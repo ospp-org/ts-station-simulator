@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.js.map
+.DS_Store
+certs/
+.env
+.env.*
+reports/
+*.log
+CLAUDE.md

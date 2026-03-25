@@ -1,0 +1,52 @@
+name: "SecurityEvent: FirmwareIntegrityFailure"
+description: "Boot station and report a firmware integrity check failure with Critical severity."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- SecurityEvent: FirmwareIntegrityFailure ---
+  - action: send
+    message: SecurityEvent
+    messageType: Event
+    payload:
+      eventId: "sec_00000005"
+      type: "FirmwareIntegrityFailure"
+      severity: "Critical"
+      timestamp: "2026-01-01T12:00:00.000Z"
+      details:
+        expectedChecksum: "sha256:abc"
+        actualChecksum: "sha256:def"
+        partition: "A"

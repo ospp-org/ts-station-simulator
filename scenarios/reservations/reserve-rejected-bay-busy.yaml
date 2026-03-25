@@ -1,0 +1,113 @@
+name: "Reserve Rejected - Bay Busy"
+description: "Attempt to reserve an occupied bay - verifies the station rejects with errorCode 3001 BAY_BUSY."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # Trigger StartService to occupy the bay first
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "StartService"
+      payload:
+        sessionId: "sess_00000001"
+        bayId: "{{bayId_1}}"
+        serviceId: "{{serviceId_1}}"
+        durationSeconds: 300
+        sessionSource: "MobileApp"
+    expect_status: 200
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  # Trigger ReserveBay on the same occupied bay - should be rejected
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "ReserveBay"
+      payload:
+        bayId: "{{bayId_1}}"
+        reservationId: "rsv_00000001"
+        expirationTime: "2099-01-01T00:00:00.000Z"
+        sessionSource: "MobileApp"
+    expect_status: 200
+
+  - action: wait_for
+    message: ReserveBay
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: ReserveBay
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3001
+      errorText: "BAY_BUSY"

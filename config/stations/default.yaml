@@ -1,0 +1,11 @@
+station:
+  firmwareVersion: "1.0.0"
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  bayCount: 2
+  timezone: "Europe/Bucharest"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+    heartbeat_interval_sec: 30
+    meter_values_interval_sec: 10

@@ -1,0 +1,58 @@
+name: "Data Transfer"
+description: "Boot, then send a DataTransfer request from station to server and wait for response."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: DataTransfer
+    messageType: Request
+    payload:
+      vendorId: "TestVendor"
+      dataId: "diagnostic_v1"
+      data:
+        metrics: true
+
+  - action: wait_for
+    message: DataTransfer
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"

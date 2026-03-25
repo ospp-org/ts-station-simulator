@@ -1,0 +1,61 @@
+name: "Change Configuration Accepted"
+description: "Change a configuration key and receive Accepted status"
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "ChangeConfiguration"
+      payload:
+        keys:
+          - key: "HeartbeatInterval"
+            value: "30"
+    expect_status: 200
+
+  - action: wait_for
+    message: ChangeConfiguration
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: ChangeConfiguration
+    messageType: Response
+    payload:
+      results:
+        - key: "HeartbeatInterval"
+          status: "Accepted"

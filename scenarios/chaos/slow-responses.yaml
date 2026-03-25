@@ -1,0 +1,69 @@
+name: "Slow Responses"
+description: "Station configured with very slow response behavior (3-5 seconds). Tests that the server tolerates delayed responses without timing out or erroring."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [3000, 5000]
+steps:
+  # --- Boot with slow behavior ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Trigger StartService via API ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "StartService"
+      payload:
+        sessionId: "sess_00000001"
+        bayId: "{{bayId_1}}"
+        serviceId: "{{serviceId_1}}"
+        durationSeconds: 300
+        sessionSource: "MobileApp"
+    expect_status: 200
+
+  # --- Wait for StartService (slow response delay applied by behavior) ---
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      serviceId: "payload.serviceId"
+
+  # --- Accept StartService (response_delay_ms [3000,5000] is applied by behavior) ---
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"

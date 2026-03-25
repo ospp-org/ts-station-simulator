@@ -1,0 +1,70 @@
+name: "Data Transfer Response"
+description: "Boot, trigger CSMS to send DataTransfer to station via API, wait for request, assert vendorId, send Accepted response."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  # Boot first
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.2.3"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  # Trigger CSMS to send DataTransfer — but start listening FIRST
+  # because the message may arrive before api_call returns
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-data-transfer"
+    body:
+      vendor_id: "TestVendor"
+      data_id: "test"
+      data: {}
+    expect_status: 200
+
+  # Wait for DataTransfer Request from CSMS
+  - action: wait_for
+    message: DataTransfer
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.vendorId"
+    exists: true
+
+  # Send DataTransfer Response back
+  - action: send
+    message: DataTransfer
+    messageType: Response
+    payload:
+      status: "Accepted"
+      data: {}

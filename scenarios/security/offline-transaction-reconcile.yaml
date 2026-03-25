@@ -1,0 +1,70 @@
+name: "Offline Transaction Reconciliation"
+description: "Boot station and send a TransactionEvent request to reconcile an offline transaction with full receipt and meter values."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 1
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- TransactionEvent: Offline reconciliation ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_a0000000001"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:05:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0ZXN0IjoxfQ=="
+        signature: "test_sig"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+      meterValues:
+        liquidMl: 2500
+        energyWh: 85
+
+  # --- Wait for response ---
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"

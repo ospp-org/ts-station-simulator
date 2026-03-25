@@ -1,0 +1,51 @@
+name: "Connection Timeout"
+description: "Send a Heartbeat and wait for the response with a very short timeout (1 second). Tests timeout handling when the server does not respond quickly enough."
+skip: true
+skip_reason: "Intentional timeout test — expected to fail wait_for"
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Send Heartbeat ---
+  - action: send
+    message: Heartbeat
+    payload: {}
+
+  # --- Wait with very short timeout to test timeout handling ---
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 1000

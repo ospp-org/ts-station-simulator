@@ -1,0 +1,207 @@
+name: "Fleet Mixed Workload"
+description: "Single station performing a full lifecycle (boot, bays available, start session, meter values, stop session, session ended, back to available). Designed to be run with many parallel workers to simulate fleet load."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- All Bays Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # --- Trigger StartService via API ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "StartService"
+      payload:
+        sessionId: "sess_00000001"
+        bayId: "{{bayId_1}}"
+        serviceId: "{{serviceId_1}}"
+        durationSeconds: 300
+        sessionSource: "MobileApp"
+    expect_status: 200
+
+  # --- Wait for StartService ---
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      serviceId: "payload.serviceId"
+      durationSeconds: "payload.durationSeconds"
+
+  # --- Accept StartService ---
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # --- StatusNotification Occupied ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: false
+
+  # --- MeterValues 1 ---
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-03-22T10:01:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  # --- MeterValues 2 ---
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-03-22T10:02:00.000Z"
+      values:
+        liquidMl: 1200
+        energyWh: 250
+
+  # --- MeterValues 3 ---
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-03-22T10:03:00.000Z"
+      values:
+        liquidMl: 1800
+        energyWh: 400
+
+  # --- Trigger StopService via API ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "StopService"
+      payload:
+        sessionId: "{{captured.sessionId}}"
+        bayId: "{{captured.bayId}}"
+    expect_status: 200
+
+  # --- Wait for StopService ---
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # --- Accept StopService ---
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 60
+      creditsCharged: 6000
+      meterValues:
+        liquidMl: 1800
+        energyWh: 400
+
+  # --- SessionEnded ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 60
+      creditsCharged: 6000
+      meterValues:
+        liquidMl: 1800
+        energyWh: 400
+
+  # --- StatusNotification Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: true

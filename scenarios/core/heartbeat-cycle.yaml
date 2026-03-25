@@ -1,0 +1,79 @@
+name: "Heartbeat Cycle"
+description: "Boot and send 3 distinct heartbeats with delay between each, capturing serverTime from every response."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Heartbeat 1
+  - action: send
+    message: Heartbeat
+    payload: {}
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 5000
+    capture:
+      serverTime1: "payload.serverTime"
+
+  - action: delay
+    ms: 1000
+
+  # Heartbeat 2
+  - action: send
+    message: Heartbeat
+    payload: {}
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 5000
+    capture:
+      serverTime2: "payload.serverTime"
+
+  - action: delay
+    ms: 1000
+
+  # Heartbeat 3
+  - action: send
+    message: Heartbeat
+    payload: {}
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 5000
+    capture:
+      serverTime3: "payload.serverTime"

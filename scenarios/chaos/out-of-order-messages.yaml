@@ -1,0 +1,63 @@
+name: "Out-of-Order Messages"
+description: "Send messages in unexpected order - orphaned MeterValues and SessionEnded for a nonexistent session. Tests server resilience to protocol violations."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Orphaned MeterValues (no active session) ---
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      sessionId: "sess_nonexistent"
+      timestamp: "2026-03-22T10:00:00.000Z"
+      values:
+        liquidMl: 100
+
+  - action: delay
+    ms: 500
+
+  # --- SessionEnded for nonexistent session ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "sess_nonexistent"
+      bayId: "{{bayId_1}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 60
+      creditsCharged: 100

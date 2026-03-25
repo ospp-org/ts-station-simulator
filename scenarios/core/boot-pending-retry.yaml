@@ -1,0 +1,97 @@
+name: "Boot Pending Retry"
+description: "Force next boot to return Pending via API, send BootNotification, assert Pending, wait retryInterval, retry boot, assert Accepted."
+station:
+  stationId: "stn_0000001e"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    auto_boot: false
+    auto_retry_boot: false
+steps:
+  # Reset sandbox state for this station
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/conformance/reset?station={{stationId}}"
+    expect_status: 200
+
+  - action: delay
+    ms: 1000
+
+  # Setup: force next boot to return Pending
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/force-pending"
+    body:
+      retry_interval: 10
+    expect_status: 200
+
+  - action: delay
+    ms: 3000
+
+  # First boot — should be Pending
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.2.3"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      bootStatus: "payload.status"
+      retryInterval: "payload.retryInterval"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Pending"
+
+  # Wait retryInterval then retry
+  - action: delay
+    ms: 10000
+
+  # Retry boot — should be Accepted
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.2.3"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 10
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"

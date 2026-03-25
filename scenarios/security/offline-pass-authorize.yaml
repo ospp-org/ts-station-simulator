@@ -1,0 +1,78 @@
+name: "Offline Pass Authorization Accepted"
+description: "Boot station and send an AuthorizeOfflinePass request with a full offline pass structure, then verify the server accepts it."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- AuthorizeOfflinePass Request ---
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "opass_a000000001"
+      offlinePass:
+        passId: "opass_a000000001"
+        sub: "sub_testuser01"
+        deviceId: "dev_test001"
+        issuedAt: "2026-01-01T00:00:00.000Z"
+        expiresAt: "2026-12-31T23:59:59.000Z"
+        policyVersion: 1
+        revocationEpoch: 0
+        offlineAllowance:
+          maxTotalCredits: 5000
+          maxUses: 10
+          maxCreditsPerTx: 500
+          allowedServiceTypes:
+            - "svc_wash_basic"
+        constraints:
+          minIntervalSec: 60
+          stationOfflineWindowHours: 24
+          stationMaxOfflineTx: 100
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+        signature: "test_sig"
+      deviceId: "dev_test001"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  # --- Wait for response ---
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"

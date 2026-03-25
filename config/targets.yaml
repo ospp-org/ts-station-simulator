@@ -1,0 +1,62 @@
+targets:
+  local:
+    mqtt_url: "mqtt://localhost:1883"
+    mqtt_tls: false
+    csms_url: "http://localhost:8080"
+    credentials:
+      email: "admin@csms.local"
+      password: "password"
+  uat:
+    mqtt_url: "mqtts://mqtt-uat.onestoppay.ro:8884"
+    mqtt_tls: true
+    csms_url: "https://api-uat.onestoppay.ro"
+    credentials:
+      email: "${UAT_EMAIL}"
+      password: "${UAT_PASSWORD}"
+    certs:
+      key: "certs/uat/station-key.pem"
+      cert: "certs/uat/station.pem"
+      server_ca: "certs/uat/ca.pem"
+  sandbox:
+    mqtt_url: "mqtts://csms-sandbox.ospp-standard.org:8883"
+    mqtt_tls: true
+    csms_url: "https://csms-sandbox.ospp-standard.org"
+    credentials:
+      email: "dev@ospp-standard.org"
+      password: "password"
+    mqtt_credentials:
+      username_template: "sandbox_stn_{{stationIdHex}}"
+      password_template: "sim-{{stationId}}"
+    certs:
+      key: "certs/sandbox/{{stationId}}-key.pem"
+      cert: "certs/sandbox/{{stationId}}.pem"
+      ca: "certs/sandbox/ca.pem"
+    station_pool:
+      - stn_00000001
+      - stn_00000002
+      - stn_00000003
+      - stn_00000004
+      - stn_00000005
+      - stn_00000006
+      - stn_00000007
+      - stn_00000008
+      - stn_00000009
+      - stn_0000000a
+      - stn_0000000b
+      - stn_0000000c
+      - stn_0000000d
+      - stn_0000000e
+      - stn_0000000f
+      - stn_00000010
+      - stn_00000011
+      - stn_00000012
+      - stn_00000013
+      - stn_00000014
+      - stn_00000015
+      - stn_00000016
+      - stn_00000017
+      - stn_00000018
+      - stn_00000019
+      - stn_0000001a
+      - stn_0000001b
+      - stn_0000001c

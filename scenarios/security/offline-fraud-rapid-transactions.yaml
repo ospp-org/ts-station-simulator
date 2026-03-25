@@ -1,0 +1,160 @@
+name: "Offline Fraud: Rapid Transactions"
+description: "Boot station and rapidly send 5 offline TransactionEvent requests in quick succession to simulate a fraud pattern with suspiciously fast transaction submissions."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 5
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Rapid TransactionEvent #1 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_aa00000001"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:05:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0eENvdW50ZXIiOjF9"
+        signature: "test_sig_1"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+      meterValues:
+        liquidMl: 2500
+        energyWh: 85
+
+  - action: delay
+    ms: 100
+
+  # --- Rapid TransactionEvent #2 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_aa00000002"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:05:30.000Z"
+      endedAt: "2026-01-01T10:10:30.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0eENvdW50ZXIiOjJ9"
+        signature: "test_sig_2"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 2
+      meterValues:
+        liquidMl: 2400
+        energyWh: 80
+
+  - action: delay
+    ms: 100
+
+  # --- Rapid TransactionEvent #3 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_aa00000003"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:11:00.000Z"
+      endedAt: "2026-01-01T10:16:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0eENvdW50ZXIiOjN9"
+        signature: "test_sig_3"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 3
+      meterValues:
+        liquidMl: 2600
+        energyWh: 90
+
+  - action: delay
+    ms: 100
+
+  # --- Rapid TransactionEvent #4 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_aa00000004"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:16:30.000Z"
+      endedAt: "2026-01-01T10:21:30.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0eENvdW50ZXIiOjR9"
+        signature: "test_sig_4"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 4
+      meterValues:
+        liquidMl: 2300
+        energyWh: 75
+
+  - action: delay
+    ms: 100
+
+  # --- Rapid TransactionEvent #5 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_aa00000005"
+      offlinePassId: "opass_a000000001"
+      userId: "sub_testuser01"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:22:00.000Z"
+      endedAt: "2026-01-01T10:27:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "eyJ0eENvdW50ZXIiOjV9"
+        signature: "test_sig_5"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 5
+      meterValues:
+        liquidMl: 2550
+        energyWh: 88

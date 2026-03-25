@@ -1,0 +1,71 @@
+name: "Maintenance Mode On"
+description: "Enable maintenance mode on a specific bay and report Unavailable status"
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    body:
+      action: "SetMaintenanceMode"
+      payload:
+        bayId: "{{bayId_1}}"
+        enabled: true
+        reason: "Scheduled cleaning"
+    expect_status: 200
+
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: SetMaintenanceMode
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Unavailable"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
