@@ -1,6 +1,6 @@
 {
   "name": "@ospp/station-simulator",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "OSPP Station Simulator — TypeScript CLI for testing CSMS implementations",
   "type": "module",
   "license": "MIT",
