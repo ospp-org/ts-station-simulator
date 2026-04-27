@@ -14,9 +14,10 @@ targets:
       email: "${UAT_EMAIL}"
       password: "${UAT_PASSWORD}"
     certs:
-      key: "certs/uat/station-key.pem"
-      cert: "certs/uat/station.pem"
-      server_ca: "certs/uat/ca.pem"
+      key: "certs/uat/{{stationId}}-key.pem"
+      cert: "certs/uat/{{stationId}}.pem"
+      station_ca_chain: "certs/uat/{{stationId}}-chain.pem"
+      server_ca: "certs/uat/server-ca.pem"
   sandbox:
     mqtt_url: "mqtts://csms-sandbox.ospp-standard.org:8883"
     mqtt_tls: true

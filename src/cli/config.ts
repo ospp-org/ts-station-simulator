@@ -20,6 +20,7 @@ export interface TargetConfig {
     keyPattern?: string;
     certPattern?: string;
     serverCa?: string;
+    stationCaChain?: string;
   };
   stationPool?: string[];
 }
@@ -31,7 +32,7 @@ export interface TargetsFile {
     csms_url: string;
     credentials?: { email: string; password: string };
     mqtt_credentials?: { username_template: string; password?: string; password_template?: string };
-    certs?: { key?: string; cert?: string; key_pattern?: string; cert_pattern?: string; ca?: string; server_ca?: string };
+    certs?: { key?: string; cert?: string; key_pattern?: string; cert_pattern?: string; ca?: string; server_ca?: string; station_ca_chain?: string };
     station_pool?: string[];
   }>;
 }
@@ -112,6 +113,7 @@ export async function loadTarget(name: string): Promise<TargetConfig> {
       keyPattern: resolved.certs.key_pattern,
       certPattern: resolved.certs.cert_pattern,
       serverCa: resolved.certs.server_ca,
+      stationCaChain: resolved.certs.station_ca_chain,
     };
   }
 

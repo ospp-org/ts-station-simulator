@@ -99,6 +99,34 @@ data transfer, status, meter, security event).
 
 Press Ctrl+C to disconnect cleanly.
 
+### provision
+
+Provision an mTLS certificate via the OSPP `/v1/provisioning` flow.
+Generates an ECDSA P-256 keypair locally (private key never leaves
+this machine), builds a CSR with `CN = stationId`, sends it to the
+CSMS server with a single-use provisioning token, and saves the
+signed certificate plus the Station CA chain.
+
+```bash
+simulator provision <stationId> \
+  --target <name> \
+  --token <provisioningToken>
+```
+
+Provisioning tokens are issued by the CSMS server administrator
+(single-use, time-limited). Files are written to the paths configured
+in `config/targets.yaml` under `target.certs`:
+
+| Field              | Role                                                                       |
+|--------------------|----------------------------------------------------------------------------|
+| `key`              | ECDSA P-256 private key, written with `chmod 0600`                         |
+| `cert`             | Signed station certificate                                                 |
+| `station_ca_chain` | Station CA + Root CA chain (presented by the station to the broker)        |
+| `server_ca`        | Broker's TLS CA (used to verify the broker; **not** modified by provision) |
+
+Per-station paths can use `{{stationId}}` as a substitution token —
+each station gets its own keypair on disk.
+
 ## Development
 
 ```bash

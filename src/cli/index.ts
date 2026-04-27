@@ -35,6 +35,13 @@ import { SecurityEventHandler } from '../handlers/SecurityEventHandler.js';
 import chalk from 'chalk';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { X509Certificate } from 'node:crypto';
+import {
+  generateEcdsaP256KeyPair,
+  buildCsr,
+  exportPrivateKeyPkcs8Pem,
+  resolveStationTemplate,
+} from './provision.js';
 
 const program = new Command();
 
@@ -451,6 +458,101 @@ program
       });
 
       console.log(chalk.green('Disconnected.'));
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error(chalk.red(`Fatal: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// provision command
+// ---------------------------------------------------------------------------
+
+interface ProvisionCommandOptions {
+  target: string;
+  token: string;
+  serialNumber?: string;
+  hardwareId: string;
+}
+
+interface ProvisioningResponse {
+  data: {
+    certificate: string;
+    caChain: string;
+    rootCaThumbprint: string;
+  };
+}
+
+program
+  .command('provision <stationId>')
+  .description('Provision an mTLS certificate via OSPP /v1/provisioning')
+  .requiredOption('-t, --target <name>', 'target environment')
+  .requiredOption('--token <provisioningToken>', 'single-use provisioning token from CSMS admin')
+  .option('--serial-number <s>', 'station serial number')
+  .option('--hardware-id <h>', 'hardware ID', 'simulator-v1')
+  .action(async (stationId: string, opts: ProvisionCommandOptions) => {
+    try {
+      const target = await loadTarget(opts.target);
+
+      if (!target.certs?.key || !target.certs.cert || !target.certs.stationCaChain) {
+        throw new Error(
+          `Target "${opts.target}" is missing certs.key, certs.cert, or certs.station_ca_chain in config/targets.yaml`,
+        );
+      }
+
+      console.log(chalk.blue(`Provisioning station ${chalk.bold(stationId)} via ${target.csmsUrl}/api/v1/provisioning...`));
+
+      const keys = await generateEcdsaP256KeyPair();
+      const csr = await buildCsr(stationId, keys);
+      const csrPem = csr.toString('pem');
+
+      const body = {
+        stationId,
+        csr: csrPem,
+        serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
+        hardwareId: opts.hardwareId,
+        provisioningToken: opts.token,
+      };
+
+      const url = `${target.csmsUrl}/api/v1/provisioning`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Provisioning failed: ${res.status} ${errText}`);
+      }
+
+      const { data } = (await res.json()) as ProvisioningResponse;
+
+      const keyPath = resolveStationTemplate(target.certs.key, stationId);
+      const certPath = resolveStationTemplate(target.certs.cert, stationId);
+      const chainPath = resolveStationTemplate(target.certs.stationCaChain, stationId);
+
+      await fs.mkdir(path.dirname(keyPath), { recursive: true });
+      await fs.mkdir(path.dirname(certPath), { recursive: true });
+      await fs.mkdir(path.dirname(chainPath), { recursive: true });
+
+      const privateKeyPem = exportPrivateKeyPkcs8Pem(keys.privateKey);
+      await fs.writeFile(keyPath, privateKeyPem, { mode: 0o600 });
+      await fs.writeFile(certPath, data.certificate);
+      await fs.writeFile(chainPath, data.caChain);
+
+      const cert = new X509Certificate(data.certificate);
+
+      console.log(chalk.green(`\nStation provisioned: ${chalk.bold(stationId)}`));
+      console.log(`  Serial:         ${cert.serialNumber}`);
+      console.log(`  Issuer:         ${cert.issuer.replace(/\n/g, ', ')}`);
+      console.log(`  Valid from:     ${cert.validFrom}`);
+      console.log(`  Valid to:       ${cert.validTo}`);
+      console.log(`  Key:            ${keyPath}`);
+      console.log(`  Cert:           ${certPath}`);
+      console.log(`  CA chain:       ${chainPath}`);
+      console.log(`  Root CA SHA256: ${data.rootCaThumbprint}`);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error(chalk.red(`Fatal: ${error.message}`));
