@@ -60,3 +60,18 @@ targets:
       - stn_0000001a
       - stn_0000001b
       - stn_0000001c
+  sandbox-gm:
+    mqtt_url: "mqtts://csms-sandbox.ospp-standard.org:8883"
+    mqtt_tls: true
+    csms_url: "https://csms-sandbox.ospp-standard.org"
+    credentials:
+      email: "${SANDBOX_GM_EMAIL}"
+      password: "${SANDBOX_GM_PASSWORD}"
+    mqtt_credentials:
+      username_template: "${SANDBOX_GM_MQTT_USER}"
+      password_template: "${SANDBOX_GM_MQTT_PASS}"
+    certs:
+      key: "certs/sandbox-gm/{{stationId}}-key.pem"
+      cert: "certs/sandbox-gm/{{stationId}}.pem"
+    station_pool:
+      - stn_00000021

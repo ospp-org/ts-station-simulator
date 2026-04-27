@@ -51,6 +51,18 @@ Configured in `config/targets.yaml`:
 
 Override via `--target` flag or `OSPP_TARGET` env var.
 
+### Environment variables per target
+
+Each target in `config/targets.yaml` can reference env vars with the
+`${VAR_NAME}` syntax (resolved at load time). Required vars per target:
+
+| Target       | Required env vars                                  |
+|--------------|----------------------------------------------------|
+| `uat`        | `UAT_EMAIL`, `UAT_PASSWORD`                        |
+| `sandbox-gm` | `SANDBOX_GM_EMAIL`, `SANDBOX_GM_PASSWORD`, `SANDBOX_GM_MQTT_USER`, `SANDBOX_GM_MQTT_PASS` |
+
+Set these in a local `.env` file at repo root (git-ignored).
+
 ## CLI Reference
 
 ```bash
