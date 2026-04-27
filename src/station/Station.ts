@@ -50,6 +50,7 @@ export class Station extends EventEmitter {
   public bootAccepted: boolean = false;
 
   private readonly handlers: Map<OsppAction, Handler> = new Map();
+  private readonly registeredListeners: Set<OsppAction> = new Set();
   private readonly bayMachines: Map<string, BayStateMachine> = new Map();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -238,6 +239,8 @@ export class Station extends EventEmitter {
   }
 
   private registerRouterListener(action: OsppAction): void {
+    if (this.registeredListeners.has(action)) return;
+    this.registeredListeners.add(action);
     this.router.onAction(action, (envelope: OsppEnvelope) => {
       this.handleMessage(envelope);
     });

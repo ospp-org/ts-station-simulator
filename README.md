@@ -71,6 +71,22 @@ npx simulator run --all --output junit --output-file results/run.xml
 npx simulator run --all --output json --output-file results/run.json
 ```
 
+### connect
+
+Run a station against a target and keep it connected to respond to
+server-initiated commands until Ctrl+C.
+
+```bash
+simulator connect --target <name> --station <id>
+```
+
+Bay IDs are derived deterministically from station ID. All 20 OSPP
+handlers are wired (boot, heartbeat, session lifecycle, configuration,
+firmware, diagnostics, maintenance, catalog, trigger, certificates,
+data transfer, status, meter, security event).
+
+Press Ctrl+C to disconnect cleanly.
+
 ## Development
 
 ```bash
