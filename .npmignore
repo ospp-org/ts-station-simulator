@@ -1,0 +1,12 @@
+.claude/
+.github/
+tests/
+results/
+dist/__tests__/
+*.config.ts
+*.config.js
+tsconfig*.json
+.eslintrc*
+eslint.config.*
+.prettierrc*
+*.log
