@@ -1,4 +1,5 @@
-import { SchemaValidator, OsppAction } from '@ospp/protocol';
+import { OsppAction } from '@ospp/protocol';
+import { SchemaValidator } from '@ospp/protocol/server';
 import type { LintIssue, LintCheck, ParsedScenario } from '../types.js';
 
 // Map YAML message names to schema keys

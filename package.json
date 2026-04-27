@@ -1,6 +1,6 @@
 {
   "name": "@ospp/station-simulator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OSPP Station Simulator — TypeScript CLI for testing CSMS implementations",
   "type": "module",
   "license": "MIT",
@@ -21,7 +21,7 @@
     "certs:sync": "tsx scripts/download-certs.ts sandbox"
   },
   "dependencies": {
-    "@ospp/protocol": "^0.1.0",
+    "@ospp/protocol": "^0.2.0",
     "mqtt": "^5.10.1",
     "yaml": "^2.6.0",
     "commander": "^12.1.0",
