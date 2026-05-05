@@ -6,6 +6,7 @@ import {
   generateEcdsaP256KeyPair,
   buildCsr,
   exportPrivateKeyPkcs8Pem,
+  exportPublicKeySpkiPem,
   resolveStationTemplate,
 } from '../../cli/provision.js';
 
@@ -69,6 +70,22 @@ describe('exportPrivateKeyPkcs8Pem', () => {
 
     expect(pem).toMatch(/-----BEGIN PRIVATE KEY-----/);
     expect(pem).toMatch(/-----END PRIVATE KEY-----/);
+  });
+});
+
+describe('exportPublicKeySpkiPem', () => {
+  it('exports the public key as a SubjectPublicKeyInfo PEM block', async () => {
+    const keys = await generateEcdsaP256KeyPair();
+    const pem = exportPublicKeySpkiPem(keys.publicKey);
+
+    expect(pem).toMatch(/-----BEGIN PUBLIC KEY-----/);
+    expect(pem).toMatch(/-----END PUBLIC KEY-----/);
+  });
+
+  it('produces a different output for distinct keypairs (sanity)', async () => {
+    const a = await generateEcdsaP256KeyPair();
+    const b = await generateEcdsaP256KeyPair();
+    expect(exportPublicKeySpkiPem(a.publicKey)).not.toBe(exportPublicKeySpkiPem(b.publicKey));
   });
 });
 

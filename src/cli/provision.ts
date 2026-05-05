@@ -29,6 +29,11 @@ export function exportPrivateKeyPkcs8Pem(privateKey: webcrypto.CryptoKey): strin
   return keyObj.export({ type: 'pkcs8', format: 'pem' }) as string;
 }
 
+export function exportPublicKeySpkiPem(publicKey: webcrypto.CryptoKey): string {
+  const keyObj = KeyObject.from(publicKey);
+  return keyObj.export({ type: 'spki', format: 'pem' }) as string;
+}
+
 export function resolveStationTemplate(value: string, stationId: string): string {
   return value.replace(/\{\{stationId\}\}/g, stationId);
 }

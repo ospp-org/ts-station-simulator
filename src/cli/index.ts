@@ -40,6 +40,7 @@ import {
   generateEcdsaP256KeyPair,
   buildCsr,
   exportPrivateKeyPkcs8Pem,
+  exportPublicKeySpkiPem,
   resolveStationTemplate,
 } from './provision.js';
 
@@ -473,7 +474,7 @@ interface ProvisionCommandOptions {
   target: string;
   token: string;
   serialNumber?: string;
-  hardwareId: string;
+  bayCount: string; // Commander returns string for option values
 }
 
 interface ProvisioningResponse {
@@ -481,16 +482,19 @@ interface ProvisioningResponse {
     certificate: string;
     caChain: string;
     rootCaThumbprint: string;
+    bayIds?: string[];
+    serverVerifyKey?: string;
+    mqttConfig?: Record<string, unknown>;
   };
 }
 
 program
   .command('provision <stationId>')
-  .description('Provision an mTLS certificate via OSPP /v1/provisioning')
+  .description('Provision an mTLS certificate via OSPP spec §2 (POST /api/v1/stations/provision)')
   .requiredOption('-t, --target <name>', 'target environment')
   .requiredOption('--token <provisioningToken>', 'single-use provisioning token from CSMS admin')
+  .requiredOption('--bay-count <n>', 'declared bay count; must match the station registration')
   .option('--serial-number <s>', 'station serial number')
-  .option('--hardware-id <h>', 'hardware ID', 'simulator-v1')
   .action(async (stationId: string, opts: ProvisionCommandOptions) => {
     try {
       const target = await loadTarget(opts.target);
@@ -501,24 +505,37 @@ program
         );
       }
 
-      console.log(chalk.blue(`Provisioning station ${chalk.bold(stationId)} via ${target.csmsUrl}/api/v1/provisioning...`));
+      const bayCount = Number.parseInt(opts.bayCount, 10);
+      if (!Number.isFinite(bayCount) || bayCount < 1) {
+        throw new Error(`--bay-count must be a positive integer, got "${opts.bayCount}"`);
+      }
 
-      const keys = await generateEcdsaP256KeyPair();
-      const csr = await buildCsr(stationId, keys);
+      const url = `${target.csmsUrl}/api/v1/stations/provision`;
+      console.log(chalk.blue(`Provisioning station ${chalk.bold(stationId)} via ${url}...`));
+
+      // TLS keypair + CSR (CN = stationId)
+      const tlsKeys = await generateEcdsaP256KeyPair();
+      const csr = await buildCsr(stationId, tlsKeys);
       const csrPem = csr.toString('pem');
 
+      // Receipt-signing keypair (separate from TLS, per OSPP spec §4.4 — used by
+      // the station to sign offline-pass receipts; the public key is persisted
+      // server-side at provisioning time, the private key never leaves the device).
+      // Same ECDSA P-256 shape as the TLS keypair; only the usage role differs.
+      const receiptKeys = await generateEcdsaP256KeyPair();
+      const receiptSigningPublicKeyPem = exportPublicKeySpkiPem(receiptKeys.publicKey);
+
       const body = {
-        stationId,
-        csr: csrPem,
-        serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
-        hardwareId: opts.hardwareId,
         provisioningToken: opts.token,
+        serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
+        bayCount,
+        tlsCsr: csrPem,
+        receiptSigningPublicKey: receiptSigningPublicKeyPem,
       };
 
-      const url = `${target.csmsUrl}/api/v1/provisioning`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(body),
       });
 
@@ -532,27 +549,43 @@ program
       const keyPath = resolveStationTemplate(target.certs.key, stationId);
       const certPath = resolveStationTemplate(target.certs.cert, stationId);
       const chainPath = resolveStationTemplate(target.certs.stationCaChain, stationId);
+      // Receipt-signing artifacts live alongside the TLS material in
+      // certs/<env>/<stationId>-receipt-{key,pub}.pem so a future
+      // "send signed receipt" command can find them by stationId convention.
+      const receiptKeyPath = keyPath.replace(/-key\.pem$/, '-receipt-key.pem');
+      const receiptPubPath = keyPath.replace(/-key\.pem$/, '-receipt-pub.pem');
 
       await fs.mkdir(path.dirname(keyPath), { recursive: true });
       await fs.mkdir(path.dirname(certPath), { recursive: true });
       await fs.mkdir(path.dirname(chainPath), { recursive: true });
 
-      const privateKeyPem = exportPrivateKeyPkcs8Pem(keys.privateKey);
+      const privateKeyPem = exportPrivateKeyPkcs8Pem(tlsKeys.privateKey);
+      const receiptPrivatePem = exportPrivateKeyPkcs8Pem(receiptKeys.privateKey);
       await fs.writeFile(keyPath, privateKeyPem, { mode: 0o600 });
+      await fs.writeFile(receiptKeyPath, receiptPrivatePem, { mode: 0o600 });
+      await fs.writeFile(receiptPubPath, receiptSigningPublicKeyPem);
       await fs.writeFile(certPath, data.certificate);
       await fs.writeFile(chainPath, data.caChain);
 
       const cert = new X509Certificate(data.certificate);
 
       console.log(chalk.green(`\nStation provisioned: ${chalk.bold(stationId)}`));
-      console.log(`  Serial:         ${cert.serialNumber}`);
-      console.log(`  Issuer:         ${cert.issuer.replace(/\n/g, ', ')}`);
-      console.log(`  Valid from:     ${cert.validFrom}`);
-      console.log(`  Valid to:       ${cert.validTo}`);
-      console.log(`  Key:            ${keyPath}`);
-      console.log(`  Cert:           ${certPath}`);
-      console.log(`  CA chain:       ${chainPath}`);
-      console.log(`  Root CA SHA256: ${data.rootCaThumbprint}`);
+      console.log(`  Serial:           ${cert.serialNumber}`);
+      console.log(`  Issuer:           ${cert.issuer.replace(/\n/g, ', ')}`);
+      console.log(`  Valid from:       ${cert.validFrom}`);
+      console.log(`  Valid to:         ${cert.validTo}`);
+      console.log(`  TLS key:          ${keyPath}`);
+      console.log(`  TLS cert:         ${certPath}`);
+      console.log(`  CA chain:         ${chainPath}`);
+      console.log(`  Receipt key:      ${receiptKeyPath}`);
+      console.log(`  Receipt pub:      ${receiptPubPath}`);
+      console.log(`  Root CA SHA256:   ${data.rootCaThumbprint}`);
+      if (data.bayIds && data.bayIds.length > 0) {
+        console.log(`  Bay IDs (${data.bayIds.length}):    ${data.bayIds.join(', ')}`);
+      }
+      if (data.mqttConfig && typeof data.mqttConfig.brokerUri === 'string') {
+        console.log(`  MQTT broker:      ${data.mqttConfig.brokerUri}`);
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error(chalk.red(`Fatal: ${error.message}`));
