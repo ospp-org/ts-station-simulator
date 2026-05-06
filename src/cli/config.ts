@@ -112,7 +112,7 @@ export async function loadTarget(name: string): Promise<TargetConfig> {
       cert: resolved.certs.cert,
       keyPattern: resolved.certs.key_pattern,
       certPattern: resolved.certs.cert_pattern,
-      serverCa: resolved.certs.server_ca,
+      serverCa: resolved.certs.server_ca ?? resolved.certs.ca,
       stationCaChain: resolved.certs.station_ca_chain,
     };
   }

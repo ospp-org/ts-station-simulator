@@ -43,6 +43,7 @@ import {
   exportPublicKeySpkiPem,
   resolveStationTemplate,
 } from './provision.js';
+import { persistBrokerArtifacts, loadBrokerArtifacts } from './artifacts.js';
 
 const program = new Command();
 
@@ -381,6 +382,23 @@ program
         };
       }
 
+      // Apply provisioning-response overrides (spec v0.3.0):
+      //   <stationId>-broker-ca.pem → tls.serverCa (TLS trust anchor)
+      //   <stationId>-mqtt.json     → effective mqttUrl (broker target)
+      const persisted = await loadBrokerArtifacts(stationId, target.certs);
+      const effectiveMqttUrl = persisted.brokerUri ?? target.mqttUrl;
+      if (tls && persisted.brokerRootCaPath) {
+        tls.serverCa = persisted.brokerRootCaPath;
+        console.log(chalk.gray(`  Using persisted broker CA: ${persisted.brokerRootCaPath}`));
+      }
+      if (persisted.brokerUri) {
+        console.log(chalk.gray(`  Using persisted broker URI: ${persisted.brokerUri}`));
+      } else if (target.certs) {
+        console.warn(chalk.yellow(
+          `  No persisted mqttConfig for ${stationId}; falling back to targets.yaml mqtt_url (${target.mqttUrl})`,
+        ));
+      }
+
       // Build station config with deterministic IDs
       const bayCount = 2;
       const stationHex = stationId.replace(/^stn_/, '');
@@ -412,7 +430,7 @@ program
             autoBoot: true,
           },
         },
-        { mqttUrl: target.mqttUrl, stationId, tls, mqttCredentials },
+        { mqttUrl: effectiveMqttUrl, stationId, tls, mqttCredentials },
       );
 
       // Register ALL handlers (cast needed: handlers use StationContext, registerHandler expects Station Handler)
@@ -480,11 +498,12 @@ interface ProvisionCommandOptions {
 interface ProvisioningResponse {
   data: {
     certificate: string;
-    caChain: string;
+    stationCaChain: string;
+    brokerRootCa?: string;
     rootCaThumbprint: string;
     bayIds?: string[];
     serverVerifyKey?: string;
-    mqttConfig?: Record<string, unknown>;
+    mqttConfig?: { brokerUri?: string; [key: string]: unknown };
   };
 }
 
@@ -565,7 +584,9 @@ program
       await fs.writeFile(receiptKeyPath, receiptPrivatePem, { mode: 0o600 });
       await fs.writeFile(receiptPubPath, receiptSigningPublicKeyPem);
       await fs.writeFile(certPath, data.certificate);
-      await fs.writeFile(chainPath, data.caChain);
+      await fs.writeFile(chainPath, data.stationCaChain);
+
+      const persistedArtifacts = await persistBrokerArtifacts(keyPath, data);
 
       const cert = new X509Certificate(data.certificate);
 
@@ -580,6 +601,12 @@ program
       console.log(`  Receipt key:      ${receiptKeyPath}`);
       console.log(`  Receipt pub:      ${receiptPubPath}`);
       console.log(`  Root CA SHA256:   ${data.rootCaThumbprint}`);
+      if (persistedArtifacts.brokerCaPath) {
+        console.log(`  Broker CA:        ${persistedArtifacts.brokerCaPath}`);
+      }
+      if (persistedArtifacts.mqttJsonPath) {
+        console.log(`  MQTT config:      ${persistedArtifacts.mqttJsonPath}`);
+      }
       if (data.bayIds && data.bayIds.length > 0) {
         console.log(`  Bay IDs (${data.bayIds.length}):    ${data.bayIds.join(', ')}`);
       }
