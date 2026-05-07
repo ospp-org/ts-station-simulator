@@ -7,7 +7,7 @@ targets:
       email: "admin@csms.local"
       password: "password"
   uat:
-    mqtt_url: "mqtts://mqtt-uat.onestoppay.ro:8884"
+    mqtt_url: "mqtts://mqtt-uat.onestoppay.ro:8883"
     mqtt_tls: true
     csms_url: "https://api-uat.onestoppay.ro"
     credentials:
