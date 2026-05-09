@@ -109,6 +109,7 @@ export class StartServiceHandler implements Handler {
         serviceId: request.serviceId,
         startedAt: new Date().toISOString(),
         durationSeconds: request.durationSeconds,
+        seqNo: 0,
       });
 
       const response: StartServiceResponse = { status: 'Accepted' };

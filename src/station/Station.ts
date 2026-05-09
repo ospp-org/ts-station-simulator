@@ -29,6 +29,7 @@ export interface SessionInfo {
   serviceId: ServiceId;
   startedAt: Date;
   durationSeconds: number;
+  seqNo: number;
 }
 
 export interface ReservationInfo {
@@ -45,6 +46,7 @@ export class Station extends EventEmitter {
   public lifecycle: StationLifecycle = StationLifecycle.OFFLINE;
   public readonly sessions: Map<string, SessionInfo> = new Map();
   public readonly reservations: Map<string, ReservationInfo> = new Map();
+  public currentRevocationEpoch: number = 0;
 
   private readonly connection: MqttConnection;
   public bootAccepted: boolean = false;

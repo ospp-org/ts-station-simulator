@@ -67,6 +67,45 @@ function substituteTemplates(
   return value;
 }
 
+/**
+ * v0.4.0 ordering-field auto-injection.
+ *
+ * - MeterValues Event: stamp seqNo from session counter (if YAML omits), then advance counter.
+ * - SessionEnded Event: stamp seqNo + finalSeqNo from session counter (if YAML omits).
+ * - StopService Accepted Response: stamp finalSeqNo from session counter (if YAML omits).
+ *
+ * Explicit YAML values always win — needed for negative tests that emit late
+ * MeterValues with seqNo > finalSeqNo.
+ */
+function injectSeqNoFields(
+  action: OsppAction,
+  msgType: MessageType,
+  payload: Record<string, unknown>,
+  station: Station,
+): void {
+  const sessionId = payload.sessionId;
+  if (typeof sessionId !== 'string') return;
+  const session = station.sessions.get(sessionId);
+  if (!session) return;
+
+  if (action === OsppAction.METER_VALUES && msgType === MessageType.EVENT) {
+    if (payload.seqNo === undefined) payload.seqNo = session.seqNo;
+    const used = payload.seqNo as number;
+    session.seqNo = used + 1;
+    return;
+  }
+  if (action === OsppAction.SESSION_ENDED && msgType === MessageType.EVENT) {
+    if (payload.seqNo === undefined) payload.seqNo = session.seqNo;
+    if (payload.finalSeqNo === undefined) payload.finalSeqNo = session.seqNo;
+    return;
+  }
+  if (action === OsppAction.STOP_SERVICE && msgType === MessageType.RESPONSE) {
+    if (payload.status === 'Accepted' && payload.finalSeqNo === undefined) {
+      payload.finalSeqNo = session.seqNo;
+    }
+  }
+}
+
 export class SendStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -81,7 +120,9 @@ export class SendStep implements Step {
     const action = mapToOsppAction(messageName);
     const messageType = mapToMessageType(definition.messageType as string | undefined);
     const rawPayload = (definition.payload as Record<string, unknown>) ?? {};
-    const payload = substituteTemplates(rawPayload, context);
+    const payload = substituteTemplates(rawPayload, context) as Record<string, unknown>;
+
+    injectSeqNoFields(action, messageType, payload, station);
 
     const envelope = await station.sender.send(
       action,

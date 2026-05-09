@@ -10,6 +10,7 @@ export interface StationContext {
   readonly lifecycle: import('../station/StationLifecycle.js').StationLifecycle;
   sessions: Map<string, SessionInfo>;
   reservations: Map<string, ReservationInfo>;
+  currentRevocationEpoch: number;
   getBayState(bayId: string): BayStatus;
   setBayState(bayId: string, status: BayStatus): void;
   startHeartbeat(intervalSec: number): void;
@@ -24,6 +25,7 @@ export interface SessionInfo {
   serviceId: string;
   startedAt: string;
   durationSeconds: number;
+  seqNo: number;
 }
 
 export interface ReservationInfo {

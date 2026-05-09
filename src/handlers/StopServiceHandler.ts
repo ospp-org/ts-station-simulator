@@ -47,6 +47,7 @@ export class StopServiceHandler implements Handler {
       status: 'Accepted',
       actualDurationSeconds,
       creditsCharged,
+      finalSeqNo: session.seqNo,
     };
 
     await station.sender.send<StopServiceResponse>(
@@ -74,6 +75,8 @@ export class StopServiceHandler implements Handler {
       reason: SessionEndReason.TIMER_EXPIRED,
       actualDurationSeconds,
       creditsCharged,
+      seqNo: session.seqNo,
+      finalSeqNo: session.seqNo,
     };
 
     await station.sender.send<SessionEndedPayload>(

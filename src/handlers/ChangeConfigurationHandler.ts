@@ -12,6 +12,15 @@ export class ChangeConfigurationHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const request = envelope.payload as ChangeConfigurationRequest;
 
+    for (const kv of request.keys) {
+      if (kv.key === 'revocationEpoch') {
+        const epoch = Number(kv.value);
+        if (Number.isFinite(epoch)) {
+          station.currentRevocationEpoch = epoch;
+        }
+      }
+    }
+
     // Simulated: accept all configuration changes
     const results: ChangeConfigurationResult[] = request.keys.map(kv => ({
       key: kv.key,
