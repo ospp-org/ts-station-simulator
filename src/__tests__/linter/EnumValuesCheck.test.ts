@@ -46,6 +46,27 @@ describe('EnumValuesCheck', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('valid SessionEnded reason "Local" (v0.4.0) — 0 issues', () => {
+    const issues = check.check(makeScenario([
+      { action: 'send', message: 'SessionEnded', messageType: 'Event', payload: { reason: 'Local' } },
+    ]));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('valid SessionEnded reason "LocalOutOfCredit" (v0.4.0) — 0 issues', () => {
+    const issues = check.check(makeScenario([
+      { action: 'send', message: 'SessionEnded', messageType: 'Event', payload: { reason: 'LocalOutOfCredit' } },
+    ]));
+    expect(issues).toHaveLength(0);
+  });
+
+  it('valid SessionEnded reason "Deauthorized" (v0.4.0) — 0 issues', () => {
+    const issues = check.check(makeScenario([
+      { action: 'send', message: 'SessionEnded', messageType: 'Event', payload: { reason: 'Deauthorized' } },
+    ]));
+    expect(issues).toHaveLength(0);
+  });
+
   it('invalid SessionEnded reason "BadReason" — 1 issue', () => {
     const issues = check.check(makeScenario([
       { action: 'send', message: 'SessionEnded', messageType: 'Event', payload: { reason: 'BadReason' } },

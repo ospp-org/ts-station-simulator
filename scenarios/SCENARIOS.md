@@ -1,13 +1,13 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 83** across 7 categories.
+**Total scenarios: 88** across 7 categories.
 
 ## Summary
 
 | Category | Count | Coverage |
 |----------|-------|----------|
 | Core | 16 | Boot (all 6 reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer, Reconnect |
-| Sessions | 13 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, MeterValues, Reservation, WebPayment |
+| Sessions | 18 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
 | Reservations | 6 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
 | Device Management | 20 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
 | Security | 18 | SecurityEvent (11 types), Certificates (3), OfflinePass (3), TransactionEvent (1) |
@@ -37,7 +37,7 @@
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |
 | `core/data-transfer-response.yaml` | Data Transfer Response | Wait for DataTransfer from server | new |
 
-## Sessions (13 scenarios)
+## Sessions (18 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -54,6 +54,11 @@
 | `sessions/session-with-reservation.yaml` | Session With Reservation | ReserveBay → StartService with reservationId | new |
 | `sessions/session-web-payment.yaml` | Session Via Web Payment | StartService with sessionSource: WebPayment | new |
 | `sessions/stop-service-rejected.yaml` | Stop Service Rejected | StopService for unknown session (3006) | new |
+| `sessions/session-stop-local.yaml` | Session Stop Local (v0.4.0) | User physical stop → SessionEnded reason: Local; pro-rated charge | new |
+| `sessions/session-local-out-of-credit.yaml` | Session Local Out Of Credit (v0.4.0) | Offline credit pool exhausted → SessionEnded reason: LocalOutOfCredit; creditsCharged=0 | new |
+| `sessions/session-deauthorized-revocation-epoch.yaml` | Session Deauthorized via RevocationEpoch (v0.4.0) | RevocationEpoch bump → SessionEnded reason: Deauthorized; creditsCharged=0 | new |
+| `sessions/session-seqno-monotonic.yaml` | Session seqNo Monotonic (v0.4.0) | 5 MeterValues with auto-injected seqNo 0..4; finalSeqNo=5 | new |
+| `sessions/session-final-seqno-terminal.yaml` | Session finalSeqNo Terminal (v0.4.0) | Late MeterValues with seqNo > finalSeqNo discarded server-side | new |
 
 ## Reservations (6 scenarios)
 
