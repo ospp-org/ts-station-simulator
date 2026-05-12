@@ -1,0 +1,425 @@
+name: "E2E — Returning Customer Session"
+description: |
+  Validates the production-realistic "returning customer" loop: an SMB
+  owner finishes the first wash, the station settles back to Available,
+  the customer (or a new customer) immediately starts a second wash on
+  the same bay, and that completes too. Exercises the same lifecycle
+  primitives as scenario A but specifically checks the state-machine
+  closure: session.completed → bay.Available → bay.Occupied → session
+  #2 completes.
+
+  Why two sessions and not one: scenario A already covers the first
+  session. The discriminating signal here is that the SECOND session
+  must be able to read the bay status, service pricing, and station
+  state that the FIRST session left behind — without re-registration,
+  re-provisioning, or re-pushing the catalog. If anything in the
+  K1.C-server's persistence is non-idempotent (e.g. catalog overwrite
+  on second PUT, bay status reset on session end, service price wipe),
+  this scenario surfaces it.
+
+  Pre-conditions: clean UAT (no user with the generated
+  e2e-returning-{{stationId}}@onestoppay.dev email). Re-running the
+  scenario is safe — each run uses a fresh stn_<random>.
+
+defer_mqtt_connect: true
+
+station:
+  bayCount: 4
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+    auto_boot: false
+    auto_retry_boot: false
+
+steps:
+  # ---------- Setup (mirrors scenario A) ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "E2E Returning Customer {{stationId}}"
+      email: "e2e-returning-{{stationId}}@onestoppay.dev"
+      password: "E2eTestPass123!"
+      password_confirmation: "E2eTestPass123!"
+    expect_status: 201
+    capture:
+      user_email: "user.email"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/organizations"
+    body:
+      name: "E2E Org {{stationId}}"
+      owner_email: "{{captured.user_email}}"
+    expect_status: 201
+    capture:
+      organization_id: "data.organization.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      name: "E2E Location {{stationId}}"
+      address: "Strada Test 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    capture:
+      location_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+          services:
+            - serviceId: "{{serviceId_1}}"
+              serviceName: "Basic Wash"
+        - bayNumber: 2
+          services:
+            - serviceId: "{{serviceId_2}}"
+              serviceName: "Premium Wash"
+        - bayNumber: 3
+          services:
+            - serviceId: "{{serviceId_3}}"
+              serviceName: "Dry"
+        - bayNumber: 4
+          services:
+            - serviceId: "{{serviceId_4}}"
+              serviceName: "Vacuum"
+    expect_status: 201
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      note: "E2E returning-customer-session scenario run"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 4
+
+  - action: connect_mqtt
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 4
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # 15s: clock-skew + resetBaysToUnknown drain — see scenario A for rationale.
+  - action: delay
+    ms: 15000
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_2}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_3}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_4}}"
+          available: true
+
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      catalogVersion: "v1-e2e-{{stationId}}"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          serviceName: "Basic Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 10
+          available: true
+        - serviceId: "{{serviceId_2}}"
+          serviceName: "Premium Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 15
+          available: true
+        - serviceId: "{{serviceId_3}}"
+          serviceName: "Dry"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 20
+          available: true
+        - serviceId: "{{serviceId_4}}"
+          serviceName: "Vacuum"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 25
+          available: true
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 5000
+    capture:
+      catalog_msg_id: "messageId"
+
+  - action: send
+    message: UpdateServiceCatalog
+    messageType: Response
+    correlationId: "{{captured.catalog_msg_id}}"
+    payload:
+      status: "Accepted"
+
+  # Drain Boot + 4 StatusNotifications + catalog Response — see scenario A
+  # for the empirical timing (single-threaded MqttConsume at ~5s/msg).
+  - action: delay
+    ms: 35000
+
+  # ========== FIRST SESSION ==========
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_1: "payload.sessionId"
+      start_msg_id_1: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_1}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      sessionId: "{{captured.session_id_1}}"
+      timestamp: "2026-05-12T16:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  # 20s drain — see scenario A for timing.
+  - action: delay
+    ms: 20000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.session_id_1}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 10000
+    capture:
+      stop_msg_id_1: "messageId"
+
+  - action: send
+    message: StopService
+    messageType: Response
+    correlationId: "{{captured.stop_msg_id_1}}"
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 60
+      creditsCharged: 10
+      meterValues:
+        liquidMl: 500
+        energyWh: 100
+
+  # Station reports the bay returning to Available after session #1 completes.
+  # Without this, /sessions/start #2 will see bay.status=Occupied → 409.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # Drain StopService Response (→ session.status=completed) +
+  # StatusNotification Available (→ bay.status=available).
+  - action: delay
+    ms: 15000
+
+  # ========== SECOND SESSION (returning customer) ==========
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_2: "payload.sessionId"
+      start_msg_id_2: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_2}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      sessionId: "{{captured.session_id_2}}"
+      timestamp: "2026-05-12T16:10:00.000Z"
+      values:
+        liquidMl: 750
+        energyWh: 150
+
+  - action: delay
+    ms: 20000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.session_id_2}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 10000
+    capture:
+      stop_msg_id_2: "messageId"
+
+  - action: send
+    message: StopService
+    messageType: Response
+    correlationId: "{{captured.stop_msg_id_2}}"
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 60
+      creditsCharged: 10
+      meterValues:
+        liquidMl: 750
+        energyWh: 150
