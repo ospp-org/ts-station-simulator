@@ -1,5 +1,5 @@
 name: "Boot Rejected"
-description: "Force-reject next boot via API, send BootNotification, assert Rejected, then retry and assert Accepted."
+description: "Deactivate station via admin is_active toggle to force production-canonical Rejected boot, then reactivate and retry to assert Accepted. Uses real PATCH /api/v1/admin/stations/{stationId}/active per csms-server admin routes (no test-only conformance endpoints)."
 station:
   stationId: "stn_0000001d"
   bayCount: 2
@@ -9,25 +9,19 @@ station:
     auto_boot: false
     auto_retry_boot: false
 steps:
-  # Reset sandbox state for this station
+  # Setup: deactivate station so next boot will be Rejected
+  # (per csms-server BootNotificationHandler.php:67-81 — when station.is_active is false)
   - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/conformance/reset?station={{stationId}}"
+    method: PATCH
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/active"
+    body:
+      is_active: false
     expect_status: 200
 
   - action: delay
-    ms: 1000
+    ms: 2000
 
-  # Setup: force next boot to be rejected
-  - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/force-reject"
-    expect_status: 200
-
-  - action: delay
-    ms: 3000
-
-  # First boot — should be Rejected
+  # First boot — should be Rejected (station inactive)
   - action: send
     message: BootNotification
     payload:
@@ -60,10 +54,18 @@ steps:
     field: "payload.status"
     equals: "Rejected"
 
+  # Reactivate station so retry will be Accepted
+  - action: api_call
+    method: PATCH
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/active"
+    body:
+      is_active: true
+    expect_status: 200
+
   - action: delay
     ms: 2000
 
-  # Retry boot — should be Accepted (force-reject auto-clears)
+  # Retry boot — should be Accepted (station now active)
   - action: send
     message: BootNotification
     payload:
