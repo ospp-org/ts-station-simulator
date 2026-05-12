@@ -138,6 +138,39 @@ export class ApiCallStep implements Step {
       ...headers,
     };
 
+    const isBackground = definition.background === true;
+
+    if (isBackground) {
+      // Background mode: fire the request without awaiting. Required for
+      // synchronous REST endpoints (e.g., POST /api/v1/sessions/start) that
+      // block on the station's MQTT Response — the scenario's subsequent
+      // wait_for + send Response steps must run while the fetch is in flight.
+      // Errors and status mismatches log but do not fail the step; capture
+      // is not supported in background mode.
+      if (definition.capture !== undefined) {
+        throw new Error(
+          'ApiCallStep: "capture" is not supported with "background: true" (response not awaited)',
+        );
+      }
+      fetch(url, { method, headers: fetchHeaders, body })
+        .then(async (response) => {
+          if (definition.expect_status !== undefined) {
+            const expectedStatus = definition.expect_status as number;
+            if (response.status !== expectedStatus) {
+              const responseBody = await response.text();
+              console.warn(
+                `[ApiCallStep:background] ${method} ${url}: expected ${expectedStatus}, got ${response.status} — ${responseBody.slice(0, 200)}`,
+              );
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[ApiCallStep:background] ${method} ${url} failed: ${message}`);
+        });
+      return;
+    }
+
     const response = await fetch(url, {
       method,
       headers: fetchHeaders,
