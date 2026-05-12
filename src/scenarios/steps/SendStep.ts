@@ -124,11 +124,18 @@ export class SendStep implements Step {
 
     injectSeqNoFields(action, messageType, payload, station);
 
+    const correlationId =
+      (definition.correlationId as string | undefined) ?? crypto.randomUUID();
+    if (process.env['SCENARIO_DEBUG'] === '1') {
+      console.log(
+        `[SendStep] action=${action} type=${messageType} messageId=${correlationId} ${typeof definition.correlationId === 'string' ? '(correlated)' : '(generated)'}`,
+      );
+    }
     const envelope = await station.sender.send(
       action,
       messageType,
       payload,
-      (definition.correlationId as string | undefined) ?? crypto.randomUUID(),
+      correlationId,
     );
 
     context.sentMessages.push(envelope);
