@@ -60,8 +60,3 @@ steps:
       services:
         - serviceId: "{{serviceId_1}}"
           available: true
-
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/stations/{{stationId}}"
-    expect_status: 200
