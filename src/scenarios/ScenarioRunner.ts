@@ -29,6 +29,14 @@ export interface ScenarioDefinition {
   target_url?: string;
   skip?: boolean;
   skip_reason?: string;
+  /**
+   * When true, the runner skips the automatic `station.connect()` call so
+   * that scenarios can run pre-provisioning API steps (signup, org, station
+   * register, provisioning-token) before the station has TLS material. The
+   * scenario MUST include a `connect_mqtt` step once provisioning artifacts
+   * exist on disk.
+   */
+  defer_mqtt_connect?: boolean;
   station: {
     stationId?: string;
     bayCount: number;
@@ -375,7 +383,9 @@ export class ScenarioRunner {
     const startTime = Date.now();
 
     try {
-      await station.connect();
+      if (!scenario.defer_mqtt_connect) {
+        await station.connect();
+      }
 
       for (let i = 0; i < scenario.steps.length; i++) {
         const rawStep = scenario.steps[i];
