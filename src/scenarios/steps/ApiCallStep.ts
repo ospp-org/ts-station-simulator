@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -75,7 +76,10 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
   const loginUrl = `${context.apiBaseUrl}/api/v1/auth/login`;
   const res = await fetch(loginUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
     body: JSON.stringify({
       email: context.apiCredentials.email,
       password: context.apiCredentials.password,
@@ -86,10 +90,21 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
     throw new Error(`API auth failed: ${res.status} ${await res.text()}`);
   }
 
-  const data = await res.json() as { token: string };
-  tokenCache.set(cacheKey, data.token);
-  context.authToken = data.token;
-  return data.token;
+  const data = await res.json() as { data?: { access_token?: string } };
+  const accessToken = data?.data?.access_token;
+  if (typeof accessToken !== 'string' || accessToken.length === 0) {
+    throw new Error(
+      `API auth response missing data.access_token: ${JSON.stringify(data).slice(0, 200)}`,
+    );
+  }
+  tokenCache.set(cacheKey, accessToken);
+  context.authToken = accessToken;
+  return accessToken;
+}
+
+function methodRequiresIdempotencyKey(method: string): boolean {
+  const m = method.toUpperCase();
+  return m === 'POST' || m === 'PUT' || m === 'PATCH';
 }
 
 export class ApiCallStep implements Step {
@@ -116,8 +131,10 @@ export class ApiCallStep implements Step {
     const token = await ensureAuth(context);
 
     const fetchHeaders: Record<string, string> = {
+      Accept: 'application/json',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(methodRequiresIdempotencyKey(method) ? { 'X-Idempotency-Key': randomUUID() } : {}),
       ...headers,
     };
 
