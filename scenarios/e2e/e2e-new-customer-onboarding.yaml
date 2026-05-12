@@ -1,0 +1,368 @@
+name: "E2E — New Customer Onboarding"
+description: |
+  End-to-end production-like business journey: a new operator signs up
+  (no pre-existing user/org/station/catalog), creates their org +
+  location, registers a 4-bay station, issues a provisioning token,
+  provisions the station (CSR+cert via /api/v1/stations/provision),
+  boots over MQTT, configures the service catalog (with prices), then
+  exercises the full session lifecycle (start → MeterValues → stop) as
+  a returning user. Single user plays both operator and driver roles —
+  the production reality for SMB owners testing their own station.
+
+  Pre-conditions: clean UAT (or at least no user with the generated
+  e2e-{{stationId}}@onestoppay.dev email). Each run uses a fresh
+  stn_<random> station — re-running the scenario does NOT collide.
+
+defer_mqtt_connect: true
+
+station:
+  bayCount: 4
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+    auto_boot: false
+    auto_retry_boot: false
+
+steps:
+  # ---------- SMB owner signs up (production reality: cannot self-create
+  # an org — `platform.organizations.create` is platform_admin-only per
+  # RolesAndPermissionsSeeder.php:199-200). The platform admin then
+  # creates the org on behalf of this user via owner_email association.
+  # We do NOT set_auth_token here because the next api_call will
+  # auto-auth as admin@onestoppay.ro to drive the operator steps below.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "E2E SMB Owner {{stationId}}"
+      email: "e2e-{{stationId}}@onestoppay.dev"
+      password: "E2eTestPass123!"
+      password_confirmation: "E2eTestPass123!"
+    expect_status: 201
+    capture:
+      user_id: "user.id"
+      user_email: "user.email"
+
+  # ---------- Platform admin creates organization on behalf of the new
+  # user. ApiCallStep auto-authenticates via UAT_EMAIL/UAT_PASSWORD
+  # (targets.yaml.uat.credentials). Subsequent steps reuse that admin JWT.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/organizations"
+    body:
+      name: "E2E Org {{stationId}}"
+      owner_email: "{{captured.user_email}}"
+    expect_status: 201
+    capture:
+      organization_id: "data.organization.id"
+
+  # ---------- Operator: create location (org-scoped) ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      name: "E2E Location {{stationId}}"
+      address: "Strada Test 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    capture:
+      location_id: "data.id"
+
+  # ---------- Operator: register station with 4 bays, each with a distinct service ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+          services:
+            - serviceId: "{{serviceId_1}}"
+              serviceName: "Basic Wash"
+        - bayNumber: 2
+          services:
+            - serviceId: "{{serviceId_2}}"
+              serviceName: "Premium Wash"
+        - bayNumber: 3
+          services:
+            - serviceId: "{{serviceId_3}}"
+              serviceName: "Dry"
+        - bayNumber: 4
+          services:
+            - serviceId: "{{serviceId_4}}"
+              serviceName: "Vacuum"
+    expect_status: 201
+
+  # ---------- Operator: issue provisioning token ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      note: "E2E new-customer-onboarding scenario run"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  # ---------- Station: provision (CSR + receipt key + POST /stations/provision) ----------
+  # Server returns 4 server-assigned 32-hex bayIds; ProvisionStep captures
+  # them into bayId_1..4 (overriding the locally-generated values).
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 4
+
+  # ---------- Station: MQTT-connect using the freshly-issued cert ----------
+  - action: connect_mqtt
+
+  # ---------- Station: BootNotification ----------
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 4
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Wait for BootNotificationHandler's post-Accept side effects to settle —
+  # specifically resetBaysToUnknown (BootNotificationHandler.php:175-185)
+  # which writes bay.updated_at = server-NOW. The next StatusNotification's
+  # envelope.timestamp (simulator-NOW) must exceed bay.updated_at, otherwise
+  # the out-of-order check at StatusNotificationHandler.php:86-98 silently
+  # drops it and bay stays UNKNOWN → BAY_NOT_READY on /sessions/start.
+  #
+  # UAT-empirical (2026-05-12): server clock is ~7s ahead of dev workstation.
+  # 15s delay = 7s clock skew + 8s margin. Real fix is either NTP-sync UAT
+  # host OR have the simulator align envelope timestamps to serverTime from
+  # BootNotification Response (deferred — out of K1.C scope).
+  - action: delay
+    ms: 15000
+
+  # ---------- Station: StatusNotification (4 bays Available) ----------
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_2}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_3}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_4}}"
+          available: true
+
+  # ---------- Operator: PUT service catalog with prices ----------
+  # Sets pricing for all 4 services at 10/15/20/25 credits per minute.
+  # Returns 202 fire-and-forget; server publishes UpdateServiceCatalog
+  # Request via MQTT, station ACKs, server persists prices to services table.
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      catalogVersion: "v1-e2e-{{stationId}}"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          serviceName: "Basic Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 10
+          available: true
+        - serviceId: "{{serviceId_2}}"
+          serviceName: "Premium Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 15
+          available: true
+        - serviceId: "{{serviceId_3}}"
+          serviceName: "Dry"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 20
+          available: true
+        - serviceId: "{{serviceId_4}}"
+          serviceName: "Vacuum"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 25
+          available: true
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 5000
+    capture:
+      catalog_msg_id: "messageId"
+
+  # Response messageId MUST equal request messageId so the server's
+  # UpdateServiceCatalogResponseHandler can resolve the pendingCommands
+  # entry (UpdateServiceCatalogResponseHandler.php:32). Without
+  # correlation, the handler skips persistence — services keep NULL
+  # pricing → BAY_NOT_READY-adjacent INVALID_SERVICE on /sessions/start.
+  - action: send
+    message: UpdateServiceCatalog
+    messageType: Response
+    correlationId: "{{captured.catalog_msg_id}}"
+    payload:
+      status: "Accepted"
+
+  # Give Path B time to persist:
+  #  - the catalog (UpdateServiceCatalogResponseHandler upserts services)
+  #  - the StatusNotifications (bay rows transition unknown → available)
+  # /sessions/start reads service.price_credits_per_minute synchronously;
+  # if catalog hasn't persisted, it sees NULL → creditsAuthorized=0 →
+  # 422 INVALID_SERVICE. Empirical (2026-05-12 13:33 UTC): with 20s delay
+  # the catalog persisted 23s after Response was published — Path B
+  # consumer is single-threaded (MqttConsume.php:67-87) and processes
+  # Boot + 4xStatusNotifications + catalog Response sequentially at
+  # ~3-4s each. 35s = 6 messages * 5s/msg + 5s margin.
+  - action: delay
+    ms: 35000
+
+  # ---------- Driver (same user): start session on bay 1 ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id: "payload.sessionId"
+      start_msg_id: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      sessionId: "{{captured.session_id}}"
+      timestamp: "2026-05-12T16:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  # Wait for Path B to drain StartService Response (→ session.status=active),
+  # StatusNotification Occupied, and MeterValues. /sessions/{id}/stop requires
+  # session.status=active in DB; consumer single-threaded at ~5s/msg means
+  # 3 messages need ~15s. Empirical (2026-05-12 13:39 UTC): with 500ms
+  # delay the StartService Response was still pending → 409 SESSION_GENERIC
+  # "cannot be stopped in current state: pending".
+  - action: delay
+    ms: 20000
+
+  # ---------- Driver: stop session ----------
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.session_id}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 10000
+    capture:
+      stop_msg_id: "messageId"
+
+  - action: send
+    message: StopService
+    messageType: Response
+    correlationId: "{{captured.stop_msg_id}}"
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 60
+      creditsCharged: 10
+      meterValues:
+        liquidMl: 500
+        energyWh: 100
