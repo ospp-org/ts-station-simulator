@@ -18,6 +18,8 @@ import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
 import { FaultStep } from './steps/FaultStep.js';
+import { ProvisionStep } from './steps/ProvisionStep.js';
+import { ConnectMqttStep } from './steps/ConnectMqttStep.js';
 import type { Step } from './steps/Step.js';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,8 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['api_call', new ApiCallStep()],
   ['delay', new DelayStep()],
   ['fault', new FaultStep()],
+  ['provision', new ProvisionStep()],
+  ['connect_mqtt', new ConnectMqttStep()],
 ]);
 
 // ---------------------------------------------------------------------------
