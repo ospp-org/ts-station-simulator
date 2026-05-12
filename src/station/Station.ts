@@ -176,6 +176,14 @@ export class Station extends EventEmitter {
     this.registerRouterListener(action);
   }
 
+  /**
+   * Update TLS material on the underlying MqttConnection before connect().
+   * Used by E2E scenarios that provision a station mid-run.
+   */
+  setTls(tls: { key?: string; cert?: string; serverCa?: string } | undefined): void {
+    this.connection.setTls(tls);
+  }
+
   startHeartbeat(intervalSec: number): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {

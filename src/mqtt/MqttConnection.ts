@@ -29,7 +29,10 @@ export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
   private readonly mqttUrl: string;
   private readonly stationId: string;
-  private readonly tlsConfig?: MqttConnectionOptions['tls'];
+  // tlsConfig is mutable to support post-construction TLS swap during E2E
+  // scenarios that provision a station mid-scenario. The cert files are read
+  // at connect() time, so updating tlsConfig before connect() is sufficient.
+  private tlsConfig?: MqttConnectionOptions['tls'];
   private readonly mqttCredentials?: MqttConnectionOptions['mqttCredentials'];
   private readonly cleanSession: boolean;
   private isDestroyingConnection = false;
@@ -41,6 +44,20 @@ export class MqttConnection extends EventEmitter {
     this.tlsConfig = options.tls;
     this.mqttCredentials = options.mqttCredentials;
     this.cleanSession = options.cleanSession ?? false;
+  }
+
+  /**
+   * Update TLS material before connect(). Required for E2E scenarios that
+   * generate a CSR + receive a cert mid-run (provision step). Throws if the
+   * connection is already established to prevent silent inconsistency.
+   */
+  setTls(tls: MqttConnectionOptions['tls']): void {
+    if (this.client !== null) {
+      throw new Error(
+        'MqttConnection.setTls: cannot change TLS after connect(); disconnect first',
+      );
+    }
+    this.tlsConfig = tls;
   }
 
   connect(): void {
