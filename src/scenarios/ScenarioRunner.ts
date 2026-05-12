@@ -39,6 +39,18 @@ export interface ScenarioDefinition {
    * exist on disk.
    */
   defer_mqtt_connect?: boolean;
+  /**
+   * MQTT 5 Clean Start. Defaults to `true` for scenarios — test runs should
+   * not inherit a queued message backlog from a previous run, which delays
+   * (or drops) time-sensitive responses like Heartbeat. Set to `false` only
+   * when the scenario explicitly depends on session persistence (i.e. tests
+   * that disconnect mid-flight and verify offline-queued commands replay
+   * on reconnect).
+   *
+   * NOTE: Will (LWT) is delivered by the broker regardless of Clean Start —
+   * setting this to `true` does NOT disable LWT.
+   */
+  clean_session?: boolean;
   station: {
     stationId?: string;
     bayCount: number;
@@ -224,6 +236,11 @@ function createStationFromScenario(
   variables: Map<string, string>,
   target: TargetConfig,
 ): Station {
+  // Default to clean session for scenarios. Persistent sessions accumulate
+  // server-published commands while the station is offline; on reconnect
+  // EMQX delivers the entire backlog before our wait_for can match, which
+  // pushed Heartbeat Response past the 5s scenario timeout (K2 §34 RCA).
+  const cleanSession = scenarioDef.clean_session ?? true;
   const stationId = variables.get('stationId')!;
   const bayCount = scenarioDef.station.bayCount;
 
@@ -292,7 +309,7 @@ function createStationFromScenario(
     stationId,
     tls,
     mqttCredentials,
-    cleanSession: !config.behavior.autoBoot,
+    cleanSession,
   });
 }
 
