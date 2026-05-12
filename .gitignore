@@ -6,5 +6,8 @@ certs/
 .env
 .env.*
 reports/
+results/
 *.log
 CLAUDE.md
+tests/artifacts/uat/
+tsconfig.tsbuildinfo
