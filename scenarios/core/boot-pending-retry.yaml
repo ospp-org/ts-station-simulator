@@ -1,5 +1,7 @@
 name: "Boot Pending Retry"
 description: "Force next boot to return Pending via API, send BootNotification, assert Pending, wait retryInterval, retry boot, assert Accepted."
+skip: true
+skip_reason: "Pending boot status not implemented in csms-server BootNotificationHandler (only Accepted/Rejected branches at BootNotificationHandler.php:56-81). Scenario preserved in-place for discoverability; deferred to a separate feature brief post-K closure. Brief K1 Phase 0 disposition variant (b)."
 station:
   stationId: "stn_0000001e"
   bayCount: 2
