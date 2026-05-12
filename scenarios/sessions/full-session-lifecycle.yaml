@@ -60,19 +60,24 @@ steps:
         - serviceId: "{{serviceId_1}}"
           available: true
 
-  # --- Trigger StartService via API ---
+  # --- Trigger StartService via canonical REST ---
+  # background: true — /sessions/start blocks on SessionReadySignal::wait
+  # until the station sends StartService Response over MQTT
+  # (SessionController.php:73). Scenario continues to wait_for + send
+  # Response below while the fetch is in flight; the server resolves the
+  # HTTP request after the station Response.
+  - action: delay
+    ms: 500
+
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000001"
-        bayId: "{{bayId_1}}"
-        serviceId: "{{serviceId_1}}"
-        durationSeconds: 60
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
 
   - action: wait_for
     message: StartService
@@ -133,15 +138,15 @@ steps:
         liquidMl: 1200
         energyWh: 250
 
-  # --- Trigger StopService via API ---
+  # --- Trigger StopService via canonical REST ---
+  # /sessions/{id}/stop does NOT block on station Response
+  # (SessionController.php:105-148 returns 200 immediately after
+  # stopSessionAction->execute); foreground api_call is fine. The session
+  # id from the captured StartService Request payload (server-generated)
+  # is the path parameter.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
-    body:
-      action: "StopService"
-      payload:
-        bayId: "{{captured.bayId}}"
-        sessionId: "{{captured.sessionId}}"
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
     expect_status: 200
 
   - action: wait_for
