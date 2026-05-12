@@ -187,13 +187,31 @@ export class ApiCallStep implements Step {
       }
     }
 
-    if (definition.capture && typeof definition.capture === 'object') {
+    const needsBody =
+      (definition.capture && typeof definition.capture === 'object') ||
+      typeof definition.set_auth_token === 'string';
+
+    if (needsBody) {
       const responseBody: unknown = await response.json();
-      for (const [varName, path] of Object.entries(
-        definition.capture as Record<string, string>,
-      )) {
-        const value = getNestedValue(responseBody, path);
-        context.captured.set(varName, value);
+
+      if (typeof definition.set_auth_token === 'string') {
+        const tokenPath = definition.set_auth_token;
+        const value = getNestedValue(responseBody, tokenPath);
+        if (typeof value !== 'string' || value.length === 0) {
+          throw new Error(
+            `ApiCallStep: set_auth_token path "${tokenPath}" did not resolve to a non-empty string`,
+          );
+        }
+        context.authToken = value;
+      }
+
+      if (definition.capture && typeof definition.capture === 'object') {
+        for (const [varName, path] of Object.entries(
+          definition.capture as Record<string, string>,
+        )) {
+          const value = getNestedValue(responseBody, path);
+          context.captured.set(varName, value);
+        }
       }
     }
   }
