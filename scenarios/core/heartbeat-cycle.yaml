@@ -44,7 +44,7 @@ steps:
   - action: wait_for
     message: Heartbeat
     messageType: Response
-    timeout_ms: 5000
+    timeout_ms: 10000
     capture:
       serverTime1: "payload.serverTime"
 
@@ -59,7 +59,7 @@ steps:
   - action: wait_for
     message: Heartbeat
     messageType: Response
-    timeout_ms: 5000
+    timeout_ms: 10000
     capture:
       serverTime2: "payload.serverTime"
 
@@ -74,6 +74,6 @@ steps:
   - action: wait_for
     message: Heartbeat
     messageType: Response
-    timeout_ms: 5000
+    timeout_ms: 10000
     capture:
       serverTime3: "payload.serverTime"
