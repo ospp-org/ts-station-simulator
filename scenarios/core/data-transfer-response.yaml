@@ -41,13 +41,16 @@ steps:
     ms: 2000
 
   # Trigger CSMS to send DataTransfer — but start listening FIRST
-  # because the message may arrive before api_call returns
+  # because the message may arrive before api_call returns.
+  # Real route per csms-server routes/api/v1/admin.php:43.
+  # Body is camelCase (DataTransferRequest) per OSPP wire-protocol field
+  # naming.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-data-transfer"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/data-transfer"
     body:
-      vendor_id: "TestVendor"
-      data_id: "test"
+      vendorId: "TestVendor"
+      dataId: "test"
       data: {}
     expect_status: 200
 
