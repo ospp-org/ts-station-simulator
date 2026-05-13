@@ -62,6 +62,7 @@ interface RunCommandOptions {
   mqttUrl?: string;
   csmsUrl?: string;
   station?: string;
+  orgId?: string;
   output: string;
   outputFile?: string;
 }
@@ -78,6 +79,7 @@ program
   .option('--mqtt-url <url>', 'Override MQTT URL')
   .option('--csms-url <url>', 'Override CSMS URL')
   .option('--station <stationId>', 'Force a specific stationId (overrides station_pool)')
+  .option('--org-id <uuid>', 'Organization UUID for X-Organization-Id header (overrides auto-discovery)')
   .option('--output <format>', 'Output format: console, junit, json', 'console')
   .option('--output-file <path>', 'File path for junit/json output')
   .action(async (opts: RunCommandOptions) => {
@@ -87,6 +89,9 @@ program
       const runnerTarget = toRunnerTarget(target);
       if (opts.station) {
         runnerTarget.stationPool = [opts.station];
+      }
+      if (opts.orgId) {
+        runnerTarget.orgId = opts.orgId;
       }
 
       // 2. Discover and run scenarios

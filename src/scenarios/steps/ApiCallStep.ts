@@ -61,6 +61,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
 }
 
 const tokenCache = new Map<string, string>();
+const orgIdCache = new Map<string, string>();
 
 async function ensureAuth(context: ScenarioContext): Promise<string | undefined> {
   if (context.authToken) return context.authToken;
@@ -107,6 +108,82 @@ function methodRequiresIdempotencyKey(method: string): boolean {
   return m === 'POST' || m === 'PUT' || m === 'PATCH';
 }
 
+/**
+ * Resolve the org UUID to inject as `X-Organization-Id`.
+ *
+ *   1. context.orgId (set from CLI --org-id flag) wins if present.
+ *   2. Otherwise lazy-discover via GET /api/v1/organizations.
+ *      Cache per (baseUrl, email). If the admin owns exactly one org,
+ *      that's the auto-selected value. Zero or multi-org admins are
+ *      errors — surface a clear message asking for explicit --org-id.
+ *
+ * Returns undefined when no resolution is possible (no auth, no baseUrl)
+ * so the caller can simply skip injection.
+ */
+async function ensureOrgId(
+  context: ScenarioContext,
+  token: string,
+): Promise<string | undefined> {
+  if (context.orgId) return context.orgId;
+  if (!context.apiBaseUrl || !context.apiCredentials) return undefined;
+
+  const cacheKey = `${context.apiBaseUrl}::${context.apiCredentials.email}`;
+  const cached = orgIdCache.get(cacheKey);
+  if (cached) {
+    context.orgId = cached;
+    return cached;
+  }
+
+  const url = `${context.apiBaseUrl}/api/v1/organizations`;
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(
+      `ApiCallStep: org auto-discovery failed (${res.status}): ${await res.text()}`,
+    );
+  }
+
+  const body = await res.json() as { data?: Array<{ id?: string }> };
+  const list = body?.data;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error(
+      `ApiCallStep: admin user has no organization memberships; cannot inject X-Organization-Id. ` +
+      `Set --org-id <uuid> on the simulator CLI or assign the user to an organization.`,
+    );
+  }
+  if (list.length > 1) {
+    const ids = list.map((o) => o.id).filter((id): id is string => typeof id === 'string');
+    throw new Error(
+      `ApiCallStep: admin user is member of ${list.length} organizations; cannot auto-pick. ` +
+      `Pass --org-id <uuid> to disambiguate. Candidates: ${ids.join(', ')}`,
+    );
+  }
+
+  const orgId = list[0]?.id;
+  if (typeof orgId !== 'string' || orgId.length === 0) {
+    throw new Error(
+      `ApiCallStep: /api/v1/organizations returned an entry without a string \`id\` field`,
+    );
+  }
+
+  orgIdCache.set(cacheKey, orgId);
+  context.orgId = orgId;
+  return orgId;
+}
+
+/**
+ * Check whether the URL targets an endpoint that the server gates on
+ * X-Organization-Id (currently anything under /api/v1/admin/).
+ */
+function requiresOrgHeader(url: string): boolean {
+  return /\/api\/v1\/admin\//.test(url);
+}
+
 export class ApiCallStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -130,10 +207,21 @@ export class ApiCallStep implements Step {
     // Auto-authenticate if credentials are available
     const token = await ensureAuth(context);
 
+    // Auto-inject X-Organization-Id for admin endpoints when not explicitly
+    // supplied via scenario `headers:`. Skip for non-admin URLs (auth/login,
+    // /organizations itself, etc.) so the auto-discovery call doesn't loop.
+    const explicitOrgHeader =
+      headers !== undefined && Object.keys(headers).some((k) => k.toLowerCase() === 'x-organization-id');
+    let autoOrgId: string | undefined;
+    if (token && requiresOrgHeader(url) && !explicitOrgHeader) {
+      autoOrgId = await ensureOrgId(context, token);
+    }
+
     const fetchHeaders: Record<string, string> = {
       Accept: 'application/json',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(autoOrgId ? { 'X-Organization-Id': autoOrgId } : {}),
       ...(methodRequiresIdempotencyKey(method) ? { 'X-Idempotency-Key': randomUUID() } : {}),
       ...headers,
     };

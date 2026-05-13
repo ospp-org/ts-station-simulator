@@ -19,6 +19,15 @@ export interface ScenarioContext {
   apiBaseUrl?: string;
   /** API credentials for JWT login */
   apiCredentials?: { email: string; password: string };
+  /**
+   * Organization UUID for multi-tenant routing. Auto-injected as
+   * `X-Organization-Id` header on /api/v1/admin/* calls by ApiCallStep.
+   *
+   * Resolution order: CLI `--org-id` flag → auto-discovery via GET
+   * /api/v1/organizations (only when exactly one org is returned).
+   * Auto-discovery is lazy on first admin api_call.
+   */
+  orgId?: string;
 }
 
 export interface StepResult {

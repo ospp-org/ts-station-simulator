@@ -81,6 +81,13 @@ export interface TargetConfig {
     email: string;
     password: string;
   };
+  /**
+   * Organization UUID for multi-tenant routing. When set, ApiCallStep
+   * auto-injects `X-Organization-Id` on /api/v1/admin/* calls. When
+   * unset and the API responds with `ORGANIZATION_REQUIRED`, ApiCallStep
+   * attempts auto-discovery via GET /api/v1/organizations.
+   */
+  orgId?: string;
 }
 
 export interface RunOptions {
@@ -407,6 +414,7 @@ export class ScenarioRunner {
     context.variables = variables;
     context.apiBaseUrl = target.apiBaseUrl;
     context.apiCredentials = target.credentials;
+    context.orgId = target.orgId;
 
     const station = createStationFromScenario(scenario, variables, target);
     const startTime = Date.now();
