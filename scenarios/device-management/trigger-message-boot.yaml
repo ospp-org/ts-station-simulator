@@ -38,12 +38,10 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/trigger-message"
     body:
-      action: "TriggerMessage"
-      payload:
-        requestedMessage: "BootNotification"
-    expect_status: 200
+      requestedMessage: "BootNotification"
+    expect_status: 202
 
   # Handler auto-responds Accepted + auto-sends BootNotification
   - action: wait_for

@@ -38,12 +38,10 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/trigger-message"
     body:
-      action: "TriggerMessage"
-      payload:
-        requestedMessage: "StatusNotification"
-    expect_status: 200
+      requestedMessage: "StatusNotification"
+    expect_status: 202
 
   - action: wait_for
     message: TriggerMessage
