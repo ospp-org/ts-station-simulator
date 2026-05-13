@@ -37,19 +37,17 @@ steps:
     equals: "Accepted"
 
   - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    method: PUT
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
     body:
-      action: "UpdateServiceCatalog"
-      payload:
-        catalogVersion: "2.0.0"
-        services:
-          - serviceId: "{{serviceId_1}}"
-            serviceName: "Premium Wash"
-            pricingType: "PerMinute"
-            priceCreditsPerMinute: 100
-            available: true
-    expect_status: 200
+      catalogVersion: "2.0.0"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          serviceName: "Premium Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 100
+          available: true
+    expect_status: 202
 
   - action: wait_for
     message: UpdateServiceCatalog
