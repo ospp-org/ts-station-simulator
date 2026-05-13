@@ -1,5 +1,5 @@
 name: "Get Configuration"
-description: "Get all configuration keys from the station"
+description: "Read the station's persisted configuration via admin REST endpoint."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -37,29 +37,6 @@ steps:
     equals: "Accepted"
 
   - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
-    body:
-      action: "GetConfiguration"
-      payload: {}
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
-
-  - action: wait_for
-    message: GetConfiguration
-    messageType: Request
-    timeout_ms: 15000
-
-  - action: send
-    message: GetConfiguration
-    messageType: Response
-    payload:
-      configuration:
-        - key: "HeartbeatInterval"
-          value: "30"
-          readonly: false
-        - key: "MeterValuesInterval"
-          value: "15"
-          readonly: false
-        - key: "StatusNotificationInterval"
-          value: "0"
-          readonly: false
