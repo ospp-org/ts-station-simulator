@@ -36,16 +36,24 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # Discover real persisted bayIds for this station (Drift 6 fix).
+  # The simulator's random {{bayId_1}} doesn't match the server's
+  # 32-hex persisted bayId, so we capture from the show endpoint.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    capture:
+      real_bay_id_1: data.bays.0.bayId
+
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
     body:
-      action: "SetMaintenanceMode"
-      payload:
-        bayId: "{{bayId_1}}"
-        enabled: true
-        reason: "Scheduled cleaning"
-    expect_status: 200
+      bayId: "{{captured.real_bay_id_1}}"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 202
 
   - action: wait_for
     message: SetMaintenanceMode
