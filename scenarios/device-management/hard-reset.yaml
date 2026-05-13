@@ -38,12 +38,10 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/reset"
     body:
-      action: "Reset"
-      payload:
-        type: "Hard"
-    expect_status: 200
+      type: "Hard"
+    expect_status: 202
 
   # Handler auto-responds Accepted + destroyConnection after 2s delay
   - action: wait_for
