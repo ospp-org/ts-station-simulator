@@ -40,13 +40,11 @@ steps:
   # --- Trigger CertificateInstall via API ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/install-certificate"
     body:
-      action: "CertificateInstall"
-      payload:
-        certificateType: "StationCertificate"
-        certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"
-    expect_status: 200
+      certificateType: "StationCertificate"
+      certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"
+    expect_status: 202
 
   # --- Wait for CertificateInstall from server ---
   - action: wait_for
