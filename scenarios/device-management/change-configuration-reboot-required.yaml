@@ -37,15 +37,12 @@ steps:
     equals: "Accepted"
 
   - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    method: PUT
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     body:
-      action: "ChangeConfiguration"
-      payload:
-        keys:
-          - key: "HeartbeatInterval"
-            value: "30"
-    expect_status: 200
+      key: "HeartbeatInterval"
+      value: "30"
+    expect_status: 202
 
   - action: wait_for
     message: ChangeConfiguration
