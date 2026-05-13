@@ -1,0 +1,700 @@
+name: "E2E — Session-End Reason Matrix (v0.4.0 §25)"
+description: |
+  Verifies the v0.4.0 SessionEndedHandler match arms by running four
+  autonomous-stop variants against a single freshly-onboarded 4-bay
+  station, one per bay. Each variant emits SessionEnded as a station-
+  initiated EVENT (not via the server's POST /sessions/{id}/stop API),
+  which is the production reality for: user pressed Stop button, credit
+  pool exhausted, offline-pass revocation, and seqNo / finalSeqNo edge
+  cases.
+
+  Variants:
+    Bay 1 — LocalOutOfCredit  → CompleteSessionAction with creditsChargedOverride=0
+    Bay 2 — Deauthorized       → SecurityEvent + FailSessionAction with creditsChargedOverride=0
+    Bay 3 — TimerExpired (multi MeterValues, seqNo monotonic)
+                                → CompleteSessionAction; verify meter_values rows seq_no 0..N-1
+    Bay 4 — TimerExpired + late MeterValues (finalSeqNo terminal marker)
+                                → CompleteSessionAction; verify late MeterValues with
+                                  seqNo > finalSeqNo are discarded
+
+  The 'Local' variant is intentionally omitted — E2E B
+  (e2e-returning-customer-session.yaml) already covers the equivalent
+  end-state via the server-initiated POST /stop → StopService Response
+  Accepted path; SessionEnded(Local) lands in the same
+  CompleteSessionAction match arm so the persistence semantics are
+  identical.
+
+  Pre-conditions: clean UAT (no user with e2e-matrix-{{stationId}}@onestoppay.dev).
+  Each run uses a fresh stn_<random> station — re-running is safe.
+
+defer_mqtt_connect: true
+
+station:
+  bayCount: 4
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+    auto_boot: false
+    auto_retry_boot: false
+
+steps:
+  # =========================================================================
+  # Setup (mirrors scenarios A + B)
+  # =========================================================================
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "E2E Matrix User {{stationId}}"
+      email: "e2e-matrix-{{stationId}}@onestoppay.dev"
+      password: "E2eTestPass123!"
+      password_confirmation: "E2eTestPass123!"
+    expect_status: 201
+    capture:
+      user_email: "user.email"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/organizations"
+    body:
+      name: "E2E Org {{stationId}}"
+      owner_email: "{{captured.user_email}}"
+    expect_status: 201
+    capture:
+      organization_id: "data.organization.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      name: "E2E Location {{stationId}}"
+      address: "Strada Test 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    capture:
+      location_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+          services:
+            - serviceId: "{{serviceId_1}}"
+              serviceName: "Basic Wash"
+        - bayNumber: 2
+          services:
+            - serviceId: "{{serviceId_2}}"
+              serviceName: "Premium Wash"
+        - bayNumber: 3
+          services:
+            - serviceId: "{{serviceId_3}}"
+              serviceName: "Dry"
+        - bayNumber: 4
+          services:
+            - serviceId: "{{serviceId_4}}"
+              serviceName: "Vacuum"
+    expect_status: 201
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      note: "E2E session-end-matrix scenario run"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 4
+
+  - action: connect_mqtt
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 4
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # 15 s clock-skew + resetBaysToUnknown drain (see scenarios A/B).
+  - action: delay
+    ms: 15000
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_2}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_3}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_4}}"
+          available: true
+
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      catalogVersion: "v1-e2e-{{stationId}}"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          serviceName: "Basic Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 10
+          available: true
+        - serviceId: "{{serviceId_2}}"
+          serviceName: "Premium Wash"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 15
+          available: true
+        - serviceId: "{{serviceId_3}}"
+          serviceName: "Dry"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 20
+          available: true
+        - serviceId: "{{serviceId_4}}"
+          serviceName: "Vacuum"
+          pricingType: "per_minute"
+          priceCreditsPerMinute: 25
+          available: true
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 5000
+    capture:
+      catalog_msg_id: "messageId"
+
+  - action: send
+    message: UpdateServiceCatalog
+    messageType: Response
+    correlationId: "{{captured.catalog_msg_id}}"
+    payload:
+      status: "Accepted"
+
+  # 35 s drain — Path B consumer single-threaded latency (see audit §33).
+  - action: delay
+    ms: 35000
+
+  # =========================================================================
+  # Bay 1 — LocalOutOfCredit
+  #
+  # Server: SessionEndedHandler::LOCAL_OUT_OF_CREDIT → CompleteSessionAction
+  # with creditsChargedOverride=0 (forceFullRefund). Expected DB state:
+  #   sessions.status = completed
+  #   sessions.credits_charged = 0 (server-forced regardless of payload)
+  #   sessions.duration_actual = 2
+  # =========================================================================
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_1: "payload.sessionId"
+      start_msg_id_1: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_1}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      sessionId: "{{captured.session_id_1}}"
+      timestamp: "2026-05-13T10:00:00.000Z"
+      values:
+        liquidMl: 300
+        energyWh: 60
+
+  # SessionEnded EVENT — station-autonomous, reason=LocalOutOfCredit.
+  # SendStep auto-injects seqNo + finalSeqNo from the session counter
+  # (see injectSeqNoFields in SendStep.ts). The payload's creditsCharged
+  # is informational only — server forces 0 via creditsChargedOverride.
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_1}}"
+      bayId: "{{captured.bayId_1}}"
+      reason: "LocalOutOfCredit"
+      actualDurationSeconds: 2
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # 20 s drain — Path B latency before next variant.
+  - action: delay
+    ms: 20000
+
+  # =========================================================================
+  # Bay 2 — Deauthorized
+  #
+  # Server: SessionEndedHandler::DEAUTHORIZED → SecurityEventReceived
+  # dispatched (type=SessionDeauthorized) AND FailSessionAction with
+  # creditsChargedOverride=0. Expected DB state:
+  #   sessions.status = failed
+  #   sessions.credits_charged = 0
+  #   sessions.fail_reason = 'SessionEnded: deauthorized (offline pass revoked)'
+  #   security_events row with type=SessionDeauthorized, severity=Warning
+  # =========================================================================
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_2}}"
+      service_id: "{{serviceId_2}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_2: "payload.sessionId"
+      start_msg_id_2: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_2}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_2}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_2}}"
+      bayId: "{{captured.bayId_2}}"
+      reason: "Deauthorized"
+      actualDurationSeconds: 2
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_2}}"
+          available: true
+
+  - action: delay
+    ms: 20000
+
+  # =========================================================================
+  # Bay 3 — TimerExpired with multiple MeterValues (seqNo monotonic)
+  #
+  # 5 MeterValues with auto-injected seqNo 0..4, then SessionEnded
+  # (TimerExpired) with auto-injected seqNo=5 and finalSeqNo=5. Server
+  # persists meter_values rows with monotonic seq_no per session.
+  # Expected DB state:
+  #   sessions.status = completed
+  #   sessions.final_seq_no = 5
+  #   meter_values rows for session_id_3 have seq_no = 0, 1, 2, 3, 4
+  # =========================================================================
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_3}}"
+      service_id: "{{serviceId_3}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_3: "payload.sessionId"
+      start_msg_id_3: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_3}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_3}}"
+          available: false
+
+  - action: delay
+    ms: 300
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      sessionId: "{{captured.session_id_3}}"
+      timestamp: "2026-05-13T10:10:00.000Z"
+      values:
+        liquidMl: 200
+        energyWh: 40
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      sessionId: "{{captured.session_id_3}}"
+      timestamp: "2026-05-13T10:10:10.000Z"
+      values:
+        liquidMl: 400
+        energyWh: 80
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      sessionId: "{{captured.session_id_3}}"
+      timestamp: "2026-05-13T10:10:20.000Z"
+      values:
+        liquidMl: 600
+        energyWh: 120
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      sessionId: "{{captured.session_id_3}}"
+      timestamp: "2026-05-13T10:10:30.000Z"
+      values:
+        liquidMl: 800
+        energyWh: 160
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      sessionId: "{{captured.session_id_3}}"
+      timestamp: "2026-05-13T10:10:40.000Z"
+      values:
+        liquidMl: 1000
+        energyWh: 200
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_3}}"
+      bayId: "{{captured.bayId_3}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 50
+      creditsCharged: 17
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_3}}"
+          available: true
+
+  # Larger drain before Bay 4 — by this point the consumer has 3 bays' worth
+  # of inbound traffic (Start/Status/MV/SessionEnded × 3) accumulated in
+  # mqtt:incoming. 60s gives the single-threaded worker (drift 11, ~5s/msg)
+  # enough headroom that Bay 4's /sessions/start does not race a still-
+  # draining queue and hit SessionReadySignal's 10s timeout.
+  - action: delay
+    ms: 60000
+
+  # =========================================================================
+  # Bay 4 — TimerExpired + late MeterValues (finalSeqNo terminal marker)
+  #
+  # 3 MeterValues with auto-injected seqNo 0,1,2. SessionEnded
+  # (TimerExpired) auto-injects seqNo=3, finalSeqNo=3 — at which point
+  # the SendStep removes the session from station.sessions so the next
+  # MeterValues no longer auto-increments. Two late MeterValues with
+  # explicit seqNo=99 and 100 propagate to the broker. Server MUST
+  # discard them per spec v0.4.0 §3.2 (seqNo > finalSeqNo).
+  # Expected DB state:
+  #   sessions.status = completed
+  #   sessions.final_seq_no = 3
+  #   meter_values rows for session_id_4 have seq_no = 0, 1, 2 (NOT 99, 100)
+  # =========================================================================
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{captured.bayId_4}}"
+      service_id: "{{serviceId_4}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      session_id_4: "payload.sessionId"
+      start_msg_id_4: "messageId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_4}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_4}}"
+          available: false
+
+  - action: delay
+    ms: 300
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      sessionId: "{{captured.session_id_4}}"
+      timestamp: "2026-05-13T10:20:00.000Z"
+      values:
+        liquidMl: 300
+        energyWh: 60
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      sessionId: "{{captured.session_id_4}}"
+      timestamp: "2026-05-13T10:20:10.000Z"
+      values:
+        liquidMl: 600
+        energyWh: 120
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      sessionId: "{{captured.session_id_4}}"
+      timestamp: "2026-05-13T10:20:20.000Z"
+      values:
+        liquidMl: 900
+        energyWh: 180
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_4}}"
+      bayId: "{{captured.bayId_4}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 30
+      creditsCharged: 13
+
+  # Late MeterValues — explicit seqNo > finalSeqNo. SendStep no longer
+  # auto-increments because the session was removed on SessionEnded;
+  # explicit YAML values propagate. Server discards these per spec.
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      sessionId: "{{captured.session_id_4}}"
+      timestamp: "2026-05-13T10:20:30.000Z"
+      seqNo: 99
+      values:
+        liquidMl: 1200
+        energyWh: 240
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      sessionId: "{{captured.session_id_4}}"
+      timestamp: "2026-05-13T10:20:40.000Z"
+      seqNo: 100
+      values:
+        liquidMl: 1500
+        energyWh: 300
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_4}}"
+          available: true
+
+  # 30 s final drain — give consumer time to process all messages before
+  # external DB verification.
+  - action: delay
+    ms: 30000
