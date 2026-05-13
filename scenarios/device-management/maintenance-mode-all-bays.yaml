@@ -38,13 +38,11 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
     body:
-      action: "SetMaintenanceMode"
-      payload:
-        enabled: true
-        reason: "Scheduled cleaning"
-    expect_status: 200
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 202
 
   - action: wait_for
     message: SetMaintenanceMode
