@@ -24,6 +24,7 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -38,15 +39,13 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
     body:
-      action: "UpdateFirmware"
-      payload:
-        firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
-        firmwareVersion: "2.0.0"
-        checksum: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        signature: "MEUCIQDexample"
-    expect_status: 200
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      signature: "MEUCIQDexample"
+    expect_status: 202
 
   - action: wait_for
     message: UpdateFirmware
