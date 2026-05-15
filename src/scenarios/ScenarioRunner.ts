@@ -200,7 +200,7 @@ function substituteTemplates(
 // Variable generation
 // ---------------------------------------------------------------------------
 
-function generateVariables(
+export function generateVariables(
   scenarioDef: ScenarioDefinition,
   target: TargetConfig,
   poolStationId?: string | null,
@@ -217,18 +217,9 @@ function generateVariables(
     vars.set(`bayId_${i}`, generateBayId());
   }
 
-  // Generate default service IDs unique per scenario run. csms-server
-  // has UNIQUE(service_id) globally (services table migration, line 15),
-  // so reusing svc_wash_basic across runs collides. We suffix each with
-  // the station's hex tail to guarantee uniqueness while staying within
-  // the 64-char VARCHAR limit and the /^svc_[a-zA-Z0-9_]+$/ regex.
-  const stationIdHex = stationId.replace(/^stn_/, '');
   const defaultServices = ['wash_basic', 'wash_premium', 'dry', 'vacuum'];
   for (let i = 0; i < defaultServices.length; i++) {
-    vars.set(
-      `serviceId_${i + 1}`,
-      generateServiceId(`${defaultServices[i]}_${stationIdHex}`),
-    );
+    vars.set(`serviceId_${i + 1}`, generateServiceId(defaultServices[i]));
   }
 
   return vars;
