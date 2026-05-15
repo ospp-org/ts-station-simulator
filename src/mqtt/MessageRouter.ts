@@ -7,12 +7,26 @@ export class MessageRouter extends EventEmitter {
   private readonly recentMessages: OsppEnvelope[] = [];
   private static readonly MAX_BUFFER = 50;
 
-  /** Remove and return buffered messages matching action (and optionally messageType). */
-  drainBuffered(action: OsppAction, messageType?: MessageType): OsppEnvelope[] {
+  /**
+   * Remove and return buffered messages matching action (and optionally
+   * messageType and messageId). Non-matching envelopes remain in the
+   * buffer so a later WaitForStep waiting on a different correlationId
+   * can still find them. Pass `messageId` to filter by OSPP-wire
+   * correlation (Response.messageId === Request.messageId).
+   */
+  drainBuffered(
+    action: OsppAction,
+    messageType?: MessageType,
+    messageId?: string,
+  ): OsppEnvelope[] {
     const matched: OsppEnvelope[] = [];
     for (let i = this.recentMessages.length - 1; i >= 0; i--) {
       const msg = this.recentMessages[i];
-      if (msg.action === action && (!messageType || msg.messageType === messageType)) {
+      if (
+        msg.action === action &&
+        (!messageType || msg.messageType === messageType) &&
+        (!messageId || msg.messageId === messageId)
+      ) {
         matched.push(...this.recentMessages.splice(i, 1));
       }
     }

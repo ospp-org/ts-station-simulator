@@ -7,6 +7,13 @@ export interface ScenarioContext {
   captured: Map<string, unknown>;
   /** All messages sent during the scenario */
   sentMessages: OsppEnvelope[];
+  /**
+   * Sent Request messageIds already claimed by a WaitForStep awaiting the
+   * correlated Response. Used for Drift 7-E FIFO auto-correlation so that
+   * back-to-back Requests of the same action each match their own Response
+   * even when Responses arrive out of order.
+   */
+  consumedSentMessageIds: Set<string>;
   /** All messages received during the scenario */
   receivedMessages: OsppEnvelope[];
   /** Step results for reporting */
@@ -43,6 +50,7 @@ export function createContext(): ScenarioContext {
     variables: new Map(),
     captured: new Map(),
     sentMessages: [],
+    consumedSentMessageIds: new Set(),
     receivedMessages: [],
     stepResults: [],
     startTime: Date.now(),
