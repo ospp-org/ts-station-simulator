@@ -40,11 +40,10 @@ steps:
     method: PUT
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
     body:
-      catalogVersion: "2.0.0"
       services:
         - serviceId: "{{serviceId_1}}"
           serviceName: "Premium Wash"
-          pricingType: "per_minute"
+          pricingType: "PerMinute"
           priceCreditsPerMinute: 100
           available: true
     expect_status: 202

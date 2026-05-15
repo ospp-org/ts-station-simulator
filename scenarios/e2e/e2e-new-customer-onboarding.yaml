@@ -225,26 +225,25 @@ steps:
     headers:
       X-Organization-Id: "{{captured.organization_id}}"
     body:
-      catalogVersion: "v1-e2e-{{stationId}}"
       services:
         - serviceId: "{{serviceId_1}}"
           serviceName: "Basic Wash"
-          pricingType: "per_minute"
+          pricingType: "PerMinute"
           priceCreditsPerMinute: 10
           available: true
         - serviceId: "{{serviceId_2}}"
           serviceName: "Premium Wash"
-          pricingType: "per_minute"
+          pricingType: "PerMinute"
           priceCreditsPerMinute: 15
           available: true
         - serviceId: "{{serviceId_3}}"
           serviceName: "Dry"
-          pricingType: "per_minute"
+          pricingType: "PerMinute"
           priceCreditsPerMinute: 20
           available: true
         - serviceId: "{{serviceId_4}}"
           serviceName: "Vacuum"
-          pricingType: "per_minute"
+          pricingType: "PerMinute"
           priceCreditsPerMinute: 25
           available: true
     expect_status: 202
