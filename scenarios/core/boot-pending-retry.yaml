@@ -10,7 +10,6 @@ station:
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]
-    auto_boot: false
     auto_retry_boot: false
 steps:
   # Reset sandbox state for this station

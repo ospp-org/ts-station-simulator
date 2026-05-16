@@ -30,7 +30,6 @@ station:
   behavior:
     accept_rate: 1.0
     response_delay_ms: [50, 200]
-    auto_boot: false
     auto_retry_boot: false
 
 steps:

@@ -8,7 +8,6 @@ station:
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]
-    auto_boot: false
     auto_retry_boot: false
 steps:
   # Setup: deactivate station so next boot will be Rejected
