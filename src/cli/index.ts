@@ -432,7 +432,6 @@ program
             heartbeatIntervalSec: 60,
             meterValuesIntervalSec: 30,
             autoRetryBoot: true,
-            autoBoot: true,
           },
         },
         { mqttUrl: effectiveMqttUrl, stationId, tls, mqttCredentials },
@@ -462,9 +461,13 @@ program
       reg(OsppAction.METER_VALUES, new MeterValuesHandler());
       reg(OsppAction.SECURITY_EVENT, new SecurityEventHandler());
 
-      // Connect
+      // Connect + send initial BootNotification.
+      // retryBoot() emits the BootNotification payload — name is historical
+      // (also used by autoRetryBoot on Rejected/Pending); rename to publishBoot()
+      // tracked as separate tech debt.
       await station.connect();
-      console.log(chalk.green(`\nStation ${stationId} connected and booted.\n`));
+      await station.retryBoot();
+      console.log(chalk.green(`\nStation ${stationId} connected. BootNotification sent.\n`));
       console.log(chalk.bold('Station IDs:'));
       console.log(`  stationId:  ${stationId}`);
       for (const bay of bays) {

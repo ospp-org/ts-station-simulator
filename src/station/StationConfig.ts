@@ -31,7 +31,6 @@ export interface BehaviorConfig {
   heartbeatIntervalSec: number;
   meterValuesIntervalSec: number;
   autoRetryBoot: boolean;              // true = handler auto-retries on Rejected/Pending
-  autoBoot: boolean;                   // true = auto-send BootNotification on MQTT connect
 }
 
 export function generateStationId(): StationId {

@@ -102,35 +102,6 @@ export class Station extends EventEmitter {
     this.lifecycle = StationLifecycle.ONLINE;
     this.bootAccepted = false;
 
-    if (this.config.behavior.autoBoot) {
-      const bootPayload: BootNotificationRequest = {
-        stationId: this.config.stationId,
-        firmwareVersion: this.config.firmwareVersion,
-        stationModel: this.config.stationModel,
-        stationVendor: this.config.stationVendor,
-        serialNumber: this.config.serialNumber,
-        bayCount: this.config.bayCount,
-        uptimeSeconds: 0,
-        pendingOfflineTransactions: 0,
-        timezone: this.config.timezone,
-        bootReason: BootReason.POWER_ON,
-        capabilities: {
-          bleSupported: false,
-          offlineModeSupported: false,
-          meterValuesSupported: true,
-        },
-        networkInfo: {
-          connectionType: 'Ethernet',
-        },
-      };
-
-      await this.sender.send(
-        OsppAction.BOOT_NOTIFICATION,
-        MessageType.REQUEST,
-        bootPayload,
-      );
-    }
-
     this.emit('connected');
   }
 

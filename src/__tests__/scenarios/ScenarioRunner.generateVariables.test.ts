@@ -9,7 +9,12 @@ const TARGET: TargetConfig = {
 function scenario(stationId?: string, bayCount = 2): ScenarioDefinition {
   return {
     name: 'test',
-    station: { stationId, bayCount },
+    station: {
+      stationId,
+      bayCount,
+      stationModel: 'WashPro X200',
+      stationVendor: 'SimCorp',
+    },
     steps: [],
   };
 }

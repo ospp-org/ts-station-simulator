@@ -54,6 +54,8 @@ export interface ScenarioDefinition {
   station: {
     stationId?: string;
     bayCount: number;
+    stationModel: string;
+    stationVendor: string;
     behavior?: {
       accept_rate?: number;
       response_delay_ms?: [number, number];
@@ -263,8 +265,8 @@ function createStationFromScenario(
   const config: StationConfig = {
     stationId,
     firmwareVersion: '1.0.0',
-    stationModel: 'SimulatorModel',
-    stationVendor: 'OSPP',
+    stationModel: scenarioDef.station.stationModel,
+    stationVendor: scenarioDef.station.stationVendor,
     serialNumber: variables.get('serialNumber')!,
     bayCount,
     timezone: 'UTC',
@@ -275,7 +277,6 @@ function createStationFromScenario(
       heartbeatIntervalSec: 60,
       meterValuesIntervalSec: 30,
       autoRetryBoot: (behavior as Record<string, unknown> | undefined)?.auto_retry_boot !== false,
-      autoBoot: (behavior as Record<string, unknown> | undefined)?.auto_boot !== false,
     },
   };
 
@@ -364,6 +365,12 @@ export class ScenarioRunner {
     }
     if (!parsed.station) {
       throw new Error(`Scenario at ${filePath} is missing a "station" field`);
+    }
+    if (!parsed.station.stationModel) {
+      throw new Error(`Scenario '${parsed.name}' missing required field station.stationModel in YAML`);
+    }
+    if (!parsed.station.stationVendor) {
+      throw new Error(`Scenario '${parsed.name}' missing required field station.stationVendor in YAML`);
     }
     if (!Array.isArray(parsed.steps)) {
       throw new Error(`Scenario at ${filePath} is missing a "steps" array`);
