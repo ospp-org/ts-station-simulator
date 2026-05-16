@@ -3,6 +3,8 @@ description: "Deactivate station via admin is_active toggle to force production-
 station:
   stationId: "stn_0000001d"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]

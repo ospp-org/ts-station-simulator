@@ -3,6 +3,8 @@ description: "Boot, then send a DataTransfer request from station to server and 
 station:
   stationId: "{{stationId}}"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]

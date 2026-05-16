@@ -3,6 +3,8 @@ description: "Boot, then disconnect to trigger MQTT Last Will and Testament. The
 station:
   stationId: "{{stationId}}"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]

@@ -3,6 +3,8 @@ description: "Firmware update fails during download phase due to network error"
 station:
   stationId: "{{stationId}}"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [50, 200]

@@ -3,6 +3,8 @@ description: "Server triggers a BootNotification message from the station — ha
 station:
   stationId: "{{stationId}}"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [50, 200]

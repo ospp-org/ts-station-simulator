@@ -5,6 +5,8 @@ skip_reason: "Pending boot status not implemented in csms-server BootNotificatio
 station:
   stationId: "stn_0000001e"
   bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
   behavior:
     accept_rate: 1.0
     response_delay_ms: [100, 300]
