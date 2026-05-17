@@ -76,7 +76,10 @@ export class WaitForStep implements Step {
 
     const action = mapToOsppAction(messageName);
     const messageType = definition.messageType as string | undefined;
-    const timeoutMs = (definition.timeout_ms as number) ?? 5000;
+    // 15s default gives ~30-50x headroom over typical ~300ms round-trip post-bridge-fix
+    // (commit 44f81d1 in csms-mqtt-bridge). Scenarios needing tighter assertion
+    // should set timeout_ms explicitly in YAML.
+    const timeoutMs = (definition.timeout_ms as number) ?? 15000;
     const explicitCorrelation = definition.correlationId as string | undefined;
 
     const expectedMessageId = pickExpectedMessageId(
