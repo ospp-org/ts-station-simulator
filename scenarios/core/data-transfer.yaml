@@ -32,7 +32,10 @@ steps:
   - action: wait_for
     message: BootNotification
     messageType: Response
-    timeout_ms: 5000
+    # Aligned with global default bump (5s → 15s, commit 9e57ce2). Under UAT
+    # TLS + cross-region latency the first BootNotification round-trip can
+    # exceed 5s, which surfaced as P5.11 flake in the V2 report.
+    timeout_ms: 15000
 
   - action: assert
     field: "payload.status"
