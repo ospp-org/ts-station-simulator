@@ -1,3 +1,9 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/sessions/meter-values-streaming.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Meter Values Streaming"
 description: "Boot, trigger StartService via API, accept, send StatusNotification Occupied, send 3 MeterValues EVENTs with increasing cumulative values and delays between them."
 station:

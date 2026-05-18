@@ -1,3 +1,9 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/sessions/session-stop-local.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Session Stop - Local (User Pressed Stop Button)"
 description: "User manually stops session at the station (physical Stop button). Station emits autonomous SessionEnded with reason Local; pro-rated charge allowed per spec v0.4.0."
 station:

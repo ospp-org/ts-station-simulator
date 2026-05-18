@@ -1,3 +1,9 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/sessions/session-fault-during-service.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Session Fault During Service"
 description: "Hardware fault occurs during an active session. Station sends SessionEnded with reason Fault, creditsCharged 0, and transitions bay to Faulted."
 station:

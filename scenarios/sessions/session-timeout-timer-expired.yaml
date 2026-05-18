@@ -1,3 +1,9 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/sessions/session-timeout-timer-expired.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Session Timeout - Timer Expired"
 description: "Session auto-stops when durationSeconds elapses. Station sends SessionEnded with reason TimerExpired, transitions through Finishing to Available."
 station:

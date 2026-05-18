@@ -1,3 +1,9 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/sessions/session-final-seqno-terminal.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Session finalSeqNo Terminal Marker"
 description: "3 MeterValues emitted (seqNo 0,1,2). StopService Accepted carries finalSeqNo=3. Two late MeterValues with explicit seqNo 99 and 100 emitted post-stop. Per spec v0.4.0 §3.2, csms-server MUST discard the late events as seqNo > finalSeqNo."
 station:

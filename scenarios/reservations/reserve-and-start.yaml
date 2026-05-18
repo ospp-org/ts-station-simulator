@@ -1,3 +1,10 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{bayId_2}}, {{serviceId_1}}
+# Example — bind to real CSMS state for Phase 3/4 coverage:
+#   simulator run --scenario scenarios/reservations/reserve-and-start.yaml --target uat \
+#     --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var bayId_2=bay_realbay002 \
+#     --var serviceId_1=svc_wash_basic
 name: "Reserve and Start"
 description: "Reserve a bay, then start a session with matching reservationId - verifies the full reservation-to-session flow."
 station:
