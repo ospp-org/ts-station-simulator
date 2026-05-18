@@ -41,3 +41,57 @@ describe('generateVariables — Drift 8.1 stationHex suffix removal', () => {
     }
   });
 });
+
+describe('generateVariables — Sprint B --var userVars overrides', () => {
+  it('overrides auto-generated bayId_1 when supplied via userVars', () => {
+    const userVars = new Map([['bayId_1', 'bay_realbay001']]);
+    const vars = generateVariables(scenario(), TARGET, null, userVars);
+
+    expect(vars.get('bayId_1')).toBe('bay_realbay001');
+    // Untouched bayId_2 still comes from generateBayId() (random hex)
+    expect(vars.get('bayId_2')).toMatch(/^bay_[a-f0-9]{8}$/);
+  });
+
+  it('overrides multiple bayId_N values simultaneously', () => {
+    const userVars = new Map([
+      ['bayId_1', 'bay_aa'],
+      ['bayId_2', 'bay_bb'],
+    ]);
+    const vars = generateVariables(scenario(undefined, 2), TARGET, null, userVars);
+
+    expect(vars.get('bayId_1')).toBe('bay_aa');
+    expect(vars.get('bayId_2')).toBe('bay_bb');
+  });
+
+  it('overrides stationId via userVars (winning over auto-generated)', () => {
+    const userVars = new Map([['stationId', 'stn_overridden']]);
+    const vars = generateVariables(scenario(), TARGET, null, userVars);
+
+    expect(vars.get('stationId')).toBe('stn_overridden');
+  });
+
+  it('userVars wins over the pool-allocated stationId (last-write semantics)', () => {
+    const userVars = new Map([['stationId', 'stn_user']]);
+    const vars = generateVariables(scenario(), TARGET, 'stn_pool', userVars);
+
+    expect(vars.get('stationId')).toBe('stn_user');
+  });
+
+  it('can define brand-new placeholder names not in the auto-generated set', () => {
+    const userVars = new Map([['customMarker', 'tag42']]);
+    const vars = generateVariables(scenario(), TARGET, null, userVars);
+
+    expect(vars.get('customMarker')).toBe('tag42');
+  });
+
+  it('omitting userVars leaves auto-generation untouched (backwards-compat)', () => {
+    const without = generateVariables(scenario('stn_fixed'), TARGET);
+    const withEmpty = generateVariables(scenario('stn_fixed'), TARGET, null, new Map());
+
+    expect(without.get('stationId')).toBe('stn_fixed');
+    expect(withEmpty.get('stationId')).toBe('stn_fixed');
+    // serviceIds are deterministic; bayIds + serialNumber are random per-call so
+    // we don't compare them directly.
+    expect(withEmpty.get('serviceId_1')).toBe(without.get('serviceId_1'));
+  });
+});

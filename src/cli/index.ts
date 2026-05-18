@@ -44,6 +44,7 @@ import {
   resolveStationTemplate,
 } from './provision.js';
 import { persistBrokerArtifacts, loadBrokerArtifacts } from './artifacts.js';
+import { parseUserVars } from './userVars.js';
 
 const program = new Command();
 
@@ -65,6 +66,7 @@ interface RunCommandOptions {
   orgId?: string;
   output: string;
   outputFile?: string;
+  var: string[];
 }
 
 program
@@ -82,6 +84,12 @@ program
   .option('--org-id <uuid>', 'Organization UUID for X-Organization-Id header (overrides auto-discovery)')
   .option('--output <format>', 'Output format: console, junit, json', 'console')
   .option('--output-file <path>', 'File path for junit/json output')
+  .option(
+    '--var <pair>',
+    'Override scenario placeholder ({{KEY}}). Format: KEY=VALUE. Repeatable.',
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
   .action(async (opts: RunCommandOptions) => {
     try {
       // 1. Load target config
@@ -93,6 +101,12 @@ program
       if (opts.orgId) {
         runnerTarget.orgId = opts.orgId;
       }
+
+      // Parse --var KEY=VALUE pairs into a Map<string,string>.
+      // Empty Map => undefined so downstream `if (userVars)` paths stay no-op
+      // when the flag isn't used.
+      const userVars = parseUserVars(opts.var ?? []);
+      const userVarsArg = userVars.size > 0 ? userVars : undefined;
 
       // 2. Discover and run scenarios
       const runner = new ScenarioRunner();
@@ -106,9 +120,10 @@ program
 
         console.log(chalk.blue(`Running scenario: ${scenario.name}`));
         console.log(chalk.blue(`  Target: ${opts.target ?? process.env['OSPP_TARGET'] ?? 'custom'}`));
+        logUserVars(userVarsArg);
         console.log();
 
-        const result = await runner.runScenario(scenario, runnerTarget);
+        const result = await runner.runScenario(scenario, runnerTarget, userVarsArg);
         results = [result];
       } else if (opts.suite) {
         // Suite — run all in scenarios/<name>/
@@ -122,8 +137,9 @@ program
 
         console.log(chalk.blue(`Running ${scenarioPaths.length} scenario(s) from suite "${opts.suite}"...`));
         logRunConfig(opts);
+        logUserVars(userVarsArg);
 
-        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers);
+        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
       } else if (opts.all) {
         // All — run everything in scenarios/
         const scenariosDir = path.resolve('scenarios');
@@ -136,8 +152,9 @@ program
 
         console.log(chalk.blue(`Running ${scenarioPaths.length} scenario(s)...`));
         logRunConfig(opts);
+        logUserVars(userVarsArg);
 
-        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers);
+        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
       } else {
         console.error(chalk.red('Error: specify --scenario, --suite, or --all'));
         process.exit(1);
@@ -195,21 +212,30 @@ async function runScenarioPaths(
   target: RunnerTargetConfig,
   parallel: boolean,
   maxWorkers: number,
+  userVars?: Map<string, string>,
 ): Promise<ScenarioResult[]> {
   const scenarios = await Promise.all(
     scenarioPaths.map(p => runner.loadScenario(p)),
   );
 
   if (parallel && maxWorkers > 1) {
-    return runner.runParallel(scenarios, target, maxWorkers);
+    return runner.runParallel(scenarios, target, maxWorkers, userVars);
   }
 
   const results: ScenarioResult[] = [];
   for (const scenario of scenarios) {
-    const result = await runner.runScenario(scenario, target);
+    const result = await runner.runScenario(scenario, target, userVars);
     results.push(result);
   }
   return results;
+}
+
+function logUserVars(userVars: Map<string, string> | undefined): void {
+  if (!userVars || userVars.size === 0) return;
+  const summary = [...userVars.entries()]
+    .map(([k, v]) => `${k}=${v}`)
+    .join(', ');
+  console.log(chalk.cyan(`  Overrides (${userVars.size}): ${summary}`));
 }
 
 function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {

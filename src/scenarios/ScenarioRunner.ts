@@ -96,6 +96,13 @@ export interface RunOptions {
   maxWorkers?: number;
   cooldownMs?: number;
   filter?: string;
+  /**
+   * Per-run placeholder overrides. Each entry's key wins over the
+   * matching auto-generated variable from `generateVariables()`. Used by
+   * the CLI's repeatable `--var KEY=VALUE` flag to plug real bay/service
+   * IDs into scenarios when exercising against an existing CSMS state.
+   */
+  userVars?: Map<string, string>;
 }
 
 export interface ScenarioResult {
@@ -206,6 +213,7 @@ export function generateVariables(
   scenarioDef: ScenarioDefinition,
   target: TargetConfig,
   poolStationId?: string | null,
+  userVars?: Map<string, string>,
 ): Map<string, string> {
   const vars = new Map<string, string>();
 
@@ -222,6 +230,13 @@ export function generateVariables(
   const defaultServices = ['wash_basic', 'wash_premium', 'dry', 'vacuum'];
   for (let i = 0; i < defaultServices.length; i++) {
     vars.set(`serviceId_${i + 1}`, generateServiceId(defaultServices[i]));
+  }
+
+  // CLI --var overrides win over auto-generated values (last-write semantics).
+  if (userVars) {
+    for (const [k, v] of userVars) {
+      vars.set(k, v);
+    }
   }
 
   return vars;
@@ -382,6 +397,7 @@ export class ScenarioRunner {
   async runScenario(
     scenario: ScenarioDefinition,
     target: TargetConfig,
+    userVars?: Map<string, string>,
   ): Promise<ScenarioResult> {
     if (scenario.skip) {
       console.log('[ScenarioRunner] Skipping "%s": %s', scenario.name, scenario.skip_reason ?? 'marked as skip');
@@ -408,7 +424,7 @@ export class ScenarioRunner {
       poolStationId = await this.poolAllocator.acquire();
     }
 
-    const variables = generateVariables(scenario, target, poolStationId);
+    const variables = generateVariables(scenario, target, poolStationId, userVars);
     context.variables = variables;
     context.apiBaseUrl = target.apiBaseUrl;
     context.apiCredentials = target.credentials;
@@ -527,7 +543,7 @@ export class ScenarioRunner {
     }
 
     if (options.maxWorkers && options.maxWorkers > 1) {
-      return this.runParallel(scenarios, target, options.maxWorkers);
+      return this.runParallel(scenarios, target, options.maxWorkers, options.userVars);
     }
 
     const cooldownMs = options.cooldownMs ?? 3000;
@@ -536,7 +552,7 @@ export class ScenarioRunner {
       if (i > 0 && cooldownMs > 0) {
         await new Promise<void>(r => setTimeout(r, cooldownMs));
       }
-      const result = await this.runScenario(scenarios[i], target);
+      const result = await this.runScenario(scenarios[i], target, options.userVars);
       results.push(result);
     }
     return results;
@@ -546,13 +562,14 @@ export class ScenarioRunner {
     scenarios: ScenarioDefinition[],
     target: TargetConfig,
     maxWorkers: number,
+    userVars?: Map<string, string>,
   ): Promise<ScenarioResult[]> {
     const semaphore = new Semaphore(maxWorkers);
 
     const tasks = scenarios.map(async (scenario) => {
       await semaphore.acquire();
       try {
-        return await this.runScenario(scenario, target);
+        return await this.runScenario(scenario, target, userVars);
       } finally {
         semaphore.release();
       }
