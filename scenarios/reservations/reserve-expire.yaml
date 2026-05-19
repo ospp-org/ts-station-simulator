@@ -56,20 +56,16 @@ steps:
           available: true
 
   # Trigger ReserveBay via CSMS API
-  # Note: The expirationTime is set to a far-future date in the trigger payload.
-  # The CSMS is expected to apply a short TTL (e.g. ~5s) for this test so the
-  # reservation expires quickly. The delay below waits for that expiration.
+  # Note: duration_minutes is the minimum (1) so the reservation expires
+  # quickly. The delay below waits for that expiration.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/reservations"
     body:
-      action: "ReserveBay"
-      payload:
-        bayId: "{{bayId_1}}"
-        reservationId: "rsv_00000001"
-        expirationTime: "2099-01-01T00:00:00.000Z"
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 1
+      session_source: "MobileApp"
+    expect_status: 201
 
   - action: wait_for
     message: ReserveBay

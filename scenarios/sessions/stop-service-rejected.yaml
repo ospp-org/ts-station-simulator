@@ -5,7 +5,7 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Stop Service Rejected - Session Not Found"
-description: "Trigger StopService via API for an unknown/non-existent session. Station rejects with error 3006 SESSION_NOT_FOUND."
+description: "POST /api/v1/sessions/{id}/stop with an unknown sessionId returns HTTP 404 SESSION_NOT_FOUND server-side without dispatching to the station. Original station-rejection test (errorCode 3006) is no longer reachable: server pre-validates the session ID; the station never sees a StopService Request for an unknown session."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -58,29 +58,13 @@ steps:
           available: true
 
   # --- Trigger StopService for nonexistent session via API ---
+  # New endpoint pre-validates sessionId server-side. Unknown sessions return
+  # HTTP 404 SESSION_NOT_FOUND directly; no MQTT dispatch to the station occurs,
+  # so the previous wait_for StopService + send Rejected Response is no longer
+  # exercised. Sprint B3 follow-up: rewrite test to use a real (active) session
+  # then call /stop with a DIFFERENT session's id to test SESSION_MISMATCH (403),
+  # or add a station-direct chaos scenario for the missing coverage.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
-    body:
-      action: "StopService"
-      payload:
-        sessionId: "sess_00000099"
-        bayId: "{{bayId_1}}"
-    expect_status: 200
-
-  - action: wait_for
-    message: StopService
-    messageType: Request
-    timeout_ms: 15000
-    capture:
-      sessionId: "payload.sessionId"
-      bayId: "payload.bayId"
-
-  # --- Reject StopService ---
-  - action: send
-    message: StopService
-    messageType: Response
-    payload:
-      status: "Rejected"
-      errorCode: 3006
-      errorText: "SESSION_NOT_FOUND"
+    url: "{{target_url}}/api/v1/sessions/sess_00000099/stop"
+    expect_status: 404

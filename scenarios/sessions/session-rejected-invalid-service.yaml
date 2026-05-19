@@ -60,16 +60,13 @@ steps:
   # --- Trigger StartService with unknown serviceId via API ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000001"
-        bayId: "{{bayId_1}}"
-        serviceId: "svc_nonexistent"
-        durationSeconds: 300
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      service_id: "svc_nonexistent"
+      duration_seconds: 300
+    expect_status: 422
 
   - action: wait_for
     message: StartService

@@ -58,15 +58,12 @@ steps:
   # Trigger ReserveBay via CSMS API
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/reservations"
     body:
-      action: "ReserveBay"
-      payload:
-        bayId: "{{bayId_1}}"
-        reservationId: "rsv_00000001"
-        expirationTime: "2099-01-01T00:00:00.000Z"
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
 
   - action: wait_for
     message: ReserveBay
@@ -96,12 +93,7 @@ steps:
   # Trigger CancelReservation via CSMS API
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
-    body:
-      action: "CancelReservation"
-      payload:
-        bayId: "{{bayId_1}}"
-        reservationId: "{{captured.reservationId}}"
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}/cancel"
     expect_status: 200
 
   - action: wait_for

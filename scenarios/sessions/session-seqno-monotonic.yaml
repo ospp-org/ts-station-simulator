@@ -60,16 +60,13 @@ steps:
   # --- Trigger StartService ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000001"
-        bayId: "{{bayId_1}}"
-        serviceId: "{{serviceId_1}}"
-        durationSeconds: 300
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
 
   - action: wait_for
     message: StartService
@@ -174,12 +171,7 @@ steps:
   # finalSeqNo=5. ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
-    body:
-      action: "StopService"
-      payload:
-        bayId: "{{captured.bayId}}"
-        sessionId: "{{captured.sessionId}}"
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
     expect_status: 200
 
   - action: wait_for

@@ -40,16 +40,13 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000001"
-        bayId: "{{bayId_1}}"
-        serviceId: "{{serviceId_1}}"
-        durationSeconds: 300
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
 
   - action: wait_for
     message: StartService
@@ -64,12 +61,12 @@ steps:
 
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
     body:
-      action: "Reset"
+      command: "Reset"
       payload:
         type: "Soft"
-    expect_status: 200
+    expect_status: 202
 
   - action: wait_for
     message: Reset

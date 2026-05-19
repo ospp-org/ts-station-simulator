@@ -60,16 +60,13 @@ steps:
   # --- Trigger first StartService via API ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000001"
-        bayId: "{{bayId_1}}"
-        serviceId: "{{serviceId_1}}"
-        durationSeconds: 300
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
 
   - action: wait_for
     message: StartService
@@ -102,16 +99,13 @@ steps:
   # --- Trigger second StartService on same bay via API ---
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
     body:
-      action: "StartService"
-      payload:
-        sessionId: "sess_00000002"
-        bayId: "{{captured.bayId}}"
-        serviceId: "{{captured.serviceId}}"
-        durationSeconds: 300
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{captured.bayId}}"
+      service_id: "{{captured.serviceId}}"
+      duration_seconds: 300
+    expect_status: 422
 
   - action: wait_for
     message: StartService

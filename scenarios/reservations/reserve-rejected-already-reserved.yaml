@@ -58,15 +58,12 @@ steps:
   # First ReserveBay - should succeed
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/reservations"
     body:
-      action: "ReserveBay"
-      payload:
-        bayId: "{{bayId_1}}"
-        reservationId: "rsv_00000001"
-        expirationTime: "2099-01-01T00:00:00.000Z"
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
 
   - action: wait_for
     message: ReserveBay
@@ -93,18 +90,16 @@ steps:
         - serviceId: "{{serviceId_1}}"
           available: true
 
-  # Second ReserveBay on the same bay - should be rejected
+  # Second ReserveBay on the same bay - should be rejected.
+  # Server propagates the station's Rejected MQTT Response as HTTP 422.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/stations/{{stationId}}/trigger-command"
+    url: "{{target_url}}/api/v1/reservations"
     body:
-      action: "ReserveBay"
-      payload:
-        bayId: "{{bayId_1}}"
-        reservationId: "rsv_00000002"
-        expirationTime: "2099-01-01T00:00:00.000Z"
-        sessionSource: "MobileApp"
-    expect_status: 200
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 422
 
   - action: wait_for
     message: ReserveBay
