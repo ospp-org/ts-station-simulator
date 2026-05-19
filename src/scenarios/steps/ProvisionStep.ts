@@ -178,6 +178,25 @@ export class ProvisionStep implements Step {
     context.captured.set('cert_path', certPath);
     context.captured.set('key_path', keyPath);
 
+    // 6. Populate structured provisioning artifact so scenarios can reference
+    //    {{ provisioning.bayIds[N] }}, {{ provisioning.stationId }}, etc.
+    //    Fixes V4 Finding #1 by giving scenarios an explicit, fail-loud
+    //    template namespace for real bayIds (no silent fallback to random).
+    context.provisioning = {
+      stationId,
+      bayIds: [...bayIds],
+      certPath,
+      keyPath,
+    };
+
+    // 7. Persist bays.json alongside the certs so future runs can hydrate
+    //    via ScenarioRunner without re-running the provision step.
+    const baysJsonPath = path.join(stationDir, 'bays.json');
+    await fs.writeFile(
+      baysJsonPath,
+      JSON.stringify({ stationId, bayIds }, null, 2),
+    );
+
     console.log(
       `[ProvisionStep] provisioned ${stationId} — ${bayIds.length} bay(s), artifacts at ${stationDir}`,
     );

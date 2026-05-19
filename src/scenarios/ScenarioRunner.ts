@@ -300,6 +300,13 @@ function substituteTemplates(value: unknown, scope: TemplateScope): unknown {
   return value;
 }
 
+export function _hydrateProvisioningForTesting(
+  stationId: string,
+  target: TargetConfig,
+): Promise<ScenarioContext['provisioning'] | undefined> {
+  return hydrateProvisioningFromDisk(stationId, target);
+}
+
 export function _substituteTemplatesForTesting(
   value: unknown,
   variables: Map<string, string>,
@@ -349,6 +356,76 @@ export function generateVariables(
   }
 
   return vars;
+}
+
+// ---------------------------------------------------------------------------
+// Disk hydration — read persisted bays.json into context.provisioning
+// ---------------------------------------------------------------------------
+
+interface BaysJsonShape {
+  stationId?: string;
+  bayIds?: string[];
+}
+
+/**
+ * Attempt to hydrate a provisioning artifact for the given stationId by
+ * reading a persisted `<stationId>-bays.json` (CLI provision flat layout)
+ * or `<artifactsBase>/<stationId>/bays.json` (in-scenario provision layout).
+ *
+ * Returns undefined if no file is found at the inferred paths. Wrapped in
+ * try/catch so any I/O error degrades silently to "no hydration" — the
+ * downstream template engine will throw a clear actionable error if a
+ * scenario actually needs `{{ provisioning.* }}` but the artifact is
+ * absent (V4 Finding #1 fix: fail loud, never silently fall back to
+ * random bayIds).
+ */
+async function hydrateProvisioningFromDisk(
+  stationId: string,
+  target: TargetConfig,
+): Promise<ScenarioContext['provisioning'] | undefined> {
+  const candidates: string[] = [];
+
+  // 1. CLI provision layout: <dirname(key)>/<stationId>-bays.json
+  const keyTemplate = target.tls?.keyPattern ?? target.tls?.key;
+  if (keyTemplate) {
+    const resolvedKey = keyTemplate.replace('{{stationId}}', stationId);
+    candidates.push(
+      path.join(path.dirname(resolvedKey), `${stationId}-bays.json`),
+    );
+  }
+
+  // 2. In-scenario ProvisionStep layout: tests/artifacts/uat/<stationId>/bays.json
+  candidates.push(
+    path.resolve('tests/artifacts/uat', stationId, 'bays.json'),
+  );
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await fs.readFile(candidate, 'utf-8');
+      const parsed = JSON.parse(raw) as BaysJsonShape;
+      if (
+        typeof parsed.stationId === 'string' &&
+        Array.isArray(parsed.bayIds) &&
+        parsed.bayIds.length > 0
+      ) {
+        return {
+          stationId: parsed.stationId,
+          bayIds: [...parsed.bayIds],
+          certPath: keyTemplate
+            ? keyTemplate
+                .replace('{{stationId}}', stationId)
+                .replace(/-key\.pem$/, '.pem')
+            : undefined,
+          keyPath: keyTemplate
+            ? keyTemplate.replace('{{stationId}}', stationId)
+            : undefined,
+        };
+      }
+    } catch {
+      // File missing or unparsable — try next candidate
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +615,37 @@ export class ScenarioRunner {
     context.apiBaseUrl = target.apiBaseUrl;
     context.apiCredentials = target.credentials;
     context.orgId = target.orgId;
+
+    // Eagerly hydrate context.provisioning from disk for the active stationId.
+    // Scenarios that have their own `provision` step will overwrite it; the
+    // hydration handles the V4 case where `simulator run --station <id>` is
+    // pointed at a pre-provisioned station whose bayIds are in
+    // `<certs_dir>/<stationId>-bays.json`. (V4 Finding #1.)
+    //
+    // When the artifact is found, real bayIds also overwrite the auto-generated
+    // `bayId_N` keys in `variables` so existing scenarios that reference
+    // `{{ bayId_1 }}` get the real values without needing per-scenario rewrites.
+    // CLI `--var bayId_1=...` overrides still win (last-write semantics, applied
+    // by generateVariables) — that order is preserved by applying user overrides
+    // AFTER hydration via a re-application step below.
+    const activeStationId = variables.get('stationId');
+    if (activeStationId) {
+      const hydrated = await hydrateProvisioningFromDisk(activeStationId, target);
+      if (hydrated) {
+        context.provisioning = hydrated;
+        for (let i = 0; i < hydrated.bayIds.length; i++) {
+          variables.set(`bayId_${i + 1}`, hydrated.bayIds[i]);
+        }
+        if (userVars) {
+          for (const [k, v] of userVars) {
+            variables.set(k, v);
+          }
+        }
+        console.log(
+          `[ScenarioRunner] hydrated provisioning for ${activeStationId} (${hydrated.bayIds.length} bay(s))`,
+        );
+      }
+    }
 
     const station = createStationFromScenario(scenario, variables, target);
     const startTime = Date.now();

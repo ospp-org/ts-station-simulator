@@ -626,6 +626,21 @@ program
       await fs.writeFile(certPath, data.certificate);
       await fs.writeFile(chainPath, data.stationCaChain);
 
+      // Persist bays.json so `simulator run --station <id>` can hydrate the
+      // {{ provisioning.bayIds[N] }} template namespace from disk (V4
+      // Finding #1 mitigation — no CLI --var override required).
+      let baysJsonPath: string | undefined;
+      if (data.bayIds && data.bayIds.length > 0) {
+        baysJsonPath = path.join(
+          path.dirname(keyPath),
+          `${stationId}-bays.json`,
+        );
+        await fs.writeFile(
+          baysJsonPath,
+          JSON.stringify({ stationId, bayIds: data.bayIds }, null, 2),
+        );
+      }
+
       const persistedArtifacts = await persistBrokerArtifacts(keyPath, data);
 
       const cert = new X509Certificate(data.certificate);
@@ -649,6 +664,9 @@ program
       }
       if (data.bayIds && data.bayIds.length > 0) {
         console.log(`  Bay IDs (${data.bayIds.length}):    ${data.bayIds.join(', ')}`);
+      }
+      if (baysJsonPath) {
+        console.log(`  Bays JSON:        ${baysJsonPath}`);
       }
       if (data.mqttConfig && typeof data.mqttConfig.brokerUri === 'string') {
         console.log(`  MQTT broker:      ${data.mqttConfig.brokerUri}`);
