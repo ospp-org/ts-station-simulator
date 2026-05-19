@@ -45,6 +45,7 @@ import {
 } from './provision.js';
 import { persistBrokerArtifacts, loadBrokerArtifacts } from './artifacts.js';
 import { parseUserVars } from './userVars.js';
+import { deriveBays } from './connectBays.js';
 
 const program = new Command();
 
@@ -373,6 +374,7 @@ function printConsoleReport(results: ScenarioResult[]): void {
 interface ConnectCommandOptions {
   target?: string;
   station?: string;
+  var: string[];
 }
 
 program
@@ -380,6 +382,12 @@ program
   .description('Boot a station and keep it connected, responding to all commands')
   .option('--target <name>', 'Target from config/targets.yaml')
   .option('--station <stationId>', 'Station ID to connect as')
+  .option(
+    '--var <pair>',
+    'Override deterministic IDs. Currently honored: bayId_<N>. Format: KEY=VALUE. Repeatable.',
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
   .action(async (opts: ConnectCommandOptions) => {
     try {
       const targetName = opts.target ?? process.env['OSPP_TARGET'] ?? 'local';
@@ -430,17 +438,15 @@ program
         ));
       }
 
-      // Build station config with deterministic IDs
+      // Build station config with deterministic IDs (overridable via --var bayId_<N>=<value>)
+      const userVars = parseUserVars(opts.var ?? []);
+      const userVarsArg = userVars.size > 0 ? userVars : undefined;
       const bayCount = 2;
-      const stationHex = stationId.replace(/^stn_/, '');
-      const bays = [];
-      for (let i = 1; i <= bayCount; i++) {
-        bays.push({
-          bayId: `bay_${stationHex}${String(i).padStart(2, '0')}`,
-          bayNumber: i,
-          services: [{ serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', available: true }],
-        });
+      const { bays, warnings } = deriveBays(stationId, bayCount, userVars);
+      for (const w of warnings) {
+        console.warn(chalk.yellow(`  Warning: ${w}`));
       }
+      logUserVars(userVarsArg);
 
       const station = new Station(
         {
