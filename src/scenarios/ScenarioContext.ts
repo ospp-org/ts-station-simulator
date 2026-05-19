@@ -1,10 +1,41 @@
 import type { OsppEnvelope } from '@ospp/protocol';
+import { StationPool } from './stations/StationPool.js';
+
+/**
+ * Provisioning artifact for the primary station. Populated either by
+ * the in-scenario `provision` step or — when running with `--station`
+ * against a target with persisted artifacts on disk — by ScenarioRunner
+ * hydration from `tests/artifacts/<target>/<stationId>/bays.json`.
+ *
+ * Scenarios reference these via `{{ provisioning.* }}` template syntax.
+ * If the namespace is referenced but the field is undefined, the
+ * template engine throws (no silent fallback to random bayIds — that
+ * was the root cause of V4 Finding #1).
+ */
+export interface ProvisioningArtifact {
+  stationId: string;
+  bayIds: string[];
+  certPath?: string;
+  keyPath?: string;
+}
 
 export interface ScenarioContext {
   /** Template variables: stationId, serialNumber, bayId_1, etc. */
   variables: Map<string, string>;
   /** Values captured by WaitFor steps */
   captured: Map<string, unknown>;
+  /**
+   * Primary-station provisioning artifact. Populated by ProvisionStep
+   * or by ScenarioRunner disk hydration. Scenarios reference via
+   * `{{ provisioning.bayIds[0] }}`, `{{ provisioning.stationId }}`, etc.
+   */
+  provisioning?: ProvisioningArtifact;
+  /**
+   * Runtime registry of provisioned stations populated by the
+   * `provision_station_pool` YAML step. Scenarios reference via
+   * `{{ pool.first.bayIds[0] }}`, `{{ pool.station[N].id }}`, etc.
+   */
+  pool: StationPool;
   /** All messages sent during the scenario */
   sentMessages: OsppEnvelope[];
   /**
@@ -49,6 +80,7 @@ export function createContext(): ScenarioContext {
   return {
     variables: new Map(),
     captured: new Map(),
+    pool: new StationPool(),
     sentMessages: [],
     consumedSentMessageIds: new Set(),
     receivedMessages: [],

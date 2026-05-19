@@ -2,7 +2,7 @@ import { parse as parseYaml } from 'yaml';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { StepDefinition } from './steps/Step.js';
-import type { StepResult } from './ScenarioContext.js';
+import type { ScenarioContext, StepResult } from './ScenarioContext.js';
 import { createContext } from './ScenarioContext.js';
 import { Station } from '../station/Station.js';
 import {
@@ -19,8 +19,10 @@ import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
 import { FaultStep } from './steps/FaultStep.js';
 import { ProvisionStep } from './steps/ProvisionStep.js';
+import { ProvisionStationPoolStep } from './steps/ProvisionStationPoolStep.js';
 import { ConnectMqttStep } from './steps/ConnectMqttStep.js';
 import type { Step } from './steps/Step.js';
+import type { StationPool, PoolEntry } from './stations/StationPool.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,6 +127,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['delay', new DelayStep()],
   ['fault', new FaultStep()],
   ['provision', new ProvisionStep()],
+  ['provision_station_pool', new ProvisionStationPoolStep()],
   ['connect_mqtt', new ConnectMqttStep()],
 ]);
 
@@ -161,22 +164,118 @@ class Semaphore {
 // Template substitution
 // ---------------------------------------------------------------------------
 
-function substituteTemplateValue(
-  value: string,
-  variables: Map<string, string>,
-  captured: Map<string, unknown>,
+interface TemplateScope {
+  variables: Map<string, string>;
+  captured: Map<string, unknown>;
+  provisioning?: ScenarioContext['provisioning'];
+  pool?: StationPool;
+}
+
+function resolvePoolExpression(expression: string, pool: StationPool | undefined): string {
+  // Supports:
+  //   pool.size
+  //   pool.first.id | pool.first.bayIds[N] | pool.first.certPath | ...
+  //   pool.station[N].id | pool.stations[N].bayIds[M] | ...
+  if (!pool) {
+    throw new Error(
+      `Template references pool.* but no station pool has been initialised. ` +
+      `Add a 'provision_station_pool' step before this reference.`,
+    );
+  }
+  if (expression === 'pool.size') {
+    return String(pool.size());
+  }
+  const firstMatch = expression.match(/^pool\.first\.(.+)$/);
+  if (firstMatch) {
+    const entry = pool.first();
+    if (!entry) {
+      throw new Error('Template references pool.first.* but the pool is empty');
+    }
+    return resolvePoolEntryField(entry, firstMatch[1], expression);
+  }
+  const indexedMatch = expression.match(/^pool\.stations?\[(\d+)\]\.(.+)$/);
+  if (indexedMatch) {
+    const index = Number.parseInt(indexedMatch[1], 10);
+    const entry = pool.at(index);
+    if (!entry) {
+      throw new Error(
+        `Template references pool.station[${index}] but only ${pool.size()} entries are registered`,
+      );
+    }
+    return resolvePoolEntryField(entry, indexedMatch[2], expression);
+  }
+  throw new Error(`Unrecognized pool template expression: ${expression}`);
+}
+
+function resolvePoolEntryField(entry: PoolEntry, field: string, fullExpression: string): string {
+  // Supports id, stationId, certPath, keyPath, chainPath, brokerCaPath,
+  // clientIdSuffix, bayIds[N]
+  if (field === 'id' || field === 'stationId') {
+    return entry.stationId;
+  }
+  if (field === 'certPath' && entry.certPath) return entry.certPath;
+  if (field === 'keyPath' && entry.keyPath) return entry.keyPath;
+  if (field === 'chainPath' && entry.chainPath) return entry.chainPath;
+  if (field === 'brokerCaPath' && entry.brokerCaPath) return entry.brokerCaPath;
+  if (field === 'clientIdSuffix') return entry.clientIdSuffix;
+  const bayMatch = field.match(/^bayIds\[(\d+)\]$/);
+  if (bayMatch) {
+    const idx = Number.parseInt(bayMatch[1], 10);
+    if (idx < 0 || idx >= entry.bayIds.length) {
+      throw new Error(
+        `Template ${fullExpression}: bayIds index ${idx} out of range (entry has ${entry.bayIds.length} bays)`,
+      );
+    }
+    return entry.bayIds[idx];
+  }
+  throw new Error(`Unrecognized pool entry field: ${field} (in ${fullExpression})`);
+}
+
+function resolveProvisioningExpression(
+  expression: string,
+  provisioning: ScenarioContext['provisioning'] | undefined,
 ): string {
+  if (!provisioning) {
+    throw new Error(
+      `Template references provisioning.* but no provisioning artifact is available. ` +
+      `Add a 'provision' step before this reference, or run with --station against a ` +
+      `target that has 'tests/artifacts/<target>/<stationId>/bays.json' persisted.`,
+    );
+  }
+  if (expression === 'provisioning.stationId') return provisioning.stationId;
+  if (expression === 'provisioning.certPath' && provisioning.certPath) return provisioning.certPath;
+  if (expression === 'provisioning.keyPath' && provisioning.keyPath) return provisioning.keyPath;
+  const bayMatch = expression.match(/^provisioning\.bayIds\[(\d+)\]$/);
+  if (bayMatch) {
+    const idx = Number.parseInt(bayMatch[1], 10);
+    if (idx < 0 || idx >= provisioning.bayIds.length) {
+      throw new Error(
+        `Template ${expression}: bayIds index ${idx} out of range (provisioning has ${provisioning.bayIds.length} bays)`,
+      );
+    }
+    return provisioning.bayIds[idx];
+  }
+  throw new Error(`Unrecognized provisioning template expression: ${expression}`);
+}
+
+function substituteTemplateValue(value: string, scope: TemplateScope): string {
   return value.replace(/\{\{([^}]+)\}\}/g, (_match, varName: string) => {
     const trimmed = varName.trim();
     if (trimmed.startsWith('captured.')) {
       const captureKey = trimmed.slice('captured.'.length);
-      const capturedVal = captured.get(captureKey);
+      const capturedVal = scope.captured.get(captureKey);
       if (capturedVal === undefined) {
         throw new Error(`Captured variable not found: ${captureKey}`);
       }
       return String(capturedVal);
     }
-    const variable = variables.get(trimmed);
+    if (trimmed === 'pool.size' || trimmed.startsWith('pool.')) {
+      return resolvePoolExpression(trimmed, scope.pool);
+    }
+    if (trimmed.startsWith('provisioning.')) {
+      return resolveProvisioningExpression(trimmed, scope.provisioning);
+    }
+    const variable = scope.variables.get(trimmed);
     if (variable === undefined) {
       throw new Error(`Template variable not found: ${trimmed}`);
     }
@@ -184,25 +283,35 @@ function substituteTemplateValue(
   });
 }
 
-function substituteTemplates(
-  value: unknown,
-  variables: Map<string, string>,
-  captured: Map<string, unknown>,
-): unknown {
+function substituteTemplates(value: unknown, scope: TemplateScope): unknown {
   if (typeof value === 'string') {
-    return substituteTemplateValue(value, variables, captured);
+    return substituteTemplateValue(value, scope);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => substituteTemplates(item, variables, captured));
+    return value.map((item) => substituteTemplates(item, scope));
   }
   if (value !== null && typeof value === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value)) {
-      result[key] = substituteTemplates(val, variables, captured);
+      result[key] = substituteTemplates(val, scope);
     }
     return result;
   }
   return value;
+}
+
+export function _substituteTemplatesForTesting(
+  value: unknown,
+  variables: Map<string, string>,
+  captured: Map<string, unknown>,
+  options?: { pool?: StationPool; provisioning?: ScenarioContext['provisioning'] },
+): unknown {
+  return substituteTemplates(value, {
+    variables,
+    captured,
+    pool: options?.pool,
+    provisioning: options?.provisioning,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -443,11 +552,12 @@ export class ScenarioRunner {
         const stepStart = Date.now();
 
         // Apply template substitution to the entire step definition
-        const substitutedStep = substituteTemplates(
-          rawStep,
-          context.variables,
-          context.captured,
-        ) as StepDefinition;
+        const substitutedStep = substituteTemplates(rawStep, {
+          variables: context.variables,
+          captured: context.captured,
+          provisioning: context.provisioning,
+          pool: context.pool,
+        }) as StepDefinition;
 
         const stepImpl = STEP_REGISTRY.get(substitutedStep.action);
         if (!stepImpl) {
