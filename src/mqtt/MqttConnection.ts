@@ -25,6 +25,15 @@ export interface MqttConnectionOptions {
   cleanSession?: boolean;
 }
 
+/**
+ * Maximum wall time, in milliseconds, the graceful disconnect path is
+ * allowed before we force-end the client. Sequential scenarios with the
+ * same stationId (and historically the same clientId) sometimes blocked
+ * indefinitely on the graceful DISCONNECT round-trip; the force-end
+ * fallback caps that latency so the next scenario can proceed.
+ */
+const DISCONNECT_TIMEOUT_MS = 3000;
+
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
   private readonly mqttUrl: string;
@@ -36,6 +45,16 @@ export class MqttConnection extends EventEmitter {
   private readonly mqttCredentials?: MqttConnectionOptions['mqttCredentials'];
   private readonly cleanSession: boolean;
   private isDestroyingConnection = false;
+  /**
+   * The MQTT clientId actually sent to the broker on the most recent
+   * connect() call. It is `${stationId}-${randomUUID()}` so that
+   * sequential connect/disconnect cycles with the same stationId cannot
+   * collide on broker-side session state — the root cause of V4
+   * Finding #6 ("Connection closed" mid-scenario). Resolved per
+   * connect call, so each connect attempt gets a fresh identifier even
+   * if the broker has not yet released the prior session.
+   */
+  private currentClientId: string | null = null;
 
   constructor(options: MqttConnectionOptions) {
     super();
@@ -44,6 +63,14 @@ export class MqttConnection extends EventEmitter {
     this.tlsConfig = options.tls;
     this.mqttCredentials = options.mqttCredentials;
     this.cleanSession = options.cleanSession ?? false;
+  }
+
+  /**
+   * Returns the MQTT clientId sent on the most recent connect() call,
+   * or null if connect() has not yet run. Exposed primarily for tests.
+   */
+  getClientId(): string | null {
+    return this.currentClientId;
   }
 
   /**
@@ -61,8 +88,13 @@ export class MqttConnection extends EventEmitter {
   }
 
   connect(): void {
+    // Mint a fresh clientId for every connect() call. Identity is enforced
+    // by the mTLS client certificate (CN=stationId), so the suffix is
+    // purely a per-session disambiguator that prevents broker-side
+    // session-state collisions across sequential reconnects.
+    this.currentClientId = `${this.stationId}-${crypto.randomUUID()}`;
     const opts: IClientOptions = {
-      clientId: this.stationId,
+      clientId: this.currentClientId,
       protocolVersion: 5,
       clean: this.cleanSession,
       keepalive: 30,
@@ -148,18 +180,40 @@ export class MqttConnection extends EventEmitter {
   }
 
   disconnect(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (!this.client) {
+    return new Promise<void>((resolve) => {
+      const client = this.client;
+      if (!client) {
         resolve();
         return;
       }
-      this.client.end(false, {}, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
+
+      let settled = false;
+      const finalize = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.client = null;
+        this.currentClientId = null;
+        resolve();
+      };
+
+      // Force-end fallback: if the graceful DISCONNECT round-trip stalls
+      // (broker unresponsive, TLS half-close, etc.) bound the wait so the
+      // next scenario does not block. Bumps the same callback as the
+      // graceful path; first-to-finish wins.
+      const timer = setTimeout(() => {
+        try {
+          client.end(true, {}, () => finalize());
+        } catch {
+          finalize();
         }
-      });
+      }, DISCONNECT_TIMEOUT_MS);
+
+      try {
+        client.end(false, {}, () => finalize());
+      } catch {
+        finalize();
+      }
     });
   }
 
