@@ -32,7 +32,10 @@ steps:
   - action: wait_for
     message: BootNotification
     messageType: Response
-    timeout_ms: 5000
+    # Aligned with global default bump (5s → 15s, commit 9e57ce2). Sprint B2
+    # timeout sweep — sister scenario from Sprint B P5.1/P5.11 fix (commit
+    # 3fdc7a6). UAT first-round-trip can exceed 5s.
+    timeout_ms: 15000
     capture:
       heartbeatInterval: "payload.heartbeatIntervalSec"
       bootStatus: "payload.status"

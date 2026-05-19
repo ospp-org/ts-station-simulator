@@ -252,7 +252,10 @@ steps:
   - action: wait_for
     message: UpdateServiceCatalog
     messageType: Request
-    timeout_ms: 5000
+    # Aligned with global default bump (5s → 15s, commit 9e57ce2). Sprint B2
+    # timeout sweep — CSMS catalog-update issue during E2E onboarding can
+    # exceed 5s; sister scenario from Sprint B P5.1/P5.11 fix (commit 3fdc7a6).
+    timeout_ms: 15000
     capture:
       catalog_msg_id: "messageId"
 
