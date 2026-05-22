@@ -52,7 +52,7 @@ const program = new Command();
 program
   .name('simulator')
   .description('OSPP Station Simulator CLI')
-  .version('0.5.0');
+  .version('0.6.0');
 
 interface RunCommandOptions {
   scenario?: string;
