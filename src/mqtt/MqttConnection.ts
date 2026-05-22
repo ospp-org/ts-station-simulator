@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-import crypto from 'node:crypto';
 import { connect, type MqttClient, type IClientOptions } from 'mqtt';
 import {
   OsppAction,
@@ -47,12 +46,16 @@ export class MqttConnection extends EventEmitter {
   private isDestroyingConnection = false;
   /**
    * The MQTT clientId actually sent to the broker on the most recent
-   * connect() call. It is `${stationId}-${randomUUID()}` so that
-   * sequential connect/disconnect cycles with the same stationId cannot
-   * collide on broker-side session state — the root cause of V4
-   * Finding #6 ("Connection closed" mid-scenario). Resolved per
-   * connect call, so each connect attempt gets a fresh identifier even
-   * if the broker has not yet released the prior session.
+   * connect() call. Per OSPP spec §02-transport §1.2 / §06-security §3.3
+   * the client_id MUST equal the cert CN (= stationId). The CSMS EMQX
+   * deployment (alignment sprint v0.4.0, G-EMQX-CLIENTID) sets
+   * peer_cert_as_clientid="cn" so the broker DERIVES client_id from
+   * the cert CN regardless of what the client sends — so the
+   * historical V4 Finding #6 workaround (UUID suffix to disambiguate
+   * sequential reconnects) is no longer load-bearing. The B4 cycle of
+   * (client_id mismatch → broker rewrite → sim/broker out of sync) is
+   * solved instead by the clean-disconnect + reconnect-guard logic
+   * elsewhere in this file.
    */
   private currentClientId: string | null = null;
 
@@ -88,11 +91,12 @@ export class MqttConnection extends EventEmitter {
   }
 
   connect(): void {
-    // Mint a fresh clientId for every connect() call. Identity is enforced
-    // by the mTLS client certificate (CN=stationId), so the suffix is
-    // purely a per-session disambiguator that prevents broker-side
-    // session-state collisions across sequential reconnects.
-    this.currentClientId = `${this.stationId}-${crypto.randomUUID()}`;
+    // OSPP spec §02-transport §1.2 / §06-security §3.3: MQTT client_id
+    // MUST equal cert CN (= stationId). With peer_cert_as_clientid="cn"
+    // enforced broker-side the equality holds regardless of what we send,
+    // but we emit the clean form anyway so broker logs + client traces
+    // are unambiguous and don't read "WRONG_ID overridden to stn_X".
+    this.currentClientId = this.stationId;
     const opts: IClientOptions = {
       clientId: this.currentClientId,
       protocolVersion: 5,

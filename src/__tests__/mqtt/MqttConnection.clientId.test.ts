@@ -22,48 +22,43 @@ vi.mock('mqtt', () => ({
 
 const { MqttConnection } = await import('../../mqtt/MqttConnection.js');
 
-describe('MqttConnection — clientId uniqueness (V4 Finding #6 fix)', () => {
+describe('MqttConnection — clientId equals cert CN (alignment v0.4.0 G-EMQX-CLIENTID)', () => {
   beforeEach(() => {
     connectCalls.length = 0;
   });
 
-  it('mints a fresh clientId per connect() call', () => {
+  it('uses the stationId exactly as the MQTT clientId (= cert CN per spec)', () => {
     const a = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_abc' });
     a.connect();
-    const firstClientId = a.getClientId();
+    expect(a.getClientId()).toBe('stn_abc');
+  });
 
-    const b = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_abc' });
+  it('clientId is stable across connect cycles on the same stationId', () => {
+    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_stable' });
+    conn.connect();
+    const first = conn.getClientId();
+    expect(first).toBe('stn_stable');
+
+    // simulate a clean disconnect-then-reconnect cycle on the same instance
+    void conn.disconnect();
+    conn.connect();
+    expect(conn.getClientId()).toBe('stn_stable');
+  });
+
+  it('distinct stationIds produce distinct clientIds', () => {
+    const a = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_A' });
+    a.connect();
+    const b = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_B' });
     b.connect();
-    const secondClientId = b.getClientId();
-
-    expect(firstClientId).not.toBeNull();
-    expect(secondClientId).not.toBeNull();
-    expect(firstClientId).not.toBe(secondClientId);
+    expect(a.getClientId()).toBe('stn_A');
+    expect(b.getClientId()).toBe('stn_B');
+    expect(a.getClientId()).not.toBe(b.getClientId());
   });
 
-  it('uses the stationId-uuid pattern that the broker can grep for', () => {
-    const c = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_grep' });
-    c.connect();
-    const id = c.getClientId();
-    expect(id).toMatch(/^stn_grep-[0-9a-f-]{36}$/);
-  });
-
-  it('passes the per-connect clientId through to mqtt.connect opts', () => {
+  it('passes the clientId through to mqtt.connect opts unchanged', () => {
     const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_opt' });
     conn.connect();
     expect(connectCalls).toHaveLength(1);
-    expect(connectCalls[0].opts.clientId).toBe(conn.getClientId());
-    expect(String(connectCalls[0].opts.clientId)).toMatch(/^stn_opt-[0-9a-f-]{36}$/);
-  });
-
-  it('re-mints clientId on a subsequent connect after disconnect', async () => {
-    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_reconn' });
-    conn.connect();
-    const before = conn.getClientId();
-    await conn.disconnect();
-    expect(conn.getClientId()).toBeNull();
-    conn.connect();
-    const after = conn.getClientId();
-    expect(after).not.toBe(before);
+    expect(connectCalls[0].opts.clientId).toBe('stn_opt');
   });
 });
