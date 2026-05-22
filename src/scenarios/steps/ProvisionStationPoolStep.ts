@@ -12,7 +12,7 @@ import {
 } from '../../cli/provision.js';
 
 interface ProvisioningResponseData {
-  certificate?: string;
+  clientCert?: string;
   stationCaChain?: string;
   brokerRootCa?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
@@ -113,10 +113,10 @@ export class ProvisionStationPoolStep implements Step {
           `ProvisionStationPoolStep[${i + 1}/${count}]: response missing "data" envelope`,
         );
       }
-      const cert = data.certificate;
+      const cert = data.clientCert;
       if (typeof cert !== 'string' || cert.length === 0) {
         throw new Error(
-          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing data.certificate`,
+          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing data.clientCert`,
         );
       }
       const bayIds = data.bayIds;

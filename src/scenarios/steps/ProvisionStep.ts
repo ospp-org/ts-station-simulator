@@ -11,7 +11,7 @@ import {
 } from '../../cli/provision.js';
 
 interface ProvisioningResponseData {
-  certificate?: string;
+  clientCert?: string;
   stationCaChain?: string;
   brokerRootCa?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
@@ -119,9 +119,9 @@ export class ProvisionStep implements Step {
       );
     }
 
-    const cert = data.certificate;
+    const cert = data.clientCert;
     if (typeof cert !== 'string' || cert.length === 0) {
-      throw new Error('ProvisionStep: response missing data.certificate');
+      throw new Error('ProvisionStep: response missing data.clientCert');
     }
 
     const bayIds = data.bayIds;

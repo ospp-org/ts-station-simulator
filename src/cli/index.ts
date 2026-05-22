@@ -537,7 +537,7 @@ interface ProvisionCommandOptions {
 
 interface ProvisioningResponse {
   data: {
-    certificate: string;
+    clientCert: string;
     stationCaChain: string;
     brokerRootCa?: string;
     rootCaThumbprint: string;
@@ -623,7 +623,7 @@ program
       await fs.writeFile(keyPath, privateKeyPem, { mode: 0o600 });
       await fs.writeFile(receiptKeyPath, receiptPrivatePem, { mode: 0o600 });
       await fs.writeFile(receiptPubPath, receiptSigningPublicKeyPem);
-      await fs.writeFile(certPath, data.certificate);
+      await fs.writeFile(certPath, data.clientCert);
       await fs.writeFile(chainPath, data.stationCaChain);
 
       // Persist bays.json so `simulator run --station <id>` can hydrate the
@@ -643,7 +643,7 @@ program
 
       const persistedArtifacts = await persistBrokerArtifacts(keyPath, data);
 
-      const cert = new X509Certificate(data.certificate);
+      const cert = new X509Certificate(data.clientCert);
 
       console.log(chalk.green(`\nStation provisioned: ${chalk.bold(stationId)}`));
       console.log(`  Serial:           ${cert.serialNumber}`);

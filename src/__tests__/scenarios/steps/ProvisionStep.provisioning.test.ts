@@ -7,7 +7,7 @@ import { createContext } from '../../../scenarios/ScenarioContext.js';
 
 const PROVISION_RESPONSE = {
   data: {
-    certificate: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
+    clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
     stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
     brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
     bayIds: ['bay_real_001', 'bay_real_002'],
