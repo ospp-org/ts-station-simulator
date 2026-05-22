@@ -33,6 +33,20 @@ export interface MqttConnectionOptions {
  */
 const DISCONNECT_TIMEOUT_MS = 3000;
 
+/**
+ * Minimum wall time, in milliseconds, between a clean DISCONNECT and the
+ * next CONNECT on the SAME stationId. With the broker configured to
+ * derive client_id from cert CN (peer_cert_as_clientid="cn") sequential
+ * reconnects target the same broker-side session record; even though
+ * the DISCONNECT carries Session Expiry Interval = 0 to flush state,
+ * the broker's bookkeeping needs a beat to settle before accepting a
+ * fresh session under the same identity. Module-level + keyed by
+ * stationId so it survives across MqttConnection instances (scenarios
+ * recreate the wrapper per cycle).
+ */
+const RECONNECT_GUARD_MS = 500;
+const lastDisconnectAt = new Map<string, number>();
+
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
   private readonly mqttUrl: string;
@@ -91,6 +105,17 @@ export class MqttConnection extends EventEmitter {
   }
 
   connect(): void {
+    const last = lastDisconnectAt.get(this.stationId) ?? 0;
+    const elapsed = Date.now() - last;
+    if (last !== 0 && elapsed < RECONNECT_GUARD_MS) {
+      const wait = RECONNECT_GUARD_MS - elapsed;
+      setTimeout(() => this.doConnect(), wait);
+      return;
+    }
+    this.doConnect();
+  }
+
+  private doConnect(): void {
     // OSPP spec §02-transport §1.2 / §06-security §3.3: MQTT client_id
     // MUST equal cert CN (= stationId). With peer_cert_as_clientid="cn"
     // enforced broker-side the equality holds regardless of what we send,
@@ -186,6 +211,7 @@ export class MqttConnection extends EventEmitter {
   disconnect(): Promise<void> {
     return new Promise<void>((resolve) => {
       const client = this.client;
+      const stationId = this.stationId;
       if (!client) {
         resolve();
         return;
@@ -196,10 +222,23 @@ export class MqttConnection extends EventEmitter {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // Record disconnect timestamp so the next connect() on the same
+        // stationId honors RECONNECT_GUARD_MS. Recorded BEFORE the wrapper
+        // is torn down so a reconnect synchronously chained on the
+        // disconnect promise still consults a meaningful value.
+        lastDisconnectAt.set(stationId, Date.now());
         this.client = null;
         this.currentClientId = null;
         resolve();
       };
+
+      // MQTT 5 DISCONNECT properties: Session Expiry Interval = 0 forces
+      // the broker to discard session state immediately so the next
+      // CONNECT under this client_id (= cert CN, after peer_cert_as_clientid
+      // derivation) starts fresh. The CONNECT-side default we sent earlier
+      // (sessionExpiryInterval=3600) is in effect during the session;
+      // sending 0 here overrides it on the way out per MQTT 5 §3.14.2.2.2.
+      const disconnectOpts = { properties: { sessionExpiryInterval: 0 } };
 
       // Force-end fallback: if the graceful DISCONNECT round-trip stalls
       // (broker unresponsive, TLS half-close, etc.) bound the wait so the
@@ -207,14 +246,14 @@ export class MqttConnection extends EventEmitter {
       // graceful path; first-to-finish wins.
       const timer = setTimeout(() => {
         try {
-          client.end(true, {}, () => finalize());
+          client.end(true, disconnectOpts, () => finalize());
         } catch {
           finalize();
         }
       }, DISCONNECT_TIMEOUT_MS);
 
       try {
-        client.end(false, {}, () => finalize());
+        client.end(false, disconnectOpts, () => finalize());
       } catch {
         finalize();
       }

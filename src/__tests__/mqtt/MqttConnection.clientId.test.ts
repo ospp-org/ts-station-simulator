@@ -33,16 +33,18 @@ describe('MqttConnection — clientId equals cert CN (alignment v0.4.0 G-EMQX-CL
     expect(a.getClientId()).toBe('stn_abc');
   });
 
-  it('clientId is stable across connect cycles on the same stationId', () => {
-    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_stable' });
-    conn.connect();
-    const first = conn.getClientId();
-    expect(first).toBe('stn_stable');
-
-    // simulate a clean disconnect-then-reconnect cycle on the same instance
-    void conn.disconnect();
-    conn.connect();
-    expect(conn.getClientId()).toBe('stn_stable');
+  it('clientId is exactly stationId on every fresh instance — no per-call randomness', () => {
+    // Distinct instances with the same stationId always derive the same
+    // clientId. Re-cycling the SAME instance is covered by the reconnect-
+    // guard test (the second connect is intentionally deferred via
+    // setTimeout, so timing-aware assertions live there).
+    const a = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_stable' });
+    a.connect();
+    const b = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_stable' });
+    b.connect();
+    expect(a.getClientId()).toBe('stn_stable');
+    expect(b.getClientId()).toBe('stn_stable');
+    expect(a.getClientId()).toBe(b.getClientId());
   });
 
   it('distinct stationIds produce distinct clientIds', () => {
