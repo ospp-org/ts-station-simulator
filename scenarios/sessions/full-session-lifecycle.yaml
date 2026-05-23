@@ -170,7 +170,7 @@ steps:
     payload:
       status: "Accepted"
       actualDurationSeconds: 60
-      creditsCharged: 6000
+      creditsCharged: 100
       meterValues:
         liquidMl: 1800
         energyWh: 400
@@ -184,7 +184,7 @@ steps:
       bayId: "{{captured.bayId}}"
       reason: "TimerExpired"
       actualDurationSeconds: 60
-      creditsCharged: 6000
+      creditsCharged: 100
       meterValues:
         liquidMl: 1800
         energyWh: 400

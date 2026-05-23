@@ -111,7 +111,7 @@ steps:
       bayId: "{{captured.bayId}}"
       reason: "TimerExpired"
       actualDurationSeconds: 2
-      creditsCharged: 200
+      creditsCharged: 4
 
   # --- StatusNotification Finishing ---
   - action: send

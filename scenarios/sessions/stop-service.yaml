@@ -115,7 +115,7 @@ steps:
     payload:
       status: "Accepted"
       actualDurationSeconds: 45
-      creditsCharged: 4500
+      creditsCharged: 75
 
   # --- SessionEnded event ---
   - action: send
@@ -126,7 +126,7 @@ steps:
       bayId: "{{captured.bayId}}"
       reason: "TimerExpired"
       actualDurationSeconds: 45
-      creditsCharged: 4500
+      creditsCharged: 75
 
   # --- StatusNotification Available ---
   - action: send
