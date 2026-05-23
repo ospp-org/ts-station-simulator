@@ -45,6 +45,13 @@ export interface ScenarioContext {
    * even when Responses arrive out of order.
    */
   consumedSentMessageIds: Set<string>;
+  /**
+   * Received Request messageIds already claimed by a SendStep responding to
+   * them. Mirror of consumedSentMessageIds for the inverse direction so that
+   * back-to-back inbound Requests of the same action each get their own
+   * correlated outbound Response (OSPP: Response.messageId === Request.messageId).
+   */
+  consumedReceivedMessageIds: Set<string>;
   /** All messages received during the scenario */
   receivedMessages: OsppEnvelope[];
   /** Step results for reporting */
@@ -83,6 +90,7 @@ export function createContext(): ScenarioContext {
     pool: new StationPool(),
     sentMessages: [],
     consumedSentMessageIds: new Set(),
+    consumedReceivedMessageIds: new Set(),
     receivedMessages: [],
     stepResults: [],
     startTime: Date.now(),

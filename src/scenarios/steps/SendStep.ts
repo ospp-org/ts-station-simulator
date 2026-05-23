@@ -106,6 +106,56 @@ function injectSeqNoFields(
   }
 }
 
+/**
+ * Pick the outbound messageId for a SendStep. Mirror of
+ * WaitForStep::pickExpectedMessageId for the inverse direction.
+ *
+ * OSPP correlates a Response to its Request by messageId equality (the
+ * envelope has no separate correlationId field; see
+ * vendor/ospp/protocol/src/Envelope/MessageBuilder.php::correlatedTo).
+ *
+ * Order of precedence:
+ *  1. Explicit `correlationId` on the YAML step → use as-is.
+ *  2. `messageType === Response` → reverse-scan `context.receivedMessages`
+ *     for the most recent Request of the same action whose messageId hasn't
+ *     been claimed by an earlier SendStep response.
+ *  3. Otherwise generate a fresh UUID (Requests + Events, plus
+ *     Responses with no paired inbound Request — preserves backward-compat
+ *     for tests that build Responses standalone).
+ *
+ * Result type tags whether the id was matched or freshly generated, so the
+ * debug log can label the source clearly.
+ */
+type CorrelationSource = 'explicit' | 'auto-correlated' | 'generated';
+
+function resolveSendCorrelation(
+  definition: StepDefinition,
+  messageType: MessageType,
+  action: OsppAction,
+  context: ScenarioContext,
+): { id: string; source: CorrelationSource } {
+  const explicit = definition.correlationId as string | undefined;
+  if (typeof explicit === 'string') {
+    return { id: explicit, source: 'explicit' };
+  }
+
+  if (messageType === MessageType.RESPONSE) {
+    for (let i = context.receivedMessages.length - 1; i >= 0; i--) {
+      const env = context.receivedMessages[i];
+      if (
+        env.action === action &&
+        env.messageType === MessageType.REQUEST &&
+        !context.consumedReceivedMessageIds.has(env.messageId)
+      ) {
+        context.consumedReceivedMessageIds.add(env.messageId);
+        return { id: env.messageId, source: 'auto-correlated' };
+      }
+    }
+  }
+
+  return { id: crypto.randomUUID(), source: 'generated' };
+}
+
 export class SendStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -124,11 +174,15 @@ export class SendStep implements Step {
 
     injectSeqNoFields(action, messageType, payload, station);
 
-    const correlationId =
-      (definition.correlationId as string | undefined) ?? crypto.randomUUID();
+    const { id: correlationId, source } = resolveSendCorrelation(
+      definition,
+      messageType,
+      action,
+      context,
+    );
     if (process.env['SCENARIO_DEBUG'] === '1') {
       console.log(
-        `[SendStep] action=${action} type=${messageType} messageId=${correlationId} ${typeof definition.correlationId === 'string' ? '(correlated)' : '(generated)'}`,
+        `[SendStep] action=${action} type=${messageType} messageId=${correlationId} (${source})`,
       );
     }
     const envelope = await station.sender.send(
