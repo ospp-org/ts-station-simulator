@@ -41,7 +41,9 @@ export class StopServiceHandler implements Handler {
 
     const startedAt = new Date(session.startedAt).getTime();
     const actualDurationSeconds = Math.round((Date.now() - startedAt) / 1000);
-    const creditsCharged = actualDurationSeconds * 100;
+    const creditsCharged = Math.ceil(
+      (actualDurationSeconds / 60) * session.priceCreditsPerMinute,
+    );
 
     const response: StopServiceResponse = {
       status: 'Accepted',

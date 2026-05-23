@@ -19,11 +19,16 @@ interface CapturedSend {
   payload: unknown;
 }
 
-function makeMockStation(seqNoAtStop: number): {
+function makeMockStation(
+  seqNoAtStop: number,
+  options: { startedAtOffsetMs?: number; priceCreditsPerMinute?: number } = {},
+): {
   station: StationContext;
   captured: CapturedSend[];
 } {
   const captured: CapturedSend[] = [];
+  const startedAtOffsetMs = options.startedAtOffsetMs ?? 60_000;
+  const priceCreditsPerMinute = options.priceCreditsPerMinute ?? 100;
   const sessions = new Map<string, SessionInfo>([
     [
       'sess_test',
@@ -31,9 +36,10 @@ function makeMockStation(seqNoAtStop: number): {
         sessionId: 'sess_test',
         bayId: 'bay_test',
         serviceId: 'svc_test',
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        startedAt: new Date(Date.now() - startedAtOffsetMs).toISOString(),
         durationSeconds: 300,
         seqNo: seqNoAtStop,
+        priceCreditsPerMinute,
       },
     ],
   ]);
@@ -100,5 +106,80 @@ describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
     expect(payload.reason).toBe(SessionEndReason.TIMER_EXPIRED);
     expect((payload as { seqNo?: number }).seqNo).toBe(12);
     expect((payload as { finalSeqNo?: number }).finalSeqNo).toBe(12);
+  });
+});
+
+describe('StopServiceHandler — Bug F: creditsCharged spec formula', () => {
+  it('60s @ 100 cr/min → creditsCharged = 100 per ceil(s/60 × rate)', async () => {
+    const { station, captured } = makeMockStation(1, {
+      startedAtOffsetMs: 60_000,
+      priceCreditsPerMinute: 100,
+    });
+    const handler = new StopServiceHandler();
+
+    await handler.handle(makeStopServiceRequest(), station);
+
+    const response = captured.find(
+      (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
+    );
+    const payload = response!.payload as StopServiceResponse;
+    expect(payload.actualDurationSeconds).toBe(60);
+    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(100);
+  });
+
+  it('75s @ 100 cr/min → creditsCharged = 125 (ceil rounding)', async () => {
+    const { station, captured } = makeMockStation(1, {
+      startedAtOffsetMs: 75_000,
+      priceCreditsPerMinute: 100,
+    });
+    const handler = new StopServiceHandler();
+
+    await handler.handle(makeStopServiceRequest(), station);
+
+    const response = captured.find(
+      (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
+    );
+    const payload = response!.payload as StopServiceResponse;
+    expect(payload.actualDurationSeconds).toBe(75);
+    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(125);
+  });
+
+  it('SessionEnded event creditsCharged matches StopService Response creditsCharged', async () => {
+    const { station, captured } = makeMockStation(1, {
+      startedAtOffsetMs: 60_000,
+      priceCreditsPerMinute: 100,
+    });
+    const handler = new StopServiceHandler();
+
+    await handler.handle(makeStopServiceRequest(), station);
+
+    const response = captured.find(
+      (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
+    );
+    const event = captured.find(
+      (c) => c.action === OsppAction.SESSION_ENDED && c.messageType === MessageType.EVENT,
+    );
+    const responsePayload = response!.payload as StopServiceResponse;
+    const eventPayload = event!.payload as SessionEndedPayload;
+    expect((eventPayload as { creditsCharged?: number }).creditsCharged).toBe(
+      (responsePayload as { creditsCharged?: number }).creditsCharged,
+    );
+    expect((eventPayload as { creditsCharged?: number }).creditsCharged).toBe(100);
+  });
+
+  it('60s @ 10 cr/min → creditsCharged = 10 (different rate)', async () => {
+    const { station, captured } = makeMockStation(1, {
+      startedAtOffsetMs: 60_000,
+      priceCreditsPerMinute: 10,
+    });
+    const handler = new StopServiceHandler();
+
+    await handler.handle(makeStopServiceRequest(), station);
+
+    const response = captured.find(
+      (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
+    );
+    const payload = response!.payload as StopServiceResponse;
+    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(10);
   });
 });

@@ -26,6 +26,12 @@ export interface SessionInfo {
   startedAt: string;
   durationSeconds: number;
   seqNo: number;
+  // Credits-per-minute used to compute `creditsCharged` on session end per OSPP
+  // §03-messages.md:700: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
+  // StartService Request schema does not carry pricing; sim defaults to 100 cr/min,
+  // matching csms-server's typical test catalog. Server is the authoritative billing
+  // engine (§04-flows.md:823-833) — this value is advisory only.
+  priceCreditsPerMinute: number;
 }
 
 export interface ReservationInfo {
