@@ -38,6 +38,21 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # --- Spec-mandated post-Boot StatusNotification (CORE-004 MUST):
+  # bay state is Unknown until the station emits StatusNotification.
+  # Without this, the server rejects subsequent /sessions/start with
+  # 3002 BAY_NOT_READY. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"

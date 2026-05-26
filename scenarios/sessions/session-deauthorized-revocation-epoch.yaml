@@ -98,15 +98,18 @@ steps:
           available: false
 
   # --- Mid-session: trigger RevocationEpoch bump via ChangeConfiguration.
-  # CSMS pushes new revocationEpoch=1; the station's
-  # ChangeConfigurationHandler captures it onto currentRevocationEpoch. ---
+  # OSPP spec ch.08 §5 defines the station-side config key as
+  # `RevocationEpoch` (PascalCase). The OfflinePass JSON field is the
+  # lowercase `revocationEpoch` — different identifier. Server pushes
+  # the new epoch; ChangeConfigurationHandler persists it onto the
+  # station's currentRevocationEpoch via the v0.4.0 sniff. ---
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
     body:
       command: "ChangeConfiguration"
       payload:
-        key: "revocationEpoch"
+        key: "RevocationEpoch"
         value: "1"
     expect_status: 202
 
