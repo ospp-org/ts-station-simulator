@@ -51,9 +51,31 @@ steps:
     messageType: Request
     timeout_ms: 15000
 
-  # Wait for: handler 2s delay + disconnect + reconnect 5s + auto-boot
+  # Wait for: handler 2s delay + disconnect + reconnect 5s
   - action: delay
     ms: 13000
+
+  # Per spec reset.md §5.4-5, station MUST send BootNotification post-reset.
+  # autoBoot was removed from sim (commit ac9b2e8) — scenarios must send explicitly.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "ManualReset"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
 
   - action: wait_for
     message: BootNotification

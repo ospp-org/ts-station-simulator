@@ -66,22 +66,6 @@ steps:
       bay_id: "{{bayId_1}}"
       service_id: "svc_nonexistent"
       duration_seconds: 300
-    expect_status: 422
-
-  - action: wait_for
-    message: StartService
-    messageType: Request
-    timeout_ms: 15000
-    capture:
-      sessionId: "payload.sessionId"
-      bayId: "payload.bayId"
-      serviceId: "payload.serviceId"
-
-  # --- Reject StartService ---
-  - action: send
-    message: StartService
-    messageType: Response
-    payload:
-      status: "Rejected"
-      errorCode: 3004
-      errorText: "INVALID_SERVICE"
+    expect_status: 404
+  # Per C-007: server returns 404 INVALID_SERVICE (not found) pre-MQTT-dispatch;
+  # no StartService Request is published. The 404 is the final assertion.

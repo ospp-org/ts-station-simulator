@@ -67,22 +67,6 @@ steps:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
       duration_seconds: 300
-    expect_status: 422
-
-  - action: wait_for
-    message: StartService
-    messageType: Request
-    timeout_ms: 15000
-    capture:
-      sessionId: "payload.sessionId"
-      bayId: "payload.bayId"
-      serviceId: "payload.serviceId"
-
-  # --- Reject StartService ---
-  - action: send
-    message: StartService
-    messageType: Response
-    payload:
-      status: "Rejected"
-      errorCode: 3011
-      errorText: "BAY_MAINTENANCE"
+    expect_status: 409
+  # Per C-008: server returns 409 BAY_MAINTENANCE (state conflict) pre-MQTT-dispatch;
+  # no StartService Request is published. The 409 is the final assertion.

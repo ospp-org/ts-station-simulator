@@ -1,0 +1,57 @@
+name: "SignCertificate Rejected (malformed CSR) — correlation regression guard"
+description: "Boot, then send SignCertificate Request with a truncated PEM CSR. Server's SignCertificateHandler throws RuntimeException → Rejected, and the Response MUST echo the inbound messageId. Regression guard for fix at csms-server@406925b — covers Rejected exception path (line 68) distinct from empty-csr scenario which covers Rejected early-return (line 52)."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- SignCertificate Request with truncated PKCS#10 (per spec test vector) ---
+  - action: send
+    message: SignCertificate
+    messageType: Request
+    payload:
+      certificateType: "StationCertificate"
+      csr: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBIjCByAIBADBmMQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExFDASBgNVBAcM\nC0xvcyBBbmdlbGVzMRIwEAYDVQQKDAlBY21lQ29ycDEgMB4GA1UEAwwXc3RuX2Ex\nYjJjM2Q0LmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END CERTIFICATE REQUEST-----"
+
+  # --- Wait for Response correlated by messageId (regression guard) ---
+  - action: wait_for
+    message: SignCertificate
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"

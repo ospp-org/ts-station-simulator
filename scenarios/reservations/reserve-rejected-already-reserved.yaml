@@ -99,17 +99,6 @@ steps:
       bay_id: "{{bayId_1}}"
       duration_minutes: 5
       session_source: "MobileApp"
-    expect_status: 422
-
-  - action: wait_for
-    message: ReserveBay
-    messageType: Request
-    timeout_ms: 15000
-
-  - action: send
-    message: ReserveBay
-    messageType: Response
-    payload:
-      status: "Rejected"
-      errorCode: 3014
-      errorText: "BAY_RESERVED"
+    expect_status: 409
+  # Per C-011: server returns 409 (resource state conflict) pre-MQTT-dispatch;
+  # no ReserveBay Request is published. The 409 is the final assertion.

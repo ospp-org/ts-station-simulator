@@ -1,0 +1,61 @@
+name: "SignCertificate Rejected (empty CSR) — correlation regression guard"
+description: "Boot, then send SignCertificate Request with an empty CSR. Server's SignCertificateHandler must reject AND echo the inbound messageId on the Response. Regression guard for fix at csms-server@406925b (SignCertificate Response correlation — 3 call sites)."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- SignCertificate Request with empty CSR ---
+  - action: send
+    message: SignCertificate
+    messageType: Request
+    payload:
+      certificateType: "StationCertificate"
+      csr: ""
+
+  # --- Wait for Response correlated by messageId (regression guard) ---
+  - action: wait_for
+    message: SignCertificate
+    messageType: Response
+    timeout_ms: 5000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "CSR is required"

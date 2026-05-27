@@ -1,7 +1,7 @@
 name: "Boot Rejected"
 description: "Deactivate station via admin is_active toggle to force production-canonical Rejected boot, then reactivate and retry to assert Accepted. Uses real PATCH /api/v1/admin/stations/{stationId}/active per csms-server admin routes (no test-only conformance endpoints)."
 station:
-  stationId: "stn_0000001d"
+  stationId: "{{stationId}}"
   bayCount: 2
   stationModel: "WashPro X200"
   stationVendor: "SimCorp"

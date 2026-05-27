@@ -97,6 +97,27 @@ steps:
         - serviceId: "{{captured.serviceId}}"
           available: false
 
+  # Per C-010: server processes StartService Response + StatusNotification Occupied
+  # async; session.status transitions authorized → active. Mirror
+  # full-session-lifecycle: send a MeterValues then delay to ensure the
+  # state transition fires before stop.
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-27T08:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  - action: delay
+    ms: 1500
+
   # --- Trigger StopService via API ---
   - action: api_call
     method: POST

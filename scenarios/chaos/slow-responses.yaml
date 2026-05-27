@@ -39,6 +39,21 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # --- Bay Available (required so api_call doesn't 409 BAY_NOT_READY) ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: delay
+    ms: 500
+
   # --- Trigger StartService via API ---
   - action: api_call
     method: POST
@@ -51,10 +66,12 @@ steps:
     expect_status: 201
 
   # --- Wait for StartService (slow response delay applied by behavior) ---
+  # Per C-017: response_delay_ms [3000, 5000] applies to multiple round-trips;
+  # bump timeout to 30s to absorb chaos-induced latency.
   - action: wait_for
     message: StartService
     messageType: Request
-    timeout_ms: 15000
+    timeout_ms: 30000
     capture:
       sessionId: "payload.sessionId"
       bayId: "payload.bayId"

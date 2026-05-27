@@ -66,6 +66,7 @@ steps:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
       duration_seconds: 300
+      session_source: "WebPayment"
     expect_status: 201
 
   - action: wait_for
