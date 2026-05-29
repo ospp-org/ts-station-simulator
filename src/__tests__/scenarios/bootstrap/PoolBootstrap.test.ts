@@ -1,0 +1,143 @@
+import { describe, it, expect } from 'vitest';
+import {
+  buildTeardownSql,
+  certPathsFor,
+  type PoolBootstrapHandle,
+} from '../../../scenarios/bootstrap/PoolBootstrap.js';
+import { sqlLiteral } from '../../../scenarios/bootstrap/uatPrivileged.js';
+import { StationPool } from '../../../scenarios/stations/StationPool.js';
+import type { TargetConfig } from '../../../scenarios/ScenarioRunner.js';
+
+function handle(overrides: Partial<PoolBootstrapHandle> = {}): PoolBootstrapHandle {
+  return {
+    orgId: 'org-1',
+    stationIds: [],
+    certFiles: [],
+    pool: new StationPool(),
+    ...overrides,
+  };
+}
+
+describe('sqlLiteral', () => {
+  it('single-quotes and doubles embedded quotes (injection-safe)', () => {
+    expect(sqlLiteral('plain')).toBe("'plain'");
+    expect(sqlLiteral("o'brien@x.dev")).toBe("'o''brien@x.dev'");
+    expect(sqlLiteral("a'; DROP TABLE users;--")).toBe("'a''; DROP TABLE users;--'");
+  });
+});
+
+describe('buildTeardownSql', () => {
+  it('empty handle → valid no-op transaction (idempotent)', () => {
+    const sql = buildTeardownSql(handle());
+    expect(sql.startsWith('BEGIN;')).toBe(true);
+    expect(sql.trimEnd().endsWith('COMMIT;')).toBe(true);
+    // Empty arrays so every WHERE matches nothing — re-runnable with no error.
+    expect(sql).toContain('ARRAY[]::text[]');
+    expect(sql).toContain('ARRAY[]::uuid[]');
+    // No offline reset when no email was flipped.
+    expect(sql).not.toContain('offline_enabled');
+  });
+
+  it('includes the offline reset only when an email was enabled', () => {
+    expect(buildTeardownSql(handle())).not.toContain('UPDATE users');
+    const sql = buildTeardownSql(handle({ offlineEnabledEmail: 'e2e@x.dev' }));
+    expect(sql).toContain("UPDATE users SET offline_enabled = false WHERE email = 'e2e@x.dev';");
+  });
+
+  it('embeds station ids / location id as escaped literals', () => {
+    const sql = buildTeardownSql(handle({
+      stationIds: ['stn_aaaa1111', 'stn_bbbb2222'],
+      locationId: '019e674f-aa63-7309-ab7a-c71fcd6178de',
+    }));
+    expect(sql).toContain("ARRAY['stn_aaaa1111', 'stn_bbbb2222']::text[]");
+    expect(sql).toContain("ARRAY['019e674f-aa63-7309-ab7a-c71fcd6178de']::uuid[]");
+  });
+
+  it('orders deletes FK-safe: bay-children → station-children → bays → stations → location', () => {
+    const sql = buildTeardownSql(handle({ stationIds: ['stn_x'], locationId: 'loc-1', offlineEnabledEmail: 'e@x' }));
+    const at = (needle: string): number => {
+      const i = sql.indexOf(needle);
+      expect(i, `expected SQL to contain: ${needle}`).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    // session-children before sessions (refunds.session_id,
+    // offline_transactions.reconciled_session_id both reference sessions)
+    expect(at('DELETE FROM refunds')).toBeLessThan(at('DELETE FROM sessions'));
+    expect(at('DELETE FROM offline_transactions')).toBeLessThan(at('DELETE FROM sessions'));
+    // sessions before reservations (sessions.reservation_id → reservations) —
+    // the FK that the first hand-ordered version got backwards
+    expect(at('DELETE FROM sessions')).toBeLessThan(at('DELETE FROM reservations'));
+    // bay-level children before bays
+    expect(at('DELETE FROM reservations')).toBeLessThan(at('DELETE FROM bays'));
+    expect(at('DELETE FROM sessions')).toBeLessThan(at('DELETE FROM bays'));
+    expect(at('DELETE FROM offline_transactions')).toBeLessThan(at('DELETE FROM bays'));
+    // station-level children before stations
+    expect(at('DELETE FROM service_catalogs')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM station_configurations')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM firmware_updates')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM diagnostics_uploads')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM provisioning_tokens')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM certificates')).toBeLessThan(at('DELETE FROM stations'));
+    // bays before stations; stations before location; everything before the offline reset
+    expect(at('DELETE FROM bays')).toBeLessThan(at('DELETE FROM stations'));
+    expect(at('DELETE FROM stations')).toBeLessThan(at('DELETE FROM locations'));
+    expect(at('DELETE FROM locations')).toBeLessThan(at('UPDATE users'));
+  });
+
+  it('reaches sessions via bay_id only (sessions has no station_id column)', () => {
+    const sql = buildTeardownSql(handle({ stationIds: ['stn_x'] }));
+    const sessionsLine = sql.split('\n').find((l) => l.includes('DELETE FROM sessions'));
+    expect(sessionsLine).toBeDefined();
+    // The DELETE predicate must filter sessions by bay_id (not a non-existent
+    // sessions.station_id). The nested bays subquery legitimately contains
+    // "station_id IN (SELECT id FROM stations …)" — so assert on the WHERE
+    // predicate column, i.e. the text right after "WHERE".
+    // The OUTER predicate must filter by bay_id (sessions has no station_id
+    // column). The nested bays subquery legitimately contains "WHERE station_id
+    // IN (SELECT id FROM stations …)", so assert only on the outer predicate:
+    // the text right after the first WHERE must begin with bay_id.
+    const where = sessionsLine!.slice(sessionsLine!.indexOf('WHERE '));
+    expect(where.startsWith('WHERE bay_id IN')).toBe(true);
+  });
+
+  it('deletes cert material by the varchar business station_id (no FK / no uuid subquery)', () => {
+    const sql = buildTeardownSql(handle({ stationIds: ['stn_x'] }));
+    for (const tbl of ['provisioning_tokens', 'certificates']) {
+      const line = sql.split('\n').find((l) => l.includes(`DELETE FROM ${tbl}`));
+      expect(line, `${tbl} delete present`).toBeDefined();
+      // keyed directly on the text[] business id, not the uuid stations.id subquery
+      expect(line).toContain('station_id = ANY(ARRAY[');
+      expect(line).not.toContain('SELECT id FROM stations');
+    }
+  });
+});
+
+describe('certPathsFor', () => {
+  const target: TargetConfig = {
+    mqttUrl: 'mqtts://broker:8883',
+    tls: {
+      keyPattern: 'certs/uat/{{stationId}}-key.pem',
+      certPattern: 'certs/uat/{{stationId}}.pem',
+      serverCa: 'certs/uat/{{stationId}}-chain.pem',
+    },
+  };
+
+  it('derives flat certs/<env>/ paths so Station.connect + disk hydration find them', () => {
+    const p = certPathsFor(target, 'stn_dead');
+    expect(p.keyPath).toBe('certs/uat/stn_dead-key.pem');
+    expect(p.certPath).toBe('certs/uat/stn_dead.pem');
+    expect(p.chainPath).toBe('certs/uat/stn_dead-chain.pem');
+    // bays.json must sit next to the key so hydrateProvisioningFromDisk finds it.
+    expect(p.baysJsonPath).toBe('certs/uat/stn_dead-bays.json');
+  });
+
+  it('falls back to deriving cert/chain from the key pattern when not set', () => {
+    const p = certPathsFor({ mqttUrl: 'x', tls: { keyPattern: 'certs/uat/{{stationId}}-key.pem' } }, 'stn_x');
+    expect(p.certPath).toBe('certs/uat/stn_x.pem');
+    expect(p.chainPath).toBe('certs/uat/stn_x-chain.pem');
+  });
+
+  it('throws a clear error when the target has no cert pattern', () => {
+    expect(() => certPathsFor({ mqttUrl: 'x' }, 'stn_x')).toThrow(/no certs\.key/);
+  });
+});
