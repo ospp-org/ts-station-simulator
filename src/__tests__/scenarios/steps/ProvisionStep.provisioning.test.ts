@@ -23,7 +23,9 @@ describe('ProvisionStep — populates context.provisioning + writes bays.json', 
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provision-test-'));
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response(JSON.stringify(PROVISION_RESPONSE), {
-        status: 201,
+        // OSPP §2 provisioning returns 200 OK (update, not create) — mirrors the
+        // live ProvisioningController. Was 201, which masked the status mismatch.
+        status: 200,
         headers: { 'content-type': 'application/json' },
       }),
     );

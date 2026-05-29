@@ -99,7 +99,9 @@ export class ProvisionStationPoolStep implements Step {
         }),
       });
 
-      if (response.status !== 201) {
+      // OSPP §2 provisioning success is 200 OK (update semantics) — see
+      // provisioning-response.schema.json + 04-flows.md §2. (Was 201 — wrong.)
+      if (response.status !== 200) {
         const body = await response.text();
         throw new Error(
           `ProvisionStationPoolStep[${i + 1}/${count}]: /api/v1/stations/provision returned ${response.status} — ${body.slice(0, 500)}`,

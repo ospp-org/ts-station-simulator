@@ -23,7 +23,8 @@ describe('ProvisionStationPoolStep', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pool-test-'));
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response(JSON.stringify(PROVISION_RESPONSE), {
-        status: 201,
+        // OSPP §2 provisioning returns 200 OK (update, not create). Was 201.
+        status: 200,
         headers: { 'content-type': 'application/json' },
       }),
     );
@@ -195,7 +196,7 @@ describe('ProvisionStationPoolStep', () => {
     ).rejects.toThrow(/token_vars length 1 does not match count 2/);
   });
 
-  it('surfaces a non-201 provisioning response with the body excerpt', async () => {
+  it('surfaces a non-200 provisioning response with the body excerpt', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response('{"error":"INVALID_TOKEN"}', { status: 401 }),
     );
