@@ -104,7 +104,13 @@ export class ProvisionStep implements Step {
       }),
     });
 
-    if (response.status !== 201) {
+    // OSPP §2 provisioning is an UPDATE of an already-registered station
+    // (registration via POST /admin/stations precedes this), so the contract
+    // success code is 200 OK — see spec/schemas/provisioning-response.schema.json
+    // ("HTTP 200 response body…") and spec/spec/04-flows.md §2 sequence
+    // ("Server-->>SSP: 200 OK ProvisioningResponse"). The live endpoint returns
+    // 200 (ProvisioningController). (Was 201 — wrong; masked by a 201 test mock.)
+    if (response.status !== 200) {
       const body = await response.text();
       throw new Error(
         `ProvisionStep: /api/v1/stations/provision returned ${response.status} — ${body.slice(0, 500)}`,

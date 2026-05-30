@@ -584,6 +584,19 @@ class StationPoolAllocator {
 
 export class ScenarioRunner {
   private poolAllocator: StationPoolAllocator | null = null;
+  /**
+   * Optional run-level station pool, populated by the per-run pool bootstrap.
+   * When set, every scenario's `context.pool` points at it so the `{{ pool.* }}`
+   * namespace resolves run-wide (revives the dormant pool machinery without a
+   * per-scenario `provision_station_pool` step). Read-only from scenarios, so
+   * sharing the instance across parallel scenarios is safe.
+   */
+  private runPool: StationPool | null = null;
+
+  /** Install a run-level pool (see {@link runPool}). */
+  setRunPool(pool: StationPool): void {
+    this.runPool = pool;
+  }
 
   async loadScenario(filePath: string): Promise<ScenarioDefinition> {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -624,6 +637,10 @@ export class ScenarioRunner {
     }
 
     const context = createContext();
+    // Expose the run-level bootstrap pool (if any) to `{{ pool.* }}`.
+    if (this.runPool) {
+      context.pool = this.runPool;
+    }
 
     // Lazy-init pool allocator for single-scenario runs (runAll does it in bulk)
     if (!this.poolAllocator && target.stationPool?.length) {

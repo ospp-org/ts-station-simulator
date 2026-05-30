@@ -5,6 +5,7 @@ import {
   ScenarioRunner,
   type TargetConfig as RunnerTargetConfig,
   type ScenarioResult,
+  type ScenarioDefinition,
 } from '../scenarios/ScenarioRunner.js';
 import { loadTarget, type TargetConfig } from './config.js';
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
@@ -46,6 +47,17 @@ import {
 import { persistBrokerArtifacts, loadBrokerArtifacts } from './artifacts.js';
 import { parseUserVars } from './userVars.js';
 import { deriveBays } from './connectBays.js';
+import {
+  bootstrapPool,
+  teardownPool,
+  PoolBootstrapError,
+  serializePoolHandle,
+  handleFromSerialized,
+  type PoolBootstrapHandle,
+  type SerializedPoolHandle,
+} from '../scenarios/bootstrap/PoolBootstrap.js';
+
+const POOL_HANDLE_PATH = path.resolve('tests/artifacts/pool-handle.json');
 
 const program = new Command();
 
@@ -68,6 +80,11 @@ interface RunCommandOptions {
   output: string;
   outputFile?: string;
   var: string[];
+  bootstrapPool?: boolean;
+  poolSize: string;
+  poolBays: string;
+  offlineEnable?: boolean;
+  keepPool?: boolean;
 }
 
 program
@@ -83,6 +100,11 @@ program
   .option('--csms-url <url>', 'Override CSMS URL')
   .option('--station <stationId>', 'Force a specific stationId (overrides station_pool)')
   .option('--org-id <uuid>', 'Organization UUID for X-Organization-Id header (overrides auto-discovery)')
+  .option('--bootstrap-pool', 'Provision a fresh per-run station pool (+ org/location + offline-enable) at suite start; tear it down at the end')
+  .option('--pool-size <n>', 'Number of stations to provision when --bootstrap-pool is set', '5')
+  .option('--pool-bays <n>', 'Bays per provisioned pool station', '4')
+  .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
+  .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
   .option('--output <format>', 'Output format: console, junit, json', 'console')
   .option('--output-file <path>', 'File path for junit/json output')
   .option(
@@ -92,6 +114,8 @@ program
     [] as string[],
   )
   .action(async (opts: RunCommandOptions) => {
+    let bootstrapHandle: PoolBootstrapHandle | undefined;
+    let exitCode = 0;
     try {
       // 1. Load target config
       const target = await resolveTarget(opts);
@@ -109,71 +133,124 @@ program
       const userVars = parseUserVars(opts.var ?? []);
       const userVarsArg = userVars.size > 0 ? userVars : undefined;
 
-      // 2. Discover and run scenarios
       const runner = new ScenarioRunner();
       const maxWorkers = parseInt(opts.workers, 10);
-      let results: ScenarioResult[];
 
+      // 2. Resolve the scenario set (discovery only — no mutation yet, so a
+      //    misconfigured invocation fails before any UAT bootstrap happens).
+      let scenarioPaths: string[];
+      let singleScenario: ScenarioDefinition | undefined;
       if (opts.scenario) {
-        // Single scenario
         const scenarioPath = path.resolve(opts.scenario);
-        const scenario = await runner.loadScenario(scenarioPath);
-
-        console.log(chalk.blue(`Running scenario: ${scenario.name}`));
+        singleScenario = await runner.loadScenario(scenarioPath);
+        scenarioPaths = [scenarioPath];
+        console.log(chalk.blue(`Running scenario: ${singleScenario.name}`));
         console.log(chalk.blue(`  Target: ${opts.target ?? process.env['OSPP_TARGET'] ?? 'custom'}`));
         logUserVars(userVarsArg);
         console.log();
-
-        const result = await runner.runScenario(scenario, runnerTarget, userVarsArg);
-        results = [result];
       } else if (opts.suite) {
-        // Suite — run all in scenarios/<name>/
         const suiteDir = path.resolve('scenarios', opts.suite);
-        const scenarioPaths = await discoverYamlFiles(suiteDir);
-
+        scenarioPaths = await discoverYamlFiles(suiteDir);
         if (scenarioPaths.length === 0) {
-          console.error(chalk.yellow(`No scenarios found in suite: ${opts.suite}`));
-          process.exit(1);
+          throw new Error(`No scenarios found in suite: ${opts.suite}`);
         }
-
         console.log(chalk.blue(`Running ${scenarioPaths.length} scenario(s) from suite "${opts.suite}"...`));
         logRunConfig(opts);
         logUserVars(userVarsArg);
-
-        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
       } else if (opts.all) {
-        // All — run everything in scenarios/
         const scenariosDir = path.resolve('scenarios');
-        const scenarioPaths = await discoverYamlFiles(scenariosDir);
-
+        scenarioPaths = await discoverYamlFiles(scenariosDir);
         if (scenarioPaths.length === 0) {
-          console.error(chalk.yellow('No scenarios found.'));
-          process.exit(1);
+          throw new Error('No scenarios found.');
         }
-
         console.log(chalk.blue(`Running ${scenarioPaths.length} scenario(s)...`));
         logRunConfig(opts);
         logUserVars(userVarsArg);
-
-        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
       } else {
-        console.error(chalk.red('Error: specify --scenario, --suite, or --all'));
-        process.exit(1);
+        throw new Error('specify --scenario, --suite, or --all');
       }
 
-      // 4. Output results
+      // 3. Per-run pool bootstrap (F-PROC-1). Runs after discovery and before
+      //    the scenarios so a fresh pool + org/location + offline-enable exist,
+      //    and is torn down in `finally` regardless of outcome.
+      if (opts.bootstrapPool) {
+        const poolSize = parseInt(opts.poolSize, 10);
+        const bayCount = parseInt(opts.poolBays, 10);
+        console.log(chalk.blue(
+          `Bootstrapping per-run pool: ${poolSize} station(s), ${bayCount} bay(s) each, ` +
+          `offline-enable=${opts.offlineEnable !== false}`,
+        ));
+        try {
+          bootstrapHandle = await bootstrapPool(runnerTarget, {
+            poolSize,
+            bayCount,
+            enableOffline: opts.offlineEnable !== false,
+            orgId: runnerTarget.orgId,
+          });
+        } catch (err) {
+          // Preserve the partial handle so `finally` can clean up what was made.
+          if (err instanceof PoolBootstrapError) bootstrapHandle = err.handle;
+          throw err;
+        }
+        runnerTarget.stationPool = bootstrapHandle.stationIds;
+        runnerTarget.orgId = bootstrapHandle.orgId;
+        runner.setRunPool(bootstrapHandle.pool);
+        console.log();
+      }
+
+      // 4. Run
+      let results: ScenarioResult[];
+      if (singleScenario) {
+        results = [await runner.runScenario(singleScenario, runnerTarget, userVarsArg)];
+      } else {
+        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
+      }
+
+      // 5. Output results
       await outputResults(results, opts);
 
-      // 5. Exit with code 1 if any scenario failed
-      const hasFailed = results.some(r => r.status === 'failed');
-      if (hasFailed) {
-        process.exit(1);
+      if (results.some(r => r.status === 'failed')) {
+        exitCode = 1;
       }
     } catch (err) {
+      if (err instanceof PoolBootstrapError && !bootstrapHandle) {
+        bootstrapHandle = err.handle;
+      }
       const error = err instanceof Error ? err : new Error(String(err));
       console.error(chalk.red(`Fatal error: ${error.message}`));
-      process.exit(1);
+      exitCode = 1;
+    } finally {
+      // 6. Teardown — runs even on failure, BEFORE exit (process.exit is deferred
+      //    so cleanup is never short-circuited). --keep-pool preserves a SUCCESSFUL
+      //    run's pool for inspection (persisting a handle for `teardown-pool`); a
+      //    failed run is always torn down regardless.
+      if (bootstrapHandle) {
+        if (opts.keepPool && exitCode === 0) {
+          try {
+            await fs.mkdir(path.dirname(POOL_HANDLE_PATH), { recursive: true });
+            await fs.writeFile(
+              POOL_HANDLE_PATH,
+              JSON.stringify(serializePoolHandle(bootstrapHandle), null, 2),
+            );
+            console.log(chalk.yellow(
+              `Pool KEPT (--keep-pool): ${bootstrapHandle.stationIds.length} station(s) under org ` +
+              `${bootstrapHandle.orgId}.\n  Handle: ${POOL_HANDLE_PATH}\n  Tear down later with: simulator teardown-pool`,
+            ));
+          } catch (e) {
+            console.error(chalk.yellow(`Could not persist pool handle: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        } else {
+          console.log(chalk.blue('Tearing down per-run pool...'));
+          try {
+            await teardownPool(bootstrapHandle);
+            console.log(chalk.green('Pool teardown complete.'));
+          } catch (e) {
+            console.error(chalk.yellow(`Teardown warning: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        }
+      }
     }
+    process.exit(exitCode);
   });
 
 function logRunConfig(opts: RunCommandOptions): void {
@@ -366,6 +443,42 @@ function printConsoleReport(results: ScenarioResult[]): void {
   }
   console.log(`  Duration: ${totalDuration}ms`);
 }
+
+// ---------------------------------------------------------------------------
+// teardown-pool command — tear down a pool kept by `run --keep-pool`
+// ---------------------------------------------------------------------------
+
+interface TeardownPoolOptions {
+  handle: string;
+}
+
+program
+  .command('teardown-pool')
+  .description('Tear down a station pool previously kept by `run --keep-pool` (idempotent)')
+  .option('--handle <path>', 'Path to the persisted pool handle JSON', POOL_HANDLE_PATH)
+  .action(async (opts: TeardownPoolOptions) => {
+    try {
+      let raw: string;
+      try {
+        raw = await fs.readFile(opts.handle, 'utf-8');
+      } catch {
+        console.error(chalk.red(`No pool handle at ${opts.handle}. Nothing to tear down.`));
+        process.exit(1);
+        return;
+      }
+      const serialized = JSON.parse(raw) as SerializedPoolHandle;
+      console.log(chalk.blue(
+        `Tearing down ${serialized.stationIds?.length ?? 0} station(s) from ${opts.handle}...`,
+      ));
+      await teardownPool(handleFromSerialized(serialized));
+      await fs.rm(opts.handle, { force: true });
+      console.log(chalk.green('Pool teardown complete.'));
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error(chalk.red(`Fatal: ${error.message}`));
+      process.exit(1);
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // connect command
