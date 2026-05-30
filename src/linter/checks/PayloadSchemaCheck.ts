@@ -64,6 +64,41 @@ function replaceTemplates(obj: unknown): unknown {
   return obj;
 }
 
+// A string whose ENTIRE value is a single {{ captured.X }} token. Mirrors
+// ScenarioRunner.substituteTemplates: such a field is replaced at runtime with
+// the captured value VERBATIM (object / array / number / ...), so its static
+// type is unknown here and must not be schema-type-checked. Embedded templates
+// ("opass_{{x}}") and pool/provisioning/variable tokens are NOT whole-value.
+const WHOLE_CAPTURE_RE = /^\{\{\s*captured\.[^{}]+\s*\}\}$/;
+
+// JSON Pointer escaping per RFC 6901 so paths line up with Ajv instancePaths.
+function escapeJsonPointer(key: string): string {
+  return key.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+// Collect the instancePaths of every field whose entire value is a whole-value
+// capture, walking nested objects/arrays so deep captures are covered too.
+function collectDynamicCapturePaths(value: unknown, base = '', out: string[] = []): string[] {
+  if (typeof value === 'string') {
+    if (WHOLE_CAPTURE_RE.test(value)) out.push(base);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => collectDynamicCapturePaths(item, `${base}/${i}`, out));
+    return out;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      collectDynamicCapturePaths(v, `${base}/${escapeJsonPointer(k)}`, out);
+    }
+  }
+  return out;
+}
+
+function isUnderDynamicPath(instancePath: string, dynamicPaths: string[]): boolean {
+  return dynamicPaths.some((p) => instancePath === p || instancePath.startsWith(`${p}/`));
+}
+
 export class PayloadSchemaCheck implements LintCheck {
   name = 'payload-schema';
   private validator: SchemaValidator;
@@ -91,11 +126,19 @@ export class PayloadSchemaCheck implements LintCheck {
       if (!schemaKey || !this.availableKeys.has(schemaKey)) continue;
 
       const resolved = replaceTemplates(payload) as Record<string, unknown>;
+      // C-015: a field whose entire value is a single {{captured.X}} token is
+      // populated at runtime with a value of statically-unknown type (the engine
+      // forwards the captured value verbatim). The dummy-string substitution above
+      // cannot represent that, so skip schema errors at those paths — the server
+      // validates the real value at runtime. Embedded/non-capture templates stay
+      // validated as before.
+      const dynamicPaths = collectDynamicCapturePaths(payload);
 
       try {
         const result = this.validator.validate(schemaKey, resolved);
         if (!result.valid && result.errors) {
           for (const err of result.errors) {
+            if (isUnderDynamicPath(err.instancePath ?? '', dynamicPaths)) continue;
             issues.push({
               file: scenario.filePath,
               step: i,

@@ -1,5 +1,20 @@
 name: "Offline Pass Authorization Accepted"
-description: "Boot station and send an AuthorizeOfflinePass request with a full offline pass structure, then verify the server accepts it."
+description: "Boot a station, obtain a genuine server-signed offline pass via POST /api/v1/offline/passes, then present it via AuthorizeOfflinePass and verify the server accepts it."
+# --- C-015 (issue-then-present) -------------------------------------------
+# OSPP offline passes are signed by the SERVER (the issuer) and verified
+# against the server's own ECDSA P-256 key — the station never holds a pass
+# signing key (spec/profiles/offline/offline-pass.md "Signing"; canonical form
+# spec/06-security.md §4.8). A station that fabricated its own signature would
+# be a forgery and is correctly rejected (error 2002 OFFLINE_PASS_INVALID) —
+# which is exactly why the old `signature: "test_sig"` placeholder failed.
+#
+# So this scenario fetches a real, server-signed pass from the issuance API and
+# presents it verbatim — just like a mobile app does (get a pass online, present
+# it offline). The signed `offlinePass` object is forwarded byte-for-byte via
+# typed capture injection ({{captured.offlinePass}} resolves to the captured
+# object, not a stringified copy), so the server's canonical-form re-verification
+# matches the original signature.
+# --------------------------------------------------------------------------
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -39,32 +54,37 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- AuthorizeOfflinePass Request ---
+  # --- Obtain a real, server-signed offline pass (C-015) ---
+  # api_call auto-authenticates with the target's credentials. We scope the pass
+  # to the service we will request so it is in the pass's allowedServiceTypes.
+  # The full signed pass (data.attributes) is captured for verbatim presentation.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_test001"
+      serviceIds:
+        - "{{serviceId_1}}"
+      maxUses: 10
+      maxTotalCredits: 5000
+      durationHours: 24
+    expect_status: 201
+    capture:
+      offlinePass: "data.attributes"
+      offlinePassId: "data.attributes.passId"
+      passDeviceId: "data.attributes.deviceId"
+
+  # --- Present the pass via AuthorizeOfflinePass ---
+  # offlinePass is injected as a TYPED object (not String()-coerced), so the
+  # server re-canonicalizes the exact bytes it signed and the ECDSA check passes.
+  # deviceId mirrors the issued pass (check 4 device binding); counter=1 is the
+  # first use of a freshly-issued pass (check 10 anti-replay).
   - action: send
     message: AuthorizeOfflinePass
     payload:
-      offlinePassId: "opass_a000000001"
-      offlinePass:
-        passId: "opass_a000000001"
-        sub: "sub_testuser01"
-        deviceId: "dev_test001"
-        issuedAt: "2026-01-01T00:00:00.000Z"
-        expiresAt: "2026-12-31T23:59:59.000Z"
-        policyVersion: 1
-        revocationEpoch: 0
-        offlineAllowance:
-          maxTotalCredits: 5000
-          maxUses: 10
-          maxCreditsPerTx: 500
-          allowedServiceTypes:
-            - "svc_wash_basic"
-        constraints:
-          minIntervalSec: 60
-          stationOfflineWindowHours: 24
-          stationMaxOfflineTx: 100
-        signatureAlgorithm: "ECDSA-P256-SHA256"
-        signature: "test_sig"
-      deviceId: "dev_test001"
+      offlinePassId: "{{captured.offlinePassId}}"
+      offlinePass: "{{captured.offlinePass}}"
+      deviceId: "{{captured.passDeviceId}}"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"

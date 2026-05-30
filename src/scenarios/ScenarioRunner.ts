@@ -283,8 +283,36 @@ function substituteTemplateValue(value: string, scope: TemplateScope): string {
   });
 }
 
+/**
+ * A string whose ENTIRE content is a single `{{ ... }}` token — no surrounding
+ * literal text and no second token. Capture group 1 is the inner expression
+ * (e.g. `captured.offlinePass`). Used to decide when a substitution may yield a
+ * typed (non-string) value rather than a string interpolation.
+ */
+const WHOLE_TEMPLATE_RE = /^\{\{\s*([^{}]+?)\s*\}\}$/;
+
 function substituteTemplates(value: unknown, scope: TemplateScope): unknown {
   if (typeof value === 'string') {
+    // C-015: when a field's *entire* value is a single `{{ captured.X }}` token,
+    // return the captured value with its original type intact (object / array /
+    // number / boolean / null) instead of coercing it to a string. This lets a
+    // scenario forward a server-signed payload (e.g. an OfflinePass) verbatim:
+    // the server re-canonicalizes and ECDSA-verifies the pass, so byte- and
+    // type-fidelity are required. Embedded templates ("opass_{{x}}") and
+    // pool.* / provisioning.* / variable tokens keep the string-interpolation
+    // path below (those resolvers only ever return strings anyway).
+    const whole = value.match(WHOLE_TEMPLATE_RE);
+    if (whole) {
+      const token = whole[1].trim();
+      if (token.startsWith('captured.')) {
+        const captureKey = token.slice('captured.'.length);
+        const capturedVal = scope.captured.get(captureKey);
+        if (capturedVal === undefined) {
+          throw new Error(`Captured variable not found: ${captureKey}`);
+        }
+        return capturedVal;
+      }
+    }
     return substituteTemplateValue(value, scope);
   }
   if (Array.isArray(value)) {
