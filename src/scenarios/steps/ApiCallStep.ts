@@ -3,6 +3,102 @@ import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
 
+// ---------------------------------------------------------------------------
+// Bounded 429 retry — Retry-After + jitter, cap 3 (opt-out via retry_on_429:false)
+// ---------------------------------------------------------------------------
+
+export interface ThrottleRetryOptions {
+  /** When `false`, no retry happens — pass-through to caller's expect_status check. */
+  enabled?: boolean;
+  /** Max retries AFTER the first attempt (default 3 → at most 4 total fetch calls). */
+  maxRetries?: number;
+  /** Backoff base ms used when no Retry-After header is present (default 500). */
+  base?: number;
+  /** Multiplicative jitter applied to the backoff curve (±, default 0.2 = ±20%). */
+  jitterPct?: number;
+  /** Injectable RNG for deterministic tests. */
+  rng?: () => number;
+  /** Injectable sleep for deterministic tests. */
+  sleepFn?: (ms: number) => Promise<void>;
+  /** Injectable fetch for tests; defaults to global fetch at call time. */
+  fetchFn?: typeof fetch;
+  /** Notify on each retry (telemetry/test hook). */
+  onRetry?: (info: { attempt: number; delayMs: number; url: string }) => void;
+}
+
+/**
+ * Translate a 429 `Retry-After` header into a wait duration. RFC 7231 §7.1.3 allows two
+ * forms — integer seconds (Laravel's `ThrottleRequests` middleware writes this) or
+ * HTTP-date. When the header is absent or unparseable, fall back to exponential backoff
+ * (`base × 2^attempt`) with multiplicative jitter so concurrent retriers don't synchronize.
+ * `attempt` is 0-indexed: first retry is `attempt = 0`.
+ */
+export function computeRetryDelayMs(
+  retryAfterHeader: string | null,
+  attempt: number,
+  options?: { base?: number; jitterPct?: number; rng?: () => number; nowMs?: number },
+): number {
+  const base = options?.base ?? 500;
+  const jitterPct = options?.jitterPct ?? 0.2;
+  const rng = options?.rng ?? Math.random;
+  const nowMs = options?.nowMs ?? Date.now();
+
+  if (retryAfterHeader !== null && retryAfterHeader !== '') {
+    const trimmed = retryAfterHeader.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const asSec = Number.parseInt(trimmed, 10);
+      return Math.max(0, asSec * 1000);
+    }
+    const asDate = Date.parse(trimmed);
+    if (!Number.isNaN(asDate)) {
+      return Math.max(0, asDate - nowMs);
+    }
+    // Unparseable → fall through to exponential.
+  }
+
+  const exp = base * Math.pow(2, attempt);
+  const jitter = 1 + (rng() * 2 - 1) * jitterPct;
+  return Math.max(0, Math.round(exp * jitter));
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * `fetch` wrapper that retries on HTTP 429 up to a bounded cap, honoring the server's
+ * `Retry-After` header when present. Non-429 responses pass straight through unchanged.
+ * The retry only changes the SHAPE of timing under contention — it never silently swallows
+ * a real failure: after the cap, the last 429 response is returned and the caller's
+ * `expect_status` mismatch check still fires.
+ */
+export async function fetchWithThrottleRetry(
+  url: string,
+  init: RequestInit,
+  opts: ThrottleRetryOptions = {},
+): Promise<Response> {
+  const enabled = opts.enabled !== false;
+  const maxRetries = opts.maxRetries ?? 3;
+  const sleepFn = opts.sleepFn ?? defaultSleep;
+  const fetchFn = opts.fetchFn ?? fetch;
+
+  let attempt = 0;
+  // First attempt + up to `maxRetries` retries → at most `maxRetries + 1` fetch calls.
+  while (true) {
+    const response = await fetchFn(url, init);
+    if (!enabled || response.status !== 429 || attempt >= maxRetries) {
+      return response;
+    }
+    const retryAfter = response.headers.get('Retry-After');
+    const delayMs = computeRetryDelayMs(retryAfter, attempt, opts);
+    // Drain the body so the underlying connection is freed before we sleep.
+    await response.text().catch(() => undefined);
+    opts.onRetry?.({ attempt, delayMs, url });
+    await sleepFn(delayMs);
+    attempt++;
+  }
+}
+
 function substituteTemplateValue(
   value: string,
   context: ScenarioContext,
@@ -227,6 +323,19 @@ export class ApiCallStep implements Step {
     };
 
     const isBackground = definition.background === true;
+    // 429 retry is on by default — only disabled with explicit `retry_on_429: false`.
+    // Honors the server's Retry-After header; falls back to bounded exponential backoff +
+    // jitter so concurrent retriers don't synchronize. After the cap, the last 429 reaches
+    // the expect_status mismatch check exactly as before — no silent swallowing.
+    const retryEnabled = definition.retry_on_429 !== false;
+    const retryOpts: ThrottleRetryOptions = {
+      enabled: retryEnabled,
+      onRetry: ({ attempt, delayMs }) => {
+        console.log(
+          `[ApiCallStep${isBackground ? ':background' : ''}] 429 retry ${attempt + 1}/3 for ${method} ${url} in ${delayMs}ms`,
+        );
+      },
+    };
 
     if (isBackground) {
       // Background mode: fire the request without awaiting. Required for
@@ -240,7 +349,7 @@ export class ApiCallStep implements Step {
           'ApiCallStep: "capture" is not supported with "background: true" (response not awaited)',
         );
       }
-      fetch(url, { method, headers: fetchHeaders, body })
+      fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
         .then(async (response) => {
           if (definition.expect_status !== undefined) {
             const expectedStatus = definition.expect_status as number;
@@ -259,11 +368,11 @@ export class ApiCallStep implements Step {
       return;
     }
 
-    const response = await fetch(url, {
-      method,
-      headers: fetchHeaders,
-      body,
-    });
+    const response = await fetchWithThrottleRetry(
+      url,
+      { method, headers: fetchHeaders, body },
+      retryOpts,
+    );
 
     if (definition.expect_status !== undefined) {
       const expectedStatus = definition.expect_status as number;
