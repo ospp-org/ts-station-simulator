@@ -4,7 +4,12 @@ import {
   certPathsFor,
   type PoolBootstrapHandle,
 } from '../../../scenarios/bootstrap/PoolBootstrap.js';
-import { sqlLiteral } from '../../../scenarios/bootstrap/uatPrivileged.js';
+import {
+  sqlLiteral,
+  buildSeedCatalogSql,
+  buildServicesPayloadJson,
+  DEFAULT_SEED_SERVICES,
+} from '../../../scenarios/bootstrap/uatPrivileged.js';
 import { StationPool } from '../../../scenarios/stations/StationPool.js';
 import type { TargetConfig } from '../../../scenarios/ScenarioRunner.js';
 
@@ -13,6 +18,7 @@ function handle(overrides: Partial<PoolBootstrapHandle> = {}): PoolBootstrapHand
     orgId: 'org-1',
     stationIds: [],
     certFiles: [],
+    seededServiceIds: [],
     pool: new StationPool(),
     ...overrides,
   };
@@ -109,6 +115,130 @@ describe('buildTeardownSql', () => {
       expect(line).toContain('station_id = ANY(ARRAY[');
       expect(line).not.toContain('SELECT id FROM stations');
     }
+  });
+});
+
+describe('buildTeardownSql — service_definitions orphan-sweep (seed symmetry)', () => {
+  it('is absent when no service_definitions were seeded this run', () => {
+    const sql = buildTeardownSql(handle({ stationIds: ['stn_x'], locationId: 'loc-1' }));
+    expect(sql).not.toContain('DELETE FROM service_definitions');
+  });
+
+  it('appears when seededServiceIds is non-empty and is scoped to org + seeded svc_* set', () => {
+    const sql = buildTeardownSql(handle({
+      orgId: '019e674f-aa63-7309-ab7a-c71fcd6178de',
+      stationIds: ['stn_x'],
+      locationId: 'loc-1',
+      seededServiceIds: ['svc_wash_basic', 'svc_wash_premium', 'svc_dry', 'svc_vacuum'],
+    }));
+    const line = sql.split('\n').find((l) => l.includes('DELETE FROM service_definitions sd'));
+    expect(line, 'orphan-sweep present').toBeDefined();
+    // Filtered to OUR org
+    expect(line).toContain("sd.organization_id = '019e674f-aa63-7309-ab7a-c71fcd6178de'");
+    // Filtered to OUR seeded svc_* set (every code present + escaped as text[])
+    expect(line).toContain("sd.service_id = ANY(ARRAY['svc_wash_basic', 'svc_wash_premium', 'svc_dry', 'svc_vacuum']::text[])");
+    // NOT EXISTS clause keeps it safe even if FK RESTRICT is one day relaxed
+    expect(line).toContain('NOT EXISTS (SELECT 1 FROM station_services ss WHERE ss.service_definition_id = sd.id)');
+  });
+
+  it('runs AFTER the DELETE FROM stations cascade so station_services is already gone', () => {
+    const sql = buildTeardownSql(handle({
+      orgId: 'org-1', stationIds: ['stn_x'],
+      seededServiceIds: ['svc_wash_basic'],
+    }));
+    const stationsAt = sql.indexOf('DELETE FROM stations');
+    const sweepAt = sql.indexOf('DELETE FROM service_definitions sd');
+    expect(stationsAt).toBeGreaterThanOrEqual(0);
+    expect(sweepAt).toBeGreaterThan(stationsAt);
+  });
+});
+
+describe('buildServicesPayloadJson — byte-identical to ServiceItemDto::toPayload()', () => {
+  it('produces the canonical PerMinute payload in the PHP DTO key order', () => {
+    const json = buildServicesPayloadJson([
+      { serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
+    ]);
+    // Key order: serviceId, serviceName, pricingType, available, priceCreditsPerMinute.
+    // Matches ServiceItemDto::toPayload() at csms-server. Re-ordering breaks fidelity.
+    expect(json).toBe('[{"serviceId":"svc_wash_basic","serviceName":"Basic Wash","pricingType":"PerMinute","available":true,"priceCreditsPerMinute":100}]');
+  });
+
+  it('switches to priceCreditsFixed for the Fixed pricing branch', () => {
+    const json = buildServicesPayloadJson([
+      { serviceId: 'svc_x', serviceName: 'X', pricingType: 'Fixed', priceCreditsFixed: 500 },
+    ]);
+    expect(json).toBe('[{"serviceId":"svc_x","serviceName":"X","pricingType":"Fixed","available":true,"priceCreditsFixed":500}]');
+  });
+
+  it('default 4-service set produces the expected canonical JSON', () => {
+    const json = buildServicesPayloadJson(DEFAULT_SEED_SERVICES);
+    expect(json).toBe('[' + [
+      '{"serviceId":"svc_wash_basic","serviceName":"Basic Wash","pricingType":"PerMinute","available":true,"priceCreditsPerMinute":100}',
+      '{"serviceId":"svc_wash_premium","serviceName":"Premium Wash","pricingType":"PerMinute","available":true,"priceCreditsPerMinute":100}',
+      '{"serviceId":"svc_dry","serviceName":"Dry","pricingType":"PerMinute","available":true,"priceCreditsPerMinute":100}',
+      '{"serviceId":"svc_vacuum","serviceName":"Vacuum","pricingType":"PerMinute","available":true,"priceCreditsPerMinute":100}',
+    ].join(',') + ']');
+  });
+});
+
+describe('buildSeedCatalogSql', () => {
+  it('empty stationIds OR empty services → no-op transaction (safe to call)', () => {
+    expect(buildSeedCatalogSql('org-1', [], DEFAULT_SEED_SERVICES)).toBe('BEGIN;\nCOMMIT;');
+    expect(buildSeedCatalogSql('org-1', ['stn_x'], [])).toBe('BEGIN;\nCOMMIT;');
+  });
+
+  it('mirrors handler conflict semantics — DO NOTHING on definitions, DO UPDATE on station_services', () => {
+    const sql = buildSeedCatalogSql('org-1', ['stn_x'], DEFAULT_SEED_SERVICES);
+    // service_definitions: DO NOTHING (handler resolveOrCreateDefinition preserves)
+    expect(sql).toContain('INSERT INTO service_definitions');
+    expect(sql).toContain('ON CONFLICT (organization_id, service_id) DO NOTHING;');
+    // station_services: DO UPDATE (Laravel updateOrInsert)
+    expect(sql).toContain('INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, available)');
+    expect(sql).toContain('ON CONFLICT (station_id, service_definition_id) DO UPDATE SET');
+    expect(sql).toContain('price_credits_per_minute = EXCLUDED.price_credits_per_minute');
+    expect(sql).toContain('updated_at = NOW();');
+  });
+
+  it('audit row INSERT + current_catalog_version bump are scoped to current_catalog_version IS NULL (re-seed-safe)', () => {
+    const sql = buildSeedCatalogSql('org-1', ['stn_x'], DEFAULT_SEED_SERVICES);
+    const catalogLine = sql.indexOf('INSERT INTO service_catalogs');
+    const updateLine = sql.indexOf('UPDATE stations SET current_catalog_version');
+    expect(catalogLine).toBeGreaterThanOrEqual(0);
+    expect(updateLine).toBeGreaterThanOrEqual(0);
+    // Both gated on IS NULL so re-running the seed against a previously-seeded station
+    // neither double-writes an audit row nor restarts the monotonic version sequence.
+    const catalogStmt = sql.slice(catalogLine, updateLine);
+    expect(catalogStmt).toContain('s.current_catalog_version IS NULL');
+    const updateStmt = sql.slice(updateLine);
+    expect(updateStmt).toContain('current_catalog_version IS NULL');
+    // First push: catalog_version = '1', previous = NULL
+    expect(catalogStmt).toContain("'1', NULL,");
+    expect(updateStmt).toContain("current_catalog_version = '1'");
+  });
+
+  it('values are sqlLiteral-escaped (injection-safe for orgId, station ids, service ids/names)', () => {
+    const sql = buildSeedCatalogSql(
+      "org'1",
+      ["stn_x'; DROP TABLE stations;--"],
+      [{ serviceId: "svc_x'", serviceName: "Evil'Name", pricingType: 'PerMinute', priceCreditsPerMinute: 100 }],
+    );
+    // Safety property: every user-supplied value appears EXCLUSIVELY in its doubled-quote
+    // escaped form (the SQL-literal-safe representation). The presence of the doubled-quote
+    // form on every channel proves the injection payload never escapes its string literal —
+    // it's just inert characters inside a quoted string.
+    expect(sql).toContain("'org''1'");
+    expect(sql).toContain("'stn_x''; DROP TABLE stations;--'");
+    expect(sql).toContain("'svc_x'''");
+    expect(sql).toContain("'Evil''Name'");
+  });
+
+  it('embeds the canonical 4-service services_data JSON in the audit INSERT (fidelity)', () => {
+    const sql = buildSeedCatalogSql('org-1', ['stn_x'], DEFAULT_SEED_SERVICES);
+    // The JSON literal is single-quoted by sqlLiteral and cast to ::jsonb.
+    const expectedJson = buildServicesPayloadJson(DEFAULT_SEED_SERVICES);
+    // Defensive: the default set has no embedded quotes, so the literal equals JSON
+    // wrapped in single quotes.
+    expect(sql).toContain(`'${expectedJson}'::jsonb`);
   });
 });
 

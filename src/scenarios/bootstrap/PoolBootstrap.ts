@@ -17,6 +17,8 @@ import {
 import {
   assertUatDbReachable,
   setOfflineEnabled,
+  seedServiceCatalog,
+  DEFAULT_SEED_SERVICES,
   runUatSql,
   sqlLiteral,
   uatDbConfigFromEnv,
@@ -70,6 +72,12 @@ export interface PoolBootstrapHandle {
   offlineEnabledEmail?: string;
   /** Local cert artifact files written this run (removed at teardown). */
   certFiles: string[];
+  /**
+   * `svc_*` codes seeded into `service_definitions` for this run's org. Teardown's
+   * orphan-sweep is scoped to this set so we only remove definitions we could have created,
+   * and only when no remaining `station_services` references them.
+   */
+  seededServiceIds: string[];
   /** Live registry — also exposes the pool via the `{{pool.*}}` namespace. */
   pool: StationPool;
 }
@@ -89,6 +97,8 @@ export interface SerializedPoolHandle {
   stationIds: string[];
   offlineEnabledEmail?: string;
   certFiles: string[];
+  /** Optional for backwards-compat with handles persisted before the seed landed. */
+  seededServiceIds?: string[];
 }
 
 export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPoolHandle {
@@ -98,6 +108,7 @@ export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPool
     stationIds: handle.stationIds,
     offlineEnabledEmail: handle.offlineEnabledEmail,
     certFiles: handle.certFiles,
+    seededServiceIds: handle.seededServiceIds,
   };
 }
 
@@ -109,6 +120,7 @@ export function handleFromSerialized(s: SerializedPoolHandle): PoolBootstrapHand
     stationIds: s.stationIds ?? [],
     offlineEnabledEmail: s.offlineEnabledEmail,
     certFiles: s.certFiles ?? [],
+    seededServiceIds: s.seededServiceIds ?? [],
     pool: new StationPool(),
   };
 }
@@ -256,15 +268,16 @@ export async function bootstrapPool(
     orgId: options.orgId ?? '',
     stationIds: [],
     certFiles: [],
+    seededServiceIds: [],
     pool: new StationPool(),
   };
 
   try {
-    // Fail fast on privileged access BEFORE provisioning anything, so we never
-    // half-build a pool we then cannot offline-enable.
-    if (options.enableOffline) {
-      await assertUatDbReachable(dbConfig);
-    }
+    // Fail fast on privileged DB access BEFORE provisioning. The catalog seed AND teardown
+    // both need it unconditionally; the offline-enable step (when on) too. A pool with no
+    // catalog is worthless (every session/start 404s INVALID_SERVICE), so make DB reachability
+    // a hard precondition for every bootstrap.
+    await assertUatDbReachable(dbConfig);
 
     // 1. Auth
     console.log(`[bootstrap] logging in as ${target.credentials.email}…`);
@@ -329,7 +342,19 @@ export async function bootstrapPool(
       }
     }
 
-    // 5. Privileged offline-enable (DB-only; no API path exists — see INVESTIGATE Q2)
+    // 5. Seed the three-tier service catalog so {{serviceId_*}} resolves to a real
+    //    station_services row on every bootstrapped station. Non-optional — without this,
+    //    every sessions/start 404s INVALID_SERVICE (validated in GATE 1). Rows are
+    //    operationally indistinguishable from what UpdateServiceCatalogResponseHandler
+    //    would write for a real MQTT roundtrip (see buildSeedCatalogSql doc + design note).
+    await seedServiceCatalog(handle.orgId, handle.stationIds, DEFAULT_SEED_SERVICES, dbConfig);
+    handle.seededServiceIds = DEFAULT_SEED_SERVICES.map((s) => s.serviceId);
+    console.log(
+      `[bootstrap] seeded service catalog (${handle.seededServiceIds.length} service(s) × ` +
+      `${handle.stationIds.length} station(s)): ${handle.seededServiceIds.join(', ')}`,
+    );
+
+    // 6. Privileged offline-enable (DB-only; no API path exists — see INVESTIGATE Q2)
     if (options.enableOffline) {
       const email = target.credentials.email;
       await setOfflineEnabled(email, true, dbConfig);
@@ -479,6 +504,7 @@ export async function teardownPool(
     console.log(
       `[teardown] removed ${handle.stationIds.length} station(s)` +
       `${handle.locationId ? ' + location' : ''}` +
+      `${handle.seededServiceIds && handle.seededServiceIds.length > 0 ? ' + orphan-swept seeded service_definitions' : ''}` +
       `${handle.offlineEnabledEmail ? ' + reset offline_enabled' : ''}`,
     );
   } catch (err) {
@@ -570,6 +596,21 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     `DELETE FROM stations WHERE station_id = ANY(${stationArray});`,
     `DELETE FROM locations WHERE id = ANY(${locationArray});`,
   ];
+
+  // Orphan-sweep for service_definitions we seeded — symmetric ownership with the bootstrap.
+  // Scoped to (a) THIS run's org, (b) THIS run's seeded svc_* codes, (c) only rows with NO
+  // remaining station_services references (FK is ON DELETE RESTRICT so the clause is
+  // intent-explicit + safe). After the `DELETE FROM stations` above cascades
+  // `station_services`, our seeded definitions become orphan and get swept; any definition
+  // still referenced by another station's catalog is left alone. Self-heals the pre-existing
+  // stale `Premium Wash` row on its first inclusion in a run's seed set.
+  if (handle.orgId && handle.seededServiceIds && handle.seededServiceIds.length > 0) {
+    const seededSvcArray = `ARRAY[${handle.seededServiceIds.map(sqlLiteral).join(', ')}]::text[]`;
+    lines.push(
+      `DELETE FROM service_definitions sd WHERE sd.organization_id = ${sqlLiteral(handle.orgId)} AND sd.service_id = ANY(${seededSvcArray}) AND NOT EXISTS (SELECT 1 FROM station_services ss WHERE ss.service_definition_id = sd.id);`,
+    );
+  }
+
   if (handle.offlineEnabledEmail) {
     lines.push(`UPDATE users SET offline_enabled = false WHERE email = ${sqlLiteral(handle.offlineEnabledEmail)};`);
   }

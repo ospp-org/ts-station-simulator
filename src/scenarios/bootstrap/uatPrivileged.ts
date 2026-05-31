@@ -116,3 +116,154 @@ export async function setOfflineEnabled(
     cfg,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Service catalog seed (Brief L three-tier model)
+// ---------------------------------------------------------------------------
+
+export type SeededPricingType = 'PerMinute' | 'Fixed';
+
+export interface SeededService {
+  serviceId: string;       // svc_*
+  serviceName: string;
+  pricingType: SeededPricingType;
+  priceCreditsPerMinute?: number | null;
+  priceCreditsFixed?: number | null;
+}
+
+/**
+ * Canonical default service set used by the per-run pool bootstrap. Matches the runner's
+ * `defaultServices` map (`ScenarioRunner.ts:374`) so `{{serviceId_1..4}}` resolves to a real
+ * `station_services` row on every bootstrapped station. Names match what the runner emits
+ * in outbound payloads (`PoolBootstrap.ts:386` + `ScenarioRunner.ts:483-487` for serviceId_1;
+ * canonical extensions for 2..4).
+ */
+export const DEFAULT_SEED_SERVICES: ReadonlyArray<SeededService> = [
+  { serviceId: 'svc_wash_basic',   serviceName: 'Basic Wash',   pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
+  { serviceId: 'svc_wash_premium', serviceName: 'Premium Wash', pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
+  { serviceId: 'svc_dry',          serviceName: 'Dry',          pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
+  { serviceId: 'svc_vacuum',       serviceName: 'Vacuum',       pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
+];
+
+/**
+ * Build the JSON payload byte-identical to csms-server's `ServiceItemDto::toPayload()` →
+ * stored in `service_catalogs.services_data` so the audit row matches what a real
+ * `UpdateServiceCatalog REQ → station Accepted` roundtrip would have written. Key order
+ * follows the PHP DTO insertion order: `serviceId`, `serviceName`, `pricingType`,
+ * `available`, then the pricing key for the chosen `pricingType`. JS object key order is
+ * insertion order for non-integer string keys, and `JSON.stringify` preserves it.
+ */
+export function buildServicesPayloadJson(services: ReadonlyArray<SeededService>): string {
+  const payload = services.map((s) => {
+    const entry: Record<string, unknown> = {
+      serviceId: s.serviceId,
+      serviceName: s.serviceName,
+      pricingType: s.pricingType,
+      available: true,
+    };
+    if (s.pricingType === 'PerMinute') {
+      entry.priceCreditsPerMinute = s.priceCreditsPerMinute ?? null;
+    } else {
+      entry.priceCreditsFixed = s.priceCreditsFixed ?? null;
+    }
+    return entry;
+  });
+  return JSON.stringify(payload);
+}
+
+/**
+ * Build the seed SQL (separated from {@link seedServiceCatalog} for unit-testability). One
+ * transaction. Behavior mirrors `UpdateServiceCatalogResponseHandler::handleAccepted`:
+ *
+ *   1. `service_definitions`: `INSERT … ON CONFLICT (organization_id, service_id) DO NOTHING`
+ *      — handler's `resolveOrCreateDefinition` returns an existing row without overwriting,
+ *      so we MUST NOT overwrite either (definition updates flow through dedicated REST per
+ *      Brief L-prime).
+ *   2. `station_services`: `INSERT … ON CONFLICT (station_id, service_definition_id) DO
+ *      UPDATE SET …` — mirrors Laravel `updateOrInsert`.
+ *   3. `service_catalogs` audit row + `stations.current_catalog_version = '1'`: scoped to
+ *      stations whose `current_catalog_version IS NULL`, so re-seeding never double-writes
+ *      an audit row or restarts the monotonic-version sequence.
+ *
+ * `bay_services` is intentionally not touched (handler doesn't write it either; the write
+ * path is Brief L-prime; the table is empty by design until then).
+ */
+export function buildSeedCatalogSql(
+  orgId: string,
+  stationIds: string[],
+  services: ReadonlyArray<SeededService>,
+): string {
+  if (stationIds.length === 0 || services.length === 0) {
+    return 'BEGIN;\nCOMMIT;';
+  }
+
+  const orgLit = sqlLiteral(orgId);
+  const stationArr = `ARRAY[${stationIds.map(sqlLiteral).join(', ')}]::text[]`;
+  const svcArr = `ARRAY[${services.map((s) => sqlLiteral(s.serviceId)).join(', ')}]::text[]`;
+  const servicesJsonLit = sqlLiteral(buildServicesPayloadJson(services));
+
+  const defRows = services
+    .map((s) => {
+      const ppm =
+        s.pricingType === 'PerMinute' && s.priceCreditsPerMinute != null
+          ? String(s.priceCreditsPerMinute)
+          : 'NULL';
+      const pcf =
+        s.pricingType === 'Fixed' && s.priceCreditsFixed != null
+          ? String(s.priceCreditsFixed)
+          : 'NULL';
+      return `(${orgLit}, ${sqlLiteral(s.serviceId)}, ${sqlLiteral(s.serviceName)}, ${sqlLiteral(s.pricingType)}, ${ppm}, ${pcf})`;
+    })
+    .join(',\n  ');
+
+  return [
+    'BEGIN;',
+    // 1. service_definitions: ON CONFLICT DO NOTHING (mirrors resolveOrCreateDefinition).
+    'INSERT INTO service_definitions (organization_id, service_id, service_name, pricing_type, recommended_price_credits_per_minute, recommended_price_credits_fixed)',
+    'VALUES',
+    `  ${defRows}`,
+    'ON CONFLICT (organization_id, service_id) DO NOTHING;',
+    // 2. station_services: UPSERT (mirrors updateOrInsert). Cross-join the bootstrapped
+    //    stations × the seeded definitions, filtered to the seed's org + svc_* set.
+    'INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, available)',
+    'SELECT s.id, sd.id, 100, true',
+    'FROM stations s, service_definitions sd',
+    `WHERE s.station_id = ANY(${stationArr})`,
+    `  AND sd.organization_id = ${orgLit}`,
+    `  AND sd.service_id = ANY(${svcArr})`,
+    'ON CONFLICT (station_id, service_definition_id) DO UPDATE SET',
+    '  price_credits_per_minute = EXCLUDED.price_credits_per_minute,',
+    '  available = EXCLUDED.available,',
+    '  updated_at = NOW();',
+    // 3. service_catalogs audit row — only for never-seeded stations (current_catalog_version
+    //    IS NULL). Re-seeding never double-writes.
+    'INSERT INTO service_catalogs (station_id, catalog_version, previous_catalog_version, services_data, applied_at, created_at)',
+    `SELECT s.id, '1', NULL, ${servicesJsonLit}::jsonb, NOW(), NOW()`,
+    'FROM stations s',
+    `WHERE s.station_id = ANY(${stationArr})`,
+    '  AND s.current_catalog_version IS NULL;',
+    // 4. stations.current_catalog_version bump — first-push only (preserves natural
+    //    increment for any subsequent real UpdateServiceCatalog).
+    "UPDATE stations SET current_catalog_version = '1', updated_at = NOW()",
+    `WHERE station_id = ANY(${stationArr})`,
+    '  AND current_catalog_version IS NULL;',
+    'COMMIT;',
+  ].join('\n');
+}
+
+/**
+ * Seed the three-tier catalog (`service_definitions` + `station_services` + `service_catalogs`)
+ * for a set of bootstrapped stations within an organization, producing rows operationally
+ * indistinguishable from what `UpdateServiceCatalogResponseHandler::handleAccepted` would
+ * write for a real `UpdateServiceCatalog REQ → station Accepted` MQTT roundtrip. Atomic per
+ * call (see {@link buildSeedCatalogSql} for the SQL contract).
+ */
+export async function seedServiceCatalog(
+  orgId: string,
+  stationIds: string[],
+  services: ReadonlyArray<SeededService>,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<void> {
+  if (stationIds.length === 0 || services.length === 0) return;
+  await runUatSql(buildSeedCatalogSql(orgId, stationIds, services), cfg);
+}
