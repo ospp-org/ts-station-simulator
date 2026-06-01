@@ -83,6 +83,7 @@ interface RunCommandOptions {
   bootstrapPool?: boolean;
   poolSize: string;
   poolBays: string;
+  identityPoolSize?: string;
   offlineEnable?: boolean;
   keepPool?: boolean;
 }
@@ -102,6 +103,7 @@ program
   .option('--org-id <uuid>', 'Organization UUID for X-Organization-Id header (overrides auto-discovery)')
   .option('--bootstrap-pool', 'Provision a fresh per-run station pool (+ org/location + offline-enable) at suite start; tear it down at the end')
   .option('--pool-size <n>', 'Number of stations to provision when --bootstrap-pool is set', '5')
+  .option('--identity-pool-size <n>', 'Number of per-worker tenant_operator identities to mint (defaults to --workers)')
   .option('--pool-bays <n>', 'Bays per provisioned pool station', '4')
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
   .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
@@ -176,15 +178,21 @@ program
       if (opts.bootstrapPool) {
         const poolSize = parseInt(opts.poolSize, 10);
         const bayCount = parseInt(opts.poolBays, 10);
+        // Identity pool defaults to workers count so each concurrent worker drives its own
+        // session-mutate (10/min) bucket — fixes the rate-limit cluster at the root.
+        const identityPoolSize = opts.identityPoolSize !== undefined
+          ? parseInt(opts.identityPoolSize, 10)
+          : maxWorkers;
         console.log(chalk.blue(
           `Bootstrapping per-run pool: ${poolSize} station(s), ${bayCount} bay(s) each, ` +
-          `offline-enable=${opts.offlineEnable !== false}`,
+          `${identityPoolSize} identity(ies), offline-enable=${opts.offlineEnable !== false}`,
         ));
         try {
           bootstrapHandle = await bootstrapPool(runnerTarget, {
             poolSize,
             bayCount,
             enableOffline: opts.offlineEnable !== false,
+            identityPoolSize,
             orgId: runnerTarget.orgId,
           });
         } catch (err) {
@@ -195,6 +203,7 @@ program
         runnerTarget.stationPool = bootstrapHandle.stationIds;
         runnerTarget.orgId = bootstrapHandle.orgId;
         runner.setRunPool(bootstrapHandle.pool);
+        runner.setRunIdentities(bootstrapHandle.identityCredentials);
         console.log();
       }
 

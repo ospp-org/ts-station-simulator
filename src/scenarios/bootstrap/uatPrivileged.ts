@@ -267,3 +267,122 @@ export async function seedServiceCatalog(
   if (stationIds.length === 0 || services.length === 0) return;
   await runUatSql(buildSeedCatalogSql(orgId, stationIds, services), cfg);
 }
+
+// ---------------------------------------------------------------------------
+// Per-worker identity seed (test users + wallet + org membership + Spatie role)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fully-qualified Spatie `model_type` for the `User` model. Single backslashes in the value
+ * are critical — Spatie compares `model_has_roles.model_type` to `User::class` (which PHP
+ * renders as `App\Modules\Auth\Models\User`). Double-escaping it breaks the lookup silently
+ * (the row is written, but Spatie can't find it).
+ */
+const USER_MODEL_TYPE = 'App\\Modules\\Auth\\Models\\User';
+
+/**
+ * Build the per-run identity-seed SQL. One transaction. For each email in {@link emails}
+ * (whose owners must NOT exist yet — UNIQUE on `users.email`), inserts:
+ *
+ *   1. `users` — copies `password_hash` from {@link copyPasswordFromEmail}'s row, so each
+ *      seeded user logs in with the same password as that source user (the bootstrap's
+ *      admin identity). `is_active = true`, `email_verified = true`.
+ *   2. `wallets` — RegisterAction creates this when a user self-registers; AcceptInvite
+ *      does NOT. We add it for safety: settlement code downstream (session stop / receipt
+ *      issuance) may read or debit the wallet, and a missing row would 500 there.
+ *   3. `organization_members` — links the user to {@link orgId} with role `tenant_operator`.
+ *      The Spatie tenant_operator role doesn't carry `sessions.start` (per RolesAndPermissions
+ *      Seeder.php:349-368), but the session-mutate routes are gated only on `auth.jwt +
+ *      idempotency.required + throttle:session-mutate` — no Spatie permission check — so
+ *      any authenticated identity works. tenant_operator is the principled non-owner role.
+ *   4. `model_has_roles` — mirrors `MemberObserver::assignSpatieRole` (`MemberObserver.php:
+ *      141-149`) which itself bypasses Eloquent with a raw `DB::table()->updateOrInsert`.
+ *      Looks up the per-org `tenant_operator` role row; the per-org variant must exist
+ *      (`MemberObserver.php:175-201` resolves it scoped to the org).
+ *
+ * All four are scoped by the email set, so re-running on a previously-seeded set is a no-op.
+ */
+export function buildSeedTestUsersSql(
+  orgId: string,
+  copyPasswordFromEmail: string,
+  emails: string[],
+  offlineEnabled: boolean = false,
+): string {
+  if (emails.length === 0) return 'BEGIN;\nCOMMIT;';
+
+  const orgLit = sqlLiteral(orgId);
+  const copyLit = sqlLiteral(copyPasswordFromEmail);
+  const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
+  const userModelLit = sqlLiteral(USER_MODEL_TYPE);
+  const offlineLit = offlineEnabled ? 'true' : 'false';
+
+  const lines = ['BEGIN;'];
+
+  // 1. users: one row per email, password_hash + auth_provider copied from the source user.
+  //    name defaults to the email (humans don't read it in tests). offline_enabled is set
+  //    per the bootstrap option so per-worker users match what the scenarios will request
+  //    (e.g. offline-pass-authorize needs the caller's `offline_enabled = true`).
+  for (const email of emails) {
+    const emailLit = sqlLiteral(email);
+    lines.push(
+      `INSERT INTO users (email, password_hash, name, is_active, email_verified, offline_enabled) ` +
+      `SELECT ${emailLit}, password_hash, ${emailLit}, true, true, ${offlineLit} ` +
+      `FROM users WHERE email = ${copyLit};`,
+    );
+  }
+
+  // 2. wallets: one row per seeded user; balance 0, version 1 (mirrors RegisterAction).
+  lines.push(
+    `INSERT INTO wallets (user_id, balance, version, created_at, updated_at) ` +
+    `SELECT id, 0, 1, NOW(), NOW() FROM users WHERE email = ANY(${emailArr});`,
+  );
+
+  // 3. organization_members: link each user as tenant_operator to the org.
+  lines.push(
+    `INSERT INTO organization_members (organization_id, user_id, role, is_active) ` +
+    `SELECT ${orgLit}, id, 'tenant_operator', true FROM users WHERE email = ANY(${emailArr});`,
+  );
+
+  // 4. model_has_roles: bind Spatie tenant_operator role to each user. Mirrors
+  //    MemberObserver::assignSpatieRole exactly (same columns, same {role_id, model_id,
+  //    model_type, organization_id} shape).
+  lines.push(
+    `INSERT INTO model_has_roles (role_id, model_id, model_type, organization_id) ` +
+    `SELECT ` +
+    `(SELECT id FROM roles WHERE name = 'tenant_operator' AND guard_name = 'web' AND organization_id = ${orgLit}), ` +
+    `u.id, ${userModelLit}, ${orgLit} ` +
+    `FROM users u WHERE u.email = ANY(${emailArr});`,
+  );
+
+  lines.push('COMMIT;');
+  return lines.join('\n');
+}
+
+/**
+ * Build the per-run identity-teardown SQL. Drops all four tiers (model_has_roles, members,
+ * wallets, users) scoped to the run's stamped emails. Idempotent — re-running on already-
+ * empty state matches zero rows. Returns just the DELETE statements (no BEGIN/COMMIT) so the
+ * caller can fold them into a larger teardown transaction.
+ */
+export function buildTeardownTestUsersSql(emails: string[]): string[] {
+  if (emails.length === 0) return [];
+  const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
+  return [
+    `DELETE FROM model_has_roles WHERE model_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
+    `DELETE FROM organization_members WHERE user_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
+    `DELETE FROM wallets WHERE user_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
+    `DELETE FROM users WHERE email = ANY(${emailArr});`,
+  ];
+}
+
+/** Seed N test users into the org. See {@link buildSeedTestUsersSql} for the contract. */
+export async function seedTestUsers(
+  orgId: string,
+  copyPasswordFromEmail: string,
+  emails: string[],
+  offlineEnabled: boolean = false,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<void> {
+  if (emails.length === 0) return;
+  await runUatSql(buildSeedTestUsersSql(orgId, copyPasswordFromEmail, emails, offlineEnabled), cfg);
+}

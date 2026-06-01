@@ -8,6 +8,8 @@ import {
   sqlLiteral,
   buildSeedCatalogSql,
   buildServicesPayloadJson,
+  buildSeedTestUsersSql,
+  buildTeardownTestUsersSql,
   DEFAULT_SEED_SERVICES,
 } from '../../../scenarios/bootstrap/uatPrivileged.js';
 import { StationPool } from '../../../scenarios/stations/StationPool.js';
@@ -19,6 +21,7 @@ function handle(overrides: Partial<PoolBootstrapHandle> = {}): PoolBootstrapHand
     stationIds: [],
     certFiles: [],
     seededServiceIds: [],
+    identityCredentials: [],
     pool: new StationPool(),
     ...overrides,
   };
@@ -239,6 +242,117 @@ describe('buildSeedCatalogSql', () => {
     // Defensive: the default set has no embedded quotes, so the literal equals JSON
     // wrapped in single quotes.
     expect(sql).toContain(`'${expectedJson}'::jsonb`);
+  });
+});
+
+describe('buildSeedTestUsersSql — per-worker identity seed', () => {
+  it('empty emails → no-op transaction', () => {
+    expect(buildSeedTestUsersSql('org-1', 'admin@x', [])).toBe('BEGIN;\nCOMMIT;');
+  });
+
+  it('emits exactly 4 INSERT statements (users + wallets + organization_members + model_has_roles)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', ['sim-worker-abc-0@test.local']);
+    // INSERT INTO users appears once (one row per email = one INSERT)
+    expect((sql.match(/INSERT INTO users /g) ?? []).length).toBe(1);
+    expect((sql.match(/INSERT INTO wallets /g) ?? []).length).toBe(1);
+    expect((sql.match(/INSERT INTO organization_members /g) ?? []).length).toBe(1);
+    expect((sql.match(/INSERT INTO model_has_roles /g) ?? []).length).toBe(1);
+  });
+
+  it('users INSERT count scales linearly with emails (one INSERT per email)', () => {
+    const emails = ['e1@t', 'e2@t', 'e3@t', 'e4@t', 'e5@t'];
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', emails);
+    expect((sql.match(/INSERT INTO users /g) ?? []).length).toBe(emails.length);
+    // wallets/members/model_has_roles use ARRAY(...)::text[], so one statement each
+    expect((sql.match(/INSERT INTO wallets /g) ?? []).length).toBe(1);
+    expect((sql.match(/INSERT INTO organization_members /g) ?? []).length).toBe(1);
+    expect((sql.match(/INSERT INTO model_has_roles /g) ?? []).length).toBe(1);
+  });
+
+  it('copies password_hash from the source identity (so the seeded user shares its password)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@onestoppay.dev', ['sim-worker-abc-0@test.local']);
+    // Each user INSERT SELECTs password_hash FROM users WHERE email = sourceEmail.
+    expect(sql).toContain("SELECT 'sim-worker-abc-0@test.local', password_hash, 'sim-worker-abc-0@test.local', true, true");
+    expect(sql).toContain("FROM users WHERE email = 'admin@onestoppay.dev';");
+  });
+
+  it('offline_enabled flag flows through (default false, opt-in true)', () => {
+    const off = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t']);
+    expect(off).toContain('true, true, false ');
+    const on = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t'], true);
+    expect(on).toContain('true, true, true ');
+  });
+
+  it('Spatie model_type is App\\Modules\\Auth\\Models\\User (single backslashes, MemberObserver fidelity)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t']);
+    // Spatie compares model_has_roles.model_type === User::class; PHP renders that as
+    // "App\Modules\Auth\Models\User" — any double-escape silently fails the lookup.
+    expect(sql).toContain("'App\\Modules\\Auth\\Models\\User'");
+  });
+
+  it('all user-supplied values are sqlLiteral-escaped (injection-safe)', () => {
+    const sql = buildSeedTestUsersSql(
+      "org'1",
+      "admin'@x",
+      ["sim-worker'; DROP TABLE users;--@test.local"],
+      true,
+    );
+    expect(sql).toContain("'org''1'");
+    expect(sql).toContain("'admin''@x'");
+    expect(sql).toContain("'sim-worker''; DROP TABLE users;--@test.local'");
+  });
+});
+
+describe('buildTeardownTestUsersSql — per-worker identity sweep', () => {
+  it('empty emails → no statements', () => {
+    expect(buildTeardownTestUsersSql([])).toEqual([]);
+  });
+
+  it('emits 4 DELETEs (model_has_roles → org_members → wallets → users) all scoped to the email set', () => {
+    const stmts = buildTeardownTestUsersSql(['e1@t', 'e2@t']);
+    expect(stmts).toHaveLength(4);
+    expect(stmts[0]).toContain('DELETE FROM model_has_roles');
+    expect(stmts[1]).toContain('DELETE FROM organization_members');
+    expect(stmts[2]).toContain('DELETE FROM wallets');
+    expect(stmts[3]).toContain('DELETE FROM users');
+    // Every DELETE is scoped to the seeded email set.
+    for (const stmt of stmts) {
+      expect(stmt).toContain("ARRAY['e1@t', 'e2@t']::text[]");
+    }
+  });
+});
+
+describe('buildTeardownSql — identity-pool sweep integrated', () => {
+  it('absent when identityCredentials is empty (legacy single-identity runs)', () => {
+    const sql = buildTeardownSql(handle({ stationIds: ['stn_x'], locationId: 'loc-1' }));
+    expect(sql).not.toContain('DELETE FROM model_has_roles');
+    expect(sql).not.toContain('DELETE FROM organization_members');
+  });
+
+  it('appears when identityCredentials is non-empty and is scoped to THIS run\'s stamped emails', () => {
+    const sql = buildTeardownSql(handle({
+      stationIds: ['stn_x'], locationId: 'loc-1',
+      identityCredentials: [
+        { email: 'sim-worker-abc-0@test.local', password: 'p' },
+        { email: 'sim-worker-abc-1@test.local', password: 'p' },
+      ],
+    }));
+    expect(sql).toContain('DELETE FROM model_has_roles');
+    expect(sql).toContain('DELETE FROM organization_members');
+    expect(sql).toContain('DELETE FROM wallets');
+    expect(sql).toContain('DELETE FROM users WHERE email = ANY(ARRAY[\'sim-worker-abc-0@test.local\', \'sim-worker-abc-1@test.local\']::text[])');
+  });
+
+  it('user-sweep runs AFTER station/location/svc_def deletes (children before parents — users have no FK from any teardown row, but order is documented intent)', () => {
+    const sql = buildTeardownSql(handle({
+      orgId: 'org-1', stationIds: ['stn_x'], locationId: 'loc-1',
+      seededServiceIds: ['svc_wash_basic'],
+      identityCredentials: [{ email: 'e@t', password: 'p' }],
+    }));
+    const stationsAt = sql.indexOf('DELETE FROM stations');
+    const usersAt = sql.indexOf('DELETE FROM users WHERE email');
+    expect(stationsAt).toBeGreaterThanOrEqual(0);
+    expect(usersAt).toBeGreaterThan(stationsAt);
   });
 });
 

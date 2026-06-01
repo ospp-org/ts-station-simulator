@@ -18,6 +18,8 @@ import {
   assertUatDbReachable,
   setOfflineEnabled,
   seedServiceCatalog,
+  seedTestUsers,
+  buildTeardownTestUsersSql,
   DEFAULT_SEED_SERVICES,
   runUatSql,
   sqlLiteral,
@@ -56,6 +58,14 @@ export interface PoolBootstrapOptions {
   bayCount: number;
   /** Run the privileged users.offline_enabled=true step (UAT DB). */
   enableOffline: boolean;
+  /**
+   * Number of test users (tenant_operator) to mint into the org for per-worker identity
+   * isolation. Defaults to the caller-passed value; CLI typically sets this to the
+   * `--workers` count so each concurrent worker gets its own `session-mutate` bucket.
+   * Pass 0 to skip identity seeding entirely (legacy single-identity behavior — only useful
+   * for one-shot debugging runs).
+   */
+  identityPoolSize: number;
   /** Explicit org UUID; when absent, discovered from the caller's memberships. */
   orgId?: string;
   /** UAT DB access config for privileged steps; defaults from env. */
@@ -78,6 +88,13 @@ export interface PoolBootstrapHandle {
    * and only when no remaining `station_services` references them.
    */
   seededServiceIds: string[];
+  /**
+   * Per-worker tenant_operator identities minted this run, one per identity-pool slot.
+   * The runner's IdentityPoolAllocator hands these out per-scenario so each concurrent
+   * worker drives its own `session-mutate` bucket. Teardown sweeps them (+ their wallets +
+   * org_members + model_has_roles) scoped to these exact emails.
+   */
+  identityCredentials: Array<{ email: string; password: string }>;
   /** Live registry — also exposes the pool via the `{{pool.*}}` namespace. */
   pool: StationPool;
 }
@@ -99,6 +116,8 @@ export interface SerializedPoolHandle {
   certFiles: string[];
   /** Optional for backwards-compat with handles persisted before the seed landed. */
   seededServiceIds?: string[];
+  /** Optional for backwards-compat with handles persisted before per-worker identity landed. */
+  identityCredentials?: Array<{ email: string; password: string }>;
 }
 
 export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPoolHandle {
@@ -109,6 +128,7 @@ export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPool
     offlineEnabledEmail: handle.offlineEnabledEmail,
     certFiles: handle.certFiles,
     seededServiceIds: handle.seededServiceIds,
+    identityCredentials: handle.identityCredentials,
   };
 }
 
@@ -121,6 +141,7 @@ export function handleFromSerialized(s: SerializedPoolHandle): PoolBootstrapHand
     offlineEnabledEmail: s.offlineEnabledEmail,
     certFiles: s.certFiles ?? [],
     seededServiceIds: s.seededServiceIds ?? [],
+    identityCredentials: s.identityCredentials ?? [],
     pool: new StationPool(),
   };
 }
@@ -269,6 +290,7 @@ export async function bootstrapPool(
     stationIds: [],
     certFiles: [],
     seededServiceIds: [],
+    identityCredentials: [],
     pool: new StationPool(),
   };
 
@@ -354,8 +376,35 @@ export async function bootstrapPool(
       `${handle.stationIds.length} station(s)): ${handle.seededServiceIds.join(', ')}`,
     );
 
-    // 6. Privileged offline-enable (DB-only; no API path exists — see INVESTIGATE Q2)
-    if (options.enableOffline) {
+    // 6. Per-worker identity pool (tenant_operator users sharing UAT_PASSWORD via
+    //    password_hash copy). Each concurrent scenario acquires one identity → distinct
+    //    `user_id` → distinct `session-mutate` (10/min) bucket. Fixes the rate-limit
+    //    cluster at the root — the production limit is sized per-user and the test
+    //    previously violated that with one identity across the whole suite. Skipped when
+    //    identityPoolSize === 0 (legacy debug runs that want the single-identity path).
+    //    `offline_enabled` is set on the seeded users to match `options.enableOffline` so
+    //    /offline/passes scenarios pass the gate without a separate flip.
+    if (options.identityPoolSize > 0) {
+      const runStamp = randomUUID().slice(0, 8);
+      const sourceEmail = target.credentials.email;
+      const sourcePassword = target.credentials.password;
+      const emails: string[] = [];
+      for (let i = 0; i < options.identityPoolSize; i++) {
+        emails.push(`sim-worker-${runStamp}-${i}@test.local`);
+      }
+      await seedTestUsers(handle.orgId, sourceEmail, emails, options.enableOffline, dbConfig);
+      handle.identityCredentials = emails.map((email) => ({ email, password: sourcePassword }));
+      console.log(
+        `[bootstrap] seeded ${emails.length} tenant_operator identity(ies) ` +
+        `(runStamp=${runStamp}, copied password_hash from ${sourceEmail}, ` +
+        `offline_enabled=${options.enableOffline})`,
+      );
+    }
+
+    // 7. Privileged offline-enable on UAT_EMAIL — legacy single-identity path only. When
+    //    identityPoolSize > 0 the scenarios run as the seeded per-worker users (whose
+    //    offline_enabled is set in step 6), so UAT_EMAIL's flag is irrelevant.
+    if (options.enableOffline && options.identityPoolSize === 0) {
       const email = target.credentials.email;
       await setOfflineEnabled(email, true, dbConfig);
       handle.offlineEnabledEmail = email;
@@ -505,6 +554,7 @@ export async function teardownPool(
       `[teardown] removed ${handle.stationIds.length} station(s)` +
       `${handle.locationId ? ' + location' : ''}` +
       `${handle.seededServiceIds && handle.seededServiceIds.length > 0 ? ' + orphan-swept seeded service_definitions' : ''}` +
+      `${handle.identityCredentials && handle.identityCredentials.length > 0 ? ` + ${handle.identityCredentials.length} seeded identity(ies)` : ''}` +
       `${handle.offlineEnabledEmail ? ' + reset offline_enabled' : ''}`,
     );
   } catch (err) {
@@ -609,6 +659,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     lines.push(
       `DELETE FROM service_definitions sd WHERE sd.organization_id = ${sqlLiteral(handle.orgId)} AND sd.service_id = ANY(${seededSvcArray}) AND NOT EXISTS (SELECT 1 FROM station_services ss WHERE ss.service_definition_id = sd.id);`,
     );
+  }
+
+  // Per-worker identity sweep — drop the four-tier user state for every seeded sim-worker.
+  // Scoped strictly to THIS run's stamped emails so no real user can ever be touched. The
+  // order mirrors a reverse of the seed (children before parents): model_has_roles →
+  // organization_members → wallets → users. Same pattern as setOfflineEnabled reset (which
+  // we don't issue when identityPoolSize > 0 — UAT_EMAIL stays untouched in that mode).
+  if (handle.identityCredentials && handle.identityCredentials.length > 0) {
+    const seededEmails = handle.identityCredentials.map((c) => c.email);
+    lines.push(...buildTeardownTestUsersSql(seededEmails));
   }
 
   if (handle.offlineEnabledEmail) {

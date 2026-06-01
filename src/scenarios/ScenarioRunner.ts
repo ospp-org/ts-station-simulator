@@ -582,6 +582,50 @@ class StationPoolAllocator {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Identity pool allocator — per-worker tenant_operator credentials. Each acquire
+// hands out a distinct `(email, password)` tuple so concurrent scenarios use
+// distinct user_ids (and thus distinct session-mutate buckets server-side).
+// Same Set + waiting-queue semantics as StationPoolAllocator — identical
+// concurrency contract, separate concern.
+// ---------------------------------------------------------------------------
+
+export interface IdentityCredentials {
+  email: string;
+  password: string;
+}
+
+export class IdentityPoolAllocator {
+  private readonly pool: IdentityCredentials[];
+  private readonly inUseEmails: Set<string> = new Set();
+  private nextIndex = 0;
+  private readonly waiting: Array<(creds: IdentityCredentials) => void> = [];
+
+  constructor(pool: IdentityCredentials[]) {
+    this.pool = pool;
+  }
+
+  async acquire(): Promise<IdentityCredentials> {
+    for (let attempts = 0; attempts < this.pool.length; attempts++) {
+      const creds = this.pool[this.nextIndex % this.pool.length];
+      this.nextIndex++;
+      if (!this.inUseEmails.has(creds.email)) {
+        this.inUseEmails.add(creds.email);
+        return creds;
+      }
+    }
+    return new Promise<IdentityCredentials>((resolve) => this.waiting.push(resolve));
+  }
+
+  release(creds: IdentityCredentials): void {
+    this.inUseEmails.delete(creds.email);
+    if (this.waiting.length > 0) {
+      this.inUseEmails.add(creds.email);
+      this.waiting.shift()!(creds);
+    }
+  }
+}
+
 export class ScenarioRunner {
   private poolAllocator: StationPoolAllocator | null = null;
   /**
@@ -592,10 +636,24 @@ export class ScenarioRunner {
    * sharing the instance across parallel scenarios is safe.
    */
   private runPool: StationPool | null = null;
+  /**
+   * Optional per-worker identity pool, populated by the per-run pool bootstrap. When set,
+   * each scenario acquires a distinct `(email, password)` tuple, isolating concurrent
+   * scenarios into distinct `session-mutate` buckets server-side (one bucket per user_id,
+   * 10/min). Without this, all scenarios share `target.credentials` → one bucket → 429s.
+   */
+  private identityPoolAllocator: IdentityPoolAllocator | null = null;
 
   /** Install a run-level pool (see {@link runPool}). */
   setRunPool(pool: StationPool): void {
     this.runPool = pool;
+  }
+
+  /** Install a run-level identity pool (see {@link identityPoolAllocator}). */
+  setRunIdentities(credentials: IdentityCredentials[]): void {
+    this.identityPoolAllocator = credentials.length > 0
+      ? new IdentityPoolAllocator(credentials)
+      : null;
   }
 
   async loadScenario(filePath: string): Promise<ScenarioDefinition> {
@@ -655,10 +713,21 @@ export class ScenarioRunner {
       poolStationId = await this.poolAllocator.acquire();
     }
 
+    // Per-worker identity allocation. INDEPENDENT of station acquire (the user explicitly
+    // chose "two independent acquires" in the design): identities scale with the worker
+    // pool, stations scale with the station pool, neither is bound to the other. Released
+    // in the `finally` below alongside the station release.
+    let acquiredIdentity: IdentityCredentials | null = null;
+    if (this.identityPoolAllocator) {
+      acquiredIdentity = await this.identityPoolAllocator.acquire();
+    }
+
     const variables = generateVariables(scenario, target, poolStationId, userVars);
     context.variables = variables;
     context.apiBaseUrl = target.apiBaseUrl;
-    context.apiCredentials = target.credentials;
+    // Per-worker identity wins over target.credentials when present. Without identity
+    // pool, falls back to the single shared identity (legacy debug runs only).
+    context.apiCredentials = acquiredIdentity ?? target.credentials;
     context.orgId = target.orgId;
 
     // Eagerly hydrate context.provisioning from disk for the active stationId.
@@ -768,6 +837,9 @@ export class ScenarioRunner {
       }
       if (poolStationId && this.poolAllocator) {
         this.poolAllocator.release(poolStationId);
+      }
+      if (acquiredIdentity && this.identityPoolAllocator) {
+        this.identityPoolAllocator.release(acquiredIdentity);
       }
     }
   }
