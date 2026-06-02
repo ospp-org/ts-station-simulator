@@ -11,59 +11,67 @@ function creds(n: number): IdentityCredentials[] {
   }));
 }
 
-describe('IdentityPoolAllocator', () => {
-  it('hands out distinct credentials on consecutive acquires (no duplicates while in-use)', async () => {
+describe('IdentityPoolAllocator (single-use FIFO)', () => {
+  it('acquire() shifts identities off the head in FIFO order', () => {
     const allocator = new IdentityPoolAllocator(creds(3));
-    const a = await allocator.acquire();
-    const b = await allocator.acquire();
-    const c = await allocator.acquire();
-    expect(new Set([a.email, b.email, c.email]).size).toBe(3);
+    expect(allocator.acquire().email).toBe('sim-worker-test-0@test.local');
+    expect(allocator.acquire().email).toBe('sim-worker-test-1@test.local');
+    expect(allocator.acquire().email).toBe('sim-worker-test-2@test.local');
   });
 
-  it('release returns the credential to the pool — subsequent acquire can pick it up', async () => {
-    const allocator = new IdentityPoolAllocator(creds(2));
-    const a = await allocator.acquire();
-    const b = await allocator.acquire();
-    allocator.release(a);
-    const c = await allocator.acquire();
-    // The released `a` is the only available slot now; `b` is still in-use.
-    expect(c.email).toBe(a.email);
-  });
-
-  it('blocks acquire when all credentials are in use; resolves on release (waiting queue)', async () => {
-    const allocator = new IdentityPoolAllocator(creds(2));
-    const a = await allocator.acquire();
-    const b = await allocator.acquire();
-    // Third acquire must wait.
-    let resolved: IdentityCredentials | null = null;
-    const pending = allocator.acquire().then((c) => {
-      resolved = c;
-      return c;
-    });
-    // Give the event loop a chance — should still be unresolved.
-    await new Promise<void>((r) => setTimeout(r, 10));
-    expect(resolved).toBeNull();
-    // Releasing `a` should unblock the queued acquire.
-    allocator.release(a);
-    const c = await pending;
-    expect(c.email).toBe(a.email);
-    // `b` still in-use; releasing it cleans up the test pool.
-    allocator.release(b);
-  });
-
-  it('concurrent acquires from a full pool round-robin distinct credentials', async () => {
+  it('every acquire returns a DISTINCT identity — single-use means no reuse', () => {
     const allocator = new IdentityPoolAllocator(creds(5));
-    const results = await Promise.all([
-      allocator.acquire(), allocator.acquire(), allocator.acquire(),
-      allocator.acquire(), allocator.acquire(),
-    ]);
-    expect(new Set(results.map((r) => r.email)).size).toBe(5);
+    const seen = new Set<string>();
+    for (let i = 0; i < 5; i++) seen.add(allocator.acquire().email);
+    expect(seen.size).toBe(5);
   });
 
-  it('release of an unknown credential is a no-op (defensive: cannot poison the pool)', () => {
+  it('throws on depletion — pool sizing contract violation', () => {
     const allocator = new IdentityPoolAllocator(creds(2));
-    // Releasing a credential that was never acquired is harmless — Set.delete on a
-    // missing key is a no-op; waiting queue stays empty.
-    expect(() => allocator.release({ email: 'stranger@x', password: 'y' })).not.toThrow();
+    allocator.acquire();
+    allocator.acquire();
+    expect(() => allocator.acquire()).toThrow(/depleted/);
+    expect(() => allocator.acquire()).toThrow(/2 identities consumed/);
+  });
+
+  it('error message points operators at the CLI auto-sizing contract', () => {
+    const allocator = new IdentityPoolAllocator(creds(1));
+    allocator.acquire();
+    expect(() => allocator.acquire()).toThrow(/max\(scenarioCount, workers\)/);
+  });
+
+  it('remaining() + size() report depletion progress (diagnostics)', () => {
+    const allocator = new IdentityPoolAllocator(creds(4));
+    expect(allocator.size()).toBe(4);
+    expect(allocator.remaining()).toBe(4);
+    allocator.acquire();
+    expect(allocator.remaining()).toBe(3);
+    expect(allocator.size()).toBe(4); // size is the initial count, never changes
+    allocator.acquire();
+    allocator.acquire();
+    allocator.acquire();
+    expect(allocator.remaining()).toBe(0);
+  });
+
+  it('empty pool throws immediately on first acquire (caller-side safety net)', () => {
+    const allocator = new IdentityPoolAllocator([]);
+    expect(allocator.size()).toBe(0);
+    expect(() => allocator.acquire()).toThrow(/depleted/);
+  });
+
+  it('defensive copy: mutating the source array after construction does not affect the pool', () => {
+    const source = creds(2);
+    const allocator = new IdentityPoolAllocator(source);
+    source.length = 0; // truncate the caller's array
+    // The allocator's internal copy is untouched — both identities still acquirable.
+    expect(allocator.acquire().email).toBe('sim-worker-test-0@test.local');
+    expect(allocator.acquire().email).toBe('sim-worker-test-1@test.local');
+  });
+
+  it('NO release() method on the API — identities are consumed once for the run', () => {
+    const allocator = new IdentityPoolAllocator(creds(3));
+    // The release method is intentionally absent (was on the previous rotation/release
+    // design). Asserted to surface accidental re-additions in code review/refactors.
+    expect((allocator as unknown as { release?: unknown }).release).toBeUndefined();
   });
 });

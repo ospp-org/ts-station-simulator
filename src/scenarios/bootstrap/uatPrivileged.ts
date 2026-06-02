@@ -359,18 +359,76 @@ export function buildSeedTestUsersSql(
 }
 
 /**
- * Build the per-run identity-teardown SQL. Drops all four tiers (model_has_roles, members,
- * wallets, users) scoped to the run's stamped emails. Idempotent — re-running on already-
- * empty state matches zero rows. Returns just the DELETE statements (no BEGIN/COMMIT) so the
- * caller can fold them into a larger teardown transaction.
+ * Build the per-run identity-teardown SQL. Drops all user-side state scoped to the run's
+ * stamped emails. Idempotent — re-running on already-empty state matches zero rows. Returns
+ * the DELETE statements (no BEGIN/COMMIT) so the caller can fold them into a larger
+ * teardown transaction.
+ *
+ * Coverage rationale (verified against `pg_constraint` 2026-06-02; snapshot is the
+ * SCHEMA_FK_GRAPH constant in `__tests__/scenarios/bootstrap/teardownFkCoverage.test.ts`,
+ * which P1-asserts this builder against the graph):
+ *
+ *   `users` has 11 FK children. `api_keys.user_id` and `refresh_tokens.user_id` are
+ *   ON DELETE CASCADE — the final `DELETE FROM users` removes them automatically.
+ *   The remaining NINE FKs are NO ACTION and would block the user delete unless we
+ *   delete from each child first. `wallets` itself has a NO-ACTION child
+ *   (`wallet_entries.wallet_id`) so wallet_entries must precede wallets which must
+ *   precede users.
+ *
+ *   Spatie tracks role + permission grants via two polymorphic tables
+ *   (`model_has_roles`, `model_has_permissions`) — there's no actual FK on `model_id`,
+ *   so they don't BLOCK the user delete, but they ARE state we seed (the runner
+ *   inserts model_has_roles in the seed step) so we sweep them to avoid orphans.
+ *
+ *   `invitations` blocks via `invited_by` (the inviter). Our seeded sim-workers don't
+ *   currently invite anyone, but defense-in-depth: delete invitations whose
+ *   invited_by is in our user set OR whose email matches a stamped sim-worker.
+ *
+ * Order (children before parents, every NO-ACTION FK observed):
+ *
+ *   1. wallet_entries          (NO ACTION child of wallets — must precede wallets)
+ *   2. offline_passes          (NO ACTION → users)   ← commit #3 missed this; blew up
+ *   3. offline_transactions    (NO ACTION → users)
+ *   4. payment_intents         (NO ACTION → users)
+ *   5. sessions                (NO ACTION → users)   ← also covered by bay-path in outer
+ *   6. reservations            (NO ACTION → users)   ← teardown; both safe to re-run
+ *   7. vehicles                (NO ACTION → users)
+ *   8. organization_members    (NO ACTION → users)
+ *   9. wallets                 (NO ACTION → users; depends on wallet_entries gone first)
+ *  10. invitations             (NO ACTION → users via invited_by)
+ *  11. model_has_roles         (Spatie, polymorphic — no FK but seeded state)
+ *  12. model_has_permissions   (Spatie, polymorphic — same)
+ *  13. users                   (api_keys + refresh_tokens auto-cascade with this)
+ *
+ * The reverse-graph static check (`teardownFkCoverage.test.ts`) fails CI if the
+ * schema gains a new NO-ACTION FK that this list doesn't cover.
  */
 export function buildTeardownTestUsersSql(emails: string[]): string[] {
   if (emails.length === 0) return [];
   const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
+  const userIds = `SELECT id FROM users WHERE email = ANY(${emailArr})`;
   return [
-    `DELETE FROM model_has_roles WHERE model_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
-    `DELETE FROM organization_members WHERE user_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
-    `DELETE FROM wallets WHERE user_id IN (SELECT id FROM users WHERE email = ANY(${emailArr}));`,
+    // 1. wallet_entries — child of wallets (NO ACTION). Must precede the wallets delete.
+    `DELETE FROM wallet_entries WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id IN (${userIds}));`,
+    // 2-9. Nine NO-ACTION FKs that point at users.id directly.
+    `DELETE FROM offline_passes WHERE user_id IN (${userIds});`,
+    `DELETE FROM offline_transactions WHERE user_id IN (${userIds});`,
+    `DELETE FROM payment_intents WHERE user_id IN (${userIds});`,
+    `DELETE FROM sessions WHERE user_id IN (${userIds});`,
+    `DELETE FROM reservations WHERE user_id IN (${userIds});`,
+    `DELETE FROM vehicles WHERE user_id IN (${userIds});`,
+    `DELETE FROM organization_members WHERE user_id IN (${userIds});`,
+    `DELETE FROM wallets WHERE user_id IN (${userIds});`,
+    // 10. invitations — invited_by (NO ACTION → users) plus email match (defense-in-depth
+    //     for any never-accepted invite addressed to a stamped sim-worker email).
+    `DELETE FROM invitations WHERE invited_by IN (${userIds}) OR email = ANY(${emailArr});`,
+    // 11-12. Spatie polymorphic — model_id is just a uuid column with no real FK, but
+    //        these rows ARE state we seeded (or could have seeded), so sweep to avoid
+    //        orphans. CASCADE-style behavior would have been server-side but isn't, so
+    //        we own it client-side.
+    `DELETE FROM model_has_roles WHERE model_id IN (${userIds});`,
+    `DELETE FROM model_has_permissions WHERE model_id IN (${userIds});`,
+    // 13. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs.
     `DELETE FROM users WHERE email = ANY(${emailArr});`,
   ];
 }

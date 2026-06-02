@@ -59,9 +59,10 @@ export interface PoolBootstrapOptions {
   /** Run the privileged users.offline_enabled=true step (UAT DB). */
   enableOffline: boolean;
   /**
-   * Number of test users (tenant_operator) to mint into the org for per-worker identity
-   * isolation. Defaults to the caller-passed value; CLI typically sets this to the
-   * `--workers` count so each concurrent worker gets its own `session-mutate` bucket.
+   * Number of test users (tenant_operator) to mint into the org for per-scenario identity
+   * isolation (single-use FIFO — each scenario consumes one identity, never reused within
+   * the run). CLI auto-sizes this to `max(scenarioCount, workers)` so the session-mutate
+   * bucket (10/min/user, ≤4 mutations/scenario per spec) cannot be contested across tests.
    * Pass 0 to skip identity seeding entirely (legacy single-identity behavior — only useful
    * for one-shot debugging runs).
    */
@@ -89,10 +90,12 @@ export interface PoolBootstrapHandle {
    */
   seededServiceIds: string[];
   /**
-   * Per-worker tenant_operator identities minted this run, one per identity-pool slot.
-   * The runner's IdentityPoolAllocator hands these out per-scenario so each concurrent
-   * worker drives its own `session-mutate` bucket. Teardown sweeps them (+ their wallets +
-   * org_members + model_has_roles) scoped to these exact emails.
+   * Per-scenario tenant_operator identities minted this run, one per identity-pool slot.
+   * The runner's IdentityPoolAllocator hands these out single-use (never reused within the
+   * run) so each scenario drives its own server-side `session-mutate` bucket. Teardown
+   * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
+   * sessions, reservations, payment_intents, vehicles, organization_members, invitations,
+   * Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
    */
   identityCredentials: Array<{ email: string; password: string }>;
   /** Live registry — also exposes the pool via the `{{pool.*}}` namespace. */
@@ -376,12 +379,13 @@ export async function bootstrapPool(
       `${handle.stationIds.length} station(s)): ${handle.seededServiceIds.join(', ')}`,
     );
 
-    // 6. Per-worker identity pool (tenant_operator users sharing UAT_PASSWORD via
-    //    password_hash copy). Each concurrent scenario acquires one identity → distinct
-    //    `user_id` → distinct `session-mutate` (10/min) bucket. Fixes the rate-limit
-    //    cluster at the root — the production limit is sized per-user and the test
-    //    previously violated that with one identity across the whole suite. Skipped when
-    //    identityPoolSize === 0 (legacy debug runs that want the single-identity path).
+    // 6. Per-scenario identity pool (tenant_operator users sharing UAT_PASSWORD via
+    //    password_hash copy). Single-use FIFO at the runner — every scenario gets a
+    //    unique `user_id` for its lifetime, no two scenarios share the same
+    //    `session-mutate` (10/min) bucket. The CLI auto-sizes `identityPoolSize` to
+    //    `max(scenarioCount, workers)` so the pool can't deplete by design; ≤4
+    //    mutations/scenario (spec max) vs 10/min budget means rate-limit 429 is
+    //    structurally impossible. Skipped when identityPoolSize === 0 (legacy debug runs).
     //    `offline_enabled` is set on the seeded users to match `options.enableOffline` so
     //    /offline/passes scenarios pass the gate without a separate flip.
     if (options.identityPoolSize > 0) {

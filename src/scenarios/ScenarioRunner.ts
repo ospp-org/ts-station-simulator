@@ -583,11 +583,24 @@ class StationPoolAllocator {
 }
 
 // ---------------------------------------------------------------------------
-// Identity pool allocator — per-worker tenant_operator credentials. Each acquire
-// hands out a distinct `(email, password)` tuple so concurrent scenarios use
-// distinct user_ids (and thus distinct session-mutate buckets server-side).
-// Same Set + waiting-queue semantics as StationPoolAllocator — identical
-// concurrency contract, separate concern.
+// Identity pool allocator — per-scenario tenant_operator credentials.
+//
+// SINGLE-USE FIFO: every acquire() shifts one identity off the head and the
+// identity is NEVER returned to the pool. Each scenario gets a unique identity
+// for its lifetime, never shared with another scenario in the same run. With
+// the CLI auto-sizing the pool to max(scenarioCount, workers), the session-mutate
+// rate limit (10/min/user, max 4 mutations per scenario per spec) becomes
+// structurally unable to overflow — no burst arithmetic, no rotation timing,
+// no shared bucket between tests.
+//
+// History: a rotation/release variant was the first design (commit 2226b8e
+// "per-worker identity isolation"). It split the bucket statistically but kept
+// identities shared across scenarios within a run, so a worker firing 3+
+// mutating scenarios on the same identity within 60s still overflowed →
+// commit #2's 429-retry absorbed the 4xx with a 60s Retry-After, but the
+// dependent MQTT wait_for steps then timed out (15s). The per-scenario model
+// removes the shared bucket entirely; commit #2's retry stays as defense-in-
+// depth for unrelated transient 429s but fires zero for session-mutate now.
 // ---------------------------------------------------------------------------
 
 export interface IdentityCredentials {
@@ -596,33 +609,41 @@ export interface IdentityCredentials {
 }
 
 export class IdentityPoolAllocator {
-  private readonly pool: IdentityCredentials[];
-  private readonly inUseEmails: Set<string> = new Set();
-  private nextIndex = 0;
-  private readonly waiting: Array<(creds: IdentityCredentials) => void> = [];
+  private readonly available: IdentityCredentials[];
+  private readonly initialSize: number;
 
   constructor(pool: IdentityCredentials[]) {
-    this.pool = pool;
+    // Defensive copy so the caller's source array stays untouched if it's
+    // re-used elsewhere (e.g., serializePoolHandle).
+    this.available = [...pool];
+    this.initialSize = pool.length;
   }
 
-  async acquire(): Promise<IdentityCredentials> {
-    for (let attempts = 0; attempts < this.pool.length; attempts++) {
-      const creds = this.pool[this.nextIndex % this.pool.length];
-      this.nextIndex++;
-      if (!this.inUseEmails.has(creds.email)) {
-        this.inUseEmails.add(creds.email);
-        return creds;
-      }
+  /**
+   * Pop one identity off the FIFO queue. Throws if empty — pool depletion is
+   * a programming error (the CLI's pool sizing contract guarantees enough),
+   * never a runtime condition to recover from.
+   */
+  acquire(): IdentityCredentials {
+    const next = this.available.shift();
+    if (!next) {
+      throw new Error(
+        `IdentityPoolAllocator depleted: ${this.initialSize} identities consumed, ` +
+        `no more available. Pool under-sized for the run — the CLI must auto-size ` +
+        `--identity-pool-size to max(scenarioCount, workers) so this cannot happen.`,
+      );
     }
-    return new Promise<IdentityCredentials>((resolve) => this.waiting.push(resolve));
+    return next;
   }
 
-  release(creds: IdentityCredentials): void {
-    this.inUseEmails.delete(creds.email);
-    if (this.waiting.length > 0) {
-      this.inUseEmails.add(creds.email);
-      this.waiting.shift()!(creds);
-    }
+  /** Remaining identities (diagnostics only — not used for runtime decisions). */
+  remaining(): number {
+    return this.available.length;
+  }
+
+  /** Initial pool size — useful in test assertions / error messages. */
+  size(): number {
+    return this.initialSize;
   }
 }
 
@@ -637,10 +658,11 @@ export class ScenarioRunner {
    */
   private runPool: StationPool | null = null;
   /**
-   * Optional per-worker identity pool, populated by the per-run pool bootstrap. When set,
-   * each scenario acquires a distinct `(email, password)` tuple, isolating concurrent
-   * scenarios into distinct `session-mutate` buckets server-side (one bucket per user_id,
-   * 10/min). Without this, all scenarios share `target.credentials` → one bucket → 429s.
+   * Optional per-scenario identity pool, populated by the per-run pool bootstrap.
+   * Each scenario acquires its own `(email, password)` tuple via single-use FIFO
+   * (the identity is never reused within the run), so the server-side per-user
+   * session-mutate bucket (10/min) can't be contested across tests. Without this,
+   * all scenarios share `target.credentials` → one bucket → bursts → 429s.
    */
   private identityPoolAllocator: IdentityPoolAllocator | null = null;
 
@@ -713,13 +735,13 @@ export class ScenarioRunner {
       poolStationId = await this.poolAllocator.acquire();
     }
 
-    // Per-worker identity allocation. INDEPENDENT of station acquire (the user explicitly
-    // chose "two independent acquires" in the design): identities scale with the worker
-    // pool, stations scale with the station pool, neither is bound to the other. Released
-    // in the `finally` below alongside the station release.
+    // Per-scenario identity allocation. SINGLE-USE: shifted off the FIFO pool here,
+    // never released back (see IdentityPoolAllocator doc). Each scenario owns its
+    // identity for its lifetime — no other scenario in this run will use the same
+    // user_id, so the per-user session-mutate bucket can't be contested.
     let acquiredIdentity: IdentityCredentials | null = null;
     if (this.identityPoolAllocator) {
-      acquiredIdentity = await this.identityPoolAllocator.acquire();
+      acquiredIdentity = this.identityPoolAllocator.acquire();
     }
 
     const variables = generateVariables(scenario, target, poolStationId, userVars);
@@ -838,9 +860,9 @@ export class ScenarioRunner {
       if (poolStationId && this.poolAllocator) {
         this.poolAllocator.release(poolStationId);
       }
-      if (acquiredIdentity && this.identityPoolAllocator) {
-        this.identityPoolAllocator.release(acquiredIdentity);
-      }
+      // Identity is single-use — no release. Once a scenario completes, its identity
+      // stays consumed for the rest of the run, guaranteeing no other scenario reuses
+      // the same session-mutate bucket.
     }
   }
 

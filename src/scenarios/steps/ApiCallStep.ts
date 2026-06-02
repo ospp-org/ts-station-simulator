@@ -66,11 +66,78 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
+ * Regenerate the `X-Idempotency-Key` header (if present) on a `RequestInit`, returning a
+ * NEW init with a freshly-minted UUID for that header. All other headers preserved.
+ *
+ * Why this is mandatory for retries: the OSPP server's `IdempotencyMiddleware` caches
+ * EVERY response under 500 (including 429s) for 86400s, keyed by the idempotency key.
+ * Without regeneration, a retry with the SAME key hits the cache and replays the original
+ * 429 — bypassing the rate-limit check entirely, even after the user's bucket has refilled.
+ * The retry then fails not because the server is actually rate-limited, but because we're
+ * looking at a stale cached response. Regenerating the key makes each retry a fresh
+ * server-side request, evaluated against the CURRENT rate-limit window.
+ *
+ * Idempotency-key semantics nuance: this is the correct trade-off for 429-retries
+ * specifically. For network-failure / timeout retries (which fetchWithThrottleRetry
+ * does NOT do — those bubble up as rejected fetches), preserving the key would be right
+ * so the server replays the original response. 429-retries are different: we WANT a
+ * fresh evaluation past the rate-limit gate.
+ */
+function regenerateIdempotencyKey(init: RequestInit): RequestInit {
+  const headers = init.headers;
+  if (!headers) return init;
+
+  const TARGET = 'x-idempotency-key';
+  const fresh = randomUUID();
+
+  if (headers instanceof Headers) {
+    const cloned = new Headers(headers);
+    for (const [k] of cloned.entries()) {
+      if (k.toLowerCase() === TARGET) {
+        cloned.set(k, fresh);
+        return { ...init, headers: cloned };
+      }
+    }
+    return init;
+  }
+  if (Array.isArray(headers)) {
+    let touched = false;
+    const cloned: Array<[string, string]> = headers.map(([k, v]) => {
+      if (k.toLowerCase() === TARGET) {
+        touched = true;
+        return [k, fresh];
+      }
+      return [k, v];
+    });
+    return touched ? { ...init, headers: cloned } : init;
+  }
+  // Plain Record<string, string>
+  const obj = headers as Record<string, string>;
+  let touched = false;
+  const cloned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.toLowerCase() === TARGET) {
+      cloned[k] = fresh;
+      touched = true;
+    } else {
+      cloned[k] = v;
+    }
+  }
+  return touched ? { ...init, headers: cloned } : init;
+}
+
+/**
  * `fetch` wrapper that retries on HTTP 429 up to a bounded cap, honoring the server's
  * `Retry-After` header when present. Non-429 responses pass straight through unchanged.
  * The retry only changes the SHAPE of timing under contention — it never silently swallows
  * a real failure: after the cap, the last 429 response is returned and the caller's
  * `expect_status` mismatch check still fires.
+ *
+ * Each retry MINTS A FRESH `X-Idempotency-Key` (when one is present on the request — i.e.,
+ * any POST/PUT/PATCH). The server's `IdempotencyMiddleware` caches all <500 responses for
+ * 86400s; reusing the same key on retry replays the cached 429 and bypasses the rate-limit
+ * gate. With a fresh key per attempt, each retry is a fresh server-side request evaluated
+ * against the current rate-limit window. See {@link regenerateIdempotencyKey}.
  */
 export async function fetchWithThrottleRetry(
   url: string,
@@ -83,9 +150,10 @@ export async function fetchWithThrottleRetry(
   const fetchFn = opts.fetchFn ?? fetch;
 
   let attempt = 0;
+  let currentInit = init;
   // First attempt + up to `maxRetries` retries → at most `maxRetries + 1` fetch calls.
   while (true) {
-    const response = await fetchFn(url, init);
+    const response = await fetchFn(url, currentInit);
     if (!enabled || response.status !== 429 || attempt >= maxRetries) {
       return response;
     }
@@ -95,6 +163,9 @@ export async function fetchWithThrottleRetry(
     await response.text().catch(() => undefined);
     opts.onRetry?.({ attempt, delayMs, url });
     await sleepFn(delayMs);
+    // Mint a fresh X-Idempotency-Key (when present) so the next attempt is a genuine
+    // server-side request, not a replay of the cached 429.
+    currentInit = regenerateIdempotencyKey(currentInit);
     attempt++;
   }
 }
@@ -171,7 +242,14 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
   }
 
   const loginUrl = `${context.apiBaseUrl}/api/v1/auth/login`;
-  const res = await fetch(loginUrl, {
+  // Wrap login in the same 429-aware retry as ApiCallStep itself (commit f2b527b).
+  // The server's `auth` limiter is `perMinute(30)->by(IP)` (brute-force protection,
+  // not per-user) so per-scenario identity (93 distinct logins from one dev IP)
+  // saturates it after the first ~30. The retry honors the server's Retry-After
+  // header and lets the IP bucket replenish — single-shared-identity runs (1 login
+  // total) never hit this path; per-scenario runs spread their logins across the
+  // bucket's 60s refill window. Same retry mechanism, broader scope.
+  const res = await fetchWithThrottleRetry(loginUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -181,6 +259,9 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
       email: context.apiCredentials.email,
       password: context.apiCredentials.password,
     }),
+  }, {
+    onRetry: ({ attempt, delayMs }) =>
+      console.warn(`[ApiCallStep:auth] 429 retry ${attempt + 1}/3 for POST ${loginUrl} in ${delayMs}ms`),
   });
 
   if (!res.ok) {

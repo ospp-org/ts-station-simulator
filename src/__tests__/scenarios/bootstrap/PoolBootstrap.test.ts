@@ -303,30 +303,71 @@ describe('buildSeedTestUsersSql — per-worker identity seed', () => {
   });
 });
 
-describe('buildTeardownTestUsersSql — per-worker identity sweep', () => {
+describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK coverage)', () => {
   it('empty emails → no statements', () => {
     expect(buildTeardownTestUsersSql([])).toEqual([]);
   });
 
-  it('emits 4 DELETEs (model_has_roles → org_members → wallets → users) all scoped to the email set', () => {
+  it('emits 13 DELETEs covering wallet_entries + all 9 NO-ACTION user FKs + Spatie + users', () => {
     const stmts = buildTeardownTestUsersSql(['e1@t', 'e2@t']);
-    expect(stmts).toHaveLength(4);
-    expect(stmts[0]).toContain('DELETE FROM model_has_roles');
-    expect(stmts[1]).toContain('DELETE FROM organization_members');
-    expect(stmts[2]).toContain('DELETE FROM wallets');
-    expect(stmts[3]).toContain('DELETE FROM users');
-    // Every DELETE is scoped to the seeded email set.
+    // Children before parents: wallet_entries → (9 NO-ACTION FKs) → Spatie (2) → users.
+    // The reverse-graph static check (teardownFkCoverage.test.ts) is the authoritative
+    // contract — this test just pins the count + the per-statement table targets.
+    expect(stmts).toHaveLength(13);
+    const tables = [
+      'wallet_entries',
+      'offline_passes',
+      'offline_transactions',
+      'payment_intents',
+      'sessions',
+      'reservations',
+      'vehicles',
+      'organization_members',
+      'wallets',
+      'invitations',
+      'model_has_roles',
+      'model_has_permissions',
+      'users',
+    ];
+    for (let i = 0; i < tables.length; i++) {
+      expect(stmts[i], `stmt[${i}] should delete from ${tables[i]}`).toContain(`DELETE FROM ${tables[i]}`);
+    }
+    // Every DELETE is scoped to the seeded email set (either via the userIds subquery
+    // or directly on email columns).
     for (const stmt of stmts) {
       expect(stmt).toContain("ARRAY['e1@t', 'e2@t']::text[]");
     }
+  });
+
+  it('wallet_entries delete precedes wallets delete (NO-ACTION FK: wallet_entries.wallet_id → wallets)', () => {
+    const stmts = buildTeardownTestUsersSql(['e@t']);
+    const walletEntriesAt = stmts.findIndex((s) => s.includes('DELETE FROM wallet_entries'));
+    const walletsAt = stmts.findIndex((s) => s.includes('DELETE FROM wallets WHERE user_id'));
+    expect(walletEntriesAt).toBeGreaterThanOrEqual(0);
+    expect(walletsAt).toBeGreaterThanOrEqual(0);
+    expect(walletEntriesAt).toBeLessThan(walletsAt);
+  });
+
+  it('invitations DELETE catches both invited_by AND email (defense-in-depth for never-accepted invites)', () => {
+    const stmts = buildTeardownTestUsersSql(['sim-worker-abc-0@test.local']);
+    const inv = stmts.find((s) => s.includes('DELETE FROM invitations'));
+    expect(inv).toBeDefined();
+    expect(inv).toContain('invited_by IN');
+    expect(inv).toContain('OR email = ANY');
   });
 });
 
 describe('buildTeardownSql — identity-pool sweep integrated', () => {
   it('absent when identityCredentials is empty (legacy single-identity runs)', () => {
     const sql = buildTeardownSql(handle({ stationIds: ['stn_x'], locationId: 'loc-1' }));
+    // None of the user-sweep tables should appear when the pool is empty.
     expect(sql).not.toContain('DELETE FROM model_has_roles');
+    expect(sql).not.toContain('DELETE FROM model_has_permissions');
     expect(sql).not.toContain('DELETE FROM organization_members');
+    expect(sql).not.toContain('DELETE FROM wallet_entries');
+    expect(sql).not.toContain('DELETE FROM offline_passes');
+    expect(sql).not.toContain('DELETE FROM vehicles');
+    expect(sql).not.toContain('DELETE FROM invitations');
   });
 
   it('appears when identityCredentials is non-empty and is scoped to THIS run\'s stamped emails', () => {
@@ -337,13 +378,18 @@ describe('buildTeardownSql — identity-pool sweep integrated', () => {
         { email: 'sim-worker-abc-1@test.local', password: 'p' },
       ],
     }));
-    expect(sql).toContain('DELETE FROM model_has_roles');
-    expect(sql).toContain('DELETE FROM organization_members');
-    expect(sql).toContain('DELETE FROM wallets');
+    // Full FK coverage: all 13 user-side DELETEs land in the integrated transaction.
+    for (const tbl of [
+      'wallet_entries', 'offline_passes', 'offline_transactions', 'payment_intents',
+      'reservations', 'vehicles', 'organization_members', 'wallets', 'invitations',
+      'model_has_roles', 'model_has_permissions',
+    ]) {
+      expect(sql, `expected DELETE FROM ${tbl}`).toContain(`DELETE FROM ${tbl}`);
+    }
     expect(sql).toContain('DELETE FROM users WHERE email = ANY(ARRAY[\'sim-worker-abc-0@test.local\', \'sim-worker-abc-1@test.local\']::text[])');
   });
 
-  it('user-sweep runs AFTER station/location/svc_def deletes (children before parents — users have no FK from any teardown row, but order is documented intent)', () => {
+  it('user-sweep runs AFTER station/location deletes (children before parents)', () => {
     const sql = buildTeardownSql(handle({
       orgId: 'org-1', stationIds: ['stn_x'], locationId: 'loc-1',
       seededServiceIds: ['svc_wash_basic'],
@@ -353,6 +399,17 @@ describe('buildTeardownSql — identity-pool sweep integrated', () => {
     const usersAt = sql.indexOf('DELETE FROM users WHERE email');
     expect(stationsAt).toBeGreaterThanOrEqual(0);
     expect(usersAt).toBeGreaterThan(stationsAt);
+  });
+
+  it('wallet_entries precedes wallets in the integrated SQL (NO-ACTION FK preservation)', () => {
+    const sql = buildTeardownSql(handle({
+      stationIds: ['stn_x'],
+      identityCredentials: [{ email: 'e@t', password: 'p' }],
+    }));
+    const weAt = sql.indexOf('DELETE FROM wallet_entries');
+    const wAt = sql.indexOf('DELETE FROM wallets WHERE user_id');
+    expect(weAt).toBeGreaterThanOrEqual(0);
+    expect(wAt).toBeGreaterThan(weAt);
   });
 });
 

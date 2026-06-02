@@ -103,7 +103,7 @@ program
   .option('--org-id <uuid>', 'Organization UUID for X-Organization-Id header (overrides auto-discovery)')
   .option('--bootstrap-pool', 'Provision a fresh per-run station pool (+ org/location + offline-enable) at suite start; tear it down at the end')
   .option('--pool-size <n>', 'Number of stations to provision when --bootstrap-pool is set', '5')
-  .option('--identity-pool-size <n>', 'Number of per-worker tenant_operator identities to mint (defaults to --workers)')
+  .option('--identity-pool-size <n>', 'Number of per-scenario tenant_operator identities to mint (single-use FIFO; defaults to max(scenarioCount, --workers); startup-fails if explicitly set below scenarioCount)')
   .option('--pool-bays <n>', 'Bays per provisioned pool station', '4')
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
   .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
@@ -178,14 +178,31 @@ program
       if (opts.bootstrapPool) {
         const poolSize = parseInt(opts.poolSize, 10);
         const bayCount = parseInt(opts.poolBays, 10);
-        // Identity pool defaults to workers count so each concurrent worker drives its own
-        // session-mutate (10/min) bucket — fixes the rate-limit cluster at the root.
-        const identityPoolSize = opts.identityPoolSize !== undefined
+        // Per-scenario identity pool: every scenario gets its OWN tenant_operator user
+        // (single-use FIFO; never reused within a run). Default size is
+        // max(scenarioCount, workers) so a run cannot deplete the pool by design — the
+        // server-side session-mutate bucket (10/min/user) physically cannot be contested
+        // across scenarios. If --identity-pool-size is explicitly set BELOW the scenario
+        // count, we FAIL AT STARTUP rather than silently re-introduce identity sharing
+        // (commit #3's surface bug — single-bucket bursts → 60s Retry-After → wait_for
+        // timeouts). The contract is enforced here, not by honor system.
+        const scenarioCount = scenarioPaths.length;
+        const explicitIdentityPoolSize = opts.identityPoolSize !== undefined
           ? parseInt(opts.identityPoolSize, 10)
-          : maxWorkers;
+          : undefined;
+        if (explicitIdentityPoolSize !== undefined && explicitIdentityPoolSize < scenarioCount) {
+          throw new Error(
+            `--identity-pool-size ${explicitIdentityPoolSize} < scenario count ${scenarioCount}. ` +
+            `Per-scenario isolation guarantee broken (identities would be reused mid-run, ` +
+            `re-introducing single-bucket bursts on the session-mutate rate limit). ` +
+            `Raise --identity-pool-size to >= ${scenarioCount} or omit it to auto-size.`,
+          );
+        }
+        const identityPoolSize = explicitIdentityPoolSize ?? Math.max(scenarioCount, maxWorkers);
         console.log(chalk.blue(
           `Bootstrapping per-run pool: ${poolSize} station(s), ${bayCount} bay(s) each, ` +
-          `${identityPoolSize} identity(ies), offline-enable=${opts.offlineEnable !== false}`,
+          `${identityPoolSize} identity(ies) (per-scenario, single-use), ` +
+          `offline-enable=${opts.offlineEnable !== false}`,
         ));
         try {
           bootstrapHandle = await bootstrapPool(runnerTarget, {
