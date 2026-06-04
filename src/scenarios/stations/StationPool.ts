@@ -8,6 +8,14 @@ export interface PoolEntry {
   chainPath?: string;
   brokerCaPath?: string;
   /**
+   * Per-station ECDSA-P256 receipt-signing private key (PKCS8 PEM) persisted
+   * during provisioning. Read by SendStep when emitting TransactionEvent to
+   * sign the receipt per spec §6.2 (canonical form + SHA-256-then-ECDSA over
+   * the canonical JSON bytes; the verifier in csms-server hashes the decoded
+   * canonical form, not the base64 wire form — implementation matches that).
+   */
+  receiptKeyPath?: string;
+  /**
    * Per-entry random suffix appended to MQTT clientId so multiple
    * pool entries (or sequential connect calls to the same stationId)
    * cannot collide on broker-side session state. The actual clientId
@@ -23,6 +31,7 @@ export interface PoolEntryInput {
   keyPath?: string;
   chainPath?: string;
   brokerCaPath?: string;
+  receiptKeyPath?: string;
   clientIdSuffix?: string;
 }
 
@@ -48,6 +57,7 @@ export class StationPool {
       keyPath: input.keyPath,
       chainPath: input.chainPath,
       brokerCaPath: input.brokerCaPath,
+      receiptKeyPath: input.receiptKeyPath,
       clientIdSuffix: input.clientIdSuffix ?? crypto.randomUUID(),
     };
     if (existing >= 0) {

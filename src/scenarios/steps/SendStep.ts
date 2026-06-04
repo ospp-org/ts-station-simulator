@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { OsppAction, MessageType } from '@ospp/protocol';
+import fs from 'node:fs/promises';
+import { OsppAction, MessageType, canonicalize } from '@ospp/protocol';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -65,6 +66,101 @@ function substituteTemplates(
     return result;
   }
   return value;
+}
+
+/**
+ * Sign the receipt on a TransactionEvent payload per spec §6.2.
+ *
+ * Pre-(α-bag) the simulator sent a placeholder `signature: "test_sig"` — the
+ * server's ReceiptVerifier rejected as invalid_receipt_signature, FraudScorer
+ * hit Critical, and the Reconciler persisted status='rejected'. That proves
+ * the rejected branch end-to-end. For the Accepted branch we need a real
+ * signature the verifier accepts.
+ *
+ * Algorithm (matches csms-server EcdsaService::verify behavior, which is
+ * `openssl_verify($decodedCanonicalBytes, $sig, $pubKey, OPENSSL_ALGO_SHA256)`
+ * — SHA-256 over the DECODED canonical JSON, then ECDSA verify):
+ *
+ *   receipt_fields = { offlineTxId, bayId, serviceId, startedAt, endedAt,
+ *                      durationSeconds, creditsCharged, meterValues?,
+ *                      txCounter }  (9 fields per spec §6.2 — meterValues
+ *                                    omitted if not present on payload)
+ *   canonical_bytes = OSPP_Canonical_Form(receipt_fields)  (UTF-8, sorted
+ *                                                          keys, compact)
+ *   signature       = ECDSA-P256-Sign(receipt_private_key, canonical_bytes)
+ *                     (openssl_sign with SHA256 internally hashes then signs)
+ *
+ *   receipt.data               = base64(canonical_bytes)
+ *   receipt.signature          = base64(DER-encoded ECDSA signature)
+ *   receipt.signatureAlgorithm = "ECDSA-P256-SHA256"
+ *
+ * NOTE on spec inconsistency: §6.2 step 3 says "data_bytes = base64_encode
+ * (receipt_data); digest = SHA-256(data_bytes)" — i.e. hash the base64.
+ * But verification step 2 decodes from base64 and step 3 hashes the
+ * decoded form. csms-server's verifier follows the verification side
+ * (decoded form). We sign to match the verifier, not the literal signing
+ * pseudocode. Worth flagging for a spec amendment.
+ */
+async function signTransactionEventReceipt(
+  payload: Record<string, unknown>,
+  station: Station,
+  context: ScenarioContext,
+): Promise<void> {
+  const receipt = payload.receipt;
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    return;
+  }
+
+  const poolEntry = context.pool.get(station.config.stationId);
+  if (!poolEntry?.receiptKeyPath) {
+    throw new Error(
+      `SendStep: no receiptKeyPath registered for station ${station.config.stationId}. ` +
+      'PoolBootstrap must persist <stationId>-receipt-key.pem (run with --bootstrap-pool).',
+    );
+  }
+
+  // Build the 9 canonicalized fields per spec §6.2. meterValues is included
+  // only if present on the payload (canonicalization sorts present keys; the
+  // verifier re-canonicalizes the same byte sequence, so both sides agree
+  // whether meterValues was a key in the signed input).
+  const receiptFields: Record<string, unknown> = {
+    offlineTxId: payload.offlineTxId,
+    bayId: payload.bayId,
+    serviceId: payload.serviceId,
+    startedAt: payload.startedAt,
+    endedAt: payload.endedAt,
+    durationSeconds: payload.durationSeconds,
+    creditsCharged: payload.creditsCharged,
+    txCounter: payload.txCounter,
+  };
+  if (payload.meterValues !== undefined) {
+    receiptFields.meterValues = payload.meterValues;
+  }
+
+  const canonicalJson = canonicalize(receiptFields);
+  const canonicalBytes = Buffer.from(canonicalJson, 'utf-8');
+
+  const receiptKeyPem = await fs.readFile(poolEntry.receiptKeyPath, 'utf-8');
+  const privateKey = crypto.createPrivateKey(receiptKeyPem);
+
+  // ECDSA-P256-SHA256: createSign('SHA256') + sign() does SHA-256 over the
+  // input then ECDSA-signs the digest. Default signature encoding is DER —
+  // matches what openssl_verify expects on the server side.
+  const signer = crypto.createSign('SHA256');
+  signer.update(canonicalBytes);
+  const signatureDer = signer.sign(privateKey);
+
+  const receiptRecord = receipt as Record<string, unknown>;
+  receiptRecord.data = canonicalBytes.toString('base64');
+  receiptRecord.signature = signatureDer.toString('base64');
+  receiptRecord.signatureAlgorithm = 'ECDSA-P256-SHA256';
+
+  if (process.env['SCENARIO_DEBUG'] === '1') {
+    console.log(
+      `[SendStep] signed TransactionEvent receipt for ${station.config.stationId} ` +
+      `(canonicalBytes=${canonicalBytes.length}B, sigDer=${signatureDer.length}B)`,
+    );
+  }
 }
 
 /**
@@ -173,6 +269,10 @@ export class SendStep implements Step {
     const payload = substituteTemplates(rawPayload, context) as Record<string, unknown>;
 
     injectSeqNoFields(action, messageType, payload, station);
+
+    if (action === OsppAction.TRANSACTION_EVENT && messageType === MessageType.REQUEST) {
+      await signTransactionEventReceipt(payload, station, context);
+    }
 
     const { id: correlationId, source } = resolveSendCorrelation(
       definition,

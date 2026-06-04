@@ -243,6 +243,8 @@ interface CertPaths {
   chainPath: string;
   baysJsonPath: string;
   brokerCaPath: string;
+  receiptKeyPath: string;
+  receiptPubPath: string;
 }
 
 export function certPathsFor(target: TargetConfig, stationId: string): CertPaths {
@@ -268,6 +270,11 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
     chainPath,
     baysJsonPath: path.join(dir, `${stationId}-bays.json`),
     brokerCaPath: path.join(dir, `${stationId}-broker-ca.pem`),
+    // Persist the receipt-signing keypair next to the TLS material so SendStep
+    // can sign TransactionEvent.receipt per spec §6.2. ProvisionStep's own
+    // layout uses the same naming convention.
+    receiptKeyPath: path.join(dir, `${stationId}-receipt-key.pem`),
+    receiptPubPath: path.join(dir, `${stationId}-receipt-pub.pem`),
   };
 }
 
@@ -516,8 +523,22 @@ async function registerAndProvisionStation(
     fs.writeFile(paths.certPath, clientCert),
     fs.writeFile(paths.chainPath, data.stationCaChain ?? clientCert),
     fs.writeFile(paths.baysJsonPath, JSON.stringify({ stationId, bayIds }, null, 2)),
+    // Receipt-signing keypair — paired with the receiptSigningPublicKey already
+    // POSTed to /api/v1/stations/provision above. Without persisting the
+    // private key, SendStep has no key to sign TransactionEvent.receipt with,
+    // and the Reconciler's ReceiptVerifier rejects every offline-tx as
+    // invalid_receipt_signature.
+    fs.writeFile(paths.receiptKeyPath, exportPrivateKeyPkcs8Pem(receiptKeys.privateKey), { mode: 0o600 }),
+    fs.writeFile(paths.receiptPubPath, exportPublicKeySpkiPem(receiptKeys.publicKey)),
   ];
-  handle.certFiles.push(paths.keyPath, paths.certPath, paths.chainPath, paths.baysJsonPath);
+  handle.certFiles.push(
+    paths.keyPath,
+    paths.certPath,
+    paths.chainPath,
+    paths.baysJsonPath,
+    paths.receiptKeyPath,
+    paths.receiptPubPath,
+  );
   if (typeof data.brokerRootCa === 'string' && data.brokerRootCa.length > 0) {
     writes.push(fs.writeFile(paths.brokerCaPath, data.brokerRootCa));
     handle.certFiles.push(paths.brokerCaPath);
@@ -531,6 +552,7 @@ async function registerAndProvisionStation(
     keyPath: paths.keyPath,
     chainPath: paths.chainPath,
     brokerCaPath: typeof data.brokerRootCa === 'string' ? paths.brokerCaPath : undefined,
+    receiptKeyPath: paths.receiptKeyPath,
   });
 }
 

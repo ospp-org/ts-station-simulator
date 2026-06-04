@@ -91,11 +91,51 @@ steps:
     messageType: Response
     timeout_ms: 10000
 
-  # Phase 1 expects Rejected — placeholder receipt sig fails ReceiptVerifier,
-  # FraudScorer's invalid_receipt_signature signal (weight 100) hits Critical,
-  # Reconciler persists status='rejected' and the handler emits the §5:62
-  # Critical OfflinePassRejected SecurityEvent. Phase 2 will add receipt
-  # signing per spec §4.8 to flip this to Accepted.
+  # Phase 2: SendStep now signs receipts per §6.2 using the per-station
+  # receipt-signing key persisted by PoolBootstrap (<id>-receipt-key.pem).
+  # ReceiptVerifier verifies the signature against the receiptSigningPublicKey
+  # registered at provisioning, FraudScorer accepts (no signals fire on a
+  # well-formed receipt + healthy pass), Reconciler debits wallet via the real
+  # WalletDebitAdapter, persists status='reconciled', and emits
+  # TransactionReconciled. NO SecurityEvent on this branch (clean accept).
   - action: assert
     field: "payload.status"
-    equals: "Rejected"
+    equals: "Accepted"
+
+  # --- Idempotency re-send (same offlineTxId, fresh envelope messageId) ---
+  # Reconciler dedups on offlineTxId before verify/score/debit (Reconciler.php
+  # line 55-68). Same idempotencyKey ('otx_'.offlineTxId) means the wallet
+  # debit would otherwise re-fire, but wallet_entries.idempotency_key UNIQUE
+  # blocks it at the DB level — defense in depth. This re-send proves the
+  # Group-1 idempotency-key fix on the real MQTT path (the f5dc68d brief
+  # Step-2a override that lets Reconciler control the key instead of letting
+  # WalletDebitAdapter generate a fresh one).
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "otx_a0000000001"
+      offlinePassId: "{{captured.offlinePassId}}"
+      userId: "{{captured.offlineUserSub}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:05:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 150
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+      meterValues:
+        liquidMl: 2500
+        energyWh: 85
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Duplicate"
