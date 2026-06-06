@@ -1,6 +1,6 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { OsppAction, MessageType, canonicalize } from '@ospp/protocol';
+import { ecdsaSign, SIGNATURE_ALGORITHM } from '@ospp/protocol/server';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -69,6 +69,59 @@ function substituteTemplates(
 }
 
 /**
+ * Build the canonical receipt_fields object for a TransactionEvent payload
+ * per spec v0.4.2+ §6.2.
+ *
+ * The signed body carries **11 mandatory fields** in canonical order:
+ *   offlineTxId, offlinePassId, userId, deviceId, bayId, serviceId,
+ *   startedAt, endedAt, durationSeconds, creditsCharged, txCounter
+ * (+ optional meterValues, signed when present; omitted from the canonical
+ * body when absent per §6.2 Note 4 — an empty `meterValues: {}` would
+ * change canonical bytes and break server-side verification).
+ *
+ * The three identity fields offlinePassId / userId / deviceId are the
+ * cryptographic-binding anchors for the server's RevalidationGate
+ * cross-checks #2 (offlinePassId envelope ↔ signed body), #3 (userId
+ * envelope ↔ signed body), and #6 (deviceId signed body ↔ pass.device_id).
+ *
+ * Pre-v0.4.2 the simulator built only 9 fields (Phase B audit (a) #9).
+ *
+ * Reference: station-simulator (PHP) TransactionEventBuilder.php — same
+ * 11 fields, same canonical ordering, same deviceId fallback convention.
+ *
+ * @param payload    TransactionEvent wire payload (from YAML scenario).
+ * @param stationId  Station business identifier — used as the fallback
+ *                   source for `deviceId` when the payload doesn't
+ *                   supply one explicitly. Mirrors PHP sim's
+ *                   `dev_{stationId}` default. Scenarios that target the
+ *                   v0.4.2+ gate's check #6 (deviceId ↔ pass.device_id)
+ *                   MUST set `deviceId` explicitly on the payload to
+ *                   match the value used at pass issuance.
+ */
+export function buildTransactionEventReceiptFields(
+  payload: Record<string, unknown>,
+  stationId: string,
+): Record<string, unknown> {
+  const receiptFields: Record<string, unknown> = {
+    offlineTxId: payload.offlineTxId,
+    offlinePassId: payload.offlinePassId,
+    userId: payload.userId,
+    deviceId: payload.deviceId ?? `dev_${stationId}`,
+    bayId: payload.bayId,
+    serviceId: payload.serviceId,
+    startedAt: payload.startedAt,
+    endedAt: payload.endedAt,
+    durationSeconds: payload.durationSeconds,
+    creditsCharged: payload.creditsCharged,
+    txCounter: payload.txCounter,
+  };
+  if (payload.meterValues !== undefined) {
+    receiptFields.meterValues = payload.meterValues;
+  }
+  return receiptFields;
+}
+
+/**
  * Sign the receipt on a TransactionEvent payload per spec §6.2.
  *
  * Pre-(α-bag) the simulator sent a placeholder `signature: "test_sig"` — the
@@ -77,29 +130,20 @@ function substituteTemplates(
  * the rejected branch end-to-end. For the Accepted branch we need a real
  * signature the verifier accepts.
  *
- * Algorithm (matches csms-server EcdsaService::verify behavior, which is
- * `openssl_verify($decodedCanonicalBytes, $sig, $pubKey, OPENSSL_ALGO_SHA256)`
- * — SHA-256 over the DECODED canonical JSON, then ECDSA verify):
- *
- *   receipt_fields = { offlineTxId, bayId, serviceId, startedAt, endedAt,
- *                      durationSeconds, creditsCharged, meterValues?,
- *                      txCounter }  (9 fields per spec §6.2 — meterValues
- *                                    omitted if not present on payload)
+ * Algorithm:
  *   canonical_bytes = OSPP_Canonical_Form(receipt_fields)  (UTF-8, sorted
  *                                                          keys, compact)
  *   signature       = ECDSA-P256-Sign(receipt_private_key, canonical_bytes)
- *                     (openssl_sign with SHA256 internally hashes then signs)
  *
  *   receipt.data               = base64(canonical_bytes)
  *   receipt.signature          = base64(DER-encoded ECDSA signature)
  *   receipt.signatureAlgorithm = "ECDSA-P256-SHA256"
  *
- * NOTE on spec inconsistency: §6.2 step 3 says "data_bytes = base64_encode
- * (receipt_data); digest = SHA-256(data_bytes)" — i.e. hash the base64.
- * But verification step 2 decodes from base64 and step 3 hashes the
- * decoded form. csms-server's verifier follows the verification side
- * (decoded form). We sign to match the verifier, not the literal signing
- * pseudocode. Worth flagging for a spec amendment.
+ * Signing is delegated to the SDK `ecdsaSign` (from `@ospp/protocol/server`)
+ * so the simulator and csms-server's verifier go through the same crypto
+ * code path (RFC 6979 deterministic nonce, SHA-256 digest, DER signature
+ * encoding), removing the local `crypto.createSign('SHA256')` divergence
+ * surface flagged in Phase B audit (b).
  */
 async function signTransactionEventReceipt(
   payload: Record<string, unknown>,
@@ -119,46 +163,27 @@ async function signTransactionEventReceipt(
     );
   }
 
-  // Build the 9 canonicalized fields per spec §6.2. meterValues is included
-  // only if present on the payload (canonicalization sorts present keys; the
-  // verifier re-canonicalizes the same byte sequence, so both sides agree
-  // whether meterValues was a key in the signed input).
-  const receiptFields: Record<string, unknown> = {
-    offlineTxId: payload.offlineTxId,
-    bayId: payload.bayId,
-    serviceId: payload.serviceId,
-    startedAt: payload.startedAt,
-    endedAt: payload.endedAt,
-    durationSeconds: payload.durationSeconds,
-    creditsCharged: payload.creditsCharged,
-    txCounter: payload.txCounter,
-  };
-  if (payload.meterValues !== undefined) {
-    receiptFields.meterValues = payload.meterValues;
-  }
+  const receiptFields = buildTransactionEventReceiptFields(payload, station.config.stationId);
 
   const canonicalJson = canonicalize(receiptFields);
   const canonicalBytes = Buffer.from(canonicalJson, 'utf-8');
 
   const receiptKeyPem = await fs.readFile(poolEntry.receiptKeyPath, 'utf-8');
-  const privateKey = crypto.createPrivateKey(receiptKeyPem);
 
-  // ECDSA-P256-SHA256: createSign('SHA256') + sign() does SHA-256 over the
-  // input then ECDSA-signs the digest. Default signature encoding is DER —
-  // matches what openssl_verify expects on the server side.
-  const signer = crypto.createSign('SHA256');
-  signer.update(canonicalBytes);
-  const signatureDer = signer.sign(privateKey);
+  // SDK ecdsaSign: RFC 6979 deterministic nonce, SHA-256 digest, returns
+  // base64(DER) directly. Same crypto path csms-server's verifier uses
+  // for verification.
+  const signatureBase64 = ecdsaSign(receiptKeyPem, canonicalBytes);
 
   const receiptRecord = receipt as Record<string, unknown>;
   receiptRecord.data = canonicalBytes.toString('base64');
-  receiptRecord.signature = signatureDer.toString('base64');
-  receiptRecord.signatureAlgorithm = 'ECDSA-P256-SHA256';
+  receiptRecord.signature = signatureBase64;
+  receiptRecord.signatureAlgorithm = SIGNATURE_ALGORITHM;
 
   if (process.env['SCENARIO_DEBUG'] === '1') {
     console.log(
       `[SendStep] signed TransactionEvent receipt for ${station.config.stationId} ` +
-      `(canonicalBytes=${canonicalBytes.length}B, sigDer=${signatureDer.length}B)`,
+      `(canonicalBytes=${canonicalBytes.length}B)`,
     );
   }
 }
