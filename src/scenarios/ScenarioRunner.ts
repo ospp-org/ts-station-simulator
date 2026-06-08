@@ -63,6 +63,25 @@ export interface ScenarioDefinition {
       response_delay_ms?: [number, number];
     };
   };
+  /**
+   * Per-scenario auth override (C-018). When present, `context.apiCredentials`
+   * is resolved from these env vars instead of `target.credentials` — used by
+   * the e2e/* scenarios that need a platform_admin (NULL-scoped) identity to
+   * call `POST /v1/organizations`. The default `target.credentials` is a
+   * `tenant_owner` per PoolBootstrap doctrine and cannot create orgs.
+   *
+   * The override is scenario-local: it mutates `context.apiCredentials` only
+   * for this run. `target.credentials` is never modified, so other scenarios
+   * in the same suite keep the default identity.
+   *
+   * Mid-scenario identity switches (e.g. platform_admin → newly-onboarded
+   * tenant_owner after `POST /organizations`) use `set_auth_token` on a
+   * separate `POST /v1/auth/login` api_call step — see ApiCallStep.
+   */
+  auth?: {
+    email_env: string;
+    password_env: string;
+  };
   steps: StepDefinition[];
 }
 
@@ -333,6 +352,42 @@ export function _hydrateProvisioningForTesting(
   target: TargetConfig,
 ): Promise<ScenarioContext['provisioning'] | undefined> {
   return hydrateProvisioningFromDisk(stationId, target);
+}
+
+/**
+ * Resolve the `context.apiCredentials` for a scenario, applying the optional
+ * `scenario.auth` env-var override (C-018). Returns a fresh object literal —
+ * never mutates `targetCredentials`. Throws with the offending env-var name
+ * when either side is unset or empty-string so misconfiguration surfaces at
+ * scenario start, not later during the first `ensureAuth` HTTP attempt.
+ *
+ * Underscore-prefix marks this as a public-for-testing seam — the production
+ * path (`runScenario` :line ~775) calls it inline. Other test helpers in this
+ * file follow the same convention (`_hydrateProvisioningForTesting`).
+ */
+export function _resolveScenarioAuthForTesting(
+  scenarioAuth: { email_env: string; password_env: string } | undefined,
+  targetCredentials: { email: string; password: string } | undefined,
+  env: Record<string, string | undefined>,
+): { email: string; password: string } | undefined {
+  if (!scenarioAuth) {
+    return targetCredentials;
+  }
+  const email = env[scenarioAuth.email_env];
+  const password = env[scenarioAuth.password_env];
+  if (!email) {
+    throw new Error(
+      `scenario.auth override declared but env var "${scenarioAuth.email_env}" is unset or empty. ` +
+      `Source secrets file before running (e.g. \`set -a; source ~/.config/osp-e2e-secrets.env; set +a\`).`,
+    );
+  }
+  if (!password) {
+    throw new Error(
+      `scenario.auth override declared but env var "${scenarioAuth.password_env}" is unset or empty. ` +
+      `Source secrets file before running (e.g. \`set -a; source ~/.config/osp-e2e-secrets.env; set +a\`).`,
+    );
+  }
+  return { email, password };
 }
 
 export function _substituteTemplatesForTesting(
@@ -747,9 +802,20 @@ export class ScenarioRunner {
     const variables = generateVariables(scenario, target, poolStationId, userVars);
     context.variables = variables;
     context.apiBaseUrl = target.apiBaseUrl;
-    // Per-worker identity wins over target.credentials when present. Without identity
-    // pool, falls back to the single shared identity (legacy debug runs only).
-    context.apiCredentials = acquiredIdentity ?? target.credentials;
+    // Identity resolution precedence (C-018):
+    //   1. scenario.auth — explicit YAML override, wins over everything. Used by
+    //      e2e/* scenarios that need a platform_admin (NULL-scoped) to call
+    //      POST /v1/organizations. Returns a fresh object literal — target is
+    //      never mutated.
+    //   2. acquiredIdentity — per-scenario tenant_operator from the run's FIFO
+    //      identity pool (when --identity-pool-size > 0). Each scenario owns its
+    //      slot for its lifetime; never released back.
+    //   3. target.credentials — single shared identity from targets.yaml. Legacy
+    //      debug-run mode and the no-pool default.
+    context.apiCredentials =
+      _resolveScenarioAuthForTesting(scenario.auth, target.credentials, process.env)
+      ?? acquiredIdentity
+      ?? target.credentials;
     context.orgId = target.orgId;
 
     // Eagerly hydrate context.provisioning from disk for the active stationId.
