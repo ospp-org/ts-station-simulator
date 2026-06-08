@@ -1,0 +1,74 @@
+# Sprint Server #2 regression — resolveServiceUuid station-scoping.
+#
+# Pre-fix bug: StationQueryService::resolveServiceUuid joined station_services
+# × service_definitions on sd.service_id WITHOUT filtering by station. When
+# two stations in one org both carried the same svc_* code, a session-start
+# naming a serviceId that the REQUEST's station did NOT carry — but another
+# station in the same org did — was ACCEPTED. sessions.service_id then FK'd
+# at the WRONG station's row, so pricing/billing read that station's prices.
+# Same shape across orgs: service_definitions UNIQUE is on
+# (organization_id, service_id), so the varchar join could leak across
+# tenants too.
+#
+# The fix (this scenario asserts the regression is closed):
+# resolveServiceUuid(string $serviceId, string $stationUuid) — mandatory
+# station UUID. Body filters by ss.station_id. Cross-station and cross-tenant
+# resolution both return null → 404 INVALID_SERVICE 3004.
+#
+# Setup expected on UAT (one-time, run the existing onboarding scenarios):
+#
+#   1. Bootstrap station A in some org O:
+#      simulator run \
+#        --scenario scenarios/e2e/e2e-new-customer-onboarding.yaml \
+#        --target uat \
+#        --station stn_a_<your-id> \
+#        --var serviceId_1=svc_wash_A_<your-id>
+#
+#   2. Bootstrap station B in the SAME org O (note: re-use the same SMB-owner
+#      email from step 1 so the platform admin creates one shared org, OR add
+#      the new station via admin REST flows directly against the existing org).
+#      Station B's catalog MUST carry svc_dry_B_<your-id> and MUST NOT carry
+#      svc_wash_A_<your-id>:
+#        simulator run \
+#          --scenario scenarios/e2e/e2e-new-customer-onboarding.yaml \
+#          --target uat \
+#          --station stn_b_<your-id> \
+#          --var serviceId_1=svc_dry_B_<your-id>
+#
+#   3. Run THIS scenario, passing station A's bayId and station B's serviceId:
+#        simulator run \
+#          --scenario scenarios/sessions/session-rejected-invalid-service-cross-station.yaml \
+#          --target uat \
+#          --station stn_a_<your-id> \
+#          --var stationA_bayId=bay_<...from-onboarding-step-1...> \
+#          --var stationB_serviceId=svc_dry_B_<your-id>
+#
+# Expected result: HTTP 404 INVALID_SERVICE 3004.
+# Pre-fix on the same data: HTTP 201 (wrong) — service_id resolves to station
+# B's station_services row, session is accepted at station A's bay with
+# station B's pricing.
+name: "Session Rejected - Invalid Service Cross-Station (Sprint Server #2 regression)"
+description: "Two stations in one org with disjoint catalogs. Session-start with bay on station A + serviceId from station B must reject with 404 INVALID_SERVICE. Asserts resolveServiceUuid station-scoping closes the cross-station/cross-tenant ambiguity."
+
+# This scenario doesn't drive MQTT — the assertion is server-side HTTP.
+# The `station:` block is a YAML schema requirement; we never connect_mqtt.
+defer_mqtt_connect: true
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 1
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+
+steps:
+  # Regression: station A's bay + station B's serviceId → 404 INVALID_SERVICE.
+  # Pre-fix this returned 201 because resolveServiceUuid found station B's
+  # station_services row via the unscoped varchar join.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{stationA_bayId}}"
+      service_id: "{{stationB_serviceId}}"
+      duration_seconds: 300
+    expect_status: 404
