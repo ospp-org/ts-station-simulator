@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   type OsppEnvelope,
   type StartServiceRequest,
   type StartServiceResponse,
@@ -19,7 +20,7 @@ export class StartServiceHandler implements Handler {
     } catch {
       const response: StartServiceResponse = {
         status: 'Rejected',
-        errorCode: 3005,
+        errorCode: OsppErrorCode.BAY_NOT_FOUND,
         errorText: 'BAY_NOT_FOUND',
       };
       await station.sender.send<StartServiceResponse>(
@@ -34,7 +35,7 @@ export class StartServiceHandler implements Handler {
     if (!bay || !bay.services.some(s => s.serviceId === request.serviceId)) {
       const response: StartServiceResponse = {
         status: 'Rejected',
-        errorCode: 3004,
+        errorCode: OsppErrorCode.INVALID_SERVICE,
         errorText: 'INVALID_SERVICE',
       };
       await station.sender.send<StartServiceResponse>(
@@ -48,7 +49,7 @@ export class StartServiceHandler implements Handler {
     if (request.durationSeconds <= 0) {
       const response: StartServiceResponse = {
         status: 'Rejected',
-        errorCode: 3008,
+        errorCode: OsppErrorCode.DURATION_INVALID,
         errorText: 'DURATION_INVALID',
       };
       await station.sender.send<StartServiceResponse>(
@@ -70,7 +71,7 @@ export class StartServiceHandler implements Handler {
           // Reservation exists but reservationId doesn't match — reject
           const response: StartServiceResponse = {
             status: 'Rejected',
-            errorCode: 3014,
+            errorCode: OsppErrorCode.BAY_RESERVED,
             errorText: `Bay ${request.bayId} is reserved under a different reservation`,
           };
 
@@ -132,7 +133,7 @@ export class StartServiceHandler implements Handler {
     } else {
       const response: StartServiceResponse = {
         status: 'Rejected',
-        errorCode: 1001,
+        errorCode: OsppErrorCode.MQTT_CONNECTION_LOST,
         errorText: canStart
           ? 'Randomly rejected by simulator'
           : `Bay ${request.bayId} is in state ${bayState}, cannot start service`,

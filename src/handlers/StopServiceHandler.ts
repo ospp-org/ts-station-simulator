@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   SessionEndReason,
   BayStatus,
   type OsppEnvelope,
@@ -18,7 +19,7 @@ export class StopServiceHandler implements Handler {
     if (!session) {
       const response: StopServiceResponse = {
         status: 'Rejected',
-        errorCode: 1002,
+        errorCode: OsppErrorCode.MQTT_PUBLISH_FAILED,
         errorText: `Session ${request.sessionId} not found`,
       };
 

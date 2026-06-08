@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   type OsppEnvelope,
   type UpdateFirmwareRequest,
   type UpdateFirmwareResponse,
@@ -17,7 +18,7 @@ export class UpdateFirmwareHandler implements Handler {
     if (request.firmwareVersion === station.config.firmwareVersion) {
       const rejected: UpdateFirmwareResponse = {
         status: 'Rejected',
-        errorCode: 5016,
+        errorCode: OsppErrorCode.VERSION_ALREADY_INSTALLED,
         errorText: 'VERSION_ALREADY_INSTALLED',
       };
       await station.sender.send<UpdateFirmwareResponse>(
@@ -31,7 +32,7 @@ export class UpdateFirmwareHandler implements Handler {
     if (station.sessions.size > 0) {
       const rejected: UpdateFirmwareResponse = {
         status: 'Rejected',
-        errorCode: 3016,
+        errorCode: OsppErrorCode.ACTIVE_SESSIONS_PRESENT,
         errorText: 'ACTIVE_SESSIONS_PRESENT',
       };
       await station.sender.send<UpdateFirmwareResponse>(

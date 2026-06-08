@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   BayStatus,
   type OsppEnvelope,
   type SetMaintenanceModeRequest,
@@ -19,7 +20,7 @@ export class SetMaintenanceModeHandler implements Handler {
         if (bayState === BayStatus.OCCUPIED) {
           const rejected: SetMaintenanceModeResponse = {
             status: 'Rejected',
-            errorCode: 3001,
+            errorCode: OsppErrorCode.BAY_BUSY,
             errorText: 'BAY_BUSY',
           };
           await station.sender.send<SetMaintenanceModeResponse>(
@@ -33,7 +34,7 @@ export class SetMaintenanceModeHandler implements Handler {
         if (occupiedBay) {
           const rejected: SetMaintenanceModeResponse = {
             status: 'Rejected',
-            errorCode: 3001,
+            errorCode: OsppErrorCode.BAY_BUSY,
             errorText: 'BAY_BUSY',
           };
           await station.sender.send<SetMaintenanceModeResponse>(

@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   BayStatus,
   type OsppEnvelope,
   type ReserveBayRequest,
@@ -68,7 +69,7 @@ export class ReserveBayHandler implements Handler {
     } else {
       const response: ReserveBayResponse = {
         status: 'Rejected',
-        errorCode: 1003,
+        errorCode: OsppErrorCode.TLS_HANDSHAKE_FAILED,
         errorText: canReserve
           ? 'Randomly rejected by simulator'
           : `Bay ${request.bayId} is in state ${bayState}, cannot reserve`,

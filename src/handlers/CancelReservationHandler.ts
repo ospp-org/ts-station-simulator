@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   BayStatus,
   type OsppEnvelope,
   type CancelReservationRequest,
@@ -77,7 +78,7 @@ export class CancelReservationHandler implements Handler {
       // Bay is Reserved but no reservation info tracked — should not happen, reject
       const response: CancelReservationResponse = {
         status: 'Rejected',
-        errorCode: 1004,
+        errorCode: OsppErrorCode.CERTIFICATE_ERROR,
         errorText: `Bay ${request.bayId} is Reserved but no matching reservation found`,
       };
 

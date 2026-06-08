@@ -1,6 +1,7 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   type OsppEnvelope,
   type ResetRequest,
   type ResetResponse,
@@ -15,7 +16,7 @@ export class ResetHandler implements Handler {
     if (station.sessions.size > 0) {
       const rejected: ResetResponse = {
         status: 'Rejected',
-        errorCode: 3016,
+        errorCode: OsppErrorCode.ACTIVE_SESSIONS_PRESENT,
         errorText: 'ACTIVE_SESSIONS_PRESENT',
       };
 
