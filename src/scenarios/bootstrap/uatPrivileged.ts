@@ -46,6 +46,30 @@ export function sqlLiteral(value: string): string {
 }
 
 /**
+ * C-018 invariant guard. The ambient permanent platform admin user (seeded
+ * once on UAT via E2EBootstrapSeeder) must NEVER appear in any teardown
+ * DELETE — its model_has_roles row (organization_id NULL) is what makes
+ * POST /v1/organizations work for every future e2e run. Deleting that user
+ * silently cascades the NULL-scoped role binding away.
+ *
+ * Reads two env vars by default:
+ *   - UAT_E2E_PLATFORM_ADMIN_EMAIL   (sourced from ~/.config/osp-e2e-secrets.env)
+ *   - E2E_PLATFORM_ADMIN_EMAIL       (the seeder-side counterpart from
+ *                                     database/seeders/E2EBootstrapSeeder.php)
+ *
+ * Empty-string values are treated as unset (the seeder rejects empty
+ * passwords too, so empty email is invalid by symmetry). Underscore prefix
+ * marks this as a test seam — production callers omit the env argument and
+ * fall through to `process.env`.
+ */
+export function _readProtectedEmailsForTesting(
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  return [env.UAT_E2E_PLATFORM_ADMIN_EMAIL, env.E2E_PLATFORM_ADMIN_EMAIL]
+    .filter((e): e is string => typeof e === 'string' && e.length > 0);
+}
+
+/**
  * Run a SQL script against the UAT database over SSH+psql, feeding the SQL on
  * stdin. Resolves with psql stdout; rejects (with stderr) on a non-zero exit.
  * `ON_ERROR_STOP=1` makes any statement error abort the whole script.
@@ -403,8 +427,32 @@ export function buildSeedTestUsersSql(
  * The reverse-graph static check (`teardownFkCoverage.test.ts`) fails CI if the
  * schema gains a new NO-ACTION FK that this list doesn't cover.
  */
-export function buildTeardownTestUsersSql(emails: string[]): string[] {
+export function buildTeardownTestUsersSql(
+  emails: string[],
+  options?: { protectedEmails?: string[] },
+): string[] {
   if (emails.length === 0) return [];
+
+  // C-018 invariant guard (defense in depth). The platform admin email is
+  // absent from PoolBootstrap.identityCredentials by construction — pool
+  // emails are stamped `sim-worker-<runStamp>-<i>@test.local` — but a
+  // regression that accidentally adds it here would silently delete the
+  // ambient platform admin user. Throw early with a clear message so the
+  // regression surfaces at CI / first-run time, not at the next e2e 403.
+  // Tests can disable via `options.protectedEmails: []`.
+  const protectedEmails = options?.protectedEmails ?? _readProtectedEmailsForTesting();
+  const violation = emails.find((e) => protectedEmails.includes(e));
+  if (violation) {
+    throw new Error(
+      `Teardown refused: email "${violation}" is in the protected platform-admin set ` +
+      `${JSON.stringify(protectedEmails)}. The ambient platform admin user MUST persist ` +
+      `across e2e runs — deleting it breaks the NULL-scoped role binding that authorizes ` +
+      `POST /v1/organizations for every future run (C-018 invariant). If you genuinely need ` +
+      `to remove the platform admin, do it manually via a one-off SQL or revoke the role via ` +
+      `\`php artisan ospp:assign-platform-role <email> <other-role>\` — NOT through this teardown.`,
+    );
+  }
+
   const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
   const userIds = `SELECT id FROM users WHERE email = ANY(${emailArr})`;
   return [
