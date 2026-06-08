@@ -18,8 +18,17 @@ description: |
   this scenario surfaces it.
 
   Pre-conditions: clean UAT (no user with the generated
-  e2e-returning-{{stationId}}@onestoppay.dev email). Re-running the
-  scenario is safe — each run uses a fresh stn_<random>.
+  e2e-returning-{{stationId}}@onestoppay.dev email) AND the permanent
+  platform admin user seeded (E2EBootstrapSeeder, see scenario A doc).
+  Re-running the scenario is safe — each run uses a fresh stn_<random>;
+  the platform admin is never touched.
+
+# C-018: platform admin (ambient, permanent) creates the org. The
+# customer (registered fresh per run) becomes tenant_owner on org-create
+# and drives every tenant op via the identity switch below.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 
 defer_mqtt_connect: true
 
@@ -46,6 +55,9 @@ steps:
     capture:
       user_email: "user.email"
 
+  # Platform admin (auto-auth from `auth:`) creates the org with the
+  # customer as owner_email — CreateOrganizationAction inserts the
+  # Member row and MemberObserver syncs the Spatie tenant_owner pivot.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/organizations"
@@ -55,6 +67,19 @@ steps:
     expect_status: 201
     capture:
       organization_id: "data.organization.id"
+
+  # Identity switch — log in as the customer (now tenant_owner). All
+  # subsequent api_calls use the customer's JWT, not the platform
+  # admin's (whose NULL-scoped role would be Spatie-filtered once
+  # X-Organization-Id is set).
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.user_email}}"
+      password: "E2eTestPass123!"
+    expect_status: 200
+    set_auth_token: "data.access_token"
 
   - action: api_call
     method: POST

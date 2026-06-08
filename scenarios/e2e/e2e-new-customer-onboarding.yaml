@@ -1,17 +1,39 @@
 name: "E2E — New Customer Onboarding"
 description: |
-  End-to-end production-like business journey: a new operator signs up
-  (no pre-existing user/org/station/catalog), creates their org +
-  location, registers a 4-bay station, issues a provisioning token,
-  provisions the station (CSR+cert via /api/v1/stations/provision),
-  boots over MQTT, configures the service catalog (with prices), then
-  exercises the full session lifecycle (start → MeterValues → stop) as
-  a returning user. Single user plays both operator and driver roles —
-  the production reality for SMB owners testing their own station.
+  End-to-end production-like business journey with THREE real identities
+  matching production RBAC (C-018):
 
-  Pre-conditions: clean UAT (or at least no user with the generated
-  e2e-{{stationId}}@onestoppay.dev email). Each run uses a fresh
-  stn_<random> station — re-running the scenario does NOT collide.
+    1. PLATFORM ADMIN (ambient, permanent in UAT — `e2e-platform-admin@
+       onestoppay.ro`, role `platform_admin` NULL-scoped, seeded once via
+       `php artisan db:seed --class=E2EBootstrapSeeder`) creates the org
+       on behalf of the new customer. The scenario never creates or
+       deletes this user — see `auth:` block below.
+
+    2. CUSTOMER (`e2e-{{stationId}}@onestoppay.dev`, fresh per run): signs
+       up via POST /v1/auth/register, then — after org-create — is
+       auto-promoted to `tenant_owner` of the new org by
+       CreateOrganizationAction (Member row with role=tenant_owner +
+       MemberObserver sync to Spatie). The scenario switches identity to
+       this user via `set_auth_token` and drives all tenant ops
+       (location, station, provisioning-token, catalog, sessions).
+
+    3. STATION (mTLS, fresh per run): identified by its `stn_<random>`
+       station_id and the cert issued by /api/v1/stations/provision.
+       Drives the MQTT wire — Boot, Status, MeterValues, Start/Stop.
+
+  Pre-conditions: clean UAT (no user with the generated
+  e2e-{{stationId}}@onestoppay.dev email) and the permanent platform
+  admin user seeded. Each run uses a fresh stn_<random> station; the
+  customer user, org, location, station, and cert are created and
+  optionally torn down per-run. The platform admin is never touched.
+
+# C-018 sim-side: resolve `context.apiCredentials` from these env vars
+# (source `~/.config/osp-e2e-secrets.env` before running). target.credentials
+# (UAT_EMAIL = tenant_owner per PoolBootstrap doctrine) is preserved for
+# every other scenario in the suite — this override is scenario-local.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 
 defer_mqtt_connect: true
 
@@ -25,12 +47,10 @@ station:
     auto_retry_boot: false
 
 steps:
-  # ---------- SMB owner signs up (production reality: cannot self-create
-  # an org — `platform.organizations.create` is platform_admin-only per
-  # RolesAndPermissionsSeeder.php:199-200). The platform admin then
-  # creates the org on behalf of this user via owner_email association.
-  # We do NOT set_auth_token here because the next api_call will
-  # auto-auth as admin@onestoppay.ro to drive the operator steps below.
+  # ---------- Identity #2 self-registers (unauthenticated endpoint).
+  # The customer is created with the global `customer` role. They are NOT
+  # yet a tenant_owner — that happens at the next step when the platform
+  # admin creates the org with `owner_email` pointing here.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/auth/register"
@@ -44,9 +64,13 @@ steps:
       user_id: "user.id"
       user_email: "user.email"
 
-  # ---------- Platform admin creates organization on behalf of the new
-  # user. ApiCallStep auto-authenticates via UAT_EMAIL/UAT_PASSWORD
-  # (targets.yaml.uat.credentials). Subsequent steps reuse that admin JWT.
+  # ---------- Identity #1 (platform admin, auto-auth from `auth:` block)
+  # creates the organization on behalf of the customer. Server-side:
+  # CreateOrganizationAction.execute (line 91-106) finds the existing
+  # customer via firstOrCreate(email=owner_email), inserts a Member row
+  # with role=tenant_owner, and MemberObserver:78 syncs the Spatie pivot
+  # so the customer holds the `tenant_owner` Spatie role on the new org
+  # immediately after this 201 lands.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/organizations"
@@ -57,7 +81,25 @@ steps:
     capture:
       organization_id: "data.organization.id"
 
-  # ---------- Operator: create location (org-scoped) ----------
+  # ---------- Identity switch: log in as the customer (now a
+  # tenant_owner of the org just created) and replace the context JWT.
+  # set_auth_token writes `context.authToken` directly; every subsequent
+  # api_call in this scenario carries the customer's Authorization
+  # header, NOT the platform admin's. The platform admin's role is
+  # NULL-scoped and would be filtered out by Spatie once the next call
+  # carries X-Organization-Id — running tenant ops as the platform admin
+  # would 403 even though the platform admin is omnipotent at the
+  # platform layer.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.user_email}}"
+      password: "E2eTestPass123!"
+    expect_status: 200
+    set_auth_token: "data.access_token"
+
+  # ---------- Identity #2 (now tenant_owner): create location ----------
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/locations"
