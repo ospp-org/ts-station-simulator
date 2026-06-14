@@ -12,6 +12,10 @@ export class BootNotificationHandler implements Handler {
           response.heartbeatIntervalSec,
         );
 
+        // Persist the session key from the response so the MessageSender can
+        // HMAC-sign critical outbound messages (over the whole envelope).
+        station.sessionKey = response.sessionKey ?? null;
+
         // Start heartbeat at server-specified interval
         station.startHeartbeat(response.heartbeatIntervalSec);
 

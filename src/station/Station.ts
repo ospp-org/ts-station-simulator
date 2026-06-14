@@ -47,6 +47,7 @@ export class Station extends EventEmitter {
   public readonly sessions: Map<string, SessionInfo> = new Map();
   public readonly reservations: Map<string, ReservationInfo> = new Map();
   public currentRevocationEpoch: number = 0;
+  public sessionKey: string | null = null;
 
   private readonly connection: MqttConnection;
   public bootAccepted: boolean = false;
@@ -61,7 +62,7 @@ export class Station extends EventEmitter {
     this.config = config;
     this.connection = new MqttConnection(mqttOptions);
     this.router = new MessageRouter();
-    this.sender = new MessageSender(this.connection, config.stationId);
+    this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
 
     for (const bay of config.bays) {
       this.bayMachines.set(bay.bayId, new BayStateMachine());

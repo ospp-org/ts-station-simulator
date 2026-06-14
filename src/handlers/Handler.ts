@@ -11,6 +11,7 @@ export interface StationContext {
   sessions: Map<string, SessionInfo>;
   reservations: Map<string, ReservationInfo>;
   currentRevocationEpoch: number;
+  sessionKey: string | null;
   getBayState(bayId: string): BayStatus;
   setBayState(bayId: string, status: BayStatus): void;
   startHeartbeat(intervalSec: number): void;
