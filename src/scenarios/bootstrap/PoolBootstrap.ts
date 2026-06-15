@@ -75,6 +75,17 @@ export interface PoolBootstrapOptions {
 
 export interface PoolBootstrapHandle {
   orgId: string;
+  /**
+   * The ephemeral tenant_owner this run minted from the platform admin (Direction B:
+   * the pool builder is self-sufficient on identity). Deleted at teardown. Absent on
+   * legacy handles.
+   */
+  ephemeralOwnerEmail?: string;
+  /**
+   * The organization this run CREATED (platform_admin POST /organizations). Teardown
+   * deletes ONLY this id — never a pre-existing org.
+   */
+  createdOrgId?: string;
   /** Location created this run (deleted at teardown). */
   locationId?: string;
   /** Business station_ids provisioned this run (deleted at teardown). */
@@ -113,6 +124,8 @@ export class PoolBootstrapError extends Error {
 /** JSON-serializable subset of a handle — enough to drive {@link teardownPool}. */
 export interface SerializedPoolHandle {
   orgId: string;
+  ephemeralOwnerEmail?: string;
+  createdOrgId?: string;
   locationId?: string;
   stationIds: string[];
   offlineEnabledEmail?: string;
@@ -126,6 +139,8 @@ export interface SerializedPoolHandle {
 export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPoolHandle {
   return {
     orgId: handle.orgId,
+    ephemeralOwnerEmail: handle.ephemeralOwnerEmail,
+    createdOrgId: handle.createdOrgId,
     locationId: handle.locationId,
     stationIds: handle.stationIds,
     offlineEnabledEmail: handle.offlineEnabledEmail,
@@ -139,6 +154,8 @@ export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPool
 export function handleFromSerialized(s: SerializedPoolHandle): PoolBootstrapHandle {
   return {
     orgId: s.orgId,
+    ephemeralOwnerEmail: s.ephemeralOwnerEmail,
+    createdOrgId: s.createdOrgId,
     locationId: s.locationId,
     stationIds: s.stationIds ?? [],
     offlineEnabledEmail: s.offlineEnabledEmail,
@@ -279,6 +296,120 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
 }
 
 // ---------------------------------------------------------------------------
+// Ephemeral provisioning identity (Direction B) — self-sufficient on identity
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the PERSISTENT platform-admin credentials from the environment (sourced from
+ * ~/.config/osp-e2e-secrets.env). This is the ONLY identity the pool builder needs from
+ * outside — it mints everything else (an ephemeral tenant_owner + its org) itself. The pool
+ * builder no longer reads UAT_EMAIL: that ad-hoc identity drifted on every DB wipe and broke
+ * the builder repeatedly; the platform admin is the stable, seeded anchor (E2EBootstrapSeeder).
+ */
+export function platformAdminCredsFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): { email: string; password: string } {
+  const email = env.UAT_E2E_PLATFORM_ADMIN_EMAIL ?? '';
+  const password = env.UAT_E2E_PLATFORM_ADMIN_PASSWORD ?? '';
+  if (email === '' || password === '') {
+    throw new Error(
+      'PoolBootstrap requires UAT_E2E_PLATFORM_ADMIN_EMAIL and UAT_E2E_PLATFORM_ADMIN_PASSWORD ' +
+      '(source ~/.config/osp-e2e-secrets.env). The pool builder mints its own ephemeral ' +
+      'tenant_owner from the persistent platform admin — it no longer uses UAT_EMAIL.',
+    );
+  }
+  return { email, password };
+}
+
+export interface EphemeralProvisioningIdentity {
+  /** tenant_owner JWT for the freshly-created org — used for all provisioning calls. */
+  token: string;
+  /** The org this run CREATED (torn down). */
+  orgId: string;
+  /** The ephemeral customer promoted to tenant_owner (password-hash source + torn down). */
+  ownerEmail: string;
+  /** The generated password the ephemeral owner registered + logs in with. */
+  ownerPassword: string;
+}
+
+/** Domain for the run-scoped ephemeral owner. A registered (active) user, deletable at teardown. */
+const EPHEMERAL_OWNER_DOMAIN = 'onestoppay.dev';
+
+/**
+ * Generate a random password meeting typical complexity (upper + lower + digit + special +
+ * entropy). The `Pp1!` prefix guarantees one of each class; the UUID hex supplies the entropy.
+ */
+function generateOwnerPassword(): string {
+  return `Pp1!${randomUUID().replace(/-/g, '')}`;
+}
+
+/**
+ * Mint an ephemeral tenant_owner from the persistent platform admin, reusing the e2e
+ * onboarding sequence (the SINGLE provisioning-identity model — no second ad-hoc identity):
+ *
+ *   1. Platform admin logs in (persistent anchor).
+ *   2. A fresh ephemeral customer self-registers — `register-first` so it is `is_active=true`
+ *      with a real `password_hash` and can therefore LOG IN (an org-create-only owner is
+ *      created inactive/passwordless → login-blocked; CreateOrganizationAction).
+ *   3. Platform admin creates an org with `owner_email` = that customer → the customer is
+ *      promoted to `tenant_owner` of the new org (CreateOrganizationAction → MemberObserver).
+ *   4. The customer logs in → a `tenant_owner` JWT scoped to the new org, carrying
+ *      `locations.create` / `stations.create` / `stations.manage_provisioning_tokens` —
+ *      exactly the tenant permissions the provisioning endpoints require (a bare platform_admin
+ *      is 403'd on all three).
+ */
+export async function acquireEphemeralProvisioningIdentity(
+  apiBaseUrl: string,
+  admin: { email: string; password: string },
+  runStamp: string,
+): Promise<EphemeralProvisioningIdentity> {
+  // 1. Platform admin login.
+  const adminLogin = await apiCall({
+    method: 'POST',
+    url: `${apiBaseUrl}/api/v1/auth/login`,
+    body: { email: admin.email, password: admin.password },
+    expectStatus: 200,
+  });
+  const adminToken = requireString(pluck(adminLogin, 'data.access_token'), 'platform admin data.access_token');
+
+  // 2. Register the ephemeral owner (active + password set → loginable).
+  const ownerEmail = `sim-pool-owner-${runStamp}@${EPHEMERAL_OWNER_DOMAIN}`;
+  const ownerPassword = generateOwnerPassword();
+  await apiCall({
+    method: 'POST',
+    url: `${apiBaseUrl}/api/v1/auth/register`,
+    body: {
+      name: `Sim Pool Owner ${runStamp}`,
+      email: ownerEmail,
+      password: ownerPassword,
+      password_confirmation: ownerPassword,
+    },
+    expectStatus: 201,
+  });
+
+  // 3. Platform admin creates the org on the owner's behalf → owner promoted to tenant_owner.
+  const orgRes = await apiCall({
+    method: 'POST',
+    url: `${apiBaseUrl}/api/v1/organizations`,
+    token: adminToken,
+    body: { name: `Sim Pool ${runStamp}`, owner_email: ownerEmail },
+    expectStatus: 201,
+  });
+  const orgId = requireString(pluck(orgRes, 'data.organization.id'), 'org data.organization.id');
+
+  // 4. Login as the promoted tenant_owner.
+  const ownerLogin = await apiCall({
+    method: 'POST',
+    url: `${apiBaseUrl}/api/v1/auth/login`,
+    body: { email: ownerEmail, password: ownerPassword },
+    expectStatus: 200,
+  });
+  const token = requireString(pluck(ownerLogin, 'data.access_token'), 'ephemeral owner data.access_token');
+
+  return { token, orgId, ownerEmail, ownerPassword };
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
@@ -289,11 +420,13 @@ export async function bootstrapPool(
   if (!target.apiBaseUrl) {
     throw new Error('bootstrap: target.apiBaseUrl is required');
   }
-  if (!target.credentials) {
-    throw new Error('bootstrap: target.credentials (UAT_EMAIL/UAT_PASSWORD) are required');
-  }
   const apiBaseUrl = target.apiBaseUrl;
   const dbConfig = options.dbConfig ?? uatDbConfigFromEnv();
+  // Direction B — class-of-problem fix: the pool builder is SELF-SUFFICIENT on identity.
+  // It no longer reads target.credentials/UAT_EMAIL (an ad-hoc identity nothing recreates →
+  // drifts on every DB wipe → 401 → broken builder, 5× over). It mints its own ephemeral
+  // tenant_owner from the PERSISTENT platform admin instead.
+  const runStamp = randomUUID().slice(0, 8);
 
   const handle: PoolBootstrapHandle = {
     orgId: options.orgId ?? '',
@@ -311,19 +444,17 @@ export async function bootstrapPool(
     // a hard precondition for every bootstrap.
     await assertUatDbReachable(dbConfig);
 
-    // 1. Auth
-    console.log(`[bootstrap] logging in as ${target.credentials.email}…`);
-    const loginRes = await apiCall({
-      method: 'POST',
-      url: `${apiBaseUrl}/api/v1/auth/login`,
-      body: { email: target.credentials.email, password: target.credentials.password },
-      expectStatus: 200,
-    });
-    const token = requireString(pluck(loginRes, 'data.access_token'), 'data.access_token');
-
-    // 2. Org (admin context)
-    handle.orgId = options.orgId ?? (await discoverOrgId(apiBaseUrl, token));
-    console.log(`[bootstrap] using organization ${handle.orgId}`);
+    // 1-2. Identity — mint an ephemeral tenant_owner from the persistent platform admin
+    //      (register customer → platform_admin org-create via owner_email → login as the
+    //      promoted owner). Both the owner and the org it owns are deleted at teardown.
+    const admin = platformAdminCredsFromEnv();
+    console.log(`[bootstrap] minting ephemeral tenant_owner from platform admin ${admin.email}…`);
+    const identity = await acquireEphemeralProvisioningIdentity(apiBaseUrl, admin, runStamp);
+    const token = identity.token;
+    handle.orgId = identity.orgId;
+    handle.createdOrgId = identity.orgId;
+    handle.ephemeralOwnerEmail = identity.ownerEmail;
+    console.log(`[bootstrap] ephemeral owner ${identity.ownerEmail} → org ${handle.orgId}`);
 
     // 3. Fresh location
     const locRes = await apiCall({
@@ -396,9 +527,8 @@ export async function bootstrapPool(
     //    `offline_enabled` is set on the seeded users to match `options.enableOffline` so
     //    /offline/passes scenarios pass the gate without a separate flip.
     if (options.identityPoolSize > 0) {
-      const runStamp = randomUUID().slice(0, 8);
-      const sourceEmail = target.credentials.email;
-      const sourcePassword = target.credentials.password;
+      const sourceEmail = identity.ownerEmail;
+      const sourcePassword = identity.ownerPassword;
       const emails: string[] = [];
       for (let i = 0; i < options.identityPoolSize; i++) {
         emails.push(`sim-worker-${runStamp}-${i}@test.local`);
@@ -416,7 +546,7 @@ export async function bootstrapPool(
     //    identityPoolSize > 0 the scenarios run as the seeded per-worker users (whose
     //    offline_enabled is set in step 6), so UAT_EMAIL's flag is irrelevant.
     if (options.enableOffline && options.identityPoolSize === 0) {
-      const email = target.credentials.email;
+      const email = identity.ownerEmail;
       await setOfflineEnabled(email, true, dbConfig);
       handle.offlineEnabledEmail = email;
       console.log(`[bootstrap] offline_enabled=true for ${email}`);
@@ -430,28 +560,6 @@ export async function bootstrapPool(
     const message = err instanceof Error ? err.message : String(err);
     throw new PoolBootstrapError(`pool bootstrap failed: ${message}`, handle);
   }
-}
-
-async function discoverOrgId(apiBaseUrl: string, token: string): Promise<string> {
-  const res = await apiCall({
-    method: 'GET',
-    url: `${apiBaseUrl}/api/v1/organizations`,
-    token,
-    expectStatus: 200,
-  });
-  const list = pluck(res, 'data');
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new Error(
-      'bootstrap: the configured user has no organization memberships. The pool bootstrap ' +
-      'needs a tenant_owner identity (org + stations.create). Pass --org-id or seed a membership.',
-    );
-  }
-  const first = list[0] as { id?: unknown };
-  const id = requireString(first.id, 'organizations[0].id');
-  if (list.length > 1) {
-    console.warn(`[bootstrap] user is in ${list.length} orgs; using the first (${id}). Pass --org-id to pin.`);
-  }
-  return id;
 }
 
 async function registerAndProvisionStation(
