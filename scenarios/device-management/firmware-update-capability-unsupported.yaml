@@ -1,0 +1,75 @@
+name: "Firmware Update — Capability Not Supported (6008, pre-flight REST rejection)"
+description: >
+  OBSERVATION INSTRUMENT (not RED-first). A station boots advertising
+  deviceManagementSupported:false. When the operator triggers UpdateFirmware via the
+  admin REST API, csms pre-flight check 3 (InitiateFirmwareUpdateAction.php:72) rejects
+  the request SERVER-SIDE before any MQTT command is dispatched, returning HTTP 422 with
+  ospp_code 6008 CAPABILITY_NOT_SUPPORTED to the OPERATOR (server->operator). Nothing
+  reaches the station on the wire. This documents the REAL direction: 6008 is an
+  operator-facing HTTP error, NOT a server->station wire code. 6008 is absent from spec +
+  sdk-ts; the canonical spec code for "command not supported" is 2007 (blanket-implicit
+  for all Server->Station REQUESTs, 07-errors.md:399).
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # 1. Boot WITHOUT device-management capability — csms persists
+  #    device_management_supported=false (BootNotificationHandler.php:101).
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: false   # <-- station does NOT support device management
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # 2. Operator triggers UpdateFirmware via admin REST API.
+  #    Pre-flight checks: 1 exists (pass), 2 online (pass — just booted), 3 capability
+  #    (FAIL: device_management_supported === false) -> throw CAPABILITY_NOT_SUPPORTED.
+  #    Global OsppException render handler (bootstrap/app.php:96) -> HTTP 422 JSON:
+  #      { "error": { "code": "...", "ospp_code": 6008, "message": "Station does not support device management" } }
+  #    The MQTT sendCommand (InitiateFirmwareUpdateAction.php:158) is NEVER reached.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      signature: "MEUCIQDexample"
+    expect_status: 422                     # <-- the operator-facing pre-flight rejection (NOT 202)
+    capture:
+      ospp_code: "error.ospp_code"         # expect 6008
+      error_code: "error.code"             # expect CAPABILITY_NOT_SUPPORTED
+      error_message: "error.message"       # expect "Station does not support device management"
+
+  # 3. NO wait_for UpdateFirmware on the wire: csms dispatched nothing for a
+  #    capability-unsupported station. The absence of a wire command IS the proof of
+  #    direction. (A wait_for here would correctly time out.)
