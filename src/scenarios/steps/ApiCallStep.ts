@@ -389,8 +389,14 @@ export class ApiCallStep implements Step {
     // /organizations itself, etc.) so the auto-discovery call doesn't loop.
     const explicitOrgHeader =
       headers !== undefined && Object.keys(headers).some((k) => k.toLowerCase() === 'x-organization-id');
+    // `omit_org_header: true` suppresses the auto-injected X-Organization-Id so a PLATFORM-scoped
+    // api_call (e.g. install-certificate / trigger-cert-renewal, gated by
+    // permission:platform.certificates.manage) resolves at the NULL/platform team instead of an
+    // org team — where a platform_admin's NULL-scoped permission would be filtered out (403).
+    // Confirmed empirically on UAT: org-less platform admin is authorized; org-scoped is 403.
+    const omitOrgHeader = definition.omit_org_header === true;
     let autoOrgId: string | undefined;
-    if (token && requiresOrgHeader(url) && !explicitOrgHeader) {
+    if (token && requiresOrgHeader(url) && !explicitOrgHeader && !omitOrgHeader) {
       autoOrgId = await ensureOrgId(context, token);
     }
 

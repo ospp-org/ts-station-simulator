@@ -1,5 +1,14 @@
 name: "Certificate Install Accepted"
 description: "Boot station, trigger CertificateInstall via API, wait for the request on MQTT, and respond with Accepted status."
+
+# Certificate lifecycle is PLATFORM-managed: install-certificate is gated by
+# permission:platform.certificates.manage (admin.php), which no tenant role carries.
+# Authenticate as the persistent platform admin AND suppress X-Organization-Id on the
+# install-certificate call (omit_org_header) so the platform permission resolves at the
+# NULL team — org-scoping it 403s the NULL-scoped platform admin. Verified on UAT.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -43,6 +52,7 @@ steps:
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/install-certificate"
+    omit_org_header: true
     body:
       certificateType: "StationCertificate"
       certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"

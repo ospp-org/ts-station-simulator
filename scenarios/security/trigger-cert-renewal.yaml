@@ -1,5 +1,11 @@
 name: "Trigger Certificate Renewal"
 description: "Boot station, trigger TriggerCertificateRenewal via API, handler auto-responds and sends SignCertificate CSR."
+
+# Platform-managed cert lifecycle — platform admin + omit_org_header (NULL team).
+# See certificate-install.yaml for the full rationale.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -43,6 +49,7 @@ steps:
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/trigger-cert-renewal"
+    omit_org_header: true
     body:
       certificateType: "StationCertificate"
     expect_status: 202
