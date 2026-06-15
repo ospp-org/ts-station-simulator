@@ -424,10 +424,16 @@ async function outputResults(results: ScenarioResult[], opts: RunCommandOptions)
 
 function printConsoleReport(results: ScenarioResult[]): void {
   for (const result of results) {
-    const icon = result.status === 'passed' ? chalk.green('\u2713') : chalk.red('\u2717');
+    const icon = result.status === 'passed'
+      ? chalk.green('\u2713')
+      : result.status === 'skipped'
+        ? chalk.gray('\u2013')
+        : chalk.red('\u2717');
     const name = result.status === 'passed'
       ? chalk.green(result.name)
-      : chalk.red(result.name);
+      : result.status === 'skipped'
+        ? chalk.gray(result.name)
+        : chalk.red(result.name);
     const duration = chalk.gray(`(${result.durationMs}ms)`);
 
     console.log(`${icon} ${name} ${duration}`);
@@ -459,6 +465,7 @@ function printConsoleReport(results: ScenarioResult[]): void {
   const total = results.length;
   const passed = results.filter(r => r.status === 'passed').length;
   const failed = results.filter(r => r.status === 'failed').length;
+  const skipped = results.filter(r => r.status === 'skipped').length;
   const totalDuration = results.reduce((sum, r) => sum + r.durationMs, 0);
 
   console.log(chalk.bold('Summary:'));
@@ -466,6 +473,9 @@ function printConsoleReport(results: ScenarioResult[]): void {
   console.log(`  ${chalk.green(`Passed:   ${passed}`)}`);
   if (failed > 0) {
     console.log(`  ${chalk.red(`Failed:   ${failed}`)}`);
+  }
+  if (skipped > 0) {
+    console.log(`  ${chalk.gray(`Skipped:  ${skipped}`)} (passed + failed + skipped = ${total})`);
   }
   console.log(`  Duration: ${totalDuration}ms`);
 }

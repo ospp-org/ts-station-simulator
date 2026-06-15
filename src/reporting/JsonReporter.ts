@@ -8,6 +8,7 @@ export class JsonReporter {
         total: results.length,
         passed: results.filter(r => r.status === 'passed').length,
         failed: results.filter(r => r.status === 'failed').length,
+        skipped: results.filter(r => r.status === 'skipped').length,
         durationMs: results.reduce((sum, r) => sum + r.durationMs, 0),
       },
       scenarios: results,

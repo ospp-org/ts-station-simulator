@@ -48,6 +48,7 @@
 # B's station_services row, session is accepted at station A's bay with
 # station B's pricing.
 name: "Session Rejected - Invalid Service Cross-Station (Sprint Server #2 regression)"
+skip_when_pooled: "Needs manual cross-station setup via --var stationA_bayId / stationB_serviceId (two stations, disjoint catalogs) — not auto-runnable in a pooled suite. Run with --scenario <file> --target uat --var ... (see header comment)."
 description: "Two stations in one org with disjoint catalogs. Session-start with bay on station A + serviceId from station B must reject with 404 INVALID_SERVICE. Asserts resolveServiceUuid station-scoping closes the cross-station/cross-tenant ambiguity."
 
 # This scenario doesn't drive MQTT — the assertion is server-side HTTP.

@@ -1,4 +1,5 @@
 name: "E2E — New Customer Onboarding"
+skip_when_pooled: "Self-provisions its own org + fresh station (action: provision) — collides with --bootstrap-pool's shared pool (409 Station already exists). Proven standalone in the gate; run with --scenario <file> --target uat."
 description: |
   End-to-end production-like business journey with THREE real identities
   matching production RBAC (C-018):

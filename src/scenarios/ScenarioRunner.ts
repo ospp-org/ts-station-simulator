@@ -36,6 +36,14 @@ export interface ScenarioDefinition {
   skip?: boolean;
   skip_reason?: string;
   /**
+   * Conditional skip: when set AND the run is a `--bootstrap-pool` run, the scenario is
+   * skipped with this reason (status 'skipped' — never failed/passed). For scenarios that are
+   * incompatible with the shared pool but run fine standalone: e2e/* (self-provision their own
+   * org+station → 409 vs the pool) and the cross-station regression (needs manual --var).
+   * Transparent: counted as skipped so passed + failed + skipped = total.
+   */
+  skip_when_pooled?: string;
+  /**
    * When true, the runner skips the automatic `station.connect()` call so
    * that scenarios can run pre-provisioning API steps (signup, org, station
    * register, provisioning-token) before the station has TLS material. The
@@ -130,7 +138,7 @@ export interface RunOptions {
 
 export interface ScenarioResult {
   name: string;
-  status: 'passed' | 'failed';
+  status: 'passed' | 'failed' | 'skipped';
   durationMs: number;
   steps: StepResult[];
   error?: string;
@@ -788,19 +796,29 @@ export class ScenarioRunner {
     return parsed;
   }
 
+  /** Build a transparent 'skipped' result (status 'skipped', reason on a marker step). */
+  private skippedResult(name: string, reason: string): ScenarioResult {
+    console.log('[ScenarioRunner] SKIPPED "%s": %s', name, reason);
+    return {
+      name,
+      status: 'skipped',
+      durationMs: 0,
+      steps: [{ stepIndex: -1, action: 'skip', status: 'skipped', durationMs: 0, error: reason }],
+    };
+  }
+
   async runScenario(
     scenario: ScenarioDefinition,
     target: TargetConfig,
     userVars?: Map<string, string>,
   ): Promise<ScenarioResult> {
     if (scenario.skip) {
-      console.log('[ScenarioRunner] Skipping "%s": %s', scenario.name, scenario.skip_reason ?? 'marked as skip');
-      return {
-        name: scenario.name,
-        status: 'passed',
-        durationMs: 0,
-        steps: [{ stepIndex: -1, action: 'skip', status: 'skipped', durationMs: 0, error: scenario.skip_reason }],
-      };
+      return this.skippedResult(scenario.name, scenario.skip_reason ?? 'marked as skip');
+    }
+    // Conditional skip: a pool-incompatible scenario in a --bootstrap-pool run (this.runPool set).
+    // Transparent — reported 'skipped', never silently dropped or counted as passed.
+    if (scenario.skip_when_pooled && this.runPool !== null) {
+      return this.skippedResult(scenario.name, scenario.skip_when_pooled);
     }
 
     const context = createContext();
