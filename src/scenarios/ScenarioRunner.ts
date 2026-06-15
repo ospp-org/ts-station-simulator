@@ -4,7 +4,9 @@ import path from 'node:path';
 import type { StepDefinition } from './steps/Step.js';
 import type { ScenarioContext, StepResult } from './ScenarioContext.js';
 import { createContext } from './ScenarioContext.js';
-import { Station } from '../station/Station.js';
+import { Station, type Handler } from '../station/Station.js';
+import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
+import { OsppAction } from '@ospp/protocol';
 import {
   generateStationId,
   generateSerialNumber,
@@ -587,14 +589,37 @@ function createStationFromScenario(
     };
   }
 
-  return new Station(config, {
+  const station = new Station(config, {
     mqttUrl: target.mqttUrl,
     stationId,
     tls,
     mqttCredentials,
     cleanSession,
   });
+
+  // Scenario mode runs zero auto-responder handlers (the scenario scripts every
+  // outbound message). But the boot Response carries the sessionKey the station
+  // needs to HMAC-sign critical messages, and only BootNotificationHandler
+  // captures it. Register it with autoReact=false so it ONLY captures the
+  // sessionKey (no auto heartbeat / StatusNotifications — those would duplicate
+  // the scenario's explicit ones and use the pre-provision bayIds). The router
+  // fans out (buffer + emit), so wait_for still sees the Response.
+  // Cast: handlers implement the StationContext-based Handler; registerHandler
+  // expects the Station-based Handler (same SessionInfo-divergence cast the
+  // `connect` command uses — see cli/index.ts).
+  station.registerHandler(
+    OsppAction.BOOT_NOTIFICATION,
+    new BootNotificationHandler(false) as unknown as Handler,
+  );
+
+  return station;
 }
+
+/**
+ * Test seam — exposes the private scenario Station factory so unit tests can
+ * assert scenario-mode wiring (e.g. that a station captures the boot sessionKey).
+ */
+export const _createStationFromScenarioForTesting = createStationFromScenario;
 
 // ---------------------------------------------------------------------------
 // ScenarioRunner
