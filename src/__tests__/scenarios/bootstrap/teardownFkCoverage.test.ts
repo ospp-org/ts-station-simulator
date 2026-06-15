@@ -103,12 +103,35 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     // cascade-removes station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
+  // organizations: 10 FKs (captured 2026-06-15 via pg_constraint, confrelid='organizations').
+  // The 5 CASCADE children are auto-removed by the org delete (stations, offline_passes, roles,
+  // model_has_roles, service_definitions); the 5 NO ACTION children must be deleted first or the
+  // org delete FK-blocks. The ephemeral-org teardown (Direction B) deletes the org last.
+  organizations: [
+    { child: 'stations',             column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'offline_passes',       column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'roles',                column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'model_has_roles',      column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'service_definitions',  column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'organization_members', column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'corporate_policies',   column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'locations',            column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'sessions',             column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'invitations',          column: 'organization_id', onDelete: 'NO ACTION' },
+  ],
+  // roles: 2 FKs, both CASCADE via the org→roles cascade (no explicit DELETE FROM roles needed).
+  roles: [
+    { child: 'model_has_roles',      column: 'role_id', onDelete: 'CASCADE' },
+    { child: 'role_has_permissions', column: 'role_id', onDelete: 'CASCADE' },
+  ],
 };
 
 /** Full-coverage handle — every optional path populated so buildTeardownSql emits everything. */
 function fullHandle(): PoolBootstrapHandle {
   return {
     orgId: '019e674f-aa63-7309-ab7a-c71fcd6178de',
+    createdOrgId: '019e674f-aa63-7309-ab7a-c71fcd6178de',
+    ephemeralOwnerEmail: 'sim-pool-owner-test@onestoppay.dev',
     locationId: '019e81fb-58db-7173-89b6-d1ae08cf9a0e',
     stationIds: ['stn_aaaa1111', 'stn_bbbb2222'],
     certFiles: [],

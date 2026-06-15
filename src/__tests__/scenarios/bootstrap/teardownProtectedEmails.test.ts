@@ -168,16 +168,19 @@ describe('PROTECTED_EMAILS teardown guard (C-018 invariant)', () => {
     });
   });
 
-  describe('CASCADE on organizations does not affect NULL-scoped Spatie rows (structural argument)', () => {
-    // Postgres CASCADE on a FK matches `child.<col> = <deleted parent id>`. NULL
-    // is never equal to any uuid (NULL != x is NULL, treated as false). The
-    // platform admin's roles + model_has_roles rows have organization_id = NULL,
-    // so deleting any tenant org (which CASCADEs via the team_foreign_key) never
-    // matches them. This test locks in that the teardown does NOT add any DELETE
-    // FROM organizations that could change this assumption.
-    it('teardown does not DELETE FROM organizations (e2e scenarios reuse the org transiently; no explicit FK cascade trigger from this teardown)', () => {
+  describe('org-delete is gated on createdOrgId — pre-existing/legacy handles never touch an org', () => {
+    // The pool builder now CREATES an ephemeral org per run (Direction B) and deletes ONLY
+    // that org (scoped to handle.createdOrgId) at teardown. A handle that carries only `orgId`
+    // (a REFERENCE to an org we did NOT create — the legacy / --org-id-pinned shape) must never
+    // emit a DELETE FROM organizations. The ephemeral-org delete + the platform-admin-untouched +
+    // pre-existing-untouched invariants are pinned in PoolBootstrapTeardownInvariant.test.ts.
+    //
+    // Postgres CASCADE on a FK matches `child.<col> = <deleted parent id>`; the platform admin's
+    // roles + model_has_roles rows have organization_id = NULL, and NULL != any uuid, so deleting
+    // the ephemeral org (a concrete uuid) never matches them — the NULL-scoped binding survives.
+    it('a handle WITHOUT createdOrgId never emits DELETE FROM organizations (pre-existing org safety)', () => {
       const sql = buildTeardownSql({
-        orgId: '019e674f-aa63-7309-ab7a-c71fcd6178de',
+        orgId: '019e674f-aa63-7309-ab7a-c71fcd6178de', // a referenced org we did NOT create
         locationId: '019e81fb-58db-7173-89b6-d1ae08cf9a0e',
         stationIds: ['stn_x'],
         certFiles: [],
@@ -185,9 +188,6 @@ describe('PROTECTED_EMAILS teardown guard (C-018 invariant)', () => {
         identityCredentials: [],
         pool: new StationPool(),
       });
-      // If a future commit adds `DELETE FROM organizations` to the teardown,
-      // this test fails — surfacing the need to confirm the platform admin's
-      // NULL-scoped invariant explicitly.
       expect(sql).not.toMatch(/DELETE FROM organizations\b/);
     });
   });

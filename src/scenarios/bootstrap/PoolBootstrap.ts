@@ -808,6 +808,31 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   if (handle.offlineEnabledEmail) {
     lines.push(`UPDATE users SET offline_enabled = false WHERE email = ${sqlLiteral(handle.offlineEnabledEmail)};`);
   }
+
+  // Ephemeral identity teardown (Direction B). The pool builder minted its OWN tenant_owner
+  // + org this run (see acquireEphemeralProvisioningIdentity); both must be removed, scoped
+  // STRICTLY to this run's ids — never a pre-existing org, never the persistent platform admin.
+  //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
+  //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
+  //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
+  //   - The org's NO-ACTION children (organization_members, corporate_policies, invitations)
+  //     are deleted before the org (FK-safe; pg_constraint-verified 2026-06-15). `locations` +
+  //     `sessions` (also NO-ACTION → organizations) were already removed by the station/location
+  //     path above. DELETE FROM organizations then CASCADE-removes the per-org cloned `roles`
+  //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
+  //     `service_definitions`, `offline_passes`, and any remaining `stations`.
+  if (handle.ephemeralOwnerEmail) {
+    lines.push(...buildTeardownTestUsersSql([handle.ephemeralOwnerEmail]));
+  }
+  if (handle.createdOrgId) {
+    const createdOrgLit = sqlLiteral(handle.createdOrgId);
+    lines.push(
+      `DELETE FROM organization_members WHERE organization_id = ${createdOrgLit};`,
+      `DELETE FROM corporate_policies WHERE organization_id = ${createdOrgLit};`,
+      `DELETE FROM invitations WHERE organization_id = ${createdOrgLit};`,
+      `DELETE FROM organizations WHERE id = ${createdOrgLit};`,
+    );
+  }
   lines.push('COMMIT;');
   return lines.join('\n');
 }
