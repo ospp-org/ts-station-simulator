@@ -369,11 +369,18 @@ export function _hydrateProvisioningForTesting(
  */
 export function _resolveScenarioAuthForTesting(
   scenarioAuth: { email_env: string; password_env: string } | undefined,
-  targetCredentials: { email: string; password: string } | undefined,
+  _targetCredentials: { email: string; password: string } | undefined,
   env: Record<string, string | undefined>,
 ): { email: string; password: string } | undefined {
   if (!scenarioAuth) {
-    return targetCredentials;
+    // Capul 2 of the UAT_EMAIL class: a scenario with NO `auth:` block returns undefined here
+    // so the caller's `?? acquiredIdentity` routes to the per-scenario pool worker
+    // (tenant_operator), NOT target.credentials/UAT_EMAIL (the drift-prone shared identity that
+    // 401'd 56/94 scenarios). The caller's final `?? target.credentials` still covers non-pool
+    // runs; in pooled mode acquiredIdentity is always set (allocator throws on depletion), so
+    // the UAT_EMAIL fallback is structurally unreachable. (`_targetCredentials` kept for
+    // signature stability with the 9 existing call sites / tests.)
+    return undefined;
   }
   const email = env[scenarioAuth.email_env];
   const password = env[scenarioAuth.password_env];

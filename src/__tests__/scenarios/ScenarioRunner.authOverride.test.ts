@@ -4,14 +4,19 @@ import { _resolveScenarioAuthForTesting } from '../../scenarios/ScenarioRunner.j
 describe('scenario.auth override (C-018 platform admin)', () => {
   const targetCreds = { email: 'tenant-owner@uat.com', password: 'tenant-pass' };
 
-  it('returns target.credentials when scenario.auth is absent', () => {
-    const result = _resolveScenarioAuthForTesting(undefined, targetCreds, {});
-    expect(result).toEqual(targetCreds);
+  // Capul 2 of the UAT_EMAIL class: when a scenario has NO `auth:` block, this MUST return
+  // undefined so the CALLER falls through to `?? acquiredIdentity` — the per-scenario pool
+  // tenant_operator worker minted by --bootstrap-pool — NOT to target.credentials (UAT_EMAIL,
+  // the drift-prone shared identity that 401'd 56/94 scenarios). The caller's final
+  // `?? target.credentials` still serves non-pool runs (e.g. sandbox with real creds); in
+  // pooled mode acquiredIdentity is always set (the allocator throws on depletion), so the
+  // UAT_EMAIL fallback is structurally unreachable there — the class is closed.
+  it('returns UNDEFINED when scenario.auth is absent (caller falls through to the pool identity, not UAT_EMAIL)', () => {
+    expect(_resolveScenarioAuthForTesting(undefined, targetCreds, {})).toBeUndefined();
   });
 
-  it('returns undefined when scenario.auth is absent AND target has no credentials', () => {
-    const result = _resolveScenarioAuthForTesting(undefined, undefined, {});
-    expect(result).toBeUndefined();
+  it('returns undefined when scenario.auth is absent regardless of target.credentials', () => {
+    expect(_resolveScenarioAuthForTesting(undefined, undefined, {})).toBeUndefined();
   });
 
   it('resolves email_env/password_env from process.env when scenario.auth is set', () => {
