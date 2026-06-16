@@ -108,3 +108,27 @@ steps:
     expect_status: 409
   # Per C-005: server returns 409 BAY_BUSY (state conflict) pre-MQTT-dispatch;
   # no StartService Request is published. The 409 is the final assertion.
+
+  # --- Pool-hygiene teardown: end the (first) session this scenario started so the
+  #     reused pooled station is returned clean. Appended after all assertions — does
+  #     not change what the scenario tests. (Class: session-leak.)
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId1}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: true

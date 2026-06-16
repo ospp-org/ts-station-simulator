@@ -102,3 +102,27 @@ steps:
       services:
         - serviceId: "{{captured.serviceId}}"
           available: false
+
+  # --- Pool-hygiene teardown: end the session this scenario started so the reused
+  #     pooled station is returned clean. Appended after all assertions — does not
+  #     change what the scenario tests. (Class: session-leak.)
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: true

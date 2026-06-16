@@ -67,6 +67,9 @@ steps:
     message: StartService
     messageType: Request
     timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
 
   - action: send
     message: StartService
@@ -95,3 +98,27 @@ steps:
       status: "Rejected"
       errorCode: 3016
       errorText: "ACTIVE_SESSIONS_PRESENT"
+
+  # --- Pool-hygiene teardown: end the session this scenario started so the reused
+  #     pooled station is returned clean. Appended after all assertions — does not
+  #     change what the scenario tests. (Class: session-leak.)
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
