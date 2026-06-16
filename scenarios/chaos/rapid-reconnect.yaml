@@ -43,8 +43,7 @@ steps:
   - action: fault
     type: disconnect
 
-  - action: delay
-    ms: 1000
+  - action: wait_for_connect
 
   # --- First reconnect with ErrorRecovery ---
   - action: send
@@ -76,8 +75,7 @@ steps:
   - action: fault
     type: disconnect
 
-  - action: delay
-    ms: 1000
+  - action: wait_for_connect
 
   # --- Second reconnect with ErrorRecovery ---
   - action: send

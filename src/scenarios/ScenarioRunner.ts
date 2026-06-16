@@ -16,6 +16,7 @@ import {
 import type { StationConfig, BayConfig } from '../station/StationConfig.js';
 import { SendStep } from './steps/SendStep.js';
 import { WaitForStep } from './steps/WaitForStep.js';
+import { WaitForConnectStep } from './steps/WaitForConnectStep.js';
 import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
@@ -151,6 +152,7 @@ export interface ScenarioResult {
 const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['send', new SendStep()],
   ['wait_for', new WaitForStep()],
+  ['wait_for_connect', new WaitForConnectStep()],
   ['assert', new AssertStep()],
   ['api_call', new ApiCallStep()],
   ['delay', new DelayStep()],

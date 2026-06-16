@@ -111,6 +111,32 @@ export class Station extends EventEmitter {
     this.connection.destroyConnection();
   }
 
+  /**
+   * Resolve when the MQTT client next emits `connect` (a connack) — i.e. the
+   * auto-reconnect that follows `destroyConnection()`. Used by the
+   * `wait_for_connect` step so a scenario re-sends on a live connection
+   * instead of publishing into the mqtt offline store while still
+   * disconnected (a QoS-1 publish there blocks until reconnect and eats the
+   * next `wait_for`'s timeout budget). Rejects after `timeoutMs`.
+   */
+  async waitForConnect(timeoutMs: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const onConnect = (): void => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        this.connection.removeListener('connect', onConnect);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timeout waiting for MQTT (re)connect after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.connection.once('connect', onConnect);
+    });
+  }
+
   async disconnect(): Promise<void> {
     this.stopHeartbeat();
     await this.connection.disconnect();
