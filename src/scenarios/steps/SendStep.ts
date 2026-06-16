@@ -297,6 +297,13 @@ export class SendStep implements Step {
 
     if (action === OsppAction.TRANSACTION_EVENT && messageType === MessageType.REQUEST) {
       await signTransactionEventReceipt(payload, station, context);
+      // `deviceId` is a receipt-only convention field: signTransactionEventReceipt
+      // signs it into receipt.data (v0.4.2+ gate check #6, deviceId <-> pass.device_id),
+      // but it is NOT part of the on-the-wire TransactionEvent schema
+      // (transaction-event-request is additionalProperties:false). Strip it after
+      // signing so the published envelope validates while the signed receipt still
+      // carries it. (Scoped to TransactionEvent Request — does not touch other sends.)
+      delete payload.deviceId;
     }
 
     const { id: correlationId, source } = resolveSendCorrelation(

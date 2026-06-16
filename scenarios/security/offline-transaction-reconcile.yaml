@@ -62,6 +62,7 @@ steps:
     capture:
       offlinePassId: "data.attributes.passId"
       offlineUserSub: "data.attributes.sub"
+      passDeviceId: "data.attributes.deviceId"
 
   # --- TransactionEvent: Offline reconciliation (rejected branch — placeholder sig) ---
   - action: send
@@ -70,6 +71,7 @@ steps:
       offlineTxId: "otx_a0000000001"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:00:00.000Z"
@@ -116,6 +118,7 @@ steps:
       offlineTxId: "otx_a0000000001"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:00:00.000Z"

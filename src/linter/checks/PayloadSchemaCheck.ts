@@ -126,6 +126,13 @@ export class PayloadSchemaCheck implements LintCheck {
       if (!schemaKey || !this.availableKeys.has(schemaKey)) continue;
 
       const resolved = replaceTemplates(payload) as Record<string, unknown>;
+      // Mirror SendStep: `deviceId` is a receipt-only convention field that SendStep
+      // signs into receipt.data and then strips before publishing a TransactionEvent
+      // Request, so it never reaches the wire. Drop it here too before schema-
+      // validating, else additionalProperties:false flags a field that is not sent.
+      if (message === 'TransactionEvent') {
+        delete resolved.deviceId;
+      }
       // C-015: a field whose entire value is a single {{captured.X}} token is
       // populated at runtime with a value of statically-unknown type (the engine
       // forwards the captured value verbatim). The dummy-string substitution above
