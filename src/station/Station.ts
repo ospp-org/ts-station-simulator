@@ -200,7 +200,16 @@ export class Station extends EventEmitter {
     }
   }
 
-  async retryBoot(): Promise<void> {
+  /**
+   * Re-send the BootNotification REQUEST.
+   *
+   * @param fixedMessageId Opt-in: reuse this messageId instead of minting a fresh
+   *   UUID. Per the OSPP glossary, a station SHOULD retry with the SAME messageId
+   *   on timeout; the default (undefined → fresh UUID) is preserved so existing
+   *   scenarios are unaffected. Reusing the id is what exercises the server's
+   *   duplicate-REQUEST cached-RESPONSE replay path (02-transport §3.3).
+   */
+  async retryBoot(fixedMessageId?: string): Promise<void> {
     console.log('[Station] Retrying BootNotification...');
     const bootPayload: BootNotificationRequest = {
       stationId: this.config.stationId,
@@ -227,6 +236,7 @@ export class Station extends EventEmitter {
       OsppAction.BOOT_NOTIFICATION,
       MessageType.REQUEST,
       bootPayload,
+      fixedMessageId,
     );
   }
 
