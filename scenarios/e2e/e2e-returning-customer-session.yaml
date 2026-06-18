@@ -174,6 +174,18 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # Heartbeat keep-alive. Scenario-mode stations don't auto-heartbeat
+  # (BootNotificationHandler autoReact=false), but a real station would. This
+  # run (~123s) outlives the csms 3.5x30=105s application-silence window: only an
+  # actual Heartbeat refreshes the server's HeartbeatTracker
+  # (Status/MeterValues/SessionEnded do NOT), so without this the
+  # station:check-heartbeats sweep marks the station offline mid-run — the
+  # second session's start sits only ~4s under the threshold (latently flaky) and
+  # its stop lands past it. Heartbeat at the server's 30s interval; torn down on
+  # disconnect.
+  - action: start_heartbeat
+    interval_sec: 30
+
   # 15s: clock-skew + resetBaysToUnknown drain — see scenario A for rationale.
   - action: delay
     ms: 15000
