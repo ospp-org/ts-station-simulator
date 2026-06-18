@@ -20,6 +20,7 @@ import { WaitForConnectStep } from './steps/WaitForConnectStep.js';
 import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
+import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
 import { FaultStep } from './steps/FaultStep.js';
 import { ProvisionStep } from './steps/ProvisionStep.js';
 import { ProvisionStationPoolStep } from './steps/ProvisionStationPoolStep.js';
@@ -156,6 +157,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['assert', new AssertStep()],
   ['api_call', new ApiCallStep()],
   ['delay', new DelayStep()],
+  ['start_heartbeat', new StartHeartbeatStep()],
   ['fault', new FaultStep()],
   ['provision', new ProvisionStep()],
   ['provision_station_pool', new ProvisionStationPoolStep()],
