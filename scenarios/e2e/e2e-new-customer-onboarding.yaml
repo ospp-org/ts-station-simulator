@@ -200,6 +200,17 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # Heartbeat keep-alive. Scenario-mode stations don't auto-heartbeat
+  # (BootNotificationHandler autoReact=false), but a real station running a live
+  # session would. This run (~86s) currently finishes ~19s under the csms
+  # 3.5x30=105s application-silence window, so it passes today WITHOUT this step —
+  # but that margin is incidental (only an actual Heartbeat refreshes the server's
+  # HeartbeatTracker; Status/MeterValues don't). Heartbeating like real firmware
+  # keeps it correct-by-construction and robust against future step additions,
+  # uniform with the other long e2e scenarios. Torn down on disconnect.
+  - action: start_heartbeat
+    interval_sec: 30
+
   # Wait for BootNotificationHandler's post-Accept side effects to settle —
   # specifically resetBaysToUnknown (BootNotificationHandler.php:175-185)
   # which writes bay.updated_at = server-NOW. The next StatusNotification's
