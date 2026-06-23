@@ -17,6 +17,14 @@ export interface ProvisioningArtifact {
   bayIds: string[];
   certPath?: string;
   keyPath?: string;
+  chainPath?: string;
+  /**
+   * Per-station ECDSA-P256 receipt-signing private key (PKCS8 PEM) persisted at
+   * provisioning. Surfaced by disk hydration only when the file actually exists,
+   * so `run --station <id>` can wire it into the pool for SendStep to sign
+   * offline TransactionEvent receipts.
+   */
+  receiptKeyPath?: string;
 }
 
 export interface ScenarioContext {

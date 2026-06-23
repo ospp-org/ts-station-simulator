@@ -483,6 +483,15 @@ interface BaysJsonShape {
  * absent (V4 Finding #1 fix: fail loud, never silently fall back to
  * random bayIds).
  */
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function hydrateProvisioningFromDisk(
   stationId: string,
   target: TargetConfig,
@@ -512,17 +521,22 @@ async function hydrateProvisioningFromDisk(
         Array.isArray(parsed.bayIds) &&
         parsed.bayIds.length > 0
       ) {
+        const resolvedKey = keyTemplate
+          ? keyTemplate.replace('{{stationId}}', stationId)
+          : undefined;
+        const receiptKeyPath = resolvedKey?.replace(/-key\.pem$/, '-receipt-key.pem');
         return {
           stationId: parsed.stationId,
           bayIds: [...parsed.bayIds],
-          certPath: keyTemplate
-            ? keyTemplate
-                .replace('{{stationId}}', stationId)
-                .replace(/-key\.pem$/, '.pem')
-            : undefined,
-          keyPath: keyTemplate
-            ? keyTemplate.replace('{{stationId}}', stationId)
-            : undefined,
+          certPath: resolvedKey?.replace(/-key\.pem$/, '.pem'),
+          keyPath: resolvedKey,
+          chainPath: resolvedKey?.replace(/-key\.pem$/, '-chain.pem'),
+          // Surface the receipt-signing key only when it's actually on disk —
+          // bootstrap/provision persist it; a pass-form-only station may not.
+          receiptKeyPath:
+            receiptKeyPath !== undefined && (await fileExists(receiptKeyPath))
+              ? receiptKeyPath
+              : undefined,
         };
       }
     } catch {
@@ -889,6 +903,21 @@ export class ScenarioRunner {
       const hydrated = await hydrateProvisioningFromDisk(activeStationId, target);
       if (hydrated) {
         context.provisioning = hydrated;
+        // Wire a pool entry so SendStep finds the station's receipt-signing key
+        // for `run --station <id>` against a pre-provisioned station. Bootstrap
+        // registers this via PoolBootstrap; disk-hydration must too, else
+        // offline-receipt TransactionEvent scenarios fail with
+        // "no receiptKeyPath registered". Skip if a run-pool entry already exists.
+        if (context.pool.get(activeStationId) === undefined) {
+          context.pool.register({
+            stationId: activeStationId,
+            bayIds: hydrated.bayIds,
+            certPath: hydrated.certPath,
+            keyPath: hydrated.keyPath,
+            chainPath: hydrated.chainPath,
+            receiptKeyPath: hydrated.receiptKeyPath,
+          });
+        }
         for (let i = 0; i < hydrated.bayIds.length; i++) {
           variables.set(`bayId_${i + 1}`, hydrated.bayIds[i]);
         }

@@ -88,4 +88,43 @@ describe('hydrateProvisioningFromDisk', () => {
     });
     expect(result?.bayIds).toEqual(['bay_p']);
   });
+
+  it('surfaces receiptKeyPath + chainPath when the receipt-signing key exists on disk', async () => {
+    // A `run --station <id>` against a bootstrap/provision-persisted station must
+    // wire the receipt-signing key so SendStep can sign offline TransactionEvent
+    // receipts — without it, auth-form/pass-form reconcile fails with
+    // "no receiptKeyPath registered".
+    const stationId = 'stn_receipt01';
+    await fs.writeFile(
+      path.join(tmpDir, `${stationId}-bays.json`),
+      JSON.stringify({ stationId, bayIds: ['bay_r'] }),
+    );
+    await fs.writeFile(
+      path.join(tmpDir, `${stationId}-receipt-key.pem`),
+      '-----BEGIN PRIVATE KEY-----\nstub\n-----END PRIVATE KEY-----',
+    );
+
+    const result = await _hydrateProvisioningForTesting(stationId, {
+      mqttUrl: 'mqtt://x',
+      tls: { key: path.join(tmpDir, '{{stationId}}-key.pem') },
+    });
+
+    expect(result?.receiptKeyPath).toBe(path.join(tmpDir, `${stationId}-receipt-key.pem`));
+    expect(result?.chainPath).toBe(path.join(tmpDir, `${stationId}-chain.pem`));
+  });
+
+  it('omits receiptKeyPath when no receipt-signing key is on disk (pass-form-only station)', async () => {
+    const stationId = 'stn_noreceipt';
+    await fs.writeFile(
+      path.join(tmpDir, `${stationId}-bays.json`),
+      JSON.stringify({ stationId, bayIds: ['bay_n'] }),
+    );
+
+    const result = await _hydrateProvisioningForTesting(stationId, {
+      mqttUrl: 'mqtt://x',
+      tls: { key: path.join(tmpDir, '{{stationId}}-key.pem') },
+    });
+
+    expect(result?.receiptKeyPath).toBeUndefined();
+  });
 });
