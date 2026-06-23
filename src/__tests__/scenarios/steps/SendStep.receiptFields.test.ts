@@ -97,3 +97,72 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
     expect('meterValues' in fields).toBe(false);
   });
 });
+
+/**
+ * Auth-form (Partial A / ServerSignedAuth) reconcile: the receipt's signed body
+ * carries {authId, sessionId} instead of {offlinePassId}. csms-server's
+ * OfflineAuthReceiptGate cross-checks offlineTxId/authId/sessionId/creditsCharged
+ * (envelope ↔ signed body); creditsCharged is the refund-lever binding. The
+ * builder detects the form from the payload (authId+sessionId present ⇒ auth-form)
+ * and MUST NOT emit offlinePassId (the auth-form receipt schema forbids it).
+ */
+describe('SendStep — buildTransactionEventReceiptFields (auth-form / Partial A)', () => {
+  const authFormPayload = {
+    offlineTxId: 'otx_auth00000001',
+    authId: 'auth_a000000001',
+    sessionId: 'sess_a000000001',
+    userId: 'sub_testuser01',
+    deviceId: 'dev_auth_recon01',
+    bayId: 'bay_0001',
+    serviceId: 'svc_eco',
+    startedAt: '2026-01-01T10:00:00.000Z',
+    endedAt: '2026-01-01T10:05:00.000Z',
+    durationSeconds: 300,
+    creditsCharged: 30,
+    txCounter: 1,
+  };
+
+  it('builds the auth-form field set: authId + sessionId, NO offlinePassId', () => {
+    const fields = buildTransactionEventReceiptFields(authFormPayload, 'stn_test');
+
+    expect(Object.keys(fields).sort()).toEqual(
+      [
+        'offlineTxId',
+        'authId',
+        'sessionId',
+        'userId',
+        'deviceId',
+        'bayId',
+        'serviceId',
+        'startedAt',
+        'endedAt',
+        'durationSeconds',
+        'creditsCharged',
+        'txCounter',
+      ].sort(),
+    );
+  });
+
+  it('carries the gate cross-check anchors authId/sessionId/creditsCharged', () => {
+    const fields = buildTransactionEventReceiptFields(authFormPayload, 'stn_test');
+
+    expect(fields.authId).toBe('auth_a000000001');
+    expect(fields.sessionId).toBe('sess_a000000001');
+    expect(fields.creditsCharged).toBe(30);
+  });
+
+  it('MUST NOT emit offlinePassId on the auth-form signed body (oneOf forbids it)', () => {
+    const fields = buildTransactionEventReceiptFields(authFormPayload, 'stn_test');
+
+    expect('offlinePassId' in fields).toBe(false);
+  });
+
+  it('signs meterValues into the auth-form body when present', () => {
+    const fields = buildTransactionEventReceiptFields(
+      { ...authFormPayload, meterValues: { liquidMl: 1000, energyWh: 30 } },
+      'stn_test',
+    );
+
+    expect(fields.meterValues).toEqual({ liquidMl: 1000, energyWh: 30 });
+  });
+});
