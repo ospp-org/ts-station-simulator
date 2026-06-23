@@ -768,6 +768,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     'BEGIN;',
     `DELETE FROM refunds WHERE session_id IN (${sess});`,
     `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
+    // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations, stations,
+    // sessions (reconciled_session_id) — no ON DELETE CASCADE. Scoped by station_id (run-
+    // ephemeral → catches every run grant, never touches another run's). Placed BEFORE
+    // sessions/stations (here) and before the appended users/organizations deletes, so no
+    // parent delete FK-blocks on a leftover grant. Mirrors offline_transactions (swept in
+    // both the station- and user-scoped teardowns).
+    `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
     `DELETE FROM sessions WHERE bay_id IN (${bays});`,
     `DELETE FROM reservations WHERE bay_id IN (${bays});`,
     `DELETE FROM service_catalogs WHERE station_id IN (${sids});`,
