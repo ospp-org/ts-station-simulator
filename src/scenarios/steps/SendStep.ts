@@ -72,9 +72,11 @@ function substituteTemplates(
  * Build the canonical receipt_fields object for a TransactionEvent payload
  * per spec v0.4.2+ §6.2.
  *
- * The signed body carries **11 mandatory fields** in canonical order:
- *   offlineTxId, offlinePassId, userId, deviceId, bayId, serviceId,
- *   startedAt, endedAt, durationSeconds, creditsCharged, txCounter
+ * The signed body carries **11 mandatory fields** in canonical order. The
+ * identity field is form-dependent (TransactionEvent oneOf): pass-form carries
+ * `offlinePassId`, auth-form (Partial A) carries `authId` + `sessionId`:
+ *   offlineTxId, {offlinePassId | authId + sessionId}, userId, deviceId, bayId,
+ *   serviceId, startedAt, endedAt, durationSeconds, creditsCharged, txCounter
  * (+ optional meterValues, signed when present; omitted from the canonical
  * body when absent per §6.2 Note 4 — an empty `meterValues: {}` would
  * change canonical bytes and break server-side verification).
@@ -102,9 +104,21 @@ export function buildTransactionEventReceiptFields(
   payload: Record<string, unknown>,
   stationId: string,
 ): Record<string, unknown> {
+  // Auth-form (Partial A / ServerSignedAuth) carries {authId, sessionId};
+  // pass-form carries {offlinePassId}. The two are mutually exclusive on the
+  // TransactionEvent oneOf — detect the form from the payload and emit the
+  // matching identity fields. csms-server's OfflineAuthReceiptGate reads
+  // authId/sessionId from the signed body (cross-checks #1 offlineTxId, #2
+  // authId, sessionId, creditsCharged); its pass-form RevalidationGate reads
+  // offlinePassId. Emitting offlinePassId on an auth-form receipt would diverge
+  // the canonical bytes from the auth-form receipt-data schema (which forbids it).
+  const isAuthForm = payload.authId !== undefined && payload.sessionId !== undefined;
+
   const receiptFields: Record<string, unknown> = {
     offlineTxId: payload.offlineTxId,
-    offlinePassId: payload.offlinePassId,
+    ...(isAuthForm
+      ? { authId: payload.authId, sessionId: payload.sessionId }
+      : { offlinePassId: payload.offlinePassId }),
     userId: payload.userId,
     deviceId: payload.deviceId ?? `dev_${stationId}`,
     bayId: payload.bayId,
