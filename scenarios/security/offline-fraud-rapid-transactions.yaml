@@ -57,6 +57,7 @@ steps:
     capture:
       offlinePassId: "data.attributes.passId"
       offlineUserSub: "data.attributes.sub"
+      passDeviceId: "data.attributes.deviceId"
 
   # --- Rapid TransactionEvent #1 ---
   - action: send
@@ -65,6 +66,7 @@ steps:
       offlineTxId: "otx_aa00000001"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:00:00.000Z"
@@ -91,6 +93,7 @@ steps:
       offlineTxId: "otx_aa00000002"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:05:30.000Z"
@@ -117,6 +120,7 @@ steps:
       offlineTxId: "otx_aa00000003"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:11:00.000Z"
@@ -143,6 +147,7 @@ steps:
       offlineTxId: "otx_aa00000004"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:16:30.000Z"
@@ -169,6 +174,7 @@ steps:
       offlineTxId: "otx_aa00000005"
       offlinePassId: "{{captured.offlinePassId}}"
       userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:22:00.000Z"
