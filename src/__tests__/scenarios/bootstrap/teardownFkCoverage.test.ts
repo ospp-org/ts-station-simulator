@@ -49,8 +49,9 @@ interface FkEdge {
 }
 
 const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
-  // 11 FKs pointing at users. 2 CASCADE (auto-handled by users delete), 9 NO ACTION.
+  // 12 FKs pointing at users. 2 CASCADE (auto-handled by users delete), 10 NO ACTION.
   users: [
+    { child: 'offline_auth_grants', column: 'user_id', onDelete: 'NO ACTION' },
     { child: 'api_keys',             column: 'user_id',    onDelete: 'CASCADE'   },
     { child: 'invitations',          column: 'invited_by', onDelete: 'NO ACTION' },
     { child: 'offline_passes',       column: 'user_id',    onDelete: 'NO ACTION' },
@@ -68,10 +69,11 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   wallets: [
     { child: 'wallet_entries', column: 'wallet_id', onDelete: 'NO ACTION' },
   ],
-  // sessions has two NO ACTION children that the teardown must handle BEFORE
-  // deleting sessions — both legitimately surface in real runs (refunds for a
-  // refunded session, offline_transactions reconciled against a session).
+  // sessions has three NO ACTION children that the teardown must handle BEFORE
+  // deleting sessions (refunds, offline_transactions, offline_auth_grants — the
+  // last two reconciled against a session via reconciled_session_id).
   sessions: [
+    { child: 'offline_auth_grants',  column: 'reconciled_session_id', onDelete: 'NO ACTION' },
     { child: 'refunds',              column: 'session_id',            onDelete: 'NO ACTION' },
     { child: 'offline_transactions', column: 'reconciled_session_id', onDelete: 'NO ACTION' },
   ],
@@ -79,6 +81,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'sessions', column: 'reservation_id', onDelete: 'NO ACTION' },
   ],
   stations: [
+    { child: 'offline_auth_grants',    column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'bays',                   column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'diagnostics_uploads',    column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'firmware_updates',       column: 'station_id', onDelete: 'NO ACTION' },
@@ -103,11 +106,13 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     // cascade-removes station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
-  // organizations: 10 FKs (captured 2026-06-15 via pg_constraint, confrelid='organizations').
+  // organizations: 11 FKs (10 captured 2026-06-15 via pg_constraint + offline_auth_grants,
+  // table added 0.6.2/B1 after that capture — exactly the "regenerate" case in the top docstring).
   // The 5 CASCADE children are auto-removed by the org delete (stations, offline_passes, roles,
-  // model_has_roles, service_definitions); the 5 NO ACTION children must be deleted first or the
+  // model_has_roles, service_definitions); the 6 NO ACTION children must be deleted first or the
   // org delete FK-blocks. The ephemeral-org teardown (Direction B) deletes the org last.
   organizations: [
+    { child: 'offline_auth_grants',  column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'stations',             column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'offline_passes',       column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'roles',                column: 'organization_id', onDelete: 'CASCADE'   },

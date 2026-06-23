@@ -2,19 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { buildTransactionEventReceiptFields } from '../../../scenarios/steps/SendStep.js';
 
 /**
- * OSPP v0.4.2+ §6.2 mandates 11 receipt_fields in the signed body:
- *   offlineTxId, offlinePassId, userId, deviceId, bayId, serviceId,
- *   startedAt, endedAt, durationSeconds, creditsCharged, txCounter
- * (+ optional meterValues, signed when present; omitted-from-canonical
- * when absent per Note 4).
+ * OSPP §6.2 signed-body receipt_fields. Form-dependent (TransactionEvent oneOf):
+ *  - pass-form  (12 fields): offlineTxId, offlinePassId, passCounter, userId,
+ *    deviceId, bayId, serviceId, startedAt, endedAt, durationSeconds,
+ *    creditsCharged, txCounter. `passCounter` added per N7 / spec 0.6.2 — the
+ *    envelope copy MUST equal this signed value (csms reconcile gate #12), and
+ *    the gate enforces global (offlinePassId, passCounter) uniqueness (#13).
+ *  - auth-form (Partial A): authId + sessionId REPLACE offlinePassId+passCounter
+ *    (see the auth-form describe block below; passCounter is FORBIDDEN there).
+ * (+ optional meterValues, signed when present; omitted-from-canonical when
+ * absent per Note 4 — an empty {} would change the signed bytes.)
  *
- * Pre-fix the simulator built only 9 fields (Phase B audit finding (a) #9):
- *   missing offlinePassId, userId, deviceId — gate checks #2, #3, #6
- *   in csms-server's RevalidationGate would emit OFFLINE_RECEIPT_MISMATCH
- *   on a strict v0.4.2+ server.
+ * Pre-0.4.2 the simulator built only 9 fields (Phase B audit finding (a) #9:
+ * missing offlinePassId/userId/deviceId → gate checks #2/#3/#6).
  *
- * Reference: station-simulator (PHP) TransactionEventBuilder.php — same 11
- * fields in the same canonical ordering.
+ * Reference: station-simulator (PHP) TransactionEventBuilder.php.
  */
 describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)', () => {
   const fullPayload = {
@@ -29,15 +31,17 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
     durationSeconds: 300,
     creditsCharged: 150,
     txCounter: 1,
+    passCounter: 5,
   };
 
-  it('builds the 11 mandatory fields when meterValues is absent', () => {
+  it('builds the 12 mandatory pass-form fields incl passCounter (N7 / spec 0.6.2) when meterValues is absent', () => {
     const fields = buildTransactionEventReceiptFields(fullPayload, 'stn_test');
 
     expect(Object.keys(fields).sort()).toEqual(
       [
         'offlineTxId',
         'offlinePassId',
+        'passCounter',
         'userId',
         'deviceId',
         'bayId',
@@ -49,6 +53,9 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
         'txCounter',
       ].sort(),
     );
+    // passCounter (5) is distinct from txCounter (1) — proves it is read from
+    // payload.passCounter, not aliased to txCounter.
+    expect(fields.passCounter).toBe(5);
   });
 
   it('signed body carries gate-cross-check anchors offlinePassId/userId/deviceId (Phase B finding (a) #9)', () => {
@@ -76,14 +83,14 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
     expect(fields.deviceId).toBe('dev_stn_alpha');
   });
 
-  it('includes meterValues when present (12-field signed body)', () => {
+  it('includes meterValues when present (13-field pass-form body: 12 + meterValues)', () => {
     const payloadWithMeter = {
       ...fullPayload,
       meterValues: { liquidMl: 42800, consumableMl: 470, energyWh: 138 },
     };
     const fields = buildTransactionEventReceiptFields(payloadWithMeter, 'stn_test');
 
-    expect(Object.keys(fields)).toHaveLength(12);
+    expect(Object.keys(fields)).toHaveLength(13);
     expect(fields.meterValues).toEqual({ liquidMl: 42800, consumableMl: 470, energyWh: 138 });
   });
 

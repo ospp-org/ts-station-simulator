@@ -308,13 +308,14 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     expect(buildTeardownTestUsersSql([])).toEqual([]);
   });
 
-  it('emits 13 DELETEs covering wallet_entries + all 9 NO-ACTION user FKs + Spatie + users', () => {
+  it('emits 14 DELETEs covering offline_auth_grants + wallet_entries + all 10 NO-ACTION user FKs + Spatie + users', () => {
     const stmts = buildTeardownTestUsersSql(['e1@t', 'e2@t']);
-    // Children before parents: wallet_entries → (9 NO-ACTION FKs) → Spatie (2) → users.
-    // The reverse-graph static check (teardownFkCoverage.test.ts) is the authoritative
-    // contract — this test just pins the count + the per-statement table targets.
-    expect(stmts).toHaveLength(13);
+    // Children before parents: offline_auth_grants → wallet_entries → (NO-ACTION FKs) →
+    // Spatie (2) → users. The reverse-graph static check (teardownFkCoverage.test.ts) is the
+    // authoritative contract — this test just pins the count + the per-statement table targets.
+    expect(stmts).toHaveLength(14);
     const tables = [
+      'offline_auth_grants',
       'wallet_entries',
       'offline_passes',
       'offline_transactions',

@@ -70,6 +70,7 @@ steps:
     payload:
       offlineTxId: "otx_a0000000001"
       offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
       userId: "{{captured.offlineUserSub}}"
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
@@ -117,6 +118,7 @@ steps:
     payload:
       offlineTxId: "otx_a0000000001"
       offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
       userId: "{{captured.offlineUserSub}}"
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"

@@ -456,6 +456,10 @@ export function buildTeardownTestUsersSql(
   const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
   const userIds = `SELECT id FROM users WHERE email = ANY(${emailArr})`;
   return [
+    // 0. offline_auth_grants — NO-ACTION FK user_id → users (0.6.2 / B1). Must precede the
+    //    users delete. Mirrors offline_transactions (swept in both station- and user-scoped
+    //    teardowns); idempotent if the station-scoped sweep already removed the run's grants.
+    `DELETE FROM offline_auth_grants WHERE user_id IN (${userIds});`,
     // 1. wallet_entries — child of wallets (NO ACTION). Must precede the wallets delete.
     `DELETE FROM wallet_entries WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id IN (${userIds}));`,
     // 2-9. Nine NO-ACTION FKs that point at users.id directly.

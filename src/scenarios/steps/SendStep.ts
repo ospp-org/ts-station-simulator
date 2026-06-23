@@ -72,11 +72,13 @@ function substituteTemplates(
  * Build the canonical receipt_fields object for a TransactionEvent payload
  * per spec v0.4.2+ §6.2.
  *
- * The signed body carries **11 mandatory fields** in canonical order. The
- * identity field is form-dependent (TransactionEvent oneOf): pass-form carries
- * `offlinePassId`, auth-form (Partial A) carries `authId` + `sessionId`:
- *   offlineTxId, {offlinePassId | authId + sessionId}, userId, deviceId, bayId,
- *   serviceId, startedAt, endedAt, durationSeconds, creditsCharged, txCounter
+ * The signed body carries **12 mandatory fields** in canonical order. The
+ * identity fields are form-dependent (TransactionEvent oneOf): pass-form carries
+ * `offlinePassId` + `passCounter`, auth-form (Partial A) carries `authId` +
+ * `sessionId`:
+ *   offlineTxId, {offlinePassId + passCounter | authId + sessionId}, userId,
+ *   deviceId, bayId, serviceId, startedAt, endedAt, durationSeconds,
+ *   creditsCharged, txCounter
  * (+ optional meterValues, signed when present; omitted from the canonical
  * body when absent per §6.2 Note 4 — an empty `meterValues: {}` would
  * change canonical bytes and break server-side verification).
@@ -88,8 +90,12 @@ function substituteTemplates(
  *
  * Pre-v0.4.2 the simulator built only 9 fields (Phase B audit (a) #9).
  *
+ * `passCounter` (pass-form, per N7 / spec 0.6.2): the envelope copy MUST equal
+ * this signed value (csms reconcile gate #12); the gate also enforces global
+ * (offlinePassId, passCounter) uniqueness (#13). Auth-form FORBIDS passCounter.
+ *
  * Reference: station-simulator (PHP) TransactionEventBuilder.php — same
- * 11 fields, same canonical ordering, same deviceId fallback convention.
+ * canonical ordering + deviceId fallback convention.
  *
  * @param payload    TransactionEvent wire payload (from YAML scenario).
  * @param stationId  Station business identifier — used as the fallback
@@ -118,7 +124,7 @@ export function buildTransactionEventReceiptFields(
     offlineTxId: payload.offlineTxId,
     ...(isAuthForm
       ? { authId: payload.authId, sessionId: payload.sessionId }
-      : { offlinePassId: payload.offlinePassId }),
+      : { offlinePassId: payload.offlinePassId, passCounter: payload.passCounter }),
     userId: payload.userId,
     deviceId: payload.deviceId ?? `dev_${stationId}`,
     bayId: payload.bayId,
