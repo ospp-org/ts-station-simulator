@@ -1,0 +1,83 @@
+name: "Offline Auth-Form Reconciliation HOSTILE (foreign-key receipt -> Rejected)"
+description: >
+  Boot, then send an auth-form TransactionEvent {authId, sessionId} that reconciles a
+  server-signed offline-auth grant (B1) on the REAL UAT MQTT wire. The receipt body carries
+  {authId, sessionId} (NOT offlinePassId); SendStep signs it with the station's ECDSA
+  receipt key (<id>-receipt-key.pem). csms-server's OfflineAuthReceiptGate verifies the
+  signature against the grant station's registered ecdsa_public_key, cross-checks
+  offlineTxId/authId/sessionId/creditsCharged (envelope <-> signed body), then the
+  settle-once true-up refunds (credits_authorized - creditsCharged).
+
+  The grant is created out-of-band (the wallet pre-debit needs a funded user; no funding
+  API on UAT) and its identifiers are injected via --var: offlineTxId, authId, sessionId,
+  userId, deviceId, bayId, serviceId. creditsCharged is fixed at 30 (< credits_authorized
+  so the true-up refunds a positive amount). The station must boot first so the engine
+  captures the HMAC sessionKey (csms UAT SigningMode=Critical signs the TransactionEvent).
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot (establishes the HMAC sessionKey for Critical message signing) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 1
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Auth-form TransactionEvent: settle the server-signed grant ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{offlineTxId}}"
+      authId: "{{authId}}"
+      sessionId: "{{sessionId}}"
+      userId: "{{userId}}"
+      deviceId: "{{deviceId}}"
+      bayId: "{{bayId}}"
+      serviceId: "{{serviceId}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:05:00.000Z"
+      durationSeconds: 300
+      creditsCharged: 30
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
