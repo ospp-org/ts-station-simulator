@@ -43,6 +43,7 @@ function replaceTemplates(obj: unknown): unknown {
       if (obj.includes('reservationId') || obj.includes('rsv_')) return 'rsv_00000001';
       if (obj.includes('offlinePassId') || obj.includes('opass_')) return 'opass_00000001';
       if (obj.includes('offlineTxId') || obj.includes('otx_')) return 'otx_00000001';
+      if (obj.includes('authId') || obj.includes('auth_')) return 'auth_00000001';
       if (obj.includes('userId') || obj.includes('sub_')) return 'sub_testuser01';
       if (obj.includes('deviceId') || obj.includes('dev_')) return 'dev_00000001';
       if (obj.includes('target_url')) return 'http://localhost:8080';
