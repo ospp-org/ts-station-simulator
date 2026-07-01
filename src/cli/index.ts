@@ -11,7 +11,7 @@ import { loadTarget, type TargetConfig } from './config.js';
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
-import { OsppAction } from '@ospp/protocol';
+import { OsppAction, MessageType, BayStatus } from '@ospp/protocol';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
@@ -653,6 +653,33 @@ program
       console.log(`  stationId:  ${stationId}`);
       for (const bay of bays) {
         console.log(`  bay ${bay.bayNumber}:      ${bay.bayId}  (service: ${bay.services[0].serviceId})`);
+      }
+      console.log();
+
+      // Report each bay Available so the CSMS marks bays.status = 'available'.
+      // Real hardware sends a StatusNotification right after boot; connect mode
+      // omitted it, so bays stayed 'unknown' server-side and GET /pay/{bay}
+      // rejected the customer with bay_unavailable — the webpay flow was
+      // unreachable against a simulated station. Wait for boot acceptance first:
+      // the CSMS drops station-initiated messages that arrive before the
+      // BootNotification is accepted.
+      for (let i = 0; i < 50 && !station.bootAccepted; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      for (const bay of bays) {
+        // The LOCAL bay state machine must reflect Available too, not just the
+        // CSMS. StartServiceHandler gates on getBayState() ∈ {Available,Reserved};
+        // boot leaves bays Unknown. Reporting Available to the CSMS WITHOUT this
+        // local transition made the sim receive the StartService and then REJECT
+        // it ("Bay ... is in state Unknown") — a paid session failed at the sim.
+        station.setBayState(bay.bayId, BayStatus.AVAILABLE);
+        await station.sender.send(OsppAction.STATUS_NOTIFICATION, MessageType.EVENT, {
+          bayId: bay.bayId,
+          bayNumber: bay.bayNumber,
+          status: 'Available',
+          services: bay.services.map((s) => ({ serviceId: s.serviceId, available: s.available ?? true })),
+        });
+        console.log(chalk.green(`  StatusNotification -> bay ${bay.bayNumber} (${bay.bayId}) = Available (local + CSMS)`));
       }
       console.log();
       console.log(chalk.gray('Press Ctrl+C to disconnect.\n'));
