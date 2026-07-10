@@ -1,0 +1,57 @@
+# TLS-1.2-floor conformance — S3
+#
+# Client pinned to EXACTLY TLS 1.1 (min_version == max_version). The broker
+# floor is 1.2 — the connection MUST be REJECTED.
+#
+# NOTE on why BOTH min_version and max_version are pinned to TLSv1.1 (the
+# task framing this scenario originates from only specified maxVersion):
+# MqttConnection's default minVersion (when a scenario does not override
+# it) is TLSv1.3 — see MqttConnection.doConnect(); Node's own compiled-in
+# default minVersion is TLSv1.2 either way. Setting ONLY max_version=1.1
+# without also lowering min_version to <=1.1 produces a self-contradictory
+# [min > max] range that Node's tls module rejects LOCALLY before ever
+# opening a socket — that would prove "our own TLS options are invalid",
+# not "the broker enforces its floor". Pinning min_version=max_version=
+# TLSv1.1 is the only way to make the client actually ATTEMPT (and have
+# the BROKER refuse) a TLS 1.1 handshake, which is what this scenario is
+# for. See also S1, which pins 1.2 the same way for the same reason.
+#
+# `expect_connect_failure: true` tells the runner the automatic pre-steps
+# connect() is EXPECTED to be rejected — on confirmed rejection the
+# scenario is reported PASSED and `steps` never runs (there is no
+# connection for them to run against). If the connect unexpectedly
+# SUCCEEDS (broker floor regressed / not actually enforced), the scenario
+# is reported FAILED, loudly. See ScenarioRunner's expect_connect_failure
+# doc for exactly what counts as "rejected" (explicit TLS/socket error, OR
+# a bounded timeout with neither `connect` nor `error` — some handshake
+# failures surface as a bare reset rather than a clean TLS alert).
+#
+# Run against a live broker with a pre-provisioned mTLS identity (the
+# identity/cert itself must be VALID — the only variable under test here
+# is the TLS version, not the certificate), e.g.:
+#   simulator run --scenario scenarios/tls-floor/s3-rejects-tls11-below-floor.yaml \
+#     --target uat --station stn_<preprovisioned>
+#
+# NEEDS A LIVE BROKER — not run in this authoring piece (C3). Deferred to
+# the deploy step, which should also confirm exactly how the broker
+# surfaces the rejection (TLS alert vs. reset) and consider tightening this
+# scenario with an `expect_connect_failure_timeout_ms` and/or asserting on
+# the captured rejection detail once that's known.
+name: "TLS floor S3 — rejects TLS 1.1 (below the broker floor)"
+description: "Client pins minVersion=maxVersion=TLSv1.1. The broker floor is 1.2, so the connection MUST be REJECTED — expect_connect_failure: true."
+tls:
+  min_version: "TLSv1.1"
+  max_version: "TLSv1.1"
+expect_connect_failure: true
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+# No steps: the connection never completes, so there is nothing to send/
+# wait_for/assert against — the rejection itself (captured by the runner
+# from station.connect()'s outcome) IS the pass condition.
+steps: []

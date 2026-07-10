@@ -1,0 +1,136 @@
+# TLS-1.2-floor conformance — S1
+#
+# Client pinned to EXACTLY TLS 1.2 (min_version == max_version), emulating a
+# cellular modem capped at TLS 1.2 (SIMCom A7608E-H) — the reason the CSMS
+# broker floor is being lowered from TLS-1.3-only to TLS 1.2+ (1.3
+# recommended). Proves a TLS-1.2-only client can still connect, complete
+# mTLS, boot, and run a session once the broker accepts 1.2 as a floor.
+#
+# The `tls:` block is a per-scenario override layered on top of whatever
+# the --target supplies (see ScenarioRunner's ScenarioDefinition.tls doc) —
+# no dedicated targets.yaml entry needed for this variant.
+#
+# Run against a live broker with a pre-provisioned mTLS identity, e.g.:
+#   simulator run --scenario scenarios/tls-floor/s1-pinned-tls12-a7608e.yaml \
+#     --target uat --station stn_<preprovisioned> \
+#     --var bayId_1=bay_... --var serviceId_1=svc_...
+# or with `--bootstrap-pool` to mint a fresh identity for the run. `local`
+# (plaintext mqtt://) is not a meaningful target for this scenario.
+#
+# NEEDS A LIVE BROKER — not run in this authoring piece (C3). Deferred to
+# the deploy step, along with confirming the broker's actual rejected/
+# accepted behavior matches what's asserted here.
+name: "TLS floor S1 — pinned TLS 1.2 (A7608E-H emulation)"
+description: "Client pins minVersion=maxVersion=TLSv1.2. Connect + mTLS + BootNotification Accepted + start a session, proving a TLS-1.2-only client works once the broker floor allows it."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Prove the pin actually took effect: TLS 1.2 was NEGOTIATED, not just requested ---
+  - action: assert
+    field: "connection.tlsProtocol"
+    equals: "TLSv1.2"
+
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Cellular"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bays Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # --- Start a session over the TLS-1.2-pinned connection ---
+  # background: true — /sessions/start blocks on SessionReadySignal::wait
+  # until the station sends StartService Response over MQTT.
+  - action: delay
+    ms: 500
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 60
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      serviceId: "payload.serviceId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: false

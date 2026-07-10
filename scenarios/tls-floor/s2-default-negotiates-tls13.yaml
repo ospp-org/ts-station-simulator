@@ -1,0 +1,62 @@
+# TLS-1.2-floor conformance — S2
+#
+# Client uses the DEFAULT TLS posture — no `tls.min_version`/`max_version`
+# override at all, i.e. exactly what every non-TLS-floor scenario already
+# gets (MqttConnection's own default: TLSv1.3 minimum, unchanged by the
+# C3 TLS-1.2-floor knob). This is the control/baseline for S1/S3/S4:
+# proves that lowering the BROKER's floor to 1.2 does not change what a
+# default (unpinned) client negotiates — it should still land on 1.3.
+#
+# Run against a live broker with a pre-provisioned mTLS identity, e.g.:
+#   simulator run --scenario scenarios/tls-floor/s2-default-negotiates-tls13.yaml \
+#     --target uat --station stn_<preprovisioned>
+# or with `--bootstrap-pool` to mint a fresh identity for the run.
+#
+# NEEDS A LIVE BROKER — not run in this authoring piece (C3). Deferred to
+# the deploy step.
+name: "TLS floor S2 — default negotiates TLS 1.3"
+description: "Client applies no TLS version pin (default posture). Connect, then ASSERT the negotiated protocol is TLSv1.3 — proves the broker floor change (1.3-only -> 1.2+) does not downgrade a client that can speak 1.3."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- The core assertion: default client still negotiates TLS 1.3 ---
+  - action: assert
+    field: "connection.tlsProtocol"
+    equals: "TLSv1.3"
+
+  # --- Boot round-trip: proves the connection is actually usable at the
+  #     application layer too, not just that a TLS socket came up ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
