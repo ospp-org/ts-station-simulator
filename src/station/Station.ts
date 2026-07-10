@@ -176,10 +176,23 @@ export class Station extends EventEmitter {
 
   /**
    * Update TLS material on the underlying MqttConnection before connect().
-   * Used by E2E scenarios that provision a station mid-run.
+   * Used by E2E scenarios that provision a station mid-run, and by
+   * TLS-floor conformance scenarios that pin an exact minVersion/maxVersion
+   * (or drop the client cert entirely) for a single connection attempt.
+   * Reuses MqttConnectionOptions['tls'] directly (rather than a hand-rolled
+   * subset) so this stays in sync with whatever MqttConnection accepts.
    */
-  setTls(tls: { key?: string; cert?: string; serverCa?: string } | undefined): void {
+  setTls(tls: MqttConnectionOptions['tls']): void {
     this.connection.setTls(tls);
+  }
+
+  /**
+   * The TLS protocol version actually negotiated on the current/most-recent
+   * connection (e.g. 'TLSv1.3'), or null before connect() / over a non-TLS
+   * transport. See MqttConnection.getNegotiatedTlsProtocol() doc.
+   */
+  getNegotiatedTlsProtocol(): string | null {
+    return this.connection.getNegotiatedTlsProtocol();
   }
 
   startHeartbeat(intervalSec: number): void {

@@ -17,23 +17,39 @@ function getNestedValue(obj: unknown, path: string): unknown {
   return current;
 }
 
+/** Fields under this prefix read off the live connection, not a received message — see below. */
+const CONNECTION_FIELD_PREFIX = 'connection.';
+
 export class AssertStep implements Step {
   async execute(
     definition: StepDefinition,
     context: ScenarioContext,
-    _station: Station,
+    station: Station,
   ): Promise<void> {
     const field = definition.field as string;
     if (!field) {
       throw new Error('AssertStep requires a "field" field');
     }
 
-    const lastMessage = context.receivedMessages[context.receivedMessages.length - 1];
-    if (!lastMessage) {
-      throw new Error('AssertStep: no received messages to assert against');
+    // "connection.*" is a transport-level assertion (e.g. the negotiated TLS
+    // protocol version — TLS-1.2-floor conformance scenarios S1/S2) with no
+    // OSPP message to read it off; resolve it against the live Station
+    // instead of context.receivedMessages.
+    let subject: unknown;
+    let subjectField: string;
+    if (field.startsWith(CONNECTION_FIELD_PREFIX)) {
+      subject = { tlsProtocol: station.getNegotiatedTlsProtocol() };
+      subjectField = field.slice(CONNECTION_FIELD_PREFIX.length);
+    } else {
+      const lastMessage = context.receivedMessages[context.receivedMessages.length - 1];
+      if (!lastMessage) {
+        throw new Error('AssertStep: no received messages to assert against');
+      }
+      subject = lastMessage;
+      subjectField = field;
     }
 
-    const actual = getNestedValue(lastMessage, field);
+    const actual = getNestedValue(subject, subjectField);
 
     if (definition.exists !== undefined) {
       const shouldExist = definition.exists as boolean;

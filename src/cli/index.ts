@@ -355,6 +355,8 @@ function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {
       keyPattern: target.certs.keyPattern,
       certPattern: target.certs.certPattern,
       serverCa: target.certs.serverCa,
+      minVersion: target.certs.minVersion,
+      maxVersion: target.certs.maxVersion,
     };
   }
 

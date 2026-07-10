@@ -1,6 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { SecureVersion } from 'node:tls';
 import type { StepDefinition } from './steps/Step.js';
 import type { ScenarioContext, StepResult } from './ScenarioContext.js';
 import { createContext } from './ScenarioContext.js';
@@ -54,6 +55,56 @@ export interface ScenarioDefinition {
    */
   defer_mqtt_connect?: boolean;
   /**
+   * Per-scenario TLS-floor conformance override, layered on top of (never
+   * replacing) `target.tls` for THIS scenario only — so one target (e.g.
+   * `uat`) can back several TLS-pin variants without a dedicated
+   * targets.yaml entry each. Node tls.connect() semantics.
+   *
+   *   min_version / max_version: pin an exact floor/ceiling, e.g.
+   *     { min_version: 'TLSv1.2', max_version: 'TLSv1.2' } to emulate a
+   *     modem capped at TLS 1.2 (A7608E-H). Omit both to inherit
+   *     target.tls / MqttConnection's own default unchanged.
+   *   no_client_cert: true DROPS whatever key/cert the target would
+   *     otherwise supply, to prove mTLS enforcement (a connection with a
+   *     valid server-CA but no client certificate must still be rejected).
+   *
+   * See also ConnectMqttStep's `min_version`/`max_version` fields, which
+   * cover the same knob for scenarios using `defer_mqtt_connect` +
+   * `connect_mqtt` (mid-scenario provisioning) instead of the automatic
+   * pre-steps connect this field targets.
+   */
+  tls?: {
+    min_version?: SecureVersion;
+    max_version?: SecureVersion;
+    no_client_cert?: boolean;
+  };
+  /**
+   * When true, the automatic pre-steps `station.connect()` (see
+   * `defer_mqtt_connect` above — this flag requires that to be unset/false)
+   * is expected to be REJECTED by the broker: e.g. a TLS version below the
+   * broker's floor (`tls.max_version` below the floor), or mTLS enforcement
+   * rejecting a missing client cert (`tls.no_client_cert`).
+   *
+   * On a confirmed rejection the scenario is reported PASSED and `steps` is
+   * never run — there is no connection for them to run against; author
+   * this style of scenario with `steps: []`. If the connect unexpectedly
+   * SUCCEEDS the scenario is reported FAILED (the conformance property
+   * under test regressed) with a loud error.
+   *
+   * "Rejected" also covers a silent hang: some TLS handshake failures
+   * surface as a bare socket reset rather than a clean TLS alert, which
+   * MqttConnection deliberately swallows (see IGNORED_CODES) for unrelated
+   * reasons — so a bounded timeout with neither `connect` nor `error` is
+   * ALSO treated as "did not connect", not just an explicit error event.
+   * See `connectExpectingFailure()`.
+   */
+  expect_connect_failure?: boolean;
+  /**
+   * Bound, in ms, on how long to wait for the rejection before a silent
+   * hang is itself treated as a (still valid) rejection. Default 10000.
+   */
+  expect_connect_failure_timeout_ms?: number;
+  /**
    * MQTT 5 Clean Start. Defaults to `true` for scenarios — test runs should
    * not inherit a queued message backlog from a previous run, which delays
    * (or drops) time-sensitive responses like Heartbeat. Set to `false` only
@@ -106,6 +157,9 @@ export interface TargetConfig {
     keyPattern?: string;
     certPattern?: string;
     serverCa?: string;
+    /** Config-level TLS floor/ceiling — see ScenarioDefinition.tls for the per-scenario override that layers on top of this. */
+    minVersion?: SecureVersion;
+    maxVersion?: SecureVersion;
   };
   mqttCredentials?: {
     usernameTemplate: string;
@@ -619,7 +673,26 @@ function createStationFromScenario(
       key: resolve(tls.keyPattern) ?? resolve(tls.key),
       cert: resolve(tls.certPattern) ?? resolve(tls.cert),
       serverCa: resolve(tls.serverCa),
+      minVersion: tls.minVersion,
+      maxVersion: tls.maxVersion,
     };
+  }
+
+  // Per-scenario TLS-floor conformance override — layered on top of (never
+  // replacing) the target's resolved tls. See ScenarioDefinition.tls doc.
+  if (scenarioDef.tls) {
+    tls = {
+      ...tls,
+      ...(scenarioDef.tls.min_version !== undefined
+        ? { minVersion: scenarioDef.tls.min_version }
+        : {}),
+      ...(scenarioDef.tls.max_version !== undefined
+        ? { maxVersion: scenarioDef.tls.max_version }
+        : {}),
+    };
+    if (scenarioDef.tls.no_client_cert) {
+      tls = { ...tls, key: undefined, cert: undefined };
+    }
   }
 
   const station = new Station(config, {
@@ -653,6 +726,59 @@ function createStationFromScenario(
  * assert scenario-mode wiring (e.g. that a station captures the boot sessionKey).
  */
 export const _createStationFromScenarioForTesting = createStationFromScenario;
+
+// ---------------------------------------------------------------------------
+// Negative-path connect — TLS-1.2-floor conformance arc (expect_connect_failure)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drives `station.connect()` for a scenario that declares
+ * `expect_connect_failure: true` (see ScenarioDefinition doc) and resolves
+ * with a human-readable description of HOW the rejection was observed.
+ *
+ * Throws if `station.connect()` actually SUCCEEDS — that is the failure
+ * case for this style of scenario (the runner's normal catch path then
+ * reports the scenario as failed, loudly, since the conformance property
+ * under test — e.g. "the broker refuses TLS below its floor" — regressed).
+ *
+ * Races the connect attempt against a bound timeout rather than trusting
+ * `station.connect()` to always settle: some TLS handshake failures surface
+ * as a bare socket reset rather than a clean TLS alert, and MqttConnection
+ * deliberately swallows ECONNRESET (see its IGNORED_CODES — unrelated
+ * reasons, disconnect/reconnect churn) which would otherwise leave
+ * station.connect()'s promise pending forever. A timeout with neither
+ * `connect` nor `error` is therefore ALSO treated as "did not connect".
+ */
+async function connectExpectingFailure(
+  station: Station,
+  timeoutMs: number,
+): Promise<string> {
+  const connectAttempt: Promise<string> = station.connect().then(
+    () => {
+      throw new Error(
+        'expect_connect_failure: station.connect() succeeded — the broker was expected to REJECT this connection',
+      );
+    },
+    (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  );
+  // Attach a throwaway handler so a LATE settlement (after the timeout below
+  // has already won the race) never surfaces as an unhandled rejection.
+  connectAttempt.catch(() => {});
+
+  let timer!: ReturnType<typeof setTimeout>;
+  const timedOut = new Promise<string>((resolve) => {
+    timer = setTimeout(
+      () => resolve(`no connect/error event within ${timeoutMs}ms (treated as rejection)`),
+      timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([connectAttempt, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ScenarioRunner
@@ -937,6 +1063,28 @@ export class ScenarioRunner {
 
     try {
       if (!scenario.defer_mqtt_connect) {
+        if (scenario.expect_connect_failure) {
+          const timeoutMs = scenario.expect_connect_failure_timeout_ms ?? 10000;
+          const detail = await connectExpectingFailure(station, timeoutMs);
+          console.log(
+            '[ScenarioRunner] "%s" — connect rejected as expected: %s',
+            scenario.name,
+            detail,
+          );
+          context.stepResults.push({
+            stepIndex: -1,
+            action: 'connect',
+            status: 'passed',
+            durationMs: Date.now() - startTime,
+            error: `expected rejection confirmed: ${detail}`,
+          });
+          return {
+            name: scenario.name,
+            status: 'passed',
+            durationMs: Date.now() - startTime,
+            steps: context.stepResults,
+          };
+        }
         await station.connect();
       }
 

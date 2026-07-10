@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
+import type { SecureVersion } from 'node:tls';
 import { connect, type MqttClient, type IClientOptions } from 'mqtt';
 import {
   OsppAction,
@@ -9,6 +10,20 @@ import {
   toServerTopic,
 } from '@ospp/protocol';
 
+/**
+ * mqtt.js's IClientOptions (ISecureClientOptions) does not model TLS
+ * minVersion/maxVersion, but mqtt.js forwards the ENTIRE opts object
+ * straight through to Node's tls.connect() for `mqtts:`/`wss:` targets
+ * (see node_modules/mqtt/build/lib/connect/tls.js: `tls.connect(opts)`) —
+ * so these fields reach Node's real TLS negotiation even though mqtt.js's
+ * own types don't enumerate them. This augmentation just lets TypeScript
+ * see what already flows through at runtime.
+ */
+type TlsVersionClientOptions = IClientOptions & {
+  minVersion?: SecureVersion;
+  maxVersion?: SecureVersion;
+};
+
 export interface MqttConnectionOptions {
   mqttUrl: string;
   stationId: string;
@@ -16,6 +31,18 @@ export interface MqttConnectionOptions {
     key?: string;      // file path — station client key (mTLS)
     cert?: string;     // file path — station client cert (mTLS)
     serverCa?: string; // file path — custom CA for server cert verification (private CA only)
+    /**
+     * TLS floor/ceiling for this connection, Node tls.connect() semantics
+     * ('TLSv1' | 'TLSv1.1' | 'TLSv1.2' | 'TLSv1.3'). Omit both to keep the
+     * default (TLSv1.3 minimum, unchanged from before this knob existed —
+     * see doConnect()). Added for the TLS-1.2-floor conformance arc: the
+     * CSMS broker floor is moving to 1.2+ (1.3 recommended) so TLS-1.2-only
+     * cellular modems (e.g. SIMCom A7608E-H) can connect; a scenario can
+     * pin an exact version to prove that against a live broker without
+     * changing the simulator's own default posture.
+     */
+    minVersion?: SecureVersion;
+    maxVersion?: SecureVersion;
   };
   mqttCredentials?: {
     username: string;
@@ -91,6 +118,27 @@ export class MqttConnection extends EventEmitter {
   }
 
   /**
+   * The TLS protocol version actually NEGOTIATED on the current/most-recent
+   * connection (e.g. 'TLSv1.3', 'TLSv1.2') — independent of whatever
+   * minVersion/maxVersion FLOOR/CEILING we requested (a minVersion of 1.2
+   * does not mean 1.2 was negotiated; the broker may still prefer 1.3).
+   * Read straight off the underlying TLS socket's own
+   * `getProtocol()` (Node tls.TLSSocket), the same `.stream` mqtt.js
+   * exposes that destroyConnection() already reaches into. Returns null
+   * before connect(), or over a non-TLS transport.
+   *
+   * Added for the TLS-1.2-floor conformance arc so a scenario can assert
+   * `connection.tlsProtocol` (see AssertStep) rather than just trusting
+   * that what it requested is what it got.
+   */
+  getNegotiatedTlsProtocol(): string | null {
+    const stream = (
+      this.client as unknown as { stream?: { getProtocol?(): string | null } } | null
+    )?.stream;
+    return stream?.getProtocol?.() ?? null;
+  }
+
+  /**
    * Update TLS material before connect(). Required for E2E scenarios that
    * generate a CSR + receive a cert mid-run (provision step). Throws if the
    * connection is already established to prevent silent inconsistency.
@@ -122,7 +170,7 @@ export class MqttConnection extends EventEmitter {
     // but we emit the clean form anyway so broker logs + client traces
     // are unambiguous and don't read "WRONG_ID overridden to stn_X".
     this.currentClientId = this.stationId;
-    const opts: IClientOptions = {
+    const opts: TlsVersionClientOptions = {
       clientId: this.currentClientId,
       protocolVersion: 5,
       clean: this.cleanSession,
@@ -167,8 +215,16 @@ export class MqttConnection extends EventEmitter {
         opts.ca = readFileSync(this.tlsConfig.serverCa);
       }
       opts.rejectUnauthorized = true;
-      // TLS 1.3 minimum per OSPP spec §1.3 — passed through to Node tls.connect()
-      (opts as Record<string, unknown>)['minVersion'] = 'TLSv1.3';
+      // TLS floor/ceiling — passed through to Node tls.connect(). DEFAULT
+      // (no minVersion/maxVersion supplied via tlsConfig) is UNCHANGED from
+      // before this knob existed: TLSv1.3 minimum per OSPP spec §1.3, no
+      // ceiling. A scenario/config that supplies minVersion/maxVersion
+      // (C3 TLS-1.2-floor conformance arc) overrides that floor/ceiling for
+      // this connection only.
+      opts.minVersion = this.tlsConfig.minVersion ?? 'TLSv1.3';
+      if (this.tlsConfig.maxVersion) {
+        opts.maxVersion = this.tlsConfig.maxVersion;
+      }
     }
 
     this.client = connect(this.mqttUrl, opts);

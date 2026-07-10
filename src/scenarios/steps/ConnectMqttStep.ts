@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { SecureVersion } from 'node:tls';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -17,6 +18,12 @@ import type { Station } from '../../station/Station.js';
  *   key_path / cert_path / broker_ca_path: explicit overrides. If absent,
  *                  derived from certs_dir + stationId per the
  *                  `<dir>/<stationId>-{key,,broker-ca}.pem` convention.
+ *   min_version / max_version: TLS floor/ceiling for this connection (Node
+ *                  tls.connect() semantics) — the mid-scenario-provisioning
+ *                  equivalent of ScenarioDefinition.tls.{min,max}_version
+ *                  for scenarios that connect via the automatic pre-steps
+ *                  connect instead. Omit both to inherit MqttConnection's
+ *                  own default unchanged.
  */
 export class ConnectMqttStep implements Step {
   async execute(
@@ -66,11 +73,14 @@ export class ConnectMqttStep implements Step {
       }
     }
 
-    station.setTls({ key: keyPath, cert: certPath, serverCa });
+    const minVersion = definition.min_version as SecureVersion | undefined;
+    const maxVersion = definition.max_version as SecureVersion | undefined;
+
+    station.setTls({ key: keyPath, cert: certPath, serverCa, minVersion, maxVersion });
     await station.connect();
 
     console.log(
-      `[ConnectMqttStep] ${stationId} MQTT-connected (key=${keyPath}, cert=${certPath}${serverCa ? `, ca=${serverCa}` : ''})`,
+      `[ConnectMqttStep] ${stationId} MQTT-connected (key=${keyPath}, cert=${certPath}${serverCa ? `, ca=${serverCa}` : ''}${minVersion ? `, minVersion=${minVersion}` : ''}${maxVersion ? `, maxVersion=${maxVersion}` : ''})`,
     );
   }
 }

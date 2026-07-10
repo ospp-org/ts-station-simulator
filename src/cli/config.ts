@@ -1,6 +1,7 @@
 import { parse as parseYaml } from 'yaml';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { SecureVersion } from 'node:tls';
 
 export interface TargetConfig {
   mqttUrl: string;
@@ -21,6 +22,9 @@ export interface TargetConfig {
     certPattern?: string;
     serverCa?: string;
     stationCaChain?: string;
+    /** Config-level TLS floor/ceiling (Node tls.connect() semantics) — see ScenarioRunner's TargetConfig.tls / ScenarioDefinition.tls for how this flows through to a connection. */
+    minVersion?: SecureVersion;
+    maxVersion?: SecureVersion;
   };
   stationPool?: string[];
 }
@@ -32,7 +36,17 @@ export interface TargetsFile {
     csms_url: string;
     credentials?: { email: string; password: string };
     mqtt_credentials?: { username_template: string; password?: string; password_template?: string };
-    certs?: { key?: string; cert?: string; key_pattern?: string; cert_pattern?: string; ca?: string; server_ca?: string; station_ca_chain?: string };
+    certs?: {
+      key?: string;
+      cert?: string;
+      key_pattern?: string;
+      cert_pattern?: string;
+      ca?: string;
+      server_ca?: string;
+      station_ca_chain?: string;
+      min_version?: SecureVersion;
+      max_version?: SecureVersion;
+    };
     station_pool?: string[];
   }>;
 }
@@ -114,6 +128,8 @@ export async function loadTarget(name: string): Promise<TargetConfig> {
       certPattern: resolved.certs.cert_pattern,
       serverCa: resolved.certs.server_ca ?? resolved.certs.ca,
       stationCaChain: resolved.certs.station_ca_chain,
+      minVersion: resolved.certs.min_version,
+      maxVersion: resolved.certs.max_version,
     };
   }
 
