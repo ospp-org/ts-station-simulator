@@ -117,3 +117,50 @@ describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.
     expect(connectCalls[1].opts.clientId).toBe('stn_BB');
   });
 });
+
+describe('MqttConnection — error re-emit guard (reconnect churn / sub-floor TLS pin)', () => {
+  beforeEach(() => {
+    connectCalls.length = 0;
+    fakeClients.length = 0;
+  });
+
+  it('swallows a repeat client error once the one-shot listener is gone (no unhandled crash)', () => {
+    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: 'stn_reemit' });
+    conn.connect();
+    const fc = fakeClients[0];
+
+    // Model Station.connect(): a single `.once('error')` consumer.
+    const seen: Error[] = [];
+    conn.once('error', (e: Error) => {
+      seen.push(e);
+    });
+
+    const fatal = Object.assign(new Error('no protocols available'), {
+      code: 'ERR_SSL_NO_PROTOCOLS_AVAILABLE',
+    });
+
+    // 1st reconnect attempt: forwarded to the once-listener.
+    expect(() => fc.emit('error', fatal)).not.toThrow();
+    expect(seen).toHaveLength(1);
+
+    // once-listener consumed → zero 'error' listeners. A client with
+    // reconnectPeriod > 0 re-fires the SAME fatal error; this must NOT throw an
+    // unhandled 'error' (which would crash the process — the S3 TLS-1.1-pin
+    // symptom: OpenSSL aborts every attempt with ERR_SSL_NO_PROTOCOLS_AVAILABLE).
+    expect(() => fc.emit('error', fatal)).not.toThrow();
+    expect(seen).toHaveLength(1);
+  });
+
+  it('still forwards every error while a listener stays attached', () => {
+    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: 'stn_fwd' });
+    conn.connect();
+    const fc = fakeClients[0];
+    const seen: string[] = [];
+    conn.on('error', (e: Error) => {
+      seen.push(e.message);
+    });
+    fc.emit('error', new Error('boom'));
+    fc.emit('error', new Error('boom2'));
+    expect(seen).toEqual(['boom', 'boom2']);
+  });
+});

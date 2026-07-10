@@ -240,6 +240,15 @@ export class MqttConnection extends EventEmitter {
       const code = (err as NodeJS.ErrnoException).code;
       if (code && IGNORED_CODES.has(code)) return;
       if (err.message.includes('write after end')) return;
+      // A client with reconnectPeriod > 0 re-fires the same fatal error on
+      // every reconnect attempt. Station.connect() wires its 'error'/'connect'
+      // handlers with `.once`, so after the initial attempt settles a later
+      // re-emit would reach an EventEmitter with zero 'error' listeners and
+      // Node throws it as an *unhandled* 'error', crashing the process. This
+      // bit a sub-floor TLS pin (S3): OpenSSL aborts every attempt locally with
+      // ERR_SSL_NO_PROTOCOLS_AVAILABLE before any packet leaves. Only forward
+      // when a consumer is actually listening; otherwise swallow the repeat.
+      if (this.listenerCount('error') === 0) return;
       this.emit('error', err);
     });
 

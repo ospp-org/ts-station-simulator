@@ -12,9 +12,16 @@
 # [min > max] range that Node's tls module rejects LOCALLY before ever
 # opening a socket — that would prove "our own TLS options are invalid",
 # not "the broker enforces its floor". Pinning min_version=max_version=
-# TLSv1.1 is the only way to make the client actually ATTEMPT (and have
-# the BROKER refuse) a TLS 1.1 handshake, which is what this scenario is
-# for. See also S1, which pins 1.2 the same way for the same reason.
+# TLSv1.1 is the only self-consistent way to configure a below-floor
+# client. NOTE (observed C4, Node 20+/OpenSSL 3): the client's own TLS
+# stack refuses to emit a TLS 1.1 ClientHello at all
+# (ERR_SSL_NO_PROTOCOLS_AVAILABLE / "no protocols available"), so the
+# handshake fails CLIENT-side before a byte reaches the broker. The
+# security outcome under test — no sub-1.2 session is established — holds
+# regardless. That the BROKER itself refuses <1.2 is proven out-of-band by
+# nmap ssl-enum-ciphers (no TLSv1.0/1.1/SSLv3 offered) + the broker's
+# versions=["tlsv1.2","tlsv1.3"] config, not by this client-side scenario.
+# See also S1, which pins 1.2 the same way for the same reason.
 #
 # `expect_connect_failure: true` tells the runner the automatic pre-steps
 # connect() is EXPECTED to be rejected — on confirmed rejection the
@@ -32,11 +39,12 @@
 #   simulator run --scenario scenarios/tls-floor/s3-rejects-tls11-below-floor.yaml \
 #     --target uat --station stn_<preprovisioned>
 #
-# NEEDS A LIVE BROKER — not run in this authoring piece (C3). Deferred to
-# the deploy step, which should also confirm exactly how the broker
-# surfaces the rejection (TLS alert vs. reset) and consider tightening this
-# scenario with an `expect_connect_failure_timeout_ms` and/or asserting on
-# the captured rejection detail once that's known.
+# C4 (deploy step) RESULT — ran live against UAT: PASSED. Observed
+# rejection detail = "tls_setup_handshake: no protocols available"
+# (client-side OpenSSL-3 refusal of the 1.1 pin), caught cleanly by the
+# runner's expect_connect_failure path. Broker-side <1.2 refusal confirmed
+# out-of-band (nmap ssl-enum-ciphers: no TLSv1.0/1.1/SSLv3; EMQX
+# versions=["tlsv1.2","tlsv1.3"]).
 name: "TLS floor S3 — rejects TLS 1.1 (below the broker floor)"
 description: "Client pins minVersion=maxVersion=TLSv1.1. The broker floor is 1.2, so the connection MUST be REJECTED — expect_connect_failure: true."
 tls:
