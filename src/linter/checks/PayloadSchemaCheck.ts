@@ -100,6 +100,35 @@ function isUnderDynamicPath(instancePath: string, dynamicPaths: string[]): boole
   return dynamicPaths.some((p) => instancePath === p || instancePath.startsWith(`${p}/`));
 }
 
+// A string whose ENTIRE value is a single {{ X }} token where X is NOT
+// `captured.*` (that case is WHOLE_CAPTURE_RE above). ScenarioRunner resolves
+// these from CLI `--var KEY=VALUE` flags at run time (e.g. `--var
+// reason=TimerExpired`) — the linter has no way to know the operator-supplied
+// value ahead of time, so the generic 'test_dummy_value' dummy substituted
+// above cannot satisfy a downstream `enum` constraint on that field. Unlike
+// WHOLE_CAPTURE_RE paths (whole error skipped — the runtime type is
+// genuinely unknown there), we skip ONLY the `enum` keyword for these paths:
+// a --var default substituted where the schema demands e.g. an object still
+// fails as before, since that would be a real bug, not a missing enum member.
+const WHOLE_VAR_RE = /^\{\{\s*(?!captured\.)[^{}]+\s*\}\}$/;
+
+function collectDynamicVarPaths(value: unknown, base = '', out: string[] = []): string[] {
+  if (typeof value === 'string') {
+    if (WHOLE_VAR_RE.test(value)) out.push(base);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => collectDynamicVarPaths(item, `${base}/${i}`, out));
+    return out;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      collectDynamicVarPaths(v, `${base}/${escapeJsonPointer(k)}`, out);
+    }
+  }
+  return out;
+}
+
 export class PayloadSchemaCheck implements LintCheck {
   name = 'payload-schema';
   private validator: SchemaValidator;
@@ -116,6 +145,15 @@ export class PayloadSchemaCheck implements LintCheck {
     for (let i = 0; i < scenario.steps.length; i++) {
       const step = scenario.steps[i];
       if (step.action !== 'send') continue;
+      // A `send` step marked `expect_invalid: true` deliberately publishes a
+      // malformed payload to probe server robustness (e.g. an omitted
+      // required field, or a field violating a pattern/enum) — schema
+      // validation on THIS step's payload is the whole point of the test, so
+      // skip it here rather than have the scenario fight the linter. This is
+      // an opt-out per-step, not a weakening of the check globally: every
+      // other `send` step, including other steps in the same scenario, is
+      // still fully validated.
+      if (step.expect_invalid === true) continue;
 
       const message = step.message as string | undefined;
       const messageType = step.messageType as string | undefined;
@@ -141,12 +179,17 @@ export class PayloadSchemaCheck implements LintCheck {
       // validates the real value at runtime. Embedded/non-capture templates stay
       // validated as before.
       const dynamicPaths = collectDynamicCapturePaths(payload);
+      // Non-captured whole-value `--var` templates (e.g. `reason: "{{reason}}"`)
+      // — see WHOLE_VAR_RE above. Only `enum` errors are suppressed at these
+      // paths, not the whole error.
+      const dynamicVarPaths = collectDynamicVarPaths(payload);
 
       try {
         const result = this.validator.validate(schemaKey, resolved);
         if (!result.valid && result.errors) {
           for (const err of result.errors) {
             if (isUnderDynamicPath(err.instancePath ?? '', dynamicPaths)) continue;
+            if (err.keyword === 'enum' && isUnderDynamicPath(err.instancePath ?? '', dynamicVarPaths)) continue;
             issues.push({
               file: scenario.filePath,
               step: i,
