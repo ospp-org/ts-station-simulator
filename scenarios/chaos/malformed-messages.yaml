@@ -43,9 +43,14 @@ steps:
     equals: "Accepted"
 
   # --- Minimal valid StatusNotification (only bayId + status) ---
+  # Deliberately omits required `bayNumber`/`services` — probes server
+  # robustness against an edge-case payload shape, not a schema-conformant
+  # one. expect_invalid: true tells PayloadSchemaCheck to skip validation
+  # for this step (the malformedness IS the test).
   - action: send
     message: StatusNotification
     messageType: Event
+    expect_invalid: true
     payload:
       bayId: "{{bayId_1}}"
       status: "Available"
@@ -54,9 +59,11 @@ steps:
     ms: 500
 
   # --- StatusNotification with empty services array ---
+  # Deliberately violates `services` minItems:1 — same intent as above.
   - action: send
     message: StatusNotification
     messageType: Event
+    expect_invalid: true
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1

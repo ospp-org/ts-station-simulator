@@ -45,7 +45,7 @@ steps:
     messageType: Event
     payload:
       bayId: "{{bayId_1}}"
-      sessionId: "sess_nonexistent"
+      sessionId: "sess_deadbeef"
       timestamp: "2026-03-22T10:00:00.000Z"
       values:
         liquidMl: 100
@@ -58,7 +58,7 @@ steps:
     message: SessionEnded
     messageType: Event
     payload:
-      sessionId: "sess_nonexistent"
+      sessionId: "sess_deadbeef"
       bayId: "{{bayId_1}}"
       reason: "TimerExpired"
       actualDurationSeconds: 60

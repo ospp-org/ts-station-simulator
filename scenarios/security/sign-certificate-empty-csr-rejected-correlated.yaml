@@ -39,9 +39,14 @@ steps:
     equals: "Accepted"
 
   # --- SignCertificate Request with empty CSR ---
+  # Deliberately violates the `csr` pattern (must start with the PEM CSR
+  # header) — the whole point of this regression guard is to prove the
+  # server rejects it (see asserts below). expect_invalid: true tells
+  # PayloadSchemaCheck to skip validation for this step.
   - action: send
     message: SignCertificate
     messageType: Request
+    expect_invalid: true
     payload:
       certificateType: "StationCertificate"
       csr: ""
