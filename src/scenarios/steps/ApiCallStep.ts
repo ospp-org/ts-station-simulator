@@ -66,7 +66,7 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Regenerate the `X-Idempotency-Key` header (if present) on a `RequestInit`, returning a
+ * Regenerate the `Idempotency-Key` header (if present) on a `RequestInit`, returning a
  * NEW init with a freshly-minted UUID for that header. All other headers preserved.
  *
  * Why this is mandatory for retries: the OSPP server's `IdempotencyMiddleware` caches
@@ -87,7 +87,7 @@ function regenerateIdempotencyKey(init: RequestInit): RequestInit {
   const headers = init.headers;
   if (!headers) return init;
 
-  const TARGET = 'x-idempotency-key';
+  const TARGET = 'idempotency-key';
   const fresh = randomUUID();
 
   if (headers instanceof Headers) {
@@ -133,7 +133,7 @@ function regenerateIdempotencyKey(init: RequestInit): RequestInit {
  * a real failure: after the cap, the last 429 response is returned and the caller's
  * `expect_status` mismatch check still fires.
  *
- * Each retry MINTS A FRESH `X-Idempotency-Key` (when one is present on the request — i.e.,
+ * Each retry MINTS A FRESH `Idempotency-Key` (when one is present on the request — i.e.,
  * any POST/PUT/PATCH). The server's `IdempotencyMiddleware` caches all <500 responses for
  * 86400s; reusing the same key on retry replays the cached 429 and bypasses the rate-limit
  * gate. With a fresh key per attempt, each retry is a fresh server-side request evaluated
@@ -163,7 +163,7 @@ export async function fetchWithThrottleRetry(
     await response.text().catch(() => undefined);
     opts.onRetry?.({ attempt, delayMs, url });
     await sleepFn(delayMs);
-    // Mint a fresh X-Idempotency-Key (when present) so the next attempt is a genuine
+    // Mint a fresh Idempotency-Key (when present) so the next attempt is a genuine
     // server-side request, not a replay of the cached 429.
     currentInit = regenerateIdempotencyKey(currentInit);
     attempt++;
@@ -405,7 +405,7 @@ export class ApiCallStep implements Step {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(autoOrgId ? { 'X-Organization-Id': autoOrgId } : {}),
-      ...(methodRequiresIdempotencyKey(method) ? { 'X-Idempotency-Key': randomUUID() } : {}),
+      ...(methodRequiresIdempotencyKey(method) ? { 'Idempotency-Key': randomUUID() } : {}),
       ...headers,
     };
 

@@ -180,17 +180,17 @@ describe('fetchWithThrottleRetry', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // X-Idempotency-Key regeneration on retry
+  // Idempotency-Key regeneration on retry
   // ---------------------------------------------------------------------------
   // The OSPP server's IdempotencyMiddleware caches every response with status < 500
-  // (including 429s) for 86400s, keyed by X-Idempotency-Key. Without regeneration,
+  // (including 429s) for 86400s, keyed by Idempotency-Key. Without regeneration,
   // a 429-retry with the same key would replay the cached 429 and bypass the
   // (now-refilled) rate-limit gate entirely. These tests assert each retry mints
   // a fresh key so the server sees a genuine new request, evaluated against the
   // CURRENT rate-limit window — not a cache hit on a stale 429.
   // ---------------------------------------------------------------------------
 
-  it('regenerates X-Idempotency-Key on each retry (plain object headers)', async () => {
+  it('regenerates Idempotency-Key on each retry (plain object headers)', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(res(429, '0'))
@@ -200,7 +200,7 @@ describe('fetchWithThrottleRetry', () => {
     const initialKey = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
     await fetchWithThrottleRetry(
       'http://x',
-      { method: 'POST', headers: { 'X-Idempotency-Key': initialKey, Authorization: 'Bearer t' } },
+      { method: 'POST', headers: { 'Idempotency-Key': initialKey, Authorization: 'Bearer t' } },
       { fetchFn, sleepFn },
     );
     expect(fetchFn).toHaveBeenCalledTimes(3);
@@ -209,7 +209,7 @@ describe('fetchWithThrottleRetry', () => {
     const keyOf = (i: number): string => {
       const init = calls[i][1] as RequestInit;
       const h = init.headers as Record<string, string>;
-      return h['X-Idempotency-Key'];
+      return h['Idempotency-Key'];
     };
     expect(keyOf(0)).toBe(initialKey);
     expect(keyOf(1)).not.toBe(initialKey);
@@ -225,46 +225,46 @@ describe('fetchWithThrottleRetry', () => {
     expect(authOf(2)).toBe('Bearer t');
   });
 
-  it('regenerates X-Idempotency-Key in Headers instance (case-insensitive match)', async () => {
+  it('regenerates Idempotency-Key in Headers instance (case-insensitive match)', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(res(429, '0'))
       .mockResolvedValueOnce(res(201));
     const sleepFn = vi.fn(async () => undefined);
     const initHeaders = new Headers();
-    initHeaders.set('x-idempotency-key', 'orig-key-1');
+    initHeaders.set('idempotency-key', 'orig-key-1');
     initHeaders.set('content-type', 'application/json');
     await fetchWithThrottleRetry('http://x', { method: 'POST', headers: initHeaders }, { fetchFn, sleepFn });
     expect(fetchFn).toHaveBeenCalledTimes(2);
     const retryInit = fetchFn.mock.calls[1][1] as RequestInit;
     const retryHeaders = retryInit.headers as Headers;
     expect(retryHeaders).toBeInstanceOf(Headers);
-    expect(retryHeaders.get('x-idempotency-key')).not.toBe('orig-key-1');
-    expect(retryHeaders.get('x-idempotency-key')!.length).toBeGreaterThan(20);
+    expect(retryHeaders.get('idempotency-key')).not.toBe('orig-key-1');
+    expect(retryHeaders.get('idempotency-key')!.length).toBeGreaterThan(20);
     expect(retryHeaders.get('content-type')).toBe('application/json');
   });
 
-  it('regenerates X-Idempotency-Key in array-of-pairs headers', async () => {
+  it('regenerates Idempotency-Key in array-of-pairs headers', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(res(429, '0'))
       .mockResolvedValueOnce(res(201));
     const sleepFn = vi.fn(async () => undefined);
     const initHeaders: Array<[string, string]> = [
-      ['X-Idempotency-Key', 'orig-key-arr'],
+      ['Idempotency-Key', 'orig-key-arr'],
       ['Accept', 'application/json'],
     ];
     await fetchWithThrottleRetry('http://x', { method: 'POST', headers: initHeaders }, { fetchFn, sleepFn });
     const retryInit = fetchFn.mock.calls[1][1] as RequestInit;
     const retryHeaders = retryInit.headers as Array<[string, string]>;
     expect(Array.isArray(retryHeaders)).toBe(true);
-    const idempPair = retryHeaders.find(([k]) => k.toLowerCase() === 'x-idempotency-key');
+    const idempPair = retryHeaders.find(([k]) => k.toLowerCase() === 'idempotency-key');
     expect(idempPair).toBeDefined();
     expect(idempPair![1]).not.toBe('orig-key-arr');
     expect(retryHeaders.find(([k]) => k === 'Accept')![1]).toBe('application/json');
   });
 
-  it('no X-Idempotency-Key header → request unchanged on retry (no-op for non-mutating calls)', async () => {
+  it('no Idempotency-Key header → request unchanged on retry (no-op for non-mutating calls)', async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(res(429, '0'))
@@ -276,7 +276,7 @@ describe('fetchWithThrottleRetry', () => {
     const h1 = (fetchFn.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
     const h2 = (fetchFn.mock.calls[1][1] as RequestInit).headers as Record<string, string>;
     expect(h1).toEqual(h2);
-    expect('X-Idempotency-Key' in h1).toBe(false);
+    expect('Idempotency-Key' in h1).toBe(false);
   });
 
   it('each retry-key is a valid UUID (defense against weak randomness)', async () => {
@@ -290,14 +290,14 @@ describe('fetchWithThrottleRetry', () => {
     const sleepFn = vi.fn(async () => undefined);
     await fetchWithThrottleRetry(
       'http://x',
-      { method: 'POST', headers: { 'X-Idempotency-Key': 'initial-key' } },
+      { method: 'POST', headers: { 'Idempotency-Key': 'initial-key' } },
       { fetchFn, sleepFn, maxRetries: 4 },
     );
     const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const seen = new Set<string>();
     for (let i = 1; i < fetchFn.mock.calls.length; i++) {
       const h = (fetchFn.mock.calls[i][1] as RequestInit).headers as Record<string, string>;
-      const k = h['X-Idempotency-Key'];
+      const k = h['Idempotency-Key'];
       expect(k, `call ${i} key shape`).toMatch(uuidV4);
       seen.add(k);
     }

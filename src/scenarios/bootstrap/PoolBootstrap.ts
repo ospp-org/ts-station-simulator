@@ -201,7 +201,7 @@ async function apiCall(spec: ApiCallSpec): Promise<unknown> {
   if (spec.body !== undefined) headers['Content-Type'] = 'application/json';
   if (spec.token) headers['Authorization'] = `Bearer ${spec.token}`;
   if (spec.orgId) headers['X-Organization-Id'] = spec.orgId;
-  if (spec.method !== 'GET') headers['X-Idempotency-Key'] = randomUUID();
+  if (spec.method !== 'GET') headers['Idempotency-Key'] = randomUUID();
 
   let res: Response;
   try {
