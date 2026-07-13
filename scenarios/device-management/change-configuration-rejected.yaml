@@ -42,7 +42,7 @@ steps:
     method: PUT
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     body:
-      key: "HeartbeatInterval"
+      key: "HeartbeatIntervalSeconds"
       value: "30"
     expect_status: 202
 
@@ -56,7 +56,7 @@ steps:
     messageType: Response
     payload:
       results:
-        - key: "HeartbeatInterval"
+        - key: "HeartbeatIntervalSeconds"
           status: "Rejected"
           errorCode: 5108
           errorText: "CONFIGURATION_KEY_READONLY"
