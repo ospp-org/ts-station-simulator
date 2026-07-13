@@ -686,16 +686,16 @@ interface ProvisionCommandOptions {
   bayCount: string; // Commander returns string for option values
 }
 
+// F-05: FLAT normative provisioning body — no `data` envelope
+// (provisioning-response.schema.json describes these fields at the top level).
 interface ProvisioningResponse {
-  data: {
-    clientCert: string;
-    stationCaChain: string;
-    brokerRootCa?: string;
-    rootCaThumbprint: string;
-    bayIds?: string[];
-    serverVerifyKey?: string;
-    mqttConfig?: { brokerUri?: string; [key: string]: unknown };
-  };
+  clientCert: string;
+  stationCaChain: string;
+  brokerRootCa?: string;
+  rootCaThumbprint: string;
+  bayIds?: string[];
+  serverVerifyKey?: string;
+  mqttConfig?: { brokerUri?: string; [key: string]: unknown };
 }
 
 program
@@ -754,7 +754,7 @@ program
         throw new Error(`Provisioning failed: ${res.status} ${errText}`);
       }
 
-      const { data } = (await res.json()) as ProvisioningResponse;
+      const data = (await res.json()) as ProvisioningResponse;
 
       const keyPath = resolveStationTemplate(target.certs.key, stationId);
       const certPath = resolveStationTemplate(target.certs.cert, stationId);

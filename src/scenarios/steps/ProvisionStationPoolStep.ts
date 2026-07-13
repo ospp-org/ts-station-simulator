@@ -19,10 +19,6 @@ interface ProvisioningResponseData {
   bayIds?: string[];
 }
 
-interface ProvisioningResponse {
-  data?: ProvisioningResponseData;
-}
-
 /**
  * Scenario step that provisions N stations into `context.pool`.
  *
@@ -108,17 +104,14 @@ export class ProvisionStationPoolStep implements Step {
         );
       }
 
-      const parsed = (await response.json()) as ProvisioningResponse;
-      const data = parsed.data;
-      if (!data) {
-        throw new Error(
-          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing "data" envelope`,
-        );
-      }
+      // F-05: provisioning response is the FLAT normative body (no `data`
+      // envelope) — see provisioning-response.schema.json.
+      const data = (await response.json()) as ProvisioningResponseData;
+
       const cert = data.clientCert;
       if (typeof cert !== 'string' || cert.length === 0) {
         throw new Error(
-          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing data.clientCert`,
+          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing clientCert`,
         );
       }
       const bayIds = data.bayIds;

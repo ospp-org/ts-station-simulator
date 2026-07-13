@@ -18,10 +18,6 @@ interface ProvisioningResponseData {
   bayIds?: string[];
 }
 
-interface ProvisioningResponse {
-  data?: ProvisioningResponseData;
-}
-
 /**
  * Scenario step that performs canonical OSPP §2 station provisioning:
  *  1. Generates ECDSA P-256 TLS keypair and CSR (CN=stationId).
@@ -117,17 +113,13 @@ export class ProvisionStep implements Step {
       );
     }
 
-    const parsed = (await response.json()) as ProvisioningResponse;
-    const data = parsed.data;
-    if (!data) {
-      throw new Error(
-        'ProvisionStep: provisioning response missing "data" envelope',
-      );
-    }
+    // F-05: provisioning response is the FLAT normative body (no `data`
+    // envelope) — see provisioning-response.schema.json.
+    const data = (await response.json()) as ProvisioningResponseData;
 
     const cert = data.clientCert;
     if (typeof cert !== 'string' || cert.length === 0) {
-      throw new Error('ProvisionStep: response missing data.clientCert');
+      throw new Error('ProvisionStep: response missing clientCert');
     }
 
     const bayIds = data.bayIds;

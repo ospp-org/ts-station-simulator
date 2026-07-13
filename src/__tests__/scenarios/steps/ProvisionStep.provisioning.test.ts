@@ -5,14 +5,14 @@ import path from 'node:path';
 import { ProvisionStep } from '../../../scenarios/steps/ProvisionStep.js';
 import { createContext } from '../../../scenarios/ScenarioContext.js';
 
+// F-05: FLAT normative provisioning body — no `data` envelope, mirroring the
+// live ProvisioningController + provisioning-response.schema.json.
 const PROVISION_RESPONSE = {
-  data: {
-    clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
-    stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
-    brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
-    bayIds: ['bay_real_001', 'bay_real_002'],
-    mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
-  },
+  clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
+  stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
+  brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
+  bayIds: ['bay_real_001', 'bay_real_002'],
+  mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
 };
 
 describe('ProvisionStep — populates context.provisioning + writes bays.json', () => {
