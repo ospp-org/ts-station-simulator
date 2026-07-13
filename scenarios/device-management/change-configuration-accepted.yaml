@@ -26,6 +26,7 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 

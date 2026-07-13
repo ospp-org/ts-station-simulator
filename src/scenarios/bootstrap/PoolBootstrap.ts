@@ -615,8 +615,11 @@ async function registerAndProvisionStation(
     },
     expectStatus: 200,
   });
-  const data = pluck(provRes, 'data') as ProvisionResponseData | undefined;
-  if (!data) throw new Error(`provision response for ${stationId} missing data envelope`);
+  // F-05: POST /api/v1/stations/provision returns the FLAT normative body
+  // (no Laravel `data` wrapper) per provisioning-response.schema.json — same
+  // change as b020cfc applied to the other three provisioning consumers.
+  const data = provRes as ProvisionResponseData | undefined;
+  if (!data) throw new Error(`provision response for ${stationId} missing body`);
   const clientCert = requireString(data.clientCert, `${stationId} data.clientCert`);
   const bayIds = data.bayIds;
   if (!Array.isArray(bayIds) || bayIds.length === 0) {
