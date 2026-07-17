@@ -1,0 +1,165 @@
+# Single-Session Drive — card-free single session for zero-regression testing of the
+# UserDuration + FixedDuration service kinds (the non-batch path).
+#
+# This is the classic server-initiated single-session flow: the simulator triggers the
+# session itself via POST /api/v1/sessions/start (background, because that endpoint
+# BLOCKS on the station's StartService round-trip), then answers the server-pushed
+# StartService Request and ends the session. It is the same shape as the proven
+# scenarios/sessions/start-service.yaml and scenarios/sessions/session-timeout-timer-
+# expired.yaml — reproduced here as a stable, minimal reference under multiunit-e2e/.
+# (scenarios/e2e/e2e-session-end-matrix.yaml is NOT this: it self-provisions an org +
+# fresh 4-bay station via `auth`/`provision`/`connect_mqtt` and drives 4 bays — a
+# heavyweight onboarding scenario, not a single-session drive.)
+#
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}    — set by --station stn_<id> (or --var stationId=...)
+#   {{serialNumber}} — auto-generated
+#   {{bayId_1}}      — bay to drive. Auto-generated fallback; override with
+#                      --var bayId_1=bay_...  (also auto-hydrated from
+#                      <stationId>-bays.json when the station is pre-provisioned).
+#   {{serviceId_1}}  — the UserDuration/FixedDuration service under test. Auto-generated
+#                      fallback; override with --var serviceId_1=svc_...  (this is the
+#                      DSL's idiomatic --var key for the service; value must be
+#                      [A-Za-z0-9_-]).
+#   {{reason}}       — REQUIRED --var (no auto-generated default → substitution throws
+#                      if omitted). SessionEnded reason, e.g. TimerExpired | Local |
+#                      Fault | LocalOutOfCredit | Deauthorized. Value must be [A-Za-z0-9_-].
+#
+# Example:
+#   node dist/cli/index.js run \
+#     --scenario scenarios/multiunit-e2e/single-session-drive.yaml \
+#     --target uat --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic \
+#     --var reason=TimerExpired
+name: "Single-Session Drive (card-free, UserDuration/FixedDuration)"
+description: "Boot single-bay station, report Available, trigger a single session via POST /sessions/start (background), answer the server-pushed StartService with Accepted, then end with reason={{reason}}. Parameterized service ({{serviceId_1}}) + reason for kind zero-regression."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 1
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 1
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+    capture:
+      bootStatus: "payload.status"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # --- Trigger the session via API (background: the endpoint blocks on the
+  #     station's StartService round-trip, which the steps below fulfil).
+  #     duration_seconds is the requested duration (UserDuration input; ignored /
+  #     server-derived for FixedDuration). ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  # --- Server pushes StartService — capture sessionId + durationSeconds ---
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      serviceId: "payload.serviceId"
+      durationSeconds: "payload.durationSeconds"
+
+  # --- Accept StartService (auto-correlates to the Request above via messageId) ---
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # --- Occupied ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: false
+
+  # --- Brief run before ending ---
+  - action: delay
+    ms: 1000
+
+  # --- SessionEnded (reason parameterized). seqNo/finalSeqNo auto-handled;
+  #     creditsCharged informational — server settlement policy decides the charge. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "{{reason}}"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+
+  # --- Bay back to Available (teardown hygiene) ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{captured.serviceId}}"
+          available: true
+
+  # --- Trailing wait so the server-side session finalizer / settlement can run. ---
+  - action: delay
+    ms: 10000

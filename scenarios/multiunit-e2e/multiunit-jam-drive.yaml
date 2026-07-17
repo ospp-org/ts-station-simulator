@@ -1,0 +1,147 @@
+name: "Multi-Unit Jam Drive (unit 1 delivered, unit 2 jams)"
+description: "Boot single-bay station, report Available, then answer 2 server-pushed StartService rounds: unit 1 TimerExpired (delivered), unit 2 Fault (jam → batch stops, unit 3 never started → tail refund of the undelivered units)."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 1
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 1
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+    capture:
+      bootStatus: "payload.status"
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+  - action: start_heartbeat
+    interval_sec: 30
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+  # UNIT 1 — TimerExpired (delivered)
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 60000
+    capture:
+      session_id_1: "payload.sessionId"
+      start_msg_id_1: "messageId"
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_1}}"
+    payload:
+      status: "Accepted"
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+  - action: delay
+    ms: 500
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_1}}"
+      bayId: "{{bayId_1}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 5
+      creditsCharged: 25
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+  # UNIT 2 — Fault (JAM → batch stops, unit 3 never dispatched)
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 60000
+    capture:
+      session_id_2: "payload.sessionId"
+      start_msg_id_2: "messageId"
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_2}}"
+    payload:
+      status: "Accepted"
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+  - action: delay
+    ms: 500
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_2}}"
+      bayId: "{{bayId_1}}"
+      reason: "Fault"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+  - action: delay
+    ms: 20000

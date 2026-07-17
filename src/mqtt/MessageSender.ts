@@ -17,17 +17,25 @@ export class MessageSender {
   private readonly stationId: string;
   private readonly getSessionKey: () => string | null;
   private readonly signingMode: MessageSigningMode;
+  private readonly protocolVersion: string | undefined;
 
   constructor(
     connection: MqttConnection,
     stationId: string,
     getSessionKey: () => string | null = () => null,
     signingMode: MessageSigningMode = 'Critical',
+    // Overridable OSPP wire protocolVersion for every outgoing envelope. Omitted → the SDK default
+    // (OSPP_PROTOCOL_VERSION, currently 0.2.1), which a local-HEAD cascade negotiates fine (MAJOR-0
+    // matches dev/testing/prod-example). Set OSPP_PROTOCOL_VERSION in the env to target a server pinned
+    // to a different MAJOR (e.g. UAT 1.x) — otherwise those messages would be rejected 1007. Never
+    // hardcoded here so the same build can be pointed at either without an edit.
+    protocolVersion: string | undefined = process.env.OSPP_PROTOCOL_VERSION || undefined,
   ) {
     this.connection = connection;
     this.stationId = stationId;
     this.getSessionKey = getSessionKey;
     this.signingMode = signingMode;
+    this.protocolVersion = protocolVersion;
   }
 
   async send<T>(
@@ -42,6 +50,9 @@ export class MessageSender {
       action,
       source: MessageSource.STATION,
       payload,
+      // undefined → the SDK default (OSPP_PROTOCOL_VERSION); an env/explicit override negotiates
+      // against a server pinned to a different MAJOR.
+      protocolVersion: this.protocolVersion,
     });
 
     // HMAC-sign the WHOLE envelope (not envelope.payload) when the message

@@ -1,0 +1,280 @@
+# Multi-Unit Batch Drive — server-pushed StartService rounds (MultiUnit / TokenDispenser kind).
+#
+# WIRE MODEL: in a MULTI-UNIT BATCH the SERVER pushes StartService to the station,
+# one round per unit. The simulator does NOT call POST /sessions/start here — the
+# parent process kicks the batch off server-side (multi-unit purchase). This scenario
+# is purely REACTIVE: for each unit it waits for the server-pushed StartService
+# Request, replies Accepted, emits SessionEnded, then re-reports the bay Available so
+# the server's next StartService (unit K+1) is not rejected 3002 BAY_NOT_READY.
+#
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}    — set by --station stn_<id> (or --var stationId=...)
+#   {{serialNumber}} — auto-generated
+#   {{bayId_1}}      — the bay the batch drives. Auto-generated fallback; override with
+#                      --var bayId_1=bay_...  (also auto-hydrated from
+#                      <stationId>-bays.json when the station is pre-provisioned).
+#   {{serviceId_1}}  — the multi-unit service. Auto-generated fallback; override with
+#                      --var serviceId_1=svc_...
+#   {{reason}}       — REQUIRED --var (no auto-generated default → substitution throws
+#                      if omitted). SessionEnded reason for the FINAL round (unit 3):
+#                        TimerExpired        = unit delivered fully (whole batch delivered)
+#                        Fault | Deauthorized = jam/fault at unit 3 (batch stops there)
+#
+# Example:
+#   node dist/cli/index.js run \
+#     --scenario scenarios/multiunit-e2e/multiunit-batch-drive.yaml \
+#     --target uat --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_token_dispenser \
+#     --var reason=TimerExpired
+#
+# LOOP SUPPORT: the DSL has NO loop/repeat construct (STEP_REGISTRY in
+# src/scenarios/ScenarioRunner.ts:153-165 registers only send/wait_for/
+# wait_for_connect/assert/api_call/delay/start_heartbeat/fault/provision/
+# provision_station_pool/connect_mqtt — no loop). The batch is therefore UNROLLED
+# for exactly 3 rounds. Units 1 and 2 are hardcoded reason=TimerExpired so the batch
+# always advances to the next unit (a Fault/Deauthorized there would stop the batch
+# server-side and starve the next wait_for). Only the final round (3) takes the
+# parameterized {{reason}}. `{{units}}` and `{{jam_at}}` are NOT expressible without a
+# loop — the count is fixed at 3 and the jam point is fixed at the final round.
+name: "Multi-Unit Batch Drive (server-pushed StartService x3)"
+description: "Boot single-bay station, report Available, then reactively drive 3 server-pushed StartService rounds: units 1-2 TimerExpired (full delivery), unit 3 uses {{reason}}. Re-reports Available after each unit so unit K+1 is not rejected 3002."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 1
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 1
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+    capture:
+      bootStatus: "payload.status"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Keep the station online for the whole batch. The server marks a station offline
+  # after 3.5 x 30s = 105s of application silence (only Heartbeat refreshes the
+  # tracker — StatusNotification / SessionEnded do not). A 3-round batch with 30-60s
+  # server backoff between units easily crosses that window, which would drop the bay
+  # + session-key cache and fail the next StartService. Torn down on disconnect.
+  - action: start_heartbeat
+    interval_sec: 30
+
+  # --- Bay Available (pre-batch) ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # =========================================================================
+  # UNIT 1 — full delivery (TimerExpired). Hardcoded so the batch advances.
+  # =========================================================================
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    # Generous — the server retries StartService with backoff between units.
+    timeout_ms: 60000
+    capture:
+      session_id_1: "payload.sessionId"
+      start_msg_id_1: "messageId"
+      duration_seconds_1: "payload.durationSeconds"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_1}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  # SessionEnded EVENT — station-autonomous. seqNo/finalSeqNo are auto-handled by
+  # SendStep (not injected in scenario mode, matching the proven session-* scenarios);
+  # creditsCharged is informational only — the server's settlement policy decides the
+  # actual per-unit charge/refund for the batch.
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_1}}"
+      bayId: "{{bayId_1}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 5
+      creditsCharged: 10
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # =========================================================================
+  # UNIT 2 — full delivery (TimerExpired). Hardcoded so the batch advances.
+  # =========================================================================
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 60000
+    capture:
+      session_id_2: "payload.sessionId"
+      start_msg_id_2: "messageId"
+      duration_seconds_2: "payload.durationSeconds"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_2}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_2}}"
+      bayId: "{{bayId_1}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 5
+      creditsCharged: 10
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # =========================================================================
+  # UNIT 3 — final unit, parameterized {{reason}}:
+  #   TimerExpired         -> whole 3-unit batch delivered
+  #   Fault | Deauthorized -> jam/fault at unit 3 (batch stops here)
+  # =========================================================================
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 60000
+    capture:
+      session_id_3: "payload.sessionId"
+      start_msg_id_3: "messageId"
+      duration_seconds_3: "payload.durationSeconds"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    correlationId: "{{captured.start_msg_id_3}}"
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.session_id_3}}"
+      bayId: "{{bayId_1}}"
+      reason: "{{reason}}"
+      actualDurationSeconds: 5
+      creditsCharged: 10
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      services:
+        - serviceId: "{{serviceId_1}}"
+          available: true
+
+  # --- Trailing wait so the server-side batch finalizer can run (per-unit settlement
+  #     + tail-refund sweep). The DSL calls this step `delay` (there is no `wait`). ---
+  - action: delay
+    ms: 30000
