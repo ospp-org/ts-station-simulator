@@ -48,6 +48,9 @@ export class Station extends EventEmitter {
   public readonly reservations: Map<string, ReservationInfo> = new Map();
   public currentRevocationEpoch: number = 0;
   public sessionKey: string | null = null;
+  // Device-held key for an in-flight cert renewal (ADR-0002 T1): set by
+  // TriggerCertificateRenewalHandler, consumed by CertificateInstallHandler.
+  public pendingRenewalKeyPem: string | null = null;
 
   private readonly connection: MqttConnection;
   public bootAccepted: boolean = false;
