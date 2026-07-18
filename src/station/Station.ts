@@ -68,6 +68,17 @@ export class Station extends EventEmitter {
     this.router = new MessageRouter();
     this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
 
+    // Wire inbound MQTT messages to the router ONCE, here — NOT per connect().
+    // The MqttConnection wrapper persists across client reconnects and re-emits
+    // 'message' from whichever underlying client is live, so a single listener
+    // routes every inbound message across any number of (re)connects. Doing this
+    // in connect() instead would stack a listener per connect(); a cert-renewal
+    // re-handshake (disconnect()+connect()) would then route each message twice
+    // (ADR-0002 T1 — see Station.messageBridge.test.ts).
+    this.connection.onMessage((inboundTopic: string, payload: Buffer) => {
+      this.router.route(inboundTopic, payload);
+    });
+
     for (const bay of config.bays) {
       this.bayMachines.set(bay.bayId, new BayStateMachine());
     }
@@ -96,9 +107,8 @@ export class Station extends EventEmitter {
     const topic = toStationTopic(this.config.stationId);
     await this.connection.subscribe(topic, 1);
 
-    this.connection.onMessage((inboundTopic: string, payload: Buffer) => {
-      this.router.route(inboundTopic, payload);
-    });
+    // NB: the connection→router 'message' bridge is registered once in the
+    // constructor (survives reconnects), so it is deliberately NOT re-added here.
 
     for (const action of this.handlers.keys()) {
       this.registerRouterListener(action);
