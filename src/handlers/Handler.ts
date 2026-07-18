@@ -24,6 +24,17 @@ export interface StationContext {
   startHeartbeat(intervalSec: number): void;
   stopHeartbeat(): void;
   retryBoot(): Promise<void>;
+  /**
+   * Persist a renewed leaf cert (+ optional issuing chain) and its retained
+   * private key to the station's TLS file paths — the client-cert swap. ADR-0002 T1.
+   */
+  installRenewedCertificate(input: {
+    certificatePem: string;
+    privateKeyPem: string;
+    caChainPem?: string;
+  }): Promise<void>;
+  /** Re-handshake mTLS presenting the freshly-installed leaf. ADR-0002 T1. */
+  reconnectWithRenewedCertificate(): Promise<void>;
   destroyConnection(): void;
 }
 

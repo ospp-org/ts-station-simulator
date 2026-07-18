@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { writeFile } from 'node:fs/promises';
 import type {
   OsppEnvelope,
   BayStatus,
@@ -145,6 +146,44 @@ export class Station extends EventEmitter {
     await this.connection.disconnect();
     this.lifecycle = StationLifecycle.OFFLINE;
     this.emit('disconnected');
+  }
+
+  /**
+   * Swap the station's client certificate: write the renewed leaf (+ optional
+   * issuing chain, full-chain order) and its retained private key to the SAME
+   * TLS file paths the connection reads at connect() time. ADR-0002 T1 — the
+   * on-the-wire analog of ProvisionStep's cert write, for an already-provisioned
+   * station. Throws if the station has no configured TLS cert/key path to swap.
+   */
+  async installRenewedCertificate(input: {
+    certificatePem: string;
+    privateKeyPem: string;
+    caChainPem?: string;
+  }): Promise<void> {
+    const paths = this.connection.getTlsPaths();
+    if (!paths?.cert || !paths.key) {
+      throw new Error(
+        'Station.installRenewedCertificate: no TLS cert/key path configured to swap',
+      );
+    }
+    const certOut =
+      input.caChainPem !== undefined && input.caChainPem.length > 0
+        ? `${input.certificatePem.trimEnd()}\n${input.caChainPem.trimEnd()}\n`
+        : input.certificatePem;
+    await writeFile(paths.cert, certOut);
+    await writeFile(paths.key, input.privateKeyPem, { mode: 0o600 });
+    this.emit('certificate-installed');
+  }
+
+  /**
+   * Re-handshake mTLS presenting the freshly-installed leaf: fully disconnect
+   * (nulling the client so the cert files are re-read) then reconnect. A
+   * resolved connect() means the broker accepted the renewed client cert — the
+   * decisive proof of a completed renewal. ADR-0002 T1.
+   */
+  async reconnectWithRenewedCertificate(): Promise<void> {
+    await this.disconnect();
+    await this.connect();
   }
 
   handleMessage(envelope: OsppEnvelope): void {

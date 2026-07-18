@@ -152,6 +152,23 @@ export class MqttConnection extends EventEmitter {
     this.tlsConfig = tls;
   }
 
+  /**
+   * The TLS material file paths this connection reads at connect() time, or
+   * undefined over a plaintext transport. Exposed so a renewed certificate can
+   * be written back to the SAME files and picked up on the next connect
+   * (ADR-0002 T1 certificate renewal).
+   */
+  getTlsPaths(): { key?: string; cert?: string; serverCa?: string } | undefined {
+    if (!this.tlsConfig) {
+      return undefined;
+    }
+    return {
+      key: this.tlsConfig.key,
+      cert: this.tlsConfig.cert,
+      serverCa: this.tlsConfig.serverCa,
+    };
+  }
+
   connect(): void {
     const last = lastDisconnectAt.get(this.stationId) ?? 0;
     const elapsed = Date.now() - last;
