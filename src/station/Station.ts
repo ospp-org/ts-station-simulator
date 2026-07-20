@@ -349,6 +349,13 @@ export class Station extends EventEmitter {
         bleSupported: false,
         offlineModeSupported: false,
         meterValuesSupported: true,
+        // Truthful: this simulator implements the device-management command set
+        // (ChangeConfiguration, GetConfiguration, GetDiagnostics, Reset, UpdateFirmware,
+        // SetMaintenanceMode, TriggerMessage). Omitting it made the CSMS store
+        // device_management_supported=false, so WriteConfigurationAction refused every
+        // config push with "Station does not support device management" — which reads
+        // exactly like a gating bug while actually being an unadvertised capability.
+        deviceManagementSupported: true,
       },
       networkInfo: {
         connectionType: 'Ethernet',
