@@ -5,6 +5,7 @@ import * as x509 from '@peculiar/x509';
 import {
   generateEcdsaP256KeyPair,
   buildCsr,
+  buildStationCsr,
   exportPrivateKeyPkcs8Pem,
   exportPublicKeySpkiPem,
   resolveStationTemplate,
@@ -104,5 +105,46 @@ describe('resolveStationTemplate', () => {
   it('replaces every occurrence', () => {
     expect(resolveStationTemplate('{{stationId}}/{{stationId}}.pem', 'stn_abc'))
       .toBe('stn_abc/stn_abc.pem');
+  });
+});
+
+// ADR-0002 T1 (cert-renewal handshake): the renewal path MUST reuse the proven
+// provisioning ECDSA P-256 keypair+CSR generator, not a placeholder string. This
+// one helper produces the fresh keypair + CSR a renewal sends in SignCertificate
+// and returns the matching PKCS8 private key the station retains to pair with the
+// signed cert delivered later in CertificateInstall. It is exactly what the CSMS
+// CsrValidator accepts (EC secp256r1, CN == the exact stationId, valid PoP
+// self-signature) — the same shape ProvisionStep already sends over HTTP.
+describe('buildStationCsr — shared renewal/provisioning CSR generator', () => {
+  it('returns a valid ECDSA P-256 CSR (CN=stationId) paired with its PKCS8 key', async () => {
+    const stationId = 'stn_renew01';
+    const { csrPem, privateKeyPem } = await buildStationCsr(stationId);
+
+    const csr = new x509.Pkcs10CertificateRequest(csrPem);
+    // CsrValidator rule: CN MUST equal the exact stationId (else cn_mismatch).
+    expect(csr.subject).toContain(`CN=${stationId}`);
+
+    // CsrValidator rule: key algorithm EC on the secp256r1 (P-256) curve.
+    const csrPub = await csr.publicKey.export();
+    const csrAlgo = csrPub.algorithm as webcrypto.EcKeyAlgorithm;
+    expect(csrAlgo.name).toBe('ECDSA');
+    expect(csrAlgo.namedCurve).toBe('P-256');
+
+    // CsrValidator rule: proof-of-possession — the CSR self-signature verifies.
+    expect(await csr.verify()).toBe(true);
+
+    // NOT the historical placeholder (`MIIBSimulated…`) the server would reject.
+    expect(csrPem).not.toMatch(/Simulated/);
+    expect(privateKeyPem).toMatch(/-----BEGIN PRIVATE KEY-----/);
+  });
+
+  it('mints a fresh keypair on every call (a renewal re-keys)', async () => {
+    const a = await buildStationCsr('stn_renew02');
+    const b = await buildStationCsr('stn_renew02');
+    // Distinct private keys → the server performs a genuine re-key (new active
+    // cert row), which is what the LeafCertificateRenewalScanner observes as
+    // completion. Reusing the provisioning key would hit the pubkey-idempotency
+    // short-circuit and insert no new row.
+    expect(a.privateKeyPem).not.toBe(b.privateKeyPem);
   });
 });

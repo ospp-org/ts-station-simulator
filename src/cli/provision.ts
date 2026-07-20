@@ -24,6 +24,31 @@ export async function buildCsr(
   });
 }
 
+/**
+ * Mint a fresh ECDSA P-256 keypair and the matching CSR for `stationId`, and
+ * return both as PEM. This is the single generator shared by station
+ * provisioning (ProvisionStep, over HTTP) and certificate RENEWAL (the inbound
+ * TriggerCertificateRenewal handler, over MQTT) — deliberately the SAME shape
+ * so the CSMS `CsrValidator` accepts a renewal CSR exactly as it accepts a
+ * provisioning one (EC secp256r1, `CN=<stationId>`, valid self-signature).
+ *
+ * The returned `privateKeyPem` is the device-held key the station must retain to
+ * pair with the signed leaf the server later pushes in CertificateInstall. A
+ * fresh keypair per call is intentional: a renewal is a genuine re-key, so the
+ * server signs a new active cert (which the LeafCertificateRenewalScanner then
+ * observes as completion) rather than short-circuiting on pubkey-idempotency.
+ */
+export async function buildStationCsr(
+  stationId: string,
+): Promise<{ csrPem: string; privateKeyPem: string }> {
+  const keys = await generateEcdsaP256KeyPair();
+  const csr = await buildCsr(stationId, keys);
+  return {
+    csrPem: csr.toString('pem'),
+    privateKeyPem: exportPrivateKeyPkcs8Pem(keys.privateKey),
+  };
+}
+
 export function exportPrivateKeyPkcs8Pem(privateKey: webcrypto.CryptoKey): string {
   const keyObj = KeyObject.from(privateKey);
   return keyObj.export({ type: 'pkcs8', format: 'pem' }) as string;
