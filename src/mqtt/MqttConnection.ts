@@ -34,7 +34,16 @@ export const DISCONNECT_REASON_ADMIN_ACTION = 0x98;
 /**
  * MQTT 5 CONNACK reason code a broker returns when it refuses a CONNECT it
  * recognises but will not serve — what EMQX answers a banned client
- * (`/api/v5/banned`). ADR-0004 TIER 1 piece 2a.
+ * (`/api/v5/banned`).
+ *
+ * KEPT AND LOAD-BEARING even though TIER 1 no longer bans (ADR-0004 §4.1
+ * moved the durable reconnect-bar to TIER 2). TIER 1's central invariant is
+ * that a disabled station STAYS reachable — and the only way to prove a
+ * negative like "nothing is barring this station" is to attempt the reconnect
+ * and observe it SUCCEED where a ban would have produced this code. The
+ * refusal path is what gives that assertion teeth; without it a passing
+ * reconnect proves nothing (see hollow-safety-net: a check that cannot fail
+ * is not a check). It is then reused as-is when TIER 2 adds the real ban.
  */
 export const CONNACK_REASON_NOT_AUTHORIZED = 0x87;
 
