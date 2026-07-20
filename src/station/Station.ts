@@ -14,7 +14,12 @@ import {
   BootReason,
   toStationTopic,
 } from '@ospp/protocol';
-import { MqttConnection, type MqttConnectionOptions } from '../mqtt/MqttConnection.js';
+import {
+  MqttConnection,
+  type MqttConnectionOptions,
+  type SeveranceState,
+  type ReconnectProbeResult,
+} from '../mqtt/MqttConnection.js';
 import { MessageRouter } from '../mqtt/MessageRouter.js';
 import { MessageSender } from '../mqtt/MessageSender.js';
 import type { StationConfig } from './StationConfig.js';
@@ -77,6 +82,16 @@ export class Station extends EventEmitter {
     // (ADR-0002 T1 — see Station.messageBridge.test.ts).
     this.connection.onMessage((inboundTopic: string, payload: Buffer) => {
       this.router.route(inboundTopic, payload);
+    });
+
+    // A broker kick (ADR-0004 TIER 1) really does take the station off the
+    // wire, so reflect it in the lifecycle rather than leaving it reading
+    // ONLINE while severed. Wired once here for the same reason as the
+    // message bridge above: the wrapper outlives individual clients.
+    this.connection.on('kicked', (reasonCode: number | null) => {
+      this.lifecycle = StationLifecycle.OFFLINE;
+      this.bootAccepted = false;
+      this.emit('kicked', reasonCode);
     });
 
     for (const bay of config.bays) {
@@ -245,6 +260,49 @@ export class Station extends EventEmitter {
    */
   getNegotiatedTlsProtocol(): string | null {
     return this.connection.getNegotiatedTlsProtocol();
+  }
+
+  /**
+   * Severance state — whether the BROKER kicked us and whether it is refusing
+   * to take us back. ADR-0004 TIER 1: a disabled station is kicked off the
+   * broker and banned from reconnecting, both reversible on re-enable.
+   */
+  getSeverance(): SeveranceState {
+    return this.connection.getSeverance();
+  }
+
+  /**
+   * One bounded connect attempt reporting accepted-vs-REFUSED — the ban probe.
+   * Observation only: it does NOT make the station operational (no subscribe,
+   * no boot). A caller proving un-ban still calls connect() afterwards.
+   */
+  async probeReconnect(timeoutMs: number): Promise<ReconnectProbeResult> {
+    return this.connection.probeReconnect(timeoutMs);
+  }
+
+  /**
+   * Resolve when the broker force-closes this station (MQTT 5 server-sent
+   * DISCONNECT), or reject on timeout. The kick half of the TIER 1 proof:
+   * a scenario awaits the sever instead of sleeping and hoping.
+   */
+  async waitForKick(timeoutMs: number): Promise<number | null> {
+    return new Promise<number | null>((resolve, reject) => {
+      // Already kicked before we started waiting — don't hang for a repeat.
+      const current = this.connection.getSeverance();
+      if (current.kicked) {
+        resolve(current.kickReasonCode);
+        return;
+      }
+      const onKick = (reasonCode: number | null): void => {
+        clearTimeout(timer);
+        resolve(reasonCode);
+      };
+      const timer = setTimeout(() => {
+        this.connection.removeListener('kicked', onKick);
+        reject(new Error(`Timeout waiting for broker kick after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.connection.once('kicked', onKick);
+    });
   }
 
   startHeartbeat(intervalSec: number): void {

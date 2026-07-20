@@ -38,7 +38,13 @@ export class AssertStep implements Step {
     let subject: unknown;
     let subjectField: string;
     if (field.startsWith(CONNECTION_FIELD_PREFIX)) {
-      subject = { tlsProtocol: station.getNegotiatedTlsProtocol() };
+      // Transport-level facts with no OSPP message behind them: the negotiated
+      // TLS version (TLS-1.2-floor arc) and the severance state (ADR-0004
+      // TIER 1 — kicked / banned / un-banned).
+      subject = {
+        tlsProtocol: station.getNegotiatedTlsProtocol(),
+        ...station.getSeverance(),
+      };
       subjectField = field.slice(CONNECTION_FIELD_PREFIX.length);
     } else {
       const lastMessage = context.receivedMessages[context.receivedMessages.length - 1];

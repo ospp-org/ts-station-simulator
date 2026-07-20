@@ -24,6 +24,49 @@ type TlsVersionClientOptions = IClientOptions & {
   maxVersion?: SecureVersion;
 };
 
+/**
+ * MQTT 5 DISCONNECT reason code a broker sends when an operator
+ * administratively force-closes a live client — EMQX's "kick"
+ * (`POST /api/v5/clients/{clientid}/kick`). ADR-0004 TIER 1 piece 2.
+ */
+export const DISCONNECT_REASON_ADMIN_ACTION = 0x98;
+
+/**
+ * MQTT 5 CONNACK reason code a broker returns when it refuses a CONNECT it
+ * recognises but will not serve — what EMQX answers a banned client
+ * (`/api/v5/banned`). ADR-0004 TIER 1 piece 2a.
+ */
+export const CONNACK_REASON_NOT_AUTHORIZED = 0x87;
+
+/**
+ * Why the connection last went down. The whole point of this discriminator is
+ * that a broker-initiated severance (`broker-kick`) must never be confused
+ * with the simulator closing its own socket (`self`) or a simulated network
+ * drop (`network`) — before ADR-0004 all three surfaced as a bare 'close'.
+ * `unknown` = the socket closed with no attributable cause (e.g. the broker
+ * dropped TCP without a DISCONNECT packet).
+ */
+export type SeveranceCause = 'none' | 'self' | 'network' | 'broker-kick' | 'unknown';
+
+/** Observable severance state — what a scenario asserts on for TIER 1. */
+export interface SeveranceState {
+  /** How the connection last went down. */
+  lastCloseCause: SeveranceCause;
+  /** True from a broker-sent DISCONNECT until the next successful connect. */
+  kicked: boolean;
+  /** Reason code carried by that DISCONNECT, if the broker supplied one. */
+  kickReasonCode: number | null;
+  /** True when the most recent reconnect probe was REFUSED by the broker. */
+  reconnectRefused: boolean;
+  /** CONNACK reason code of that refusal, if the broker supplied one. */
+  refusalReasonCode: number | null;
+}
+
+/** Outcome of a single bounded reconnect attempt — the ban/un-ban probe. */
+export type ReconnectProbeResult =
+  | { outcome: 'connected' }
+  | { outcome: 'refused'; reasonCode: number | null; message: string };
+
 export interface MqttConnectionOptions {
   mqttUrl: string;
   stationId: string;
@@ -74,6 +117,12 @@ const DISCONNECT_TIMEOUT_MS = 3000;
 const RECONNECT_GUARD_MS = 500;
 const lastDisconnectAt = new Map<string, number>();
 
+/**
+ * Auto-retry cadence of the LIVE connection. probeReconnect() deliberately
+ * passes 0 instead: a ban probe must return a verdict, not retry forever.
+ */
+const LIVE_RECONNECT_PERIOD_MS = 5000;
+
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
   private readonly mqttUrl: string;
@@ -85,6 +134,15 @@ export class MqttConnection extends EventEmitter {
   private readonly mqttCredentials?: MqttConnectionOptions['mqttCredentials'];
   private readonly cleanSession: boolean;
   private isDestroyingConnection = false;
+  // --- ADR-0004 TIER 1 severance observability -------------------------
+  // Why the socket last went down, and whether the broker is refusing us.
+  // Attributed by the three paths that KNOW the cause (server DISCONNECT,
+  // destroyConnection(), disconnect()); a close with no attribution falls
+  // through to 'unknown' rather than silently reading as a clean close.
+  private closeCause: SeveranceCause = 'none';
+  private kickReasonCode: number | null = null;
+  private reconnectRefused = false;
+  private refusalReasonCode: number | null = null;
   /**
    * The MQTT clientId actually sent to the broker on the most recent
    * connect() call. Per OSPP spec §02-transport §1.2 / §06-security §3.3
@@ -187,12 +245,24 @@ export class MqttConnection extends EventEmitter {
     // but we emit the clean form anyway so broker logs + client traces
     // are unambiguous and don't read "WRONG_ID overridden to stn_X".
     this.currentClientId = this.stationId;
+    const opts = this.buildConnectOptions(LIVE_RECONNECT_PERIOD_MS);
+
+    this.client = connect(this.mqttUrl, opts);
+    this.wireClientEvents(this.client);
+  }
+
+  /**
+   * Build the CONNECT options. Shared by the live connection (which retries on
+   * LIVE_RECONNECT_PERIOD_MS) and by probeReconnect(), which passes 0 so a
+   * refused attempt REPORTS BACK instead of spinning on the broker forever.
+   */
+  private buildConnectOptions(reconnectPeriod: number): TlsVersionClientOptions {
     const opts: TlsVersionClientOptions = {
-      clientId: this.currentClientId,
+      clientId: this.stationId,
       protocolVersion: 5,
       clean: this.cleanSession,
       keepalive: 30,
-      reconnectPeriod: 5000,
+      reconnectPeriod,
       properties: {
         sessionExpiryInterval: 3600,
         receiveMaximum: 10,
@@ -244,16 +314,32 @@ export class MqttConnection extends EventEmitter {
       }
     }
 
-    this.client = connect(this.mqttUrl, opts);
+    return opts;
+  }
 
-    this.client.on('connect', (connack) => {
+  private wireClientEvents(client: MqttClient): void {
+    client.on('connect', (connack) => {
       this.isDestroyingConnection = false;
+      // A live connection means we are neither kicked nor barred right now.
+      this.closeCause = 'none';
+      this.kickReasonCode = null;
+      this.reconnectRefused = false;
+      this.refusalReasonCode = null;
       this.emit('connect', connack);
+    });
+
+    // MQTT 5 server-sent DISCONNECT — the ONLY unambiguous signal that the
+    // BROKER severed us rather than us closing our own socket. This is what
+    // an EMQX kick (ADR-0004 TIER 1 piece 2) looks like on the wire.
+    client.on('disconnect', (packet) => {
+      this.closeCause = 'broker-kick';
+      this.kickReasonCode = packet.reasonCode ?? null;
+      this.emit('kicked', this.kickReasonCode);
     });
 
     const IGNORED_CODES = new Set(['ERR_STREAM_WRITE_AFTER_END', 'ECONNRESET']);
 
-    this.client.on('error', (err) => {
+    client.on('error', (err) => {
       const code = (err as NodeJS.ErrnoException).code;
       if (code && IGNORED_CODES.has(code)) return;
       if (err.message.includes('write after end')) return;
@@ -269,16 +355,121 @@ export class MqttConnection extends EventEmitter {
       this.emit('error', err);
     });
 
-    this.client.on('close', () => {
+    client.on('close', () => {
+      // 'close' fires for EVERY teardown, so it must not overwrite a cause the
+      // paths that actually know it (server DISCONNECT / destroyConnection() /
+      // disconnect()) already attributed. Only an otherwise-unattributed close
+      // lands here — e.g. the broker dropping TCP without a DISCONNECT packet.
+      if (this.closeCause === 'none') {
+        this.closeCause = 'unknown';
+      }
       this.emit('close');
     });
 
-    this.client.on('reconnect', () => {
+    client.on('reconnect', () => {
       this.emit('reconnect');
     });
 
-    this.client.on('message', (topic, payload, packet) => {
+    client.on('message', (topic, payload, packet) => {
       this.emit('message', topic, payload, packet);
+    });
+  }
+
+  /** Observable severance state — see SeveranceState. ADR-0004 TIER 1. */
+  getSeverance(): SeveranceState {
+    return {
+      lastCloseCause: this.closeCause,
+      kicked: this.closeCause === 'broker-kick',
+      kickReasonCode: this.kickReasonCode,
+      reconnectRefused: this.reconnectRefused,
+      refusalReasonCode: this.refusalReasonCode,
+    };
+  }
+
+  /**
+   * Make ONE bounded connect attempt and report whether the broker accepted or
+   * REFUSED it — the ban / un-ban probe (ADR-0004 TIER 1 piece 2a).
+   *
+   * Deliberately NOT the live connect path: it uses reconnectPeriod 0 so a
+   * refusal comes back as a verdict instead of an endless silent retry, and it
+   * tears its own client down rather than occupying the live-connection slot.
+   * A caller that wants to become operational again still calls connect().
+   */
+  async probeReconnect(timeoutMs: number): Promise<ReconnectProbeResult> {
+    // Tear the live client down FIRST. Two reasons, both load-bearing:
+    //   1. after a kick it is still auto-retrying on LIVE_RECONNECT_PERIOD_MS,
+    //      so a probe would race its retries and report whichever won;
+    //   2. it holds the SAME clientId (= cert CN), and a second connection
+    //      under one clientId is a session takeover — the probe would kick our
+    //      own live connection and we would measure our own interference.
+    // Ending it is what makes the verdict attributable to the BROKER.
+    if (this.client !== null) {
+      // ...but that internal teardown must not ERASE the kick we are probing
+      // the consequences of: disconnect() attributes the close to 'self', which
+      // would make getSeverance().kicked read false right when the scenario
+      // needs both facts (kicked THEN refused). Preserve the broker's verdict.
+      const priorCause = this.closeCause;
+      const priorKickReason = this.kickReasonCode;
+      await this.disconnect();
+      if (priorCause === 'broker-kick') {
+        this.closeCause = 'broker-kick';
+        this.kickReasonCode = priorKickReason;
+      }
+    }
+    return this.runReconnectProbe(timeoutMs);
+  }
+
+  private runReconnectProbe(timeoutMs: number): Promise<ReconnectProbeResult> {
+    return new Promise<ReconnectProbeResult>((resolve) => {
+      const probeClient = connect(this.mqttUrl, this.buildConnectOptions(0));
+      let settled = false;
+
+      const settle = (result: ReconnectProbeResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (result.outcome === 'refused') {
+          this.reconnectRefused = true;
+          this.refusalReasonCode = result.reasonCode;
+        } else {
+          this.reconnectRefused = false;
+          this.refusalReasonCode = null;
+        }
+        // The probe must leave nothing behind: end its own client and record
+        // the timestamp so a real connect() that follows honours the guard.
+        try {
+          probeClient.end(true, { properties: { sessionExpiryInterval: 0 } }, () => {
+            lastDisconnectAt.set(this.stationId, Date.now());
+            resolve(result);
+          });
+        } catch {
+          lastDisconnectAt.set(this.stationId, Date.now());
+          resolve(result);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        settle({
+          outcome: 'refused',
+          reasonCode: null,
+          message: `reconnect probe timed out after ${timeoutMs}ms with no CONNACK`,
+        });
+      }, timeoutMs);
+
+      probeClient.on('connect', () => settle({ outcome: 'connected' }));
+
+      // A banned client is refused at CONNACK; mqtt.js surfaces the reason code
+      // on the error. Listener stays attached after settling so a repeat error
+      // never reaches an EventEmitter with zero 'error' listeners (Node would
+      // throw it as unhandled and crash the run).
+      probeClient.on('error', (err: Error) => {
+        const reasonCode = (err as { code?: unknown }).code;
+        settle({
+          outcome: 'refused',
+          reasonCode: typeof reasonCode === 'number' ? reasonCode : null,
+          message: err.message,
+        });
+      });
     });
   }
 
@@ -286,6 +477,7 @@ export class MqttConnection extends EventEmitter {
   destroyConnection(): void {
     if (this.client) {
       this.isDestroyingConnection = true;
+      this.closeCause = 'network';
       (this.client as unknown as { stream?: { destroy(): void } }).stream?.destroy();
     }
   }
@@ -298,6 +490,11 @@ export class MqttConnection extends EventEmitter {
         resolve();
         return;
       }
+
+      // Attribute the cause BEFORE the socket goes down, so the 'close' that
+      // follows our own DISCONNECT is never mistaken for a broker kick.
+      this.closeCause = 'self';
+      this.kickReasonCode = null;
 
       let settled = false;
       const finalize = () => {
