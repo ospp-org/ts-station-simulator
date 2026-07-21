@@ -61,6 +61,25 @@ export class Station extends EventEmitter {
   private readonly connection: MqttConnection;
   public bootAccepted: boolean = false;
 
+  /**
+   * The station's power-on instant (epoch ms), fixed when this instance is
+   * constructed. A simulated station's process lifetime IS its power cycle, so
+   * `Date.now() - poweredOnAt` is its true uptime; a genuine power-cycle means a
+   * new process and therefore a new Station, which resets this to ~now.
+   * BootNotification.uptimeSeconds is derived from it rather than hardcoded —
+   * see currentUptimeSeconds().
+   */
+  private readonly poweredOnAt: number = Date.now();
+
+  /**
+   * Why the station is sending its CURRENT BootNotification. Defaults to
+   * POWER_ON (this instance did just power on) and is updated by whatever
+   * non-power-on event re-boots the station — today only a cert-renewal
+   * re-handshake (see reconnectWithRenewedCertificate). Retries of the same
+   * boot re-send the same reason, since a retry is not a new boot episode.
+   */
+  private currentBootReason: BootReason = BootReason.POWER_ON;
+
   private readonly handlers: Map<OsppAction, Handler> = new Map();
   private readonly registeredListeners: Set<OsppAction> = new Set();
   private readonly bayMachines: Map<string, BayStateMachine> = new Map();
@@ -205,10 +224,50 @@ export class Station extends EventEmitter {
    * (nulling the client so the cert files are re-read) then reconnect. A
    * resolved connect() means the broker accepted the renewed client cert — the
    * decisive proof of a completed renewal. ADR-0002 T1.
+   *
+   * This is a RECONNECT, not a reboot: the station stayed powered on the whole
+   * time, so the BootNotification that follows must not claim a power-cycle.
+   * Marking the reason here (rather than in CertificateInstallHandler) keeps it
+   * attached to the event that actually causes the re-boot, so every caller of
+   * this method reports it — and a failed re-handshake leaves the reason alone.
    */
   async reconnectWithRenewedCertificate(): Promise<void> {
     await this.disconnect();
     await this.connect();
+    this.currentBootReason = Station.RECONNECT_BOOT_REASON;
+  }
+
+  /**
+   * The bootReason a station reports on a reconnect that was NOT a power-cycle.
+   *
+   * OSPP's BootReason enum (spec 03-messages.md §1.1) has no "Reconnect" or
+   * "CertificateRenewal" member — the six values are PowerOn, Watchdog,
+   * FirmwareUpdate, ManualReset, ScheduledReset and ErrorRecovery — so this is
+   * the closest correct value, not an exact one. The spec itself designates it
+   * for exactly this case: in examples/flows/10-error-recovery.md a station that
+   * merely re-established its link sends `bootReason: "ErrorRecovery"` with a
+   * truthful non-zero uptime, and the flow states the server "recognizes this as
+   * a reconnection (not a cold boot) based on bootReason: ErrorRecovery ... It
+   * does not reset session state."
+   *
+   * Rejected alternatives: PowerOn is the defect being fixed; FirmwareUpdate and
+   * Watchdog assert hardware/firmware events that did not happen; ManualReset and
+   * ScheduledReset both claim an actual reset the station never performed.
+   */
+  private static readonly RECONNECT_BOOT_REASON = BootReason.ERROR_RECOVERY;
+
+  /**
+   * Seconds since this station powered on — the value BootNotification reports.
+   *
+   * The CSMS treats it as a fact the station asserts about itself: it derives
+   * bootTime = now - uptimeSeconds and force-fails (and refunds) every session
+   * that started before that instant, on the assumption that a reboot cut them
+   * short. Reporting a hardcoded 0 on a mere reconnect therefore destroys live
+   * washes, which is why this is computed and never a literal. Clamped at 0
+   * because the wire schema requires uptimeSeconds >= 0.
+   */
+  private currentUptimeSeconds(): number {
+    return Math.max(0, Math.floor((Date.now() - this.poweredOnAt) / 1000));
   }
 
   handleMessage(envelope: OsppEnvelope): void {
@@ -324,7 +383,11 @@ export class Station extends EventEmitter {
   }
 
   /**
-   * Re-send the BootNotification REQUEST.
+   * Send the BootNotification REQUEST. (Name is historical: this is also the
+   * INITIAL boot — see cli/index.ts.) `uptimeSeconds` and `bootReason` are
+   * derived from the station's live state, so the same call reports ~0/PowerOn
+   * on a genuine power-on and the real elapsed uptime with a reconnect reason
+   * after a cert-renewal re-handshake.
    *
    * @param fixedMessageId Opt-in: reuse this messageId instead of minting a fresh
    *   UUID. Per the OSPP glossary, a station SHOULD retry with the SAME messageId
@@ -341,10 +404,12 @@ export class Station extends EventEmitter {
       stationVendor: this.config.stationVendor,
       serialNumber: this.config.serialNumber,
       bayCount: this.config.bayCount,
-      uptimeSeconds: 0,
+      // Truthful, never a literal — the CSMS force-fails and refunds every
+      // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
+      uptimeSeconds: this.currentUptimeSeconds(),
       pendingOfflineTransactions: 0,
       timezone: this.config.timezone,
-      bootReason: BootReason.POWER_ON,
+      bootReason: this.currentBootReason,
       capabilities: {
         bleSupported: false,
         offlineModeSupported: false,
