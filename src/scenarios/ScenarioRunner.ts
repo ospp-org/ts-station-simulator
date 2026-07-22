@@ -77,6 +77,16 @@ export interface ScenarioDefinition {
     min_version?: SecureVersion;
     max_version?: SecureVersion;
     no_client_cert?: boolean;
+    /**
+     * Per-scenario client identity override (ADR-0005 §7). Points the connect
+     * attempt at a SPECIFIC cert/key — e.g. a revoked leaf — while leaving the
+     * TLS version + CA chain at the target defaults, so a refusal can be
+     * attributed to the cert alone (the S4 "one variable" discipline: the CRL
+     * serial is the only variable). `{{stationId}}` is substituted. Mirrors
+     * the `no_client_cert` branch, but feeds a cert instead of dropping it.
+     */
+    cert?: string;
+    key?: string;
   };
   /**
    * When true, the automatic pre-steps `station.connect()` (see
@@ -104,6 +114,16 @@ export interface ScenarioDefinition {
    * hang is itself treated as a (still valid) rejection. Default 10000.
    */
   expect_connect_failure_timeout_ms?: number;
+  /**
+   * When set (alongside `expect_connect_failure`), the rejection is a PASS
+   * only if its CLASSIFIED reason matches — otherwise the scenario FAILS even
+   * though the connect was refused. This is what lets a revoked-cert proof
+   * assert the refusal came from the broker's CRL check
+   * (`broker-certificate-revoked`, invariant 6), and would NOT be satisfied by
+   * a client-side TLS-version refusal (`client-tls-version`) or a bare hang.
+   * See `classifyRefusalReason()`.
+   */
+  expect_refusal_reason?: RefusalReason;
   /**
    * MQTT 5 Clean Start. Defaults to `true` for scenarios — test runs should
    * not inherit a queued message backlog from a previous run, which delays
@@ -693,6 +713,18 @@ function createStationFromScenario(
     if (scenarioDef.tls.no_client_cert) {
       tls = { ...tls, key: undefined, cert: undefined };
     }
+    // Per-scenario client identity override (ADR-0005 §7): feed a SPECIFIC
+    // cert/key (e.g. a revoked leaf) with `{{stationId}}` substituted. Layered
+    // after no_client_cert so the two are mutually exclusive by authoring.
+    if (scenarioDef.tls.cert !== undefined || scenarioDef.tls.key !== undefined) {
+      const sub = (s: string | undefined): string | undefined =>
+        s?.replace('{{stationId}}', stationId);
+      tls = {
+        ...tls,
+        ...(scenarioDef.tls.key !== undefined ? { key: sub(scenarioDef.tls.key) } : {}),
+        ...(scenarioDef.tls.cert !== undefined ? { cert: sub(scenarioDef.tls.cert) } : {}),
+      };
+    }
   }
 
   const station = new Station(config, {
@@ -730,6 +762,84 @@ export const _createStationFromScenarioForTesting = createStationFromScenario;
 // ---------------------------------------------------------------------------
 // Negative-path connect — TLS-1.2-floor conformance arc (expect_connect_failure)
 // ---------------------------------------------------------------------------
+
+/**
+ * Why a connect attempt was refused, attributed to a LAYER. Load-bearing for
+ * the revocation proof (ADR-0005 §7, invariant 6): a "refused" boolean can be
+ * satisfied by the wrong cause (a client-side TLS-version refusal, a bare
+ * hang), so a revoked-cert proof must assert the refusal came specifically
+ * from the broker's CRL check.
+ *
+ *  - `broker-certificate-revoked` — the broker rejected the leaf via its CRL
+ *    check (TLS alert 44 `certificate_revoked`). THE revocation signal.
+ *  - `broker-bad-certificate`     — other broker-side cert refusal (missing
+ *    client cert, unknown CA, bad/expired cert, handshake failure).
+ *  - `client-tls-version`         — the client's own TLS stack refused before
+ *    a byte reached the broker (e.g. a below-floor version pin, S3).
+ *  - `timeout`                    — a bounded hang with no clean alert.
+ *  - `unknown`                    — refused, but unclassifiable.
+ */
+export type RefusalReason =
+  | 'broker-certificate-revoked'
+  | 'broker-bad-certificate'
+  | 'client-tls-version'
+  | 'timeout'
+  | 'unknown';
+
+export interface RefusalClassification {
+  reason: RefusalReason;
+  layer: 'broker' | 'client' | 'unknown';
+}
+
+/**
+ * Classify a connect-failure detail string (the TLS-alert / OpenSSL error text
+ * mqtt.js surfaces, or the runner's own timeout message) into a REASON + the
+ * layer it came from. Order matters: the revocation alert is checked before
+ * the generic bad-certificate bucket, and client-side version refusals before
+ * broker alerts, so the most specific attribution wins.
+ */
+export function classifyRefusalReason(detail: string): RefusalClassification {
+  const d = detail.toLowerCase();
+
+  // Broker CRL check: TLS alert 44 = certificate_revoked. OpenSSL renders it
+  // "...alert certificate revoked"; some stacks only carry the alert number.
+  if (/certificate revoked/.test(d) || /\balert number 44\b/.test(d) || /alert_certificate_revoked/.test(d)) {
+    return { reason: 'broker-certificate-revoked', layer: 'broker' };
+  }
+
+  // Client-side TLS-version refusal — the client never emits a ClientHello the
+  // broker could answer (S3: Node/OpenSSL-3 refuses a below-floor pin).
+  if (
+    /no protocols available/.test(d) ||
+    /unsupported protocol/.test(d) ||
+    /wrong version number/.test(d) ||
+    /protocol version/.test(d) ||
+    /no_protocols_available/.test(d)
+  ) {
+    return { reason: 'client-tls-version', layer: 'client' };
+  }
+
+  // Other broker-side certificate refusals (mTLS enforcement, chain, expiry).
+  if (
+    /handshake failure/.test(d) ||
+    /bad certificate/.test(d) ||
+    /unknown ca/.test(d) ||
+    /certificate required/.test(d) ||
+    /peer did not return a certificate/.test(d) ||
+    /certificate expired/.test(d) ||
+    /unknown_ca/.test(d) ||
+    /bad_certificate/.test(d)
+  ) {
+    return { reason: 'broker-bad-certificate', layer: 'broker' };
+  }
+
+  // The runner's bounded-hang message (see connectExpectingFailure).
+  if (/treated as rejection/.test(d) || /no connect\/error event/.test(d)) {
+    return { reason: 'timeout', layer: 'unknown' };
+  }
+
+  return { reason: 'unknown', layer: 'unknown' };
+}
 
 /**
  * Drives `station.connect()` for a scenario that declares
@@ -1066,9 +1176,39 @@ export class ScenarioRunner {
         if (scenario.expect_connect_failure) {
           const timeoutMs = scenario.expect_connect_failure_timeout_ms ?? 10000;
           const detail = await connectExpectingFailure(station, timeoutMs);
+          const classified = classifyRefusalReason(detail);
+
+          // Invariant 6: when a scenario pins the reason, a refusal for the
+          // WRONG reason is a FAIL — a client-side TLS-version refusal (or a
+          // bare hang) must not satisfy a broker-CRL revocation proof.
+          if (
+            scenario.expect_refusal_reason &&
+            classified.reason !== scenario.expect_refusal_reason
+          ) {
+            const msg =
+              `expect_refusal_reason: expected '${scenario.expect_refusal_reason}' but the connection ` +
+              `was refused for '${classified.reason}' (${classified.layer} layer): ${detail}`;
+            console.error('[ScenarioRunner] "%s" — %s', scenario.name, msg);
+            context.stepResults.push({
+              stepIndex: -1,
+              action: 'connect',
+              status: 'failed',
+              durationMs: Date.now() - startTime,
+              error: msg,
+            });
+            return {
+              name: scenario.name,
+              status: 'failed',
+              durationMs: Date.now() - startTime,
+              error: msg,
+              steps: context.stepResults,
+            };
+          }
+
           console.log(
-            '[ScenarioRunner] "%s" — connect rejected as expected: %s',
+            '[ScenarioRunner] "%s" — connect rejected as expected [%s]: %s',
             scenario.name,
+            classified.reason,
             detail,
           );
           context.stepResults.push({
@@ -1076,7 +1216,7 @@ export class ScenarioRunner {
             action: 'connect',
             status: 'passed',
             durationMs: Date.now() - startTime,
-            error: `expected rejection confirmed: ${detail}`,
+            error: `expected rejection confirmed [${classified.reason}]: ${detail}`,
           });
           return {
             name: scenario.name,
