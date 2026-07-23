@@ -21,6 +21,9 @@ import path from 'node:path';
 
 type ConnectBehavior = 'success' | 'error';
 let behavior: ConnectBehavior = 'success';
+// Configurable so a test can drive classifyRefusalReason through different TLS-
+// alert shapes (S5's certificate_revoked vs S3/S4's version/handshake refusal).
+let errorMessage = 'unsupported protocol';
 
 const connectCalls: Array<{ url: string; opts: Record<string, unknown> }> = [];
 const fakeClients: FakeMqttClient[] = [];
@@ -44,10 +47,7 @@ vi.mock('mqtt', () => ({
     if (behavior === 'success') {
       setImmediate(() => fc.emit('connect', {}));
     } else {
-      const err = Object.assign(new Error('unsupported protocol'), {
-        code: 'ERR_SSL_UNSUPPORTED_PROTOCOL',
-      });
-      setImmediate(() => fc.emit('error', err));
+      setImmediate(() => fc.emit('error', new Error(errorMessage)));
     }
     return fc;
   }),
@@ -68,6 +68,7 @@ const scenarioPath = (name: string) =>
 describe('TLS floor S1-S4 — the actual committed scenario files (integration)', () => {
   beforeEach(() => {
     behavior = 'success';
+    errorMessage = 'unsupported protocol';
     connectCalls.length = 0;
     fakeClients.length = 0;
   });
@@ -153,5 +154,59 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     expect(result.status).toBe('passed');
     expect(connectCalls[0]?.opts.key).toBeUndefined();
     expect(connectCalls[0]?.opts.cert).toBeUndefined();
+  });
+
+  it('S5b (positive control) pins TLS 1.2 and its assert passes when a valid cert negotiates 1.2 under enable_crl_check', async () => {
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s5b-accepts-valid-cert-crl-on.yaml'));
+    expect(def.tls).toEqual({ min_version: 'TLSv1.2', max_version: 'TLSv1.2' });
+    expect(def.steps[0]).toMatchObject({ action: 'assert', field: 'connection.tlsProtocol', equals: 'TLSv1.2' });
+
+    const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
+    const variables = generateVariables(def, target, null, undefined);
+    const station = _createStationFromScenarioForTesting(def, variables, target);
+    await station.connect();
+
+    expect(connectCalls[0].opts.minVersion).toBe('TLSv1.2');
+    expect(connectCalls[0].opts.maxVersion).toBe('TLSv1.2');
+
+    // Broker negotiated 1.2 and accepted the (valid) leaf under enable_crl_check.
+    fakeClients[0].stream = { getProtocol: () => 'TLSv1.2' };
+    await expect(
+      new AssertStep().execute(def.steps[0], createContext(), station),
+    ).resolves.toBeUndefined();
+
+    await station.disconnect();
+  });
+
+  it('S5 pins TLS 1.2, expect_refusal_reason=broker-certificate-revoked, reports PASSED on a CRL revocation alert', async () => {
+    behavior = 'error';
+    // The in-handshake TLS alert 44 shape mqtt.js/OpenSSL surfaces under 1.2.
+    errorMessage =
+      'Client network socket disconnected before secure TLS connection: tlsv1 alert certificate revoked';
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s5-rejects-revoked-cert.yaml'));
+    expect(def.expect_connect_failure).toBe(true);
+    expect(def.expect_refusal_reason).toBe('broker-certificate-revoked');
+    expect(def.tls).toEqual({ min_version: 'TLSv1.2', max_version: 'TLSv1.2' });
+    expect(def.steps).toHaveLength(0);
+
+    const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
+    const result = await runner.runScenario(def, target);
+
+    expect(result.status).toBe('passed');
+  });
+
+  it('S5 reports FAILED when the revoked-cert scenario is refused for a NON-CRL reason (invariant-6 guard on the real file)', async () => {
+    behavior = 'error';
+    errorMessage = 'no protocols available'; // client-side TLS-version refusal
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s5-rejects-revoked-cert.yaml'));
+
+    const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
+    const result = await runner.runScenario(def, target);
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toMatch(/expected 'broker-certificate-revoked'/);
   });
 });

@@ -1,0 +1,56 @@
+# TLS-1.2-floor conformance — S5 (ADR-0005 §7, TIER-2 certificate revocation)
+#
+# The revocation wire-proof. Client presents a WELL-FORMED, correctly-chained
+# leaf whose ONLY defect is that its serial has been revoked (CSMS revoke
+# action -> certificates.status='revoked' -> the station-CA CRL regenerates
+# including that serial). The broker's `enable_crl_check` MUST reject it AT
+# THE TLS HANDSHAKE — expect_connect_failure: true — and the refusal MUST be
+# attributed to the CRL check (expect_refusal_reason: broker-certificate-revoked,
+# invariant 6), NOT merely "it failed".
+#
+# ONE-VARIABLE DISCIPLINE (S4 pattern): valid TLS version, well-formed cert,
+# correct CA chain — so a refusal can ONLY be the broker's CRL check. The
+# station's leaf is supplied by `--target uat --station stn_<revoked>` (the
+# target's certs pattern), i.e. the SAME cert that connected fine before the
+# revoke. The positive control (s5b-accepts-valid-cert-crl-on.yaml) presents a
+# DIFFERENT, non-revoked CRLDP leaf in the SAME broker state to prove the check
+# does not blanket-refuse — a revocation proof without a positive control is
+# not acceptable (a blanket-refusal misconfiguration would masquerade as a
+# successful revocation).
+#
+# WHY PIN TLS 1.2 (min == max): under TLS 1.3 the broker validates the CLIENT
+# cert AFTER the handshake summary and sends `certificate_revoked` (alert 44)
+# as a POST-handshake alert — which some client stacks surface without the
+# alert text, so classifyRefusalReason() cannot attribute it (this exact
+# artifact produced a Phase-A false negative when read via `openssl s_client`).
+# Pinning TLS 1.2 delivers the revocation alert IN-handshake, so mqtt.js/OpenSSL
+# renders a clean "... alert certificate revoked" string that the classifier
+# maps to broker-certificate-revoked. TLS version is held CONSTANT between this
+# scenario and its positive control, so revocation stays the only variable.
+# (Enforcement under the deployment-default TLS 1.3 is corroborated at deploy
+# time via the EMQX server-alert log + a mosquitto exit code — ground truth,
+# never an s_client verify summary.)
+#
+# Run against a live broker (needs a revoked-then-CRL-published identity):
+#   simulator run --scenario scenarios/tls-floor/s5-rejects-revoked-cert.yaml \
+#     --target uat --station stn_<revoked>
+#
+# NEEDS A LIVE BROKER with enable_crl_check on + a reachable, up-to-date CRL.
+name: "TLS floor S5 — rejects a revoked client certificate (broker CRL check)"
+description: "Client presents a REVOKED but otherwise-valid leaf (correct chain, in-floor TLS version). The broker's enable_crl_check MUST reject it at the TLS handshake, and the refusal MUST classify as broker-certificate-revoked (invariant 6) — not a client-side or unattributed failure."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+expect_connect_failure: true
+expect_refusal_reason: broker-certificate-revoked
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+# No steps: the connection never completes — the revoked leaf is refused at the
+# TLS handshake, exactly like S3/S4's negative-path shape.
+steps: []

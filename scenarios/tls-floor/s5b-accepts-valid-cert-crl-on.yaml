@@ -1,0 +1,42 @@
+# TLS-1.2-floor conformance — S5b (ADR-0005 §7 positive control for S5)
+#
+# The positive control the revocation proof requires: a VALID (non-revoked)
+# CRLDP-bearing leaf MUST still connect while `enable_crl_check` is on. This
+# proves two things at once, in the SAME broker state S5 is measured in:
+#   1. enable_crl_check does NOT blanket-refuse — so S5's refusal is genuinely
+#      about the revoked serial, not a misconfiguration refusing everyone.
+#   2. the broker CAN fetch + validate the CRL (a cold-cache / unreachable-CRL
+#      failure under the fail-closed posture would refuse even THIS valid cert).
+#
+# Pinned to TLS 1.2 (min == max) to hold the TLS version CONSTANT with S5 — so
+# the ONLY difference between "connects" (here) and "refused" (S5) is whether
+# the presented leaf's serial is on the CRL. Minimal by design: connect + assert
+# the negotiated protocol, no boot/session round-trip, so the control cannot
+# fail for an unrelated application-layer reason.
+#
+# Run against a live broker with a valid provisioned identity:
+#   simulator run --scenario scenarios/tls-floor/s5b-accepts-valid-cert-crl-on.yaml \
+#     --target uat --station stn_<valid>
+#
+# NEEDS A LIVE BROKER with enable_crl_check on + a reachable, up-to-date CRL.
+name: "TLS floor S5b — accepts a valid (non-revoked) cert with enable_crl_check on"
+description: "Positive control for S5: a valid CRLDP-bearing leaf connects while enable_crl_check is on (pinned TLS 1.2, same version as S5). Proves the CRL check does not blanket-refuse and the broker can fetch the CRL — so S5's refusal is attributable to the revoked serial alone."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # The core assertion: a valid cert NEGOTIATED a TLS-1.2 connection under
+  # enable_crl_check — i.e. the handshake (incl. the broker's CRL lookup)
+  # completed and the leaf was accepted. If the broker blanket-refused or the
+  # CRL fetch failed (fail-closed), connect() would have thrown before here.
+  - action: assert
+    field: "connection.tlsProtocol"
+    equals: "TLSv1.2"
