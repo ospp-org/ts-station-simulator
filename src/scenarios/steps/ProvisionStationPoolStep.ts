@@ -1,3 +1,4 @@
+import { assertBayIds } from '../../provisioning/assertBayIds.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -114,12 +115,10 @@ export class ProvisionStationPoolStep implements Step {
           `ProvisionStationPoolStep[${i + 1}/${count}]: response missing clientCert`,
         );
       }
-      const bayIds = data.bayIds;
-      if (!Array.isArray(bayIds) || bayIds.length === 0) {
-        throw new Error(
-          `ProvisionStationPoolStep[${i + 1}/${count}]: response missing data.bayIds`,
-        );
-      }
+      const bayIds = assertBayIds(data.bayIds, {
+        context: `ProvisionStationPoolStep[${i + 1}/${count}]`,
+        expectedCount: bayCount,
+      });
 
       const stationDir = path.resolve(artifactsBase, 'pool', stationId);
       await fs.mkdir(stationDir, { recursive: true });

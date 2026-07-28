@@ -11,7 +11,7 @@ const PROVISION_RESPONSE = {
   clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
   stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
   brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
-  bayIds: ['bay_real_001', 'bay_real_002'],
+  bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
   mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
 };
 
@@ -60,7 +60,7 @@ describe('ProvisionStep — populates context.provisioning + writes bays.json', 
 
     expect(context.provisioning).toBeDefined();
     expect(context.provisioning?.stationId).toBe('stn_provtest');
-    expect(context.provisioning?.bayIds).toEqual(['bay_real_001', 'bay_real_002']);
+    expect(context.provisioning?.bayIds).toEqual(['bay_1111111111111111', 'bay_2222222222222222']);
     expect(context.provisioning?.certPath).toContain('stn_provtest.pem');
     expect(context.provisioning?.keyPath).toContain('stn_provtest-key.pem');
   });
@@ -83,7 +83,7 @@ describe('ProvisionStep — populates context.provisioning + writes bays.json', 
     const parsed = JSON.parse(await fs.readFile(baysJsonPath, 'utf-8'));
     expect(parsed).toEqual({
       stationId: 'stn_baystest',
-      bayIds: ['bay_real_001', 'bay_real_002'],
+      bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
     });
   });
 
@@ -100,7 +100,7 @@ describe('ProvisionStep — populates context.provisioning + writes bays.json', 
       context,
       {} as never,
     );
-    expect(context.captured.get('bayId_1')).toBe('bay_real_001');
-    expect(context.captured.get('bayId_2')).toBe('bay_real_002');
+    expect(context.captured.get('bayId_1')).toBe('bay_1111111111111111');
+    expect(context.captured.get('bayId_2')).toBe('bay_2222222222222222');
   });
 });

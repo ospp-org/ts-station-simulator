@@ -1,3 +1,4 @@
+import { assertBayIds } from '../../provisioning/assertBayIds.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Step, StepDefinition } from './Step.js';
@@ -122,10 +123,10 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: response missing clientCert');
     }
 
-    const bayIds = data.bayIds;
-    if (!Array.isArray(bayIds) || bayIds.length === 0) {
-      throw new Error('ProvisionStep: response missing data.bayIds');
-    }
+    const bayIds = assertBayIds(data.bayIds, {
+      context: 'ProvisionStep',
+      expectedCount: bayCount,
+    });
 
     // 4. Persist artifacts
     const artifactsBase =

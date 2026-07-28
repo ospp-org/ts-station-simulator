@@ -1,3 +1,4 @@
+import { assertBayIds } from '../../provisioning/assertBayIds.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -621,10 +622,10 @@ async function registerAndProvisionStation(
   const data = provRes as ProvisionResponseData | undefined;
   if (!data) throw new Error(`provision response for ${stationId} missing body`);
   const clientCert = requireString(data.clientCert, `${stationId} data.clientCert`);
-  const bayIds = data.bayIds;
-  if (!Array.isArray(bayIds) || bayIds.length === 0) {
-    throw new Error(`provision response for ${stationId} missing data.bayIds`);
-  }
+  const bayIds = assertBayIds(data.bayIds, {
+    context: `provision response for ${stationId}`,
+    expectedCount: bayCount,
+  });
 
   // Persist artifacts into the target's flat certs/<env>/ layout.
   const paths = certPathsFor(target, stationId);

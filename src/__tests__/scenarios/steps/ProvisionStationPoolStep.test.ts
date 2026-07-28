@@ -11,7 +11,7 @@ const PROVISION_RESPONSE = {
   clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
   stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
   brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
-  bayIds: ['bay_real_001', 'bay_real_002'],
+  bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
   mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
 };
 
@@ -61,7 +61,7 @@ describe('ProvisionStationPoolStep', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     for (const entry of context.pool.list()) {
       expect(entry.stationId).toMatch(/^stn_pool_[a-f0-9]{8}$/);
-      expect(entry.bayIds).toEqual(['bay_real_001', 'bay_real_002']);
+      expect(entry.bayIds).toEqual(['bay_1111111111111111', 'bay_2222222222222222']);
       expect(entry.clientIdSuffix).toMatch(/^[0-9a-f-]{36}$/);
       expect(entry.certPath).toBeDefined();
       expect(entry.keyPath).toBeDefined();
@@ -89,7 +89,7 @@ describe('ProvisionStationPoolStep', () => {
       );
       const baysJson = JSON.parse(await fs.readFile(path.join(dir, 'bays.json'), 'utf8'));
       expect(baysJson.stationId).toBe(entry.stationId);
-      expect(baysJson.bayIds).toEqual(['bay_real_001', 'bay_real_002']);
+      expect(baysJson.bayIds).toEqual(['bay_1111111111111111', 'bay_2222222222222222']);
     }
   });
 
@@ -97,7 +97,7 @@ describe('ProvisionStationPoolStep', () => {
     const step = new ProvisionStationPoolStep();
     const context = ctx();
     await step.execute(
-      { action: 'provision_station_pool', count: 2, bay_count: 1, artifacts_dir: tmpDir },
+      { action: 'provision_station_pool', count: 2, bay_count: 2, artifacts_dir: tmpDir },
       context,
       {} as never,
     );
@@ -105,7 +105,7 @@ describe('ProvisionStationPoolStep', () => {
     const index = JSON.parse(await fs.readFile(path.join(tmpDir, 'pool', 'index.json'), 'utf8'));
     expect(index.stations).toHaveLength(2);
     expect(index.stations[0].stationId).toMatch(/^stn_pool_/);
-    expect(index.stations[0].bayIds).toEqual(['bay_real_001', 'bay_real_002']);
+    expect(index.stations[0].bayIds).toEqual(['bay_1111111111111111', 'bay_2222222222222222']);
   });
 
   it('uses a custom prefix when supplied', async () => {
@@ -115,7 +115,7 @@ describe('ProvisionStationPoolStep', () => {
       {
         action: 'provision_station_pool',
         count: 2,
-        bay_count: 1,
+        bay_count: 2,
         artifacts_dir: tmpDir,
         prefix: 'stn_fleet_',
       },
@@ -147,7 +147,7 @@ describe('ProvisionStationPoolStep', () => {
     context.apiBaseUrl = 'http://localhost:8080';
     await expect(
       step.execute(
-        { action: 'provision_station_pool', count: 1, bay_count: 1, artifacts_dir: tmpDir },
+        { action: 'provision_station_pool', count: 1, bay_count: 2, artifacts_dir: tmpDir },
         context,
         {} as never,
       ),
@@ -163,7 +163,7 @@ describe('ProvisionStationPoolStep', () => {
       {
         action: 'provision_station_pool',
         count: 2,
-        bay_count: 1,
+        bay_count: 2,
         artifacts_dir: tmpDir,
         token_vars: ['tok_a', 'tok_b'],
       },
