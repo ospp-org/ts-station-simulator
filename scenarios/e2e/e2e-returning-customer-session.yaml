@@ -186,12 +186,10 @@ steps:
   - action: start_heartbeat
     interval_sec: 30
 
-  # 15s: clock-skew + resetBaysToUnknown drain — see scenario A for rationale,
-  # including why this stays: the server-side fix (csms-server 21f18c4) is NOT
-  # deployed on UAT — verified 2026-07-31, pre-fix handler + no
-  # last_status_reported_at column + image built 2026-07-27.
-  - action: delay
-    ms: 15000
+  # No clock-skew delay here any more — csms-server 21f18c4 moved the ordering
+  # floor onto `last_status_reported_at`; see scenario A for the full note.
+  # Proven on UAT 2026-07-31 with the delay removed: stn_764ec888, all 4 bays
+  # `available`, watermark populated.
 
   - action: send
     message: StatusNotification

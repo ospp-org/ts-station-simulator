@@ -194,11 +194,9 @@ steps:
   - action: start_heartbeat
     interval_sec: 30
 
-  # 15 s clock-skew + resetBaysToUnknown drain (see scenarios A/B, including why
-  # this stays: csms-server 21f18c4 fixes it server-side but is NOT deployed on
-  # UAT — verified 2026-07-31 at code, schema and image level).
-  - action: delay
-    ms: 15000
+  # No clock-skew delay here any more (see scenarios A/B). Proven on UAT
+  # 2026-07-31 with the delay removed: stn_a05d0979, all 4 bays `available`,
+  # watermark populated.
 
   - action: send
     message: StatusNotification

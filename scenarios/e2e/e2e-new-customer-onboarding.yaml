@@ -211,37 +211,26 @@ steps:
   - action: start_heartbeat
     interval_sec: 30
 
-  # Wait for BootNotificationHandler's post-Accept side effects to settle —
-  # specifically resetBaysToUnknown (BootNotificationHandler.php:175-185)
-  # which writes bay.updated_at = server-NOW. The next StatusNotification's
-  # envelope.timestamp (simulator-NOW) must exceed bay.updated_at, otherwise
-  # the out-of-order check at StatusNotificationHandler.php:86-98 silently
-  # drops it and bay stays UNKNOWN → BAY_NOT_READY on /sessions/start.
+  # No delay here, deliberately — and this note records why one used to be.
   #
-  # UAT-empirical (2026-05-12): server clock is ~7s ahead of dev workstation.
-  # 15s delay = 7s clock skew + 8s margin.
+  # A 15 s delay sat here from 2026-05-12 until 2026-07-31. `resetBaysToUnknown`
+  # stamped `bay.updated_at` with the SERVER clock on every boot, and the
+  # out-of-order guard then compared the next StatusNotification's envelope
+  # timestamp (station clock) against it. A station whose clock trailed the
+  # server's lost that comparison, its post-boot report was dropped, and the bay
+  # stayed `unknown` — where /sessions/start answers BAY_NOT_READY. The delay
+  # bought enough wall-clock for the station timestamp to clear the bar.
   #
-  # The real fix landed server-side, and it is NOT either of the two this comment
-  # used to propose (NTP-sync the host / align envelope timestamps to serverTime).
-  # csms-server 21f18c4 moved the ordering floor off `bays.updated_at` — a
-  # server-clock row touch that Boot, LWT and the heartbeat watchdog all move —
-  # onto `bays.last_status_reported_at`, which only an ACCEPTED report writes and
-  # which is NULL for a never-reported bay, admitting its first report by
-  # construction. With that deployed, this delay is unnecessary.
+  # csms-server 21f18c4 fixed it properly: the ordering floor moved off
+  # `bays.updated_at` onto `bays.last_status_reported_at`, which only an ACCEPTED
+  # report writes, which no server-internal reset advances, and which is NULL for
+  # a never-reported bay — admitting its first report by construction.
   #
-  # IT IS NOT DEPLOYED ON UAT. Verified 2026-07-31 against the running stack, all
-  # three layers agreeing:
-  #   - csms-app-uat still runs the pre-fix comparison
-  #     (StatusNotificationHandler.php:137 `$bay->updated_at`), and
-  #     `last_status_reported_at` appears 0 times in the deployed file;
-  #   - the UAT `bays` table has no `last_status_reported_at` column;
-  #   - the uat-app image was built 2026-07-27, three days before the fix.
-  #
-  # So the delay is still load-bearing HERE and stays until UAT is rebuilt and
-  # redeployed. Remove it only after re-verifying those three, not on the strength
-  # of the fix existing on master.
-  - action: delay
-    ms: 15000
+  # Proven on UAT 2026-07-31, after deploying that fix, rather than assumed:
+  # this scenario ran with the delay removed and all four bays reached
+  # `status = available` with `last_status_reported_at` populated. Same for
+  # e2e-returning-customer-session (stn_764ec888) and e2e-session-end-matrix
+  # (stn_a05d0979). Scenario duration fell 18.2 s -> 2.8 s.
 
   # ---------- Station: StatusNotification (4 bays Available) ----------
   - action: send
