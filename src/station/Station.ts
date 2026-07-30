@@ -413,6 +413,13 @@ export class Station extends EventEmitter {
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
       uptimeSeconds: this.currentUptimeSeconds(),
+      // A literal, and the last one left in this payload. Truthful only because
+      // `offlineModeSupported: false` below means this simulator never buffers a
+      // transaction, so the count is 0 by construction. It is the same class as
+      // the `uptimeSeconds: 0` defect — a self-reported fact hardcoded rather
+      // than derived — and it stops being defensible the moment offline support
+      // is declared. Whoever flips offlineModeSupported to true must derive this
+      // from the real buffer in the same commit.
       pendingOfflineTransactions: 0,
       timezone: this.config.timezone,
       bootReason: this.currentBootReason,
