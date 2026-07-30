@@ -194,7 +194,9 @@ steps:
   - action: start_heartbeat
     interval_sec: 30
 
-  # 15 s clock-skew + resetBaysToUnknown drain (see scenarios A/B).
+  # 15 s clock-skew + resetBaysToUnknown drain (see scenarios A/B, including why
+  # this stays: csms-server 21f18c4 fixes it server-side but is NOT deployed on
+  # UAT — verified 2026-07-31 at code, schema and image level).
   - action: delay
     ms: 15000
 

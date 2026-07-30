@@ -219,9 +219,27 @@ steps:
   # drops it and bay stays UNKNOWN → BAY_NOT_READY on /sessions/start.
   #
   # UAT-empirical (2026-05-12): server clock is ~7s ahead of dev workstation.
-  # 15s delay = 7s clock skew + 8s margin. Real fix is either NTP-sync UAT
-  # host OR have the simulator align envelope timestamps to serverTime from
-  # BootNotification Response (deferred — out of K1.C scope).
+  # 15s delay = 7s clock skew + 8s margin.
+  #
+  # The real fix landed server-side, and it is NOT either of the two this comment
+  # used to propose (NTP-sync the host / align envelope timestamps to serverTime).
+  # csms-server 21f18c4 moved the ordering floor off `bays.updated_at` — a
+  # server-clock row touch that Boot, LWT and the heartbeat watchdog all move —
+  # onto `bays.last_status_reported_at`, which only an ACCEPTED report writes and
+  # which is NULL for a never-reported bay, admitting its first report by
+  # construction. With that deployed, this delay is unnecessary.
+  #
+  # IT IS NOT DEPLOYED ON UAT. Verified 2026-07-31 against the running stack, all
+  # three layers agreeing:
+  #   - csms-app-uat still runs the pre-fix comparison
+  #     (StatusNotificationHandler.php:137 `$bay->updated_at`), and
+  #     `last_status_reported_at` appears 0 times in the deployed file;
+  #   - the UAT `bays` table has no `last_status_reported_at` column;
+  #   - the uat-app image was built 2026-07-27, three days before the fix.
+  #
+  # So the delay is still load-bearing HERE and stays until UAT is rebuilt and
+  # redeployed. Remove it only after re-verifying those three, not on the strength
+  # of the fix existing on master.
   - action: delay
     ms: 15000
 
