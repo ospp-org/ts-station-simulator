@@ -45,8 +45,58 @@ steps:
       requestedMessage: "BootNotification"
     expect_status: 202
 
-  # Handler auto-responds Accepted + auto-sends BootNotification
   - action: wait_for
     message: TriggerMessage
     messageType: Request
     timeout_ms: 15000
+
+  # Scenario mode registers no TriggerMessageHandler (ScenarioRunner registers
+  # only BootNotificationHandler, to capture the sessionKey) — the scenario
+  # scripts every outbound message itself, the way trigger-message-heartbeat
+  # does. This file used to stop at the wait_for above under a comment claiming
+  # a handler auto-responded, so it proved only that the trigger was DELIVERED
+  # and never that the station answers it correctly.
+  - action: send
+    message: TriggerMessage
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # The triggered re-announce, and the point of the scenario. A trigger is not a
+  # power-cycle: the station has been up for an hour and says so. Reporting
+  # uptimeSeconds: 0 here would make the server derive bootTime ≈ now and
+  # force-fail + refund every live wash on the station. bootReason stays PowerOn
+  # because that is still the episode that is running — the field is "reason the
+  # station booted", not "reason for this send" — and deviceManagementSupported
+  # is declared so one station does not advertise two capability sets.
+  # These are the values TriggerMessageHandler now emits via Station.retryBoot();
+  # the offline pin on that is src/__tests__/handlers/TriggerMessageHandler.bootTruthful.test.ts.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bayCount: 2
+      uptimeSeconds: 3600
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
