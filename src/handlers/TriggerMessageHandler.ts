@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {
+  isReportableBayStatus,
   OsppAction,
   MessageType,
   type OsppEnvelope,
@@ -84,10 +85,24 @@ export class TriggerMessageHandler implements Handler {
         // Send status for all configured bays
         for (const bay of station.config.bays) {
           const bayId = request.bayId ?? bay.bayId;
+          const bayState = station.getBayState(bayId);
+
+          // Same rule as the post-boot report: a station reports a determinate
+          // state or it does not report. `Unknown` is not a wire value
+          // (05-state-machines.md §1.2), and a triggered report is no exception —
+          // TriggerMessage asks the station what a bay IS, not what the server has
+          // forgotten.
+          if (!isReportableBayStatus(bayState)) {
+            throw new Error(
+              `[TriggerMessage] bay ${bayId} is in state ${bayState}, which a station must not ` +
+                'report. Resolve the bay before reporting it (05-state-machines.md §1.2).',
+            );
+          }
+
           const statusPayload: StatusNotificationPayload = {
             bayId,
             bayNumber: bay.bayNumber,
-            status: station.getBayState(bayId),
+            status: bayState,
             services: bay.services.map(s => ({
               serviceId: s.serviceId,
               available: s.available,

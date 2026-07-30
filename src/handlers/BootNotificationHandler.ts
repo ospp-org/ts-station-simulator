@@ -1,4 +1,4 @@
-import { type OsppEnvelope, type BootNotificationResponse, OsppAction, MessageType, type StatusNotificationPayload } from '@ospp/protocol';
+import { type OsppEnvelope, type BootNotificationResponse, OsppAction, MessageType, type StatusNotificationPayload, isReportableBayStatus } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 
 export class BootNotificationHandler implements Handler {
@@ -33,9 +33,28 @@ export class BootNotificationHandler implements Handler {
           // Start heartbeat at server-specified interval
           station.startHeartbeat(response.heartbeatIntervalSec);
 
-          // Send StatusNotification for every bay (BOOT-012, SN-001)
+          // Send StatusNotification for every bay (BOOT-012, SN-001).
+          //
+          // `previousStatus` is deliberately absent: this is the post-boot report,
+          // and the state it leaves behind is `Unknown`, which the field cannot
+          // carry. Its absence is what marks the message as the boot report
+          // (status-notification.md §5 rule 2).
           for (const bay of station.config.bays) {
             const bayState = station.getBayState(bay.bayId);
+
+            // The station reports what it resolved TO, never `Unknown` itself. Bays
+            // are constructed AVAILABLE and nothing station-side moves them back —
+            // the transitions INTO `Unknown` are the server's LWT bookkeeping, which
+            // a station never observes. So this cannot fire; it is here because the
+            // alternative is publishing a non-conforming message, and a loud local
+            // failure beats a message the server will reject and drop entirely.
+            if (!isReportableBayStatus(bayState)) {
+              throw new Error(
+                `[BootNotification] bay ${bay.bayId} is in state ${bayState}, which a station ` +
+                  'must not report. Resolve the bay before reporting it (05-state-machines.md §1.2).',
+              );
+            }
+
             const statusPayload: StatusNotificationPayload = {
               bayId: bay.bayId,
               bayNumber: bay.bayNumber,

@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
 import type {
   OsppEnvelope,
-  BayStatus,
   BootNotificationRequest,
   BayId,
   ServiceId,
@@ -10,6 +9,7 @@ import type {
 import {
   OsppAction,
   MessageType,
+  BayStatus,
   BayStateMachine,
   BootReason,
   toStationTopic,
@@ -113,8 +113,22 @@ export class Station extends EventEmitter {
       this.emit('kicked', reasonCode);
     });
 
+    // Bays start AVAILABLE, not at the FSM's `Unknown` default.
+    //
+    // `Unknown` is the state a station holds between power-on and the end of its
+    // self-test. It is never transmitted (spec 05-state-machines.md §1.2), and a
+    // station leaves it by reporting what the self-test found. This simulator has
+    // no hardware and therefore no self-test to run — and the spec's own boot
+    // sequence puts that step three steps before the network (01-architecture.md
+    // §7.3: bays initialise, then TLS, then subscribe, then BootNotification), so
+    // a station whose power-on checks completed before the radio came up is
+    // exactly what a hardware-less station should model.
+    //
+    // Constructing at `Unknown` and leaving it there meant the post-boot
+    // StatusNotification — built by reading getBayState() straight into the
+    // payload — put a non-reportable value on the wire.
     for (const bay of config.bays) {
-      this.bayMachines.set(bay.bayId, new BayStateMachine());
+      this.bayMachines.set(bay.bayId, new BayStateMachine(BayStatus.AVAILABLE));
     }
   }
 
