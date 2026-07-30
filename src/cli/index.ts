@@ -11,7 +11,7 @@ import { loadTarget, type TargetConfig } from './config.js';
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
-import { OsppAction, MessageType, BayStatus } from '@ospp/protocol';
+import { OsppAction } from '@ospp/protocol';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
@@ -658,32 +658,22 @@ program
       }
       console.log();
 
-      // Report each bay Available so the CSMS marks bays.status = 'available'.
-      // Real hardware sends a StatusNotification right after boot; connect mode
-      // omitted it, so bays stayed 'unknown' server-side and GET /pay/{bay}
-      // rejected the customer with bay_unavailable — the webpay flow was
-      // unreachable against a simulated station. Wait for boot acceptance first:
-      // the CSMS drops station-initiated messages that arrive before the
-      // BootNotification is accepted.
-      for (let i = 0; i < 50 && !station.bootAccepted; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      for (const bay of bays) {
-        // The LOCAL bay state machine must reflect Available too, not just the
-        // CSMS. StartServiceHandler gates on getBayState() ∈ {Available,Reserved};
-        // boot leaves bays Unknown. Reporting Available to the CSMS WITHOUT this
-        // local transition made the sim receive the StartService and then REJECT
-        // it ("Bay ... is in state Unknown") — a paid session failed at the sim.
-        station.setBayState(bay.bayId, BayStatus.AVAILABLE);
-        await station.sender.send(OsppAction.STATUS_NOTIFICATION, MessageType.EVENT, {
-          bayId: bay.bayId,
-          bayNumber: bay.bayNumber,
-          status: 'Available',
-          services: bay.services.map((s) => ({ serviceId: s.serviceId, available: s.available ?? true })),
-        });
-        console.log(chalk.green(`  StatusNotification -> bay ${bay.bayNumber} (${bay.bayId}) = Available (local + CSMS)`));
-      }
-      console.log();
+      // The post-boot StatusNotification per bay is BootNotificationHandler's job
+      // (autoReact, on `Accepted`) and is not repeated here.
+      //
+      // This used to carry a second, corrective publish: wait for bootAccepted,
+      // force each bay to Available locally, then re-report it. That existed
+      // because boot left bays at `Unknown`, so the handler's own report put a
+      // non-conforming value on the wire and the CSMS held the bay at unknown,
+      // where GET /pay/{bay} refuses the customer with bay_unavailable. It patched
+      // the symptom from outside and left two publishers racing over one bay.
+      //
+      // Bays now construct Available, so the handler's single report is correct on
+      // its own. The second mechanism goes, and the race with it — and it could
+      // not have stayed regardless: `setBayState(bay, AVAILABLE)` on an
+      // already-Available bay is an Available -> Available transition, which is
+      // not in the table and throws.
+      console.log(chalk.gray('  StatusNotification per bay sent on boot acceptance.'));
       console.log(chalk.gray('Press Ctrl+C to disconnect.\n'));
 
       // Keep alive — wait for SIGINT
