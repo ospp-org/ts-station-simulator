@@ -384,10 +384,16 @@ export class Station extends EventEmitter {
 
   /**
    * Send the BootNotification REQUEST. (Name is historical: this is also the
-   * INITIAL boot — see cli/index.ts.) `uptimeSeconds` and `bootReason` are
-   * derived from the station's live state, so the same call reports ~0/PowerOn
-   * on a genuine power-on and the real elapsed uptime with a reconnect reason
-   * after a cert-renewal re-handshake.
+   * INITIAL boot — see cli/index.ts — and the SERVER-TRIGGERED re-announce, see
+   * TriggerMessageHandler.) `uptimeSeconds` and `bootReason` are derived from the
+   * station's live state, so the same call reports ~0/PowerOn on a genuine
+   * power-on and the real elapsed uptime with a reconnect reason after a
+   * cert-renewal re-handshake.
+   *
+   * This is the ONLY place a BootNotification payload is built. It has to stay
+   * that way: the trigger path once carried its own literal and drifted from this
+   * one in three fields, two of which cost live washes. Add fields here, never in
+   * a caller.
    *
    * @param fixedMessageId Opt-in: reuse this messageId instead of minting a fresh
    *   UUID. Per the OSPP glossary, a station SHOULD retry with the SAME messageId

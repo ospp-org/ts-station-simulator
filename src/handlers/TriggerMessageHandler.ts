@@ -2,13 +2,11 @@ import crypto from 'node:crypto';
 import {
   OsppAction,
   MessageType,
-  BootReason,
   type OsppEnvelope,
   type TriggerMessageRequest,
   type TriggerMessageResponse,
   type HeartbeatRequest,
   type StatusNotificationPayload,
-  type BootNotificationRequest,
   type MeterValuesPayload,
   type DiagnosticsNotificationPayload,
   type FirmwareStatusNotificationPayload,
@@ -50,29 +48,23 @@ export class TriggerMessageHandler implements Handler {
     // Now send the requested message
     switch (request.requestedMessage) {
       case 'BootNotification': {
-        const bootPayload: BootNotificationRequest = {
-          stationId: station.config.stationId,
-          firmwareVersion: station.config.firmwareVersion,
-          stationModel: station.config.stationModel,
-          stationVendor: station.config.stationVendor,
-          serialNumber: station.config.serialNumber,
-          bayCount: station.config.bayCount,
-          uptimeSeconds: 0,
-          pendingOfflineTransactions: 0,
-          timezone: station.config.timezone,
-          bootReason: BootReason.POWER_ON,
-          capabilities: {
-            bleSupported: false,
-            offlineModeSupported: false,
-            meterValuesSupported: true,
-          },
-          networkInfo: {
-            connectionType: 'Ethernet',
-          },
-        };
-        await station.sender.send<BootNotificationRequest>(
-          OsppAction.BOOT_NOTIFICATION, MessageType.REQUEST, bootPayload,
-        );
+        // Delegate rather than build a second payload here. A trigger is not a
+        // boot: nothing power-cycles, so every field is a fact about the station,
+        // and retryBoot() already derives all of them from live state. A literal
+        // built here disagreed with it in three places — uptimeSeconds: 0 (which
+        // makes the CSMS force-fail and refund every live wash, since it derives
+        // bootTime = now - uptimeSeconds), a hardcoded PowerOn, and an omitted
+        // deviceManagementSupported. Calling the shared path means the next field
+        // added to the boot payload cannot diverge on this one.
+        //
+        // bootReason follows from the same premise: the field is "reason the
+        // station booted" (spec/profiles/core/boot-notification.md:29) — a
+        // property of the last boot EPISODE, not of the send. A trigger
+        // re-announces an episode rather than starting one, exactly as a
+        // Rejected/Pending retry does, so the truthful value is whatever actually
+        // booted the station. That is Station.currentBootReason, and reading it
+        // makes this path truthful by construction instead of by picking a value.
+        await station.retryBoot();
         console.log('[TriggerMessage] BootNotification sent');
         break;
       }
