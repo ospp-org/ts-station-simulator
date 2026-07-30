@@ -1,5 +1,5 @@
 name: "Status All Bay States"
-description: "Boot and send StatusNotification for every possible bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable, Unknown."
+description: "Boot and send StatusNotification for every REPORTABLE bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable. `Unknown` is the FSM's seventh state and is deliberately absent — no station may put it on the wire (spec v0.10.0, 05-state-machines.md 1.2)."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -114,7 +114,7 @@ steps:
       status: "Faulted"
       previousStatus: "Finishing"
       errorCode: 5001
-      errorText: "Water pump pressure below threshold"
+      errorText: "PUMP_SYSTEM"
       services:
         - serviceId: "{{serviceId_1}}"
           available: false
@@ -135,18 +135,3 @@ steps:
         - serviceId: "{{serviceId_1}}"
           available: false
 
-  - action: delay
-    ms: 300
-
-  # Status: Unknown
-  - action: send
-    message: StatusNotification
-    messageType: Event
-    payload:
-      bayId: "{{bayId_1}}"
-      bayNumber: 1
-      status: "Unknown"
-      previousStatus: "Unavailable"
-      services:
-        - serviceId: "{{serviceId_1}}"
-          available: false
