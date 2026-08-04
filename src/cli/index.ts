@@ -354,6 +354,7 @@ function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {
       cert: target.certs.cert,
       keyPattern: target.certs.keyPattern,
       certPattern: target.certs.certPattern,
+      chain: target.certs.stationCaChain,
       serverCa: target.certs.serverCa,
       minVersion: target.certs.minVersion,
       maxVersion: target.certs.maxVersion,
@@ -562,12 +563,13 @@ program
       }
 
       // Resolve cert paths
-      let tls: { key?: string; cert?: string; serverCa?: string } | undefined;
+      let tls: { key?: string; cert?: string; chain?: string; serverCa?: string } | undefined;
       if (target.certs) {
         const resolveP = (s: string | undefined) => s?.replace('{{stationId}}', stationId);
         tls = {
           key: resolveP(target.certs.keyPattern) ?? resolveP(target.certs.key),
           cert: resolveP(target.certs.certPattern) ?? resolveP(target.certs.cert),
+          chain: resolveP(target.certs.stationCaChain),
           serverCa: resolveP(target.certs.serverCa),
         };
       }

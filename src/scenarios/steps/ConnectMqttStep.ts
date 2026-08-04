@@ -15,9 +15,12 @@ import type { Station } from '../../station/Station.js';
  * Optional YAML fields:
  *   certs_dir_var: captured-var name holding the artifacts directory
  *                  (default: "certs_dir"; set by ProvisionStep).
- *   key_path / cert_path / broker_ca_path: explicit overrides. If absent,
- *                  derived from certs_dir + stationId per the
- *                  `<dir>/<stationId>-{key,,broker-ca}.pem` convention.
+ *   key_path / cert_path / chain_path / broker_ca_path: explicit overrides.
+ *                  If absent, derived from certs_dir + stationId per the
+ *                  `<dir>/<stationId>-{key,,chain,broker-ca}.pem` convention.
+ *                  `chain_path` is the Station CA chain PRESENTED alongside
+ *                  the leaf (CONS-133); like broker_ca_path it is optional,
+ *                  and an absent file falls back to leaf-only.
  *   min_version / max_version: TLS floor/ceiling for this connection (Node
  *                  tls.connect() semantics) — the mid-scenario-provisioning
  *                  equivalent of ScenarioDefinition.tls.{min,max}_version
@@ -50,6 +53,9 @@ export class ConnectMqttStep implements Step {
     const certPath =
       (definition.cert_path as string | undefined) ??
       (certsDir ? path.join(certsDir, `${stationId}.pem`) : undefined);
+    const chainPath =
+      (definition.chain_path as string | undefined) ??
+      (certsDir ? path.join(certsDir, `${stationId}-chain.pem`) : undefined);
     const brokerCaPath =
       (definition.broker_ca_path as string | undefined) ??
       (certsDir ? path.join(certsDir, `${stationId}-broker-ca.pem`) : undefined);
@@ -62,6 +68,18 @@ export class ConnectMqttStep implements Step {
 
     await fs.access(keyPath);
     await fs.access(certPath);
+
+    // The chain is optional: a pass-form-only or pre-chain station may not have
+    // one on disk, and leaf-only is still a valid (if weaker) presentation.
+    let chain: string | undefined;
+    if (chainPath) {
+      try {
+        await fs.access(chainPath);
+        chain = chainPath;
+      } catch {
+        // no chain persisted for this station; present the leaf alone
+      }
+    }
 
     let serverCa: string | undefined;
     if (brokerCaPath) {
@@ -76,11 +94,11 @@ export class ConnectMqttStep implements Step {
     const minVersion = definition.min_version as SecureVersion | undefined;
     const maxVersion = definition.max_version as SecureVersion | undefined;
 
-    station.setTls({ key: keyPath, cert: certPath, serverCa, minVersion, maxVersion });
+    station.setTls({ key: keyPath, cert: certPath, chain, serverCa, minVersion, maxVersion });
     await station.connect();
 
     console.log(
-      `[ConnectMqttStep] ${stationId} MQTT-connected (key=${keyPath}, cert=${certPath}${serverCa ? `, ca=${serverCa}` : ''}${minVersion ? `, minVersion=${minVersion}` : ''}${maxVersion ? `, maxVersion=${maxVersion}` : ''})`,
+      `[ConnectMqttStep] ${stationId} MQTT-connected (key=${keyPath}, cert=${certPath}${chain ? `, chain=${chain}` : ''}${serverCa ? `, ca=${serverCa}` : ''}${minVersion ? `, minVersion=${minVersion}` : ''}${maxVersion ? `, maxVersion=${maxVersion}` : ''})`,
     );
   }
 }
