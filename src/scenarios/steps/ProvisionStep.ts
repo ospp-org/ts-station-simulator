@@ -4,12 +4,7 @@ import path from 'node:path';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
-import {
-  generateEcdsaP256KeyPair,
-  buildCsr,
-  exportPrivateKeyPkcs8Pem,
-  exportPublicKeySpkiPem,
-} from '../../cli/provision.js';
+import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
 
 interface ProvisioningResponseData {
   clientCert?: string;
@@ -73,16 +68,20 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: context.apiBaseUrl is not set');
     }
 
-    // 1. TLS keypair + CSR
-    const tlsKeys = await generateEcdsaP256KeyPair();
-    const csr = await buildCsr(stationId, tlsKeys);
-    const csrPem = csr.toString('pem');
-    const tlsKeyPem = exportPrivateKeyPkcs8Pem(tlsKeys.privateKey);
+    const artifactsBase =
+      (definition.artifacts_dir as string | undefined) ?? 'tests/artifacts/uat';
+    const stationDir = path.resolve(artifactsBase, stationId);
 
-    // 2. Receipt keypair
-    const receiptKeys = await generateEcdsaP256KeyPair();
-    const receiptKeyPem = exportPrivateKeyPkcs8Pem(receiptKeys.privateKey);
-    const receiptPubPem = exportPublicKeySpkiPem(receiptKeys.publicKey);
+    // 1-2. TLS + receipt keypairs, COMMITTED DURABLY BEFORE THE POST.
+    // spec/04-flows.md:253 step 6b — "Before step 7 leaves the device, the SSP
+    // MUST commit every private key generated in steps 5-6a to non-volatile
+    // storage, durably". This used to generate here and write at step 4, after
+    // the response: a crash in between left the server holding a cert bound to
+    // keys the simulator no longer had, and the retry was answered 4015.
+    // A key set already on disk is REUSED, which is the other half of :307.
+    const keySet = await commitProvisioningKeySet(stationDir, stationId);
+    const csrPem = keySet.csrPem;
+    const receiptPubPem = keySet.receiptPubPem;
 
     // 3. POST /api/v1/stations/provision
     const url = `${context.apiBaseUrl}/api/v1/stations/provision`;
@@ -128,22 +127,16 @@ export class ProvisionStep implements Step {
       expectedCount: bayCount,
     });
 
-    // 4. Persist artifacts
-    const artifactsBase =
-      (definition.artifacts_dir as string | undefined) ?? 'tests/artifacts/uat';
-    const stationDir = path.resolve(artifactsBase, stationId);
-    await fs.mkdir(stationDir, { recursive: true });
-
-    const keyPath = path.join(stationDir, `${stationId}-key.pem`);
+    // 4. Persist the RESPONSE. The private keys are already on disk and flushed.
+    const keyPath = keySet.paths.tlsKeyPath;
     const certPath = path.join(stationDir, `${stationId}.pem`);
     const chainPath = path.join(stationDir, `${stationId}-chain.pem`);
-    const receiptKeyPath = path.join(stationDir, `${stationId}-receipt-key.pem`);
-    const receiptPubPath = path.join(stationDir, `${stationId}-receipt-pub.pem`);
+    const receiptKeyPath = keySet.paths.receiptKeyPath;
+    const receiptPubPath = keySet.paths.receiptPubPath;
     const brokerCaPath = path.join(stationDir, `${stationId}-broker-ca.pem`);
     const mqttJsonPath = path.join(stationDir, `${stationId}-mqtt.json`);
 
     await Promise.all([
-      fs.writeFile(keyPath, tlsKeyPem, { mode: 0o600 }),
       fs.writeFile(certPath, cert),
       fs.writeFile(
         chainPath,
@@ -151,8 +144,6 @@ export class ProvisionStep implements Step {
           ? cert + data.stationCaChain
           : cert,
       ),
-      fs.writeFile(receiptKeyPath, receiptKeyPem, { mode: 0o600 }),
-      fs.writeFile(receiptPubPath, receiptPubPem),
     ]);
 
     if (typeof data.brokerRootCa === 'string' && data.brokerRootCa.length > 0) {

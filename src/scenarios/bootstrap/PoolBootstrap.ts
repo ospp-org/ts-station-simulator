@@ -27,6 +27,7 @@ import {
   uatDbConfigFromEnv,
   type UatDbConfig,
 } from './uatPrivileged.js';
+import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
 
 /**
  * Per-run station-pool bootstrap (F-PROC-1 fix).
@@ -600,10 +601,18 @@ async function registerAndProvisionStation(
   });
   const rawToken = requireString(pluck(tokenRes, 'data.rawToken'), 'data.rawToken');
 
-  // Provision: keygen + CSR + receipt key, POST /stations/provision (200 OK).
-  const tlsKeys = await generateEcdsaP256KeyPair();
-  const csr = await buildCsr(stationId, tlsKeys);
-  const receiptKeys = await generateEcdsaP256KeyPair();
+  // Provision. The key set is COMMITTED DURABLY BEFORE THE POST —
+  // spec/04-flows.md:253 step 6b, "Before step 7 leaves the device, the SSP MUST
+  // commit every private key generated in steps 5-6a to non-volatile storage,
+  // durably". This used to generate here and write after the response, so a
+  // crash in between left the server holding a cert bound to keys the process no
+  // longer had and the retry was answered 4015 (recoverable:false).
+  const paths = certPathsFor(target, stationId);
+  const keySet = await commitProvisioningKeySet(path.dirname(paths.keyPath), stationId, {
+    tlsKeyPath: paths.keyPath,
+    receiptKeyPath: paths.receiptKeyPath,
+    receiptPubPath: paths.receiptPubPath,
+  });
   const provRes = await apiCall({
     method: 'POST',
     url: `${apiBaseUrl}/api/v1/stations/provision`,
@@ -611,8 +620,8 @@ async function registerAndProvisionStation(
       provisioningToken: rawToken,
       serialNumber: generateSerialNumber(),
       bayCount,
-      tlsCsr: csr.toString('pem'),
-      receiptSigningPublicKey: exportPublicKeySpkiPem(receiptKeys.publicKey),
+      tlsCsr: keySet.csrPem,
+      receiptSigningPublicKey: keySet.receiptPubPem,
     },
     expectStatus: 200,
   });
@@ -627,21 +636,13 @@ async function registerAndProvisionStation(
     expectedCount: bayCount,
   });
 
-  // Persist artifacts into the target's flat certs/<env>/ layout.
-  const paths = certPathsFor(target, stationId);
-  await fs.mkdir(path.dirname(paths.keyPath), { recursive: true });
+  // Persist the RESPONSE into the target's flat certs/<env>/ layout. The key
+  // set — including the receipt-signing private key SendStep needs to sign
+  // TransactionEvent.receipt with — is already on disk and flushed.
   const writes: Array<Promise<void>> = [
-    fs.writeFile(paths.keyPath, exportPrivateKeyPkcs8Pem(tlsKeys.privateKey), { mode: 0o600 }),
     fs.writeFile(paths.certPath, clientCert),
     fs.writeFile(paths.chainPath, data.stationCaChain ?? clientCert),
     fs.writeFile(paths.baysJsonPath, JSON.stringify({ stationId, bayIds }, null, 2)),
-    // Receipt-signing keypair — paired with the receiptSigningPublicKey already
-    // POSTed to /api/v1/stations/provision above. Without persisting the
-    // private key, SendStep has no key to sign TransactionEvent.receipt with,
-    // and the Reconciler's ReceiptVerifier rejects every offline-tx as
-    // invalid_receipt_signature.
-    fs.writeFile(paths.receiptKeyPath, exportPrivateKeyPkcs8Pem(receiptKeys.privateKey), { mode: 0o600 }),
-    fs.writeFile(paths.receiptPubPath, exportPublicKeySpkiPem(receiptKeys.publicKey)),
   ];
   handle.certFiles.push(
     paths.keyPath,

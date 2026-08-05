@@ -5,12 +5,7 @@ import crypto from 'node:crypto';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
-import {
-  generateEcdsaP256KeyPair,
-  buildCsr,
-  exportPrivateKeyPkcs8Pem,
-  exportPublicKeySpkiPem,
-} from '../../cli/provision.js';
+import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
 
 interface ProvisioningResponseData {
   clientCert?: string;
@@ -74,14 +69,14 @@ export class ProvisionStationPoolStep implements Step {
       const stationId = `${prefix}${randomHex8()}`;
       const token = tokens[i];
 
-      const tlsKeys = await generateEcdsaP256KeyPair();
-      const csr = await buildCsr(stationId, tlsKeys);
-      const csrPem = csr.toString('pem');
-      const tlsKeyPem = exportPrivateKeyPkcs8Pem(tlsKeys.privateKey);
-
-      const receiptKeys = await generateEcdsaP256KeyPair();
-      const receiptKeyPem = exportPrivateKeyPkcs8Pem(receiptKeys.privateKey);
-      const receiptPubPem = exportPublicKeySpkiPem(receiptKeys.publicKey);
+      // Keys COMMITTED DURABLY BEFORE THE POST — spec/04-flows.md:253 step 6b.
+      // This used to generate here and write after the response, so a crash in
+      // between left the server holding a cert bound to keys this process no
+      // longer had, and the retry was answered 4015 (recoverable:false).
+      const stationDir = path.resolve(artifactsBase, 'pool', stationId);
+      const keySet = await commitProvisioningKeySet(stationDir, stationId);
+      const csrPem = keySet.csrPem;
+      const receiptPubPem = keySet.receiptPubPem;
 
       const url = `${context.apiBaseUrl}/api/v1/stations/provision`;
       const response = await fetch(url, {
@@ -120,26 +115,20 @@ export class ProvisionStationPoolStep implements Step {
         expectedCount: bayCount,
       });
 
-      const stationDir = path.resolve(artifactsBase, 'pool', stationId);
-      await fs.mkdir(stationDir, { recursive: true });
-
-      const keyPath = path.join(stationDir, `${stationId}-key.pem`);
+      const keyPath = keySet.paths.tlsKeyPath;
       const certPath = path.join(stationDir, `${stationId}.pem`);
       const chainPath = path.join(stationDir, `${stationId}-chain.pem`);
-      const receiptKeyPath = path.join(stationDir, `${stationId}-receipt-key.pem`);
-      const receiptPubPath = path.join(stationDir, `${stationId}-receipt-pub.pem`);
+      const receiptKeyPath = keySet.paths.receiptKeyPath;
+      const receiptPubPath = keySet.paths.receiptPubPath;
       const brokerCaPath = path.join(stationDir, `${stationId}-broker-ca.pem`);
       const baysJsonPath = path.join(stationDir, 'bays.json');
 
       await Promise.all([
-        fs.writeFile(keyPath, tlsKeyPem, { mode: 0o600 }),
         fs.writeFile(certPath, cert),
         fs.writeFile(
           chainPath,
           typeof data.stationCaChain === 'string' ? cert + data.stationCaChain : cert,
         ),
-        fs.writeFile(receiptKeyPath, receiptKeyPem, { mode: 0o600 }),
-        fs.writeFile(receiptPubPath, receiptPubPem),
       ]);
 
       let registeredBrokerCaPath: string | undefined;
