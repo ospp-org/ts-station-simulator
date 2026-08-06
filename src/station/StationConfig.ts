@@ -16,7 +16,31 @@ export interface StationConfig {
 export interface BayConfig {
   bayId: BayId;
   bayNumber: number;
+  /**
+   * The PROGRAMS this bay can run — physical operations the hardware performs,
+   * and firmware constants the station owns (spec 01-architecture.md:234).
+   *
+   * Declared at provisioning and re-declared, ordinals only, at every boot. This
+   * is what StatusNotification reports: a station cannot originate knowledge of a
+   * SERVICE, only echo one the server pushed, and at first boot it has been told
+   * none — which is why the old `services` shape made a conforming first boot
+   * impossible.
+   */
+  programs: ProgramConfig[];
+  /**
+   * The commercial offers the SERVER minted and pushed in the catalog. Retained
+   * because the simulator answers StartService by serviceId, but NEVER put on the
+   * wire in a StatusNotification.
+   */
   services: ServiceConfig[];
+}
+
+export interface ProgramConfig {
+  /** 1..32, unique within the bay, need not be dense. */
+  programNumber: number;
+  /** Printable ASCII 1..32. Descriptive: declared, never compared at boot. */
+  label: string;
+  available: boolean;
 }
 
 export interface ServiceConfig {

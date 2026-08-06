@@ -20,6 +20,7 @@ function makeMockStation(): { station: StationContext; sessions: Map<string, Ses
         {
           bayId: 'bay_test',
           bayNumber: 1,
+          programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
           services: [{ serviceId: 'svc_test', serviceName: 'Wash', available: true }],
         },
       ],

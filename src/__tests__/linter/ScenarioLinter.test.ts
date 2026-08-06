@@ -37,7 +37,11 @@ steps:
       stationModel: "WashPro X200"
       stationVendor: "SimCorp"
       serialNumber: "SN-12345678"
-      bayCount: 2
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
       uptimeSeconds: 0
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"

@@ -652,6 +652,9 @@ function createStationFromScenario(
     bays.push({
       bayId,
       bayNumber: i,
+      // Programs are the station's own firmware constants; services are what the
+      // server pushed. Only programs go on the wire in a StatusNotification.
+      programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
       services: [
         {
           serviceId: variables.get('serviceId_1') ?? generateServiceId('wash_basic'),

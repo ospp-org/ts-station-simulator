@@ -20,6 +20,10 @@ export function deriveBays(
     bays.push({
       bayId: overrideBayId ?? defaultBayId,
       bayNumber: i,
+      // Programs are firmware constants the station owns; services are what the
+      // server pushed. Both are declared here because the simulator plays both
+      // halves, but only programs go on the wire in a StatusNotification.
+      programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
       services: [{ serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', available: true }],
     });
   }

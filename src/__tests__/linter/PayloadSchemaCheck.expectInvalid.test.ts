@@ -29,7 +29,11 @@ describe('PayloadSchemaCheck — expect_invalid opt-out', () => {
     const issues = check.check(scenario);
     expect(issues.length).toBeGreaterThan(0);
     expect(issues.some((i) => i.message.includes('bayNumber'))).toBe(true);
-    expect(issues.some((i) => i.message.includes('services'))).toBe(true);
+    // `programs`, not `services`: StatusNotification reports the bay's PROGRAMS
+    // now (status-notification.schema.json). A station cannot originate knowledge
+    // of a service, only echo one it was pushed — which made the old shape
+    // impossible to satisfy on a first boot.
+    expect(issues.some((i) => i.message.includes('programs'))).toBe(true);
   });
 
   it('omitting expect_invalid entirely (default/undefined) still fails the same invalid payload', () => {

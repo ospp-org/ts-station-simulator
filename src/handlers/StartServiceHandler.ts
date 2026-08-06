@@ -22,7 +22,11 @@ export class StartServiceHandler implements Handler {
         status: 'Rejected',
         errorCode: OsppErrorCode.BAY_NOT_FOUND,
         errorText: 'BAY_NOT_FOUND',
-      };
+        // The rejection names the ordinal it refused, so an operator need not
+        // correlate against the request to find out which one was wrong
+        // (start-service-response.schema.json:30, REQUIRED when Rejected).
+        programNumber: request.programNumber,
+        };
       await station.sender.send<StartServiceResponse>(
         OsppAction.START_SERVICE, MessageType.RESPONSE, response, envelope.messageId,
       );
@@ -37,7 +41,11 @@ export class StartServiceHandler implements Handler {
         status: 'Rejected',
         errorCode: OsppErrorCode.INVALID_SERVICE,
         errorText: 'INVALID_SERVICE',
-      };
+        // The rejection names the ordinal it refused, so an operator need not
+        // correlate against the request to find out which one was wrong
+        // (start-service-response.schema.json:30, REQUIRED when Rejected).
+        programNumber: request.programNumber,
+        };
       await station.sender.send<StartServiceResponse>(
         OsppAction.START_SERVICE, MessageType.RESPONSE, response, envelope.messageId,
       );
@@ -51,7 +59,11 @@ export class StartServiceHandler implements Handler {
         status: 'Rejected',
         errorCode: OsppErrorCode.DURATION_INVALID,
         errorText: 'DURATION_INVALID',
-      };
+        // The rejection names the ordinal it refused, so an operator need not
+        // correlate against the request to find out which one was wrong
+        // (start-service-response.schema.json:30, REQUIRED when Rejected).
+        programNumber: request.programNumber,
+        };
       await station.sender.send<StartServiceResponse>(
         OsppAction.START_SERVICE, MessageType.RESPONSE, response, envelope.messageId,
       );
@@ -73,7 +85,11 @@ export class StartServiceHandler implements Handler {
             status: 'Rejected',
             errorCode: OsppErrorCode.BAY_RESERVED,
             errorText: `Bay ${request.bayId} is reserved under a different reservation`,
-          };
+            // The rejection names the ordinal it refused, so an operator need not
+            // correlate against the request to find out which one was wrong
+            // (start-service-response.schema.json:30, REQUIRED when Rejected).
+            programNumber: request.programNumber,
+            };
 
           await station.sender.send<StartServiceResponse>(
             OsppAction.START_SERVICE,
@@ -137,6 +153,8 @@ export class StartServiceHandler implements Handler {
         errorText: canStart
           ? 'Randomly rejected by simulator'
           : `Bay ${request.bayId} is in state ${bayState}, cannot start service`,
+        // REQUIRED when Rejected — start-service-response.schema.json:30.
+        programNumber: request.programNumber,
       };
 
       await station.sender.send<StartServiceResponse>(
@@ -150,7 +168,9 @@ export class StartServiceHandler implements Handler {
         '[StartService] Rejected session %s on bay %s — %s',
         request.sessionId,
         request.bayId,
-        response.errorText,
+        // `errorText` is absent from the Accepted variant, so it is only readable
+        // inside this branch where the response is narrowed to Rejected.
+        response.status === 'Rejected' ? response.errorText : 'accepted',
       );
     }
   }

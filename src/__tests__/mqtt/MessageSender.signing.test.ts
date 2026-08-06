@@ -25,7 +25,10 @@ function makeSender(sessionKey: string | null): {
     },
   } as unknown as MqttConnection;
 
-  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => sessionKey, 'Critical');
+  // 'All' — 'Critical' is deleted from the SDK; with everything signed it
+  // selected nothing. Everything except the three structural exemptions carries
+  // a MAC now.
+  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => sessionKey, 'All');
 
   return { sender, published: () => payload };
 }

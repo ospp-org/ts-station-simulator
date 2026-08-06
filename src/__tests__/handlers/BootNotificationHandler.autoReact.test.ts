@@ -27,8 +27,8 @@ function makeMockStation(): {
   const station = {
     config: {
       bays: [
-        { bayId: 'bay_a', bayNumber: 1, services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }] },
-        { bayId: 'bay_b', bayNumber: 2, services: [{ serviceId: 'svc_y', serviceName: 'Y', available: true }] },
+        { bayId: 'bay_a', bayNumber: 1, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }] },
+        { bayId: 'bay_b', bayNumber: 2, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [{ serviceId: 'svc_y', serviceName: 'Y', available: true }] },
       ],
       behavior: { autoRetryBoot: false },
     },

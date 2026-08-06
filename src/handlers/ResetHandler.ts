@@ -41,11 +41,16 @@ export class ResetHandler implements Handler {
       envelope.messageId,
     );
 
-    console.log('[Reset] Accepted — type: %s', request.type);
+    // One reboot operation; `force` is its only choice (reset.md:9). Hard/Soft
+    // are deleted and force is NOT a rename of Hard — Hard meant a credential
+    // wipe the protocol no longer has (§5.1), force means "settle the running
+    // session first, then reboot".
+    const forced = request.force === true;
+    console.log('[Reset] Accepted — forced: %s', forced);
 
     station.stopHeartbeat();
-    const delay = request.type === 'Hard' ? 2000 : 1000;
-    console.log('[Reset] %s reset — destroying connection in %dms', request.type, delay);
+    const delay = forced ? 2000 : 1000;
+    console.log('[Reset] reboot (forced=%s) — destroying connection in %dms', forced, delay);
     await new Promise<void>(resolve => setTimeout(resolve, delay));
     station.destroyConnection();
   }

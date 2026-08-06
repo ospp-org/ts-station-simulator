@@ -7,6 +7,7 @@ import type {
   ServiceId,
 } from '@ospp/protocol';
 import {
+  EffectedBy,
   OsppAction,
   MessageType,
   BayStatus,
@@ -128,7 +129,11 @@ export class Station extends EventEmitter {
     // StatusNotification — built by reading getBayState() straight into the
     // payload — put a non-reportable value on the wire.
     for (const bay of config.bays) {
-      this.bayMachines.set(bay.bayId, new BayStateMachine(BayStatus.AVAILABLE));
+      // EffectedBy.STATION is REQUIRED and is the point: "a station machine that
+      // silently accepted the Server rows would model the server's job — which is
+      // exactly the merge §2.3 exists to undo." A station may never effect the six
+      // inferences to Unknown.
+      this.bayMachines.set(bay.bayId, new BayStateMachine(EffectedBy.STATION, BayStatus.AVAILABLE));
     }
   }
 
@@ -423,7 +428,14 @@ export class Station extends EventEmitter {
       stationModel: this.config.stationModel,
       stationVendor: this.config.stationVendor,
       serialNumber: this.config.serialNumber,
-      bayCount: this.config.bayCount,
+      // The RE-DECLARED PHYSICAL TOPOLOGY, replacing bayCount, which is deleted
+      // from the wire. Ordinals only: labels are descriptive and are never
+      // compared, so a corrected typo in a firmware constant must not put the
+      // station into Pending.
+      bays: this.config.bays.map(b => ({
+        bayNumber: b.bayNumber,
+        programNumbers: b.programs.map(p => p.programNumber).sort((x, y) => x - y),
+      })),
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
       uptimeSeconds: this.currentUptimeSeconds(),

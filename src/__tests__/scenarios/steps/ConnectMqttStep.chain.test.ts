@@ -66,7 +66,7 @@ function makeStation() {
       serialNumber: 'SIM-1',
       bayCount: 1,
       timezone: 'UTC',
-      bays: [{ bayId: 'bay_1', bayNumber: 1, services: [] }],
+      bays: [{ bayId: 'bay_1', bayNumber: 1, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [] }],
     } as unknown as ConstructorParameters<typeof Station>[0],
     { mqttUrl: 'mqtts://x', stationId: STATION_ID },
   );

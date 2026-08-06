@@ -5,7 +5,7 @@ import {
   MessageSource,
   createEnvelope,
   toServerTopic,
-  requiresHmac,
+  requiresMac,
   type MessageSigningMode,
   type OsppEnvelope,
 } from '@ospp/protocol';
@@ -23,7 +23,9 @@ export class MessageSender {
     connection: MqttConnection,
     stationId: string,
     getSessionKey: () => string | null = () => null,
-    signingMode: MessageSigningMode = 'Critical',
+    // 'All' is the default and one of two remaining modes; 'Critical' is deleted
+    // — with everything signed it selected nothing.
+    signingMode: MessageSigningMode = 'All',
     // Overridable OSPP wire protocolVersion for every outgoing envelope. Omitted → the SDK default
     // (OSPP_PROTOCOL_VERSION, currently 0.2.1), which a local-HEAD cascade negotiates fine (MAJOR-0
     // matches dev/testing/prod-example). Set OSPP_PROTOCOL_VERSION in the env to target a server pinned
@@ -60,7 +62,7 @@ export class MessageSender {
     // envelope minus `mac`. signMessage adds the `mac` field.
     const sessionKey = this.getSessionKey();
     const outgoing: OsppEnvelope<T> =
-      sessionKey !== null && requiresHmac(action, messageType, this.signingMode)
+      sessionKey !== null && requiresMac(action, messageType, this.signingMode)
         ? (signMessage(
             sessionKey,
             envelope as unknown as Record<string, unknown>,
