@@ -532,13 +532,21 @@ export class Station extends EventEmitter {
       {
         sessionId: session.sessionId,
         bayId: session.bayId,
-        // SPEC DEFECT: `force` says the session is "reported exactly as an
-        // operator-initiated stop", but SessionEndReason has no operator-stop
-        // member — TimerExpired, Fault, Local, LocalOutOfCredit, Deauthorized.
-        // Deauthorized is the closest correct value, not an exact one: the server
-        // withdrew the authorisation to continue, and it is already the reason
-        // csms-server treats as an externally-driven terminal stop
-        // (AllOrNothingSettlement, UserDurationStrategy). Recorded, not invented.
+        // KNOWN WRONG, and blocked — see Station.operatorStopBlocked.test.ts.
+        //
+        // `Deauthorized` carries "Session MUST be billed at zero" (03-messages.md
+        // §5.4), while `force` requires the customer be "billed for what they
+        // received". A forced reset therefore delivers a wash and charges nothing.
+        //
+        // The correct value is `OperatorStopped`, added to the spec for exactly
+        // this. It cannot be emitted yet: @ospp/protocol has not been regenerated,
+        // and the reference server's schema rejects the string — a REJECTED
+        // SessionEnded is worse than a mis-billed one, because SessionEnded is the
+        // sole billing source when no StopService was issued, so the session goes
+        // unbilled entirely rather than billed at zero.
+        //
+        // Flip to SessionEndReason.OPERATOR_STOPPED once the SDK ships it. The
+        // pinned test fails at that moment, which is the signal.
         reason: SessionEndReason.DEAUTHORIZED,
         actualDurationSeconds,
         creditsCharged,
