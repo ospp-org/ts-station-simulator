@@ -16,6 +16,8 @@ import {
   BayStatus,
   BayStateMachine,
   BootReason,
+  SessionEndReason,
+  type SessionEndedPayload,
   toStationTopic,
 } from '@ospp/protocol';
 import {
@@ -459,6 +461,65 @@ export class Station extends EventEmitter {
     const certPath = this.connection.getTlsPaths()?.cert;
 
     return certPath === undefined ? null : dirname(certPath);
+  }
+
+  /**
+   * Settle one running session as an OPERATOR-INITIATED stop and report it.
+   *
+   * reset-request.schema.json, `force`: the station "settles every active session
+   * under the operator-disable policy FIRST — the session is stopped, metered and
+   * reported exactly as an operator-initiated stop, so the customer is billed for
+   * what they received — and only then reboots."
+   *
+   * Metered from the session's real elapsed time, not from its requested
+   * duration: the customer receives what ran, and billing the full request would
+   * charge for a wash the reset cut short.
+   */
+  async settleSessionAsOperatorStop(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) {
+      return;
+    }
+
+    const actualDurationSeconds = Math.max(
+      0,
+      Math.round((Date.now() - session.startedAt.getTime()) / 1000),
+    );
+    // Station.SessionInfo carries no price; the SERVER is the authoritative
+    // billing engine (§04-flows.md:823-833) and this value is advisory. 100 cr/min
+    // is the same default the sim uses elsewhere.
+    const creditsCharged = Math.ceil((actualDurationSeconds / 60) * 100);
+
+    this.sessions.delete(sessionId);
+    this.setBayState(session.bayId, BayStatus.AVAILABLE);
+
+    await this.sender.send<SessionEndedPayload>(
+      OsppAction.SESSION_ENDED,
+      MessageType.EVENT,
+      {
+        sessionId: session.sessionId,
+        bayId: session.bayId,
+        // SPEC DEFECT: `force` says the session is "reported exactly as an
+        // operator-initiated stop", but SessionEndReason has no operator-stop
+        // member — TimerExpired, Fault, Local, LocalOutOfCredit, Deauthorized.
+        // Deauthorized is the closest correct value, not an exact one: the server
+        // withdrew the authorisation to continue, and it is already the reason
+        // csms-server treats as an externally-driven terminal stop
+        // (AllOrNothingSettlement, UserDurationStrategy). Recorded, not invented.
+        reason: SessionEndReason.DEAUTHORIZED,
+        actualDurationSeconds,
+        creditsCharged,
+        // peek, not next: SessionEnded reports the FINAL position, it does not
+        // issue a new one.
+        seqNo: session.seq.peek(),
+        finalSeqNo: session.seq.peek(),
+      },
+    );
+
+    console.log(
+      '[Reset] settled session %s as an operator stop — %ds, %d credits',
+      sessionId, actualDurationSeconds, creditsCharged,
+    );
   }
 
   async retryBoot(fixedMessageId?: string): Promise<void> {
