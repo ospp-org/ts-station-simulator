@@ -30,6 +30,20 @@ export class MessageRouter extends EventEmitter {
   }
 
   /**
+   * The key this router would verify with, right now.
+   *
+   * Exists so the WIRING can be asserted. The verification below was built with
+   * a `getSessionKey` parameter and Station.ts constructed the router without
+   * one, taking the `() => null` default — so the station stored its key and the
+   * router could never see it. Every unit test passed, because they construct
+   * this class directly WITH a getter; only a test that reads the key back
+   * through the router itself can see the difference.
+   */
+  currentSessionKey(): string | null {
+    return this.getSessionKey();
+  }
+
+  /**
    * Remove and return buffered messages matching action (and optionally
    * messageType and messageId). Non-matching envelopes remain in the
    * buffer so a later WaitForStep waiting on a different correlationId

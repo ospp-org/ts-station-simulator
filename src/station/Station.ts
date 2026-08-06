@@ -97,7 +97,10 @@ export class Station extends EventEmitter {
     super();
     this.config = config;
     this.connection = new MqttConnection(mqttOptions);
-    this.router = new MessageRouter();
+    // The getter, not a captured value: the session key arrives in the
+    // BootNotification response, necessarily AFTER this router exists. Passing
+    // `this.sessionKey` here would freeze null forever.
+    this.router = new MessageRouter(() => this.sessionKey);
     this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
 
     // Wire inbound MQTT messages to the router ONCE, here — NOT per connect().
