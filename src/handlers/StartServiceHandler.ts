@@ -8,6 +8,7 @@ import {
   BayStatus,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { SequenceCounter } from '../station/SequenceCounter.js';
 
 export class StartServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -126,7 +127,7 @@ export class StartServiceHandler implements Handler {
         serviceId: request.serviceId,
         startedAt: new Date().toISOString(),
         durationSeconds: request.durationSeconds,
-        seqNo: 0,
+        seq: new SequenceCounter(),
         priceCreditsPerMinute: 100,
       });
 

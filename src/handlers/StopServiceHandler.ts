@@ -50,7 +50,7 @@ export class StopServiceHandler implements Handler {
       status: 'Accepted',
       actualDurationSeconds,
       creditsCharged,
-      finalSeqNo: session.seqNo,
+      finalSeqNo: session.seq.peek(),
     };
 
     await station.sender.send<StopServiceResponse>(
@@ -78,8 +78,10 @@ export class StopServiceHandler implements Handler {
       reason: SessionEndReason.TIMER_EXPIRED,
       actualDurationSeconds,
       creditsCharged,
-      seqNo: session.seqNo,
-      finalSeqNo: session.seqNo,
+      // peek, not next: SessionEnded reports the FINAL position, it does not
+        // issue a new one — seqNo and finalSeqNo are the same number here.
+        seqNo: session.seq.peek(),
+      finalSeqNo: session.seq.peek(),
     };
 
     await station.sender.send<SessionEndedPayload>(

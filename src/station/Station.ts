@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { SequenceCounter } from './SequenceCounter.js';
+import { TopologyStore, type DeclaredBay } from './TopologyStore.js';
 import type {
   OsppEnvelope,
   BootNotificationRequest,
@@ -36,7 +39,11 @@ export interface SessionInfo {
   serviceId: ServiceId;
   startedAt: Date;
   durationSeconds: number;
-  seqNo: number;
+  /**
+   * The station's ordering counter for this session. Was a bare number the
+   * scenario read, wrote and advanced; see SequenceCounter for what that cost.
+   */
+  seq: SequenceCounter;
 }
 
 export interface ReservationInfo {
@@ -420,6 +427,37 @@ export class Station extends EventEmitter {
    *   scenarios are unaffected. Reusing the id is what exercises the server's
    *   duplicate-REQUEST cached-RESPONSE replay path (02-transport §3.3).
    */
+  /**
+   * The topology this station declares, from its own persisted memory.
+   *
+   * Falls back to the config shape ONLY when no store directory is configured —
+   * i.e. a unit test constructing a Station without a TLS path. That fallback is
+   * narrow on purpose: it cannot be reached by a station that has certificates,
+   * which is every station that can actually connect.
+   */
+  private async declaredTopology(): Promise<DeclaredBay[]> {
+    const dir = this.topologyDir();
+    if (dir === null) {
+      return TopologyStore.toWireShape(this.config.bays);
+    }
+
+    return new TopologyStore(dir, this.config.stationId).declare(this.config.bays);
+  }
+
+  /** Alongside the station's certificates — the state it already keeps on disk. */
+  private topologyDir(): string | null {
+    // A unit test may hand in a bare fake connection with no TLS surface at all.
+    // That is the fallback's only legitimate caller: a station that can actually
+    // connect has certificates, so it has a directory and it persists.
+    if (typeof this.connection.getTlsPaths !== 'function') {
+      return null;
+    }
+
+    const certPath = this.connection.getTlsPaths()?.cert;
+
+    return certPath === undefined ? null : dirname(certPath);
+  }
+
   async retryBoot(fixedMessageId?: string): Promise<void> {
     console.log('[Station] Retrying BootNotification...');
     const bootPayload: BootNotificationRequest = {
@@ -432,10 +470,14 @@ export class Station extends EventEmitter {
       // from the wire. Ordinals only: labels are descriptive and are never
       // compared, so a corrected typo in a firmware constant must not put the
       // station into Pending.
-      bays: this.config.bays.map(b => ({
-        bayNumber: b.bayNumber,
-        programNumbers: b.programs.map(p => p.programNumber).sort((x, y) => x - y),
-      })),
+      //
+      // Read from what THIS STATION wrote, not from config. First boot writes it;
+      // every later boot re-declares the same thing even if config changed —
+      // "the declaration MUST be STABLE between boots while the hardware is
+      // unchanged" (boot-notification-request.schema.json:50), and a station that
+      // re-derives from config each boot is silently agreeing with whatever it is
+      // told to be, which is what §05-state-machines.md:126 forbids.
+      bays: await this.declaredTopology(),
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
       uptimeSeconds: this.currentUptimeSeconds(),

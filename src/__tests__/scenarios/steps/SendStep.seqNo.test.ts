@@ -9,6 +9,14 @@ import {
   type OsppEnvelope,
 } from '@ospp/protocol';
 import type { Station, SessionInfo } from '../../../station/Station.js';
+import { SequenceCounter } from '../../../station/SequenceCounter.js';
+
+// The station owns the counter now; a fixture seeds it explicitly.
+function counterAt(n: number): SequenceCounter {
+  const c = new SequenceCounter();
+  c.forceTo(n);
+  return c;
+}
 
 interface CapturedSend {
   action: OsppAction;
@@ -24,7 +32,7 @@ function makeMockStation(): { station: Station; captured: CapturedSend[]; sessio
     serviceId: 'svc_test',
     startedAt: new Date(),
     durationSeconds: 300,
-    seqNo: 0,
+    seq: counterAt(0),
   };
 
   const sessions = new Map<string, SessionInfo>([[session.sessionId, session]]);
@@ -74,12 +82,12 @@ describe('SendStep — v0.4.0 seqNo/finalSeqNo auto-injection', () => {
     expect(captured[0].payload.seqNo).toBe(0);
     expect(captured[1].payload.seqNo).toBe(1);
     expect(captured[2].payload.seqNo).toBe(2);
-    expect(session.seqNo).toBe(3);
+    expect(session.seq.peek()).toBe(3);
   });
 
   it('SessionEnded Event: stamps current seqNo + finalSeqNo without advancing', async () => {
     const { station, captured, session } = makeMockStation();
-    session.seqNo = 5;
+    session.seq.forceTo(5);
     const ctx = createContext();
 
     await step.execute(
@@ -95,12 +103,12 @@ describe('SendStep — v0.4.0 seqNo/finalSeqNo auto-injection', () => {
 
     expect(captured[0].payload.seqNo).toBe(5);
     expect(captured[0].payload.finalSeqNo).toBe(5);
-    expect(session.seqNo).toBe(5);
+    expect(session.seq.peek()).toBe(5);
   });
 
   it('StopService Accepted Response: stamps finalSeqNo from session counter', async () => {
     const { station, captured, session } = makeMockStation();
-    session.seqNo = 7;
+    session.seq.forceTo(7);
     const ctx = createContext();
 
     await step.execute(
@@ -117,9 +125,9 @@ describe('SendStep — v0.4.0 seqNo/finalSeqNo auto-injection', () => {
     expect(captured[0].payload.finalSeqNo).toBe(7);
   });
 
-  it('explicit YAML seqNo overrides auto-injection (negative test for late MeterValues)', async () => {
+  it('an explicit YAML seqNo reaches the wire but does NOT move the station counter', async () => {
     const { station, captured, session } = makeMockStation();
-    session.seqNo = 3;
+    session.seq.forceTo(3);
     const ctx = createContext();
 
     await step.execute(
@@ -133,8 +141,17 @@ describe('SendStep — v0.4.0 seqNo/finalSeqNo auto-injection', () => {
       station,
     );
 
+    // The override still reaches the wire — negative tests need a late
+    // MeterValues with seqNo > finalSeqNo.
     expect(captured[0].payload.seqNo).toBe(99);
-    expect(session.seqNo).toBe(100);
+
+    // But it does NOT relocate the station's counter. This assertion used to read
+    // toBe(100), which was the defect: a number written in a YAML payload moved
+    // the station's ordering, so a scenario could put the station anywhere and
+    // then assert on sequences it never produced. The station issued 3 for this
+    // message and continues at 4; the override is confined to the one message
+    // that asked for it. To move the counter deliberately, call forceTo().
+    expect(session.seq.peek()).toBe(4);
   });
 
   it('no-op when sessionId is unknown to station.sessions', async () => {

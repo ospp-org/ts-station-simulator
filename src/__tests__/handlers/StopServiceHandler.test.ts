@@ -12,6 +12,14 @@ import {
   type SessionEndedPayload,
 } from '@ospp/protocol';
 import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
+import { SequenceCounter } from '../../station/SequenceCounter.js';
+
+// The station owns the counter now; a fixture seeds it explicitly.
+function counterAt(n: number): SequenceCounter {
+  const c = new SequenceCounter();
+  c.forceTo(n);
+  return c;
+}
 
 interface CapturedSend {
   action: OsppAction;
@@ -38,7 +46,7 @@ function makeMockStation(
         serviceId: 'svc_test',
         startedAt: new Date(Date.now() - startedAtOffsetMs).toISOString(),
         durationSeconds: 300,
-        seqNo: seqNoAtStop,
+        seq: counterAt(seqNoAtStop),
         priceCreditsPerMinute,
       },
     ],

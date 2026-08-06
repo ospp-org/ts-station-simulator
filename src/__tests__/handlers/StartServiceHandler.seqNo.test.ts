@@ -70,6 +70,6 @@ describe('StartServiceHandler — v0.4.0 SessionInfo.seqNo init', () => {
 
     const session = sessions.get('sess_test');
     expect(session).toBeDefined();
-    expect(session!.seqNo).toBe(0);
+    expect(session!.seq.peek()).toBe(0);
   });
 });

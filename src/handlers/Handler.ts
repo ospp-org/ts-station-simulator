@@ -1,3 +1,4 @@
+import type { SequenceCounter } from '../station/SequenceCounter.js';
 import type { OsppEnvelope, BayStatus } from '@ospp/protocol';
 
 /**
@@ -44,7 +45,7 @@ export interface SessionInfo {
   serviceId: string;
   startedAt: string;
   durationSeconds: number;
-  seqNo: number;
+  seq: SequenceCounter;
   // Credits-per-minute used to compute `creditsCharged` on session end per OSPP
   // §03-messages.md:700: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
   // StartService Request schema does not carry pricing; sim defaults to 100 cr/min,
