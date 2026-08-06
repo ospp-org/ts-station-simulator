@@ -1,4 +1,4 @@
-import { assertBayIds } from '../../provisioning/assertBayIds.js';
+import { assertBays } from '../../provisioning/assertBays.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Step, StepDefinition } from './Step.js';
@@ -11,7 +11,7 @@ interface ProvisioningResponseData {
   stationCaChain?: string;
   brokerRootCa?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
-  bayIds?: string[];
+  bays?: unknown;
 }
 
 /**
@@ -55,6 +55,16 @@ export class ProvisionStep implements Step {
     }
 
     const bayCount = definition.bay_count as number | undefined;
+    // A scenario still says bay_count; the topology it stands for is dense
+    // 1..bayCount with one program each, which is what the pre-0.11.0 scenarios
+    // meant by the scalar. A scenario needing a NON-DENSE set — the case the
+    // positional shape could not express — declares `bays` explicitly.
+    const declaredBays =
+      (definition.bays as Array<{ bayNumber: number; programs: Array<{ programNumber: number; label: string }> }> | undefined) ??
+      Array.from({ length: (definition.bay_count as number | undefined) ?? 0 }, (_, i) => ({
+        bayNumber: i + 1,
+        programs: [{ programNumber: 1, label: 'Basic Wash' }],
+      }));
     if (typeof bayCount !== 'number' || bayCount < 1) {
       throw new Error('ProvisionStep: "bay_count" field is required (integer ≥ 1)');
     }
@@ -94,7 +104,13 @@ export class ProvisionStep implements Step {
       body: JSON.stringify({
         provisioningToken: rawToken,
         serialNumber,
-        bayCount,
+        // v0.11.0: the station DECLARES its topology — bays, and the programs
+        // each one physically has. provisioning-request.schema.json:8 makes
+        // `bays` required and `bayCount` is gone. §01-architecture.md:238 — this
+        // is the declaration that carries LABELS, because it is "the moment the
+        // server creates the bay records and the moment an operator needs the
+        // labels to build the service bindings".
+        bays: declaredBays,
         tlsCsr: csrPem,
         receiptSigningPublicKey: receiptPubPem,
       }),
@@ -122,9 +138,9 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: response missing clientCert');
     }
 
-    const bayIds = assertBayIds(data.bayIds, {
+    const bays = assertBays(data.bays, {
       context: 'ProvisionStep',
-      expectedCount: bayCount,
+      declaredBayNumbers: declaredBays.map(b => b.bayNumber),
     });
 
     // 4. Persist the RESPONSE. The private keys are already on disk and flushed.
@@ -157,9 +173,12 @@ export class ProvisionStep implements Step {
       );
     }
 
-    // 5. Capture bayIds into context for downstream steps
-    for (let i = 0; i < bayIds.length; i++) {
-      context.captured.set(`bayId_${i + 1}`, bayIds[i]);
+    // 5. Capture the pairs into context for downstream steps, keyed by the
+    // DECLARED bayNumber rather than by array position. `bayId_3` is now bay
+    // number 3's id, not the third element's — which for a non-dense {1,3} set
+    // are different bays.
+    for (const pair of bays) {
+      context.captured.set(`bayId_${pair.bayNumber}`, pair.bayId);
     }
 
     const capturePathVar =
@@ -172,9 +191,18 @@ export class ProvisionStep implements Step {
     //    {{ provisioning.bayIds[N] }}, {{ provisioning.stationId }}, etc.
     //    Fixes V4 Finding #1 by giving scenarios an explicit, fail-loud
     //    template namespace for real bayIds (no silent fallback to random).
+    // The WIRE now pairs explicitly; the TEMPLATE namespace stays a 0-indexed
+    // array, because that is what 20 scenario references say and because
+    // {{ provisioning.bayIds[0] }} means "the scenario's first bay", not "bay
+    // number 1". Sorted by bayNumber so the order is the station's declaration
+    // rather than whatever order the server answered in — which under the old
+    // contract was the same thing only by luck.
+    const orderedBayIds = [...bays].sort((a, b) => a.bayNumber - b.bayNumber).map(p => p.bayId);
+
     context.provisioning = {
       stationId,
-      bayIds: [...bayIds],
+      bays: [...bays],
+      bayIds: orderedBayIds,
       certPath,
       keyPath,
     };
@@ -184,11 +212,11 @@ export class ProvisionStep implements Step {
     const baysJsonPath = path.join(stationDir, 'bays.json');
     await fs.writeFile(
       baysJsonPath,
-      JSON.stringify({ stationId, bayIds }, null, 2),
+      JSON.stringify({ stationId, bays, bayIds: orderedBayIds }, null, 2),
     );
 
     console.log(
-      `[ProvisionStep] provisioned ${stationId} — ${bayIds.length} bay(s), artifacts at ${stationDir}`,
+      `[ProvisionStep] provisioned ${stationId} — ${bays.length} bay(s), artifacts at ${stationDir}`,
     );
   }
 }

@@ -22,7 +22,11 @@ import { createContext } from '../../../scenarios/ScenarioContext.js';
 const PROVISION_RESPONSE = {
   clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
   stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
-  bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
+  // v0.11.0 wire shape: explicit {bayId, bayNumber} pairs, not a positional array.
+  bays: [
+    { bayId: 'bay_1111111111111111', bayNumber: 1 },
+    { bayId: 'bay_2222222222222222', bayNumber: 2 },
+  ],
   mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
 };
 

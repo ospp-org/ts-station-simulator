@@ -1,4 +1,4 @@
-import { assertBayIds } from '../../provisioning/assertBayIds.js';
+import { assertBays } from '../../provisioning/assertBays.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -12,7 +12,7 @@ interface ProvisioningResponseData {
   stationCaChain?: string;
   brokerRootCa?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
-  bayIds?: string[];
+  bays?: unknown;
 }
 
 /**
@@ -50,6 +50,11 @@ export class ProvisionStationPoolStep implements Step {
     }
 
     const bayCount = definition.bay_count as number | undefined;
+    // Dense 1..bayCount with one program each — what the pre-0.11.0 scalar meant.
+    const declaredBays = Array.from({ length: (definition.bay_count as number | undefined) ?? 0 }, (_, b) => ({
+      bayNumber: b + 1,
+      programs: [{ programNumber: 1, label: 'Basic Wash' }],
+    }));
     if (typeof bayCount !== 'number' || bayCount < 1) {
       throw new Error('ProvisionStationPoolStep: "bay_count" field is required (integer >= 1)');
     }
@@ -85,7 +90,8 @@ export class ProvisionStationPoolStep implements Step {
         body: JSON.stringify({
           provisioningToken: token,
           serialNumber: `${serialPrefix}${randomHex8()}`,
-          bayCount,
+          // v0.11.0: the station declares bays and the programs each one has.
+          bays: declaredBays,
           tlsCsr: csrPem,
           receiptSigningPublicKey: receiptPubPem,
         }),
@@ -110,10 +116,12 @@ export class ProvisionStationPoolStep implements Step {
           `ProvisionStationPoolStep[${i + 1}/${count}]: response missing clientCert`,
         );
       }
-      const bayIds = assertBayIds(data.bayIds, {
+      const bayPairs = assertBays(data.bays, {
         context: `ProvisionStationPoolStep[${i + 1}/${count}]`,
-        expectedCount: bayCount,
+        declaredBayNumbers: declaredBays.map(b => b.bayNumber),
       });
+      // 0-indexed template array, sorted by bayNumber — see ProvisioningArtifact.
+      const bayIds = [...bayPairs].sort((a, b) => a.bayNumber - b.bayNumber).map(p => p.bayId);
 
       const keyPath = keySet.paths.tlsKeyPath;
       const certPath = path.join(stationDir, `${stationId}.pem`);

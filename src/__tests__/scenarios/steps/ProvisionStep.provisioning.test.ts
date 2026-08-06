@@ -11,7 +11,11 @@ const PROVISION_RESPONSE = {
   clientCert: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
   stationCaChain: '-----BEGIN CERTIFICATE-----\nCHAIN\n-----END CERTIFICATE-----',
   brokerRootCa: '-----BEGIN CERTIFICATE-----\nBROKER\n-----END CERTIFICATE-----',
-  bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
+  // v0.11.0 wire shape: explicit {bayId, bayNumber} pairs, not a positional array.
+  bays: [
+    { bayId: 'bay_1111111111111111', bayNumber: 1 },
+    { bayId: 'bay_2222222222222222', bayNumber: 2 },
+  ],
   mqttConfig: { brokerUri: 'mqtts://broker.example:8883' },
 };
 
@@ -83,6 +87,14 @@ describe('ProvisionStep — populates context.provisioning + writes bays.json', 
     const parsed = JSON.parse(await fs.readFile(baysJsonPath, 'utf-8'));
     expect(parsed).toEqual({
       stationId: 'stn_baystest',
+      // The v0.11.0 pairs, verbatim...
+      bays: [
+        { bayId: 'bay_1111111111111111', bayNumber: 1 },
+        { bayId: 'bay_2222222222222222', bayNumber: 2 },
+      ],
+      // ...plus the 0-indexed template array, sorted by bayNumber. Both are
+      // written because they answer different questions: `bays` is the wire
+      // mapping, `bayIds[0]` is "the scenario's first bay".
       bayIds: ['bay_1111111111111111', 'bay_2222222222222222'],
     });
   });

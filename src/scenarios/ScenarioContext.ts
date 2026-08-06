@@ -14,6 +14,18 @@ import { StationPool } from './stations/StationPool.js';
  */
 export interface ProvisioningArtifact {
   stationId: string;
+  /**
+   * v0.11.0 wire shape: {bayId, bayNumber} pairs, explicit and order-free.
+   * provisioning-response.schema.json:21 — "This is the mapping the station needs
+   * and the only one it is given."
+   */
+  bays?: Array<{ bayId: string; bayNumber: number }>;
+  /**
+   * The 0-indexed template convenience, SORTED BY bayNumber. Distinct from
+   * `bays`: {{ provisioning.bayIds[0] }} means "the scenario's first bay", not
+   * "bay number 1", and for a non-dense {1,3} declaration those differ. Read
+   * `bays` when the bay NUMBER matters.
+   */
   bayIds: string[];
   certPath?: string;
   keyPath?: string;

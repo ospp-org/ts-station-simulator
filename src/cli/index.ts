@@ -713,7 +713,15 @@ interface ProvisioningResponse {
   stationCaChain: string;
   brokerRootCa?: string;
   rootCaThumbprint: string;
-  bayIds?: string[];
+  /**
+   * v0.11.0: server-assigned bay identifiers, each paired EXPLICITLY with the
+   * bayNumber the station declared for it. `bayIds[]` is gone — it was a
+   * positional array, and provisioning-response.schema.json:21 says why the pair
+   * replaced it: "This is the mapping the station needs and the only one it is
+   * given." A declaration of {1,3} used to come back as a two-element array the
+   * station had to re-index by position, which silently mapped bay 3 to slot 2.
+   */
+  bays?: Array<{ bayId: string; bayNumber: number }>;
   serverVerifyKey?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
 }
@@ -767,10 +775,28 @@ program
       const csrPem = keySet.csrPem;
       const receiptSigningPublicKeyPem = keySet.receiptPubPem;
 
+      // v0.11.0: the station DECLARES its topology here — bays, and the
+      // programs each one physically has. provisioning-request.schema.json:8
+      // makes `bays` required and `bayCount` is gone. §01-architecture.md:238:
+      // this is the declaration that carries LABELS, because "this is the moment
+      // the server creates the bay records and the moment an operator needs the
+      // labels to build the service bindings".
+      //
+      // Derived from the same deriveBays() the connect path uses, so what the
+      // station declares at provisioning is what it re-declares at boot. Deriving
+      // them separately is how a station ends up disagreeing with itself.
+      const { bays: declaredBays } = deriveBays(stationId, bayCount, new Map());
+
       const body = {
         provisioningToken: opts.token,
         serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
-        bayCount,
+        bays: declaredBays.map(b => ({
+          bayNumber: b.bayNumber,
+          programs: b.programs.map(p => ({
+            programNumber: p.programNumber,
+            label: p.label,
+          })),
+        })),
         tlsCsr: csrPem,
         receiptSigningPublicKey: receiptSigningPublicKeyPem,
       };
@@ -800,14 +826,23 @@ program
       // {{ provisioning.bayIds[N] }} template namespace from disk (V4
       // Finding #1 mitigation — no CLI --var override required).
       let baysJsonPath: string | undefined;
-      if (data.bayIds && data.bayIds.length > 0) {
+      if (data.bays && data.bays.length > 0) {
         baysJsonPath = path.join(
           path.dirname(keyPath),
           `${stationId}-bays.json`,
         );
+        // The pairs are written verbatim; `bayIds` stays a 0-indexed array for the
+        // {{ provisioning.bayIds[N] }} template namespace, sorted by bayNumber so
+        // its order is the station's declaration rather than whatever order the
+        // server answered in.
+        const ordered = [...data.bays].sort((a, b) => a.bayNumber - b.bayNumber);
         await fs.writeFile(
           baysJsonPath,
-          JSON.stringify({ stationId, bayIds: data.bayIds }, null, 2),
+          JSON.stringify(
+            { stationId, bays: ordered, bayIds: ordered.map(p => p.bayId) },
+            null,
+            2,
+          ),
         );
       }
 
@@ -832,8 +867,9 @@ program
       if (persistedArtifacts.mqttJsonPath) {
         console.log(`  MQTT config:      ${persistedArtifacts.mqttJsonPath}`);
       }
-      if (data.bayIds && data.bayIds.length > 0) {
-        console.log(`  Bay IDs (${data.bayIds.length}):    ${data.bayIds.join(', ')}`);
+      if (data.bays && data.bays.length > 0) {
+        const pairs = data.bays.map(b => `${b.bayNumber}=${b.bayId}`).join(', ');
+        console.log(`  Bays (${data.bays.length}):        ${pairs}`);
       }
       if (baysJsonPath) {
         console.log(`  Bays JSON:        ${baysJsonPath}`);
