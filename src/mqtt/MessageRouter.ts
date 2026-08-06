@@ -1,11 +1,33 @@
 import { EventEmitter } from 'node:events';
-import { type OsppEnvelope, OsppAction, type MessageType } from '@ospp/protocol';
+import {
+  type OsppEnvelope,
+  OsppAction,
+  type MessageType,
+  requiresMac,
+  verifyMac,
+} from '@ospp/protocol';
 
 type ActionHandler = (envelope: OsppEnvelope) => void;
 
 export class MessageRouter extends EventEmitter {
   private readonly recentMessages: OsppEnvelope[] = [];
   private static readonly MAX_BUFFER = 50;
+
+  /**
+   * The session key the station currently holds, or null before boot.
+   *
+   * spec v0.11.0 §06-security.md:852 — "The signing path and the verification
+   * path MUST both fail closed." This router used to parse an envelope and emit
+   * it with no MAC check of any kind, so the simulator executed any command that
+   * was valid JSON with an `action` field. As a conformance instrument that made
+   * it useless for the one property the signing arc exists to establish.
+   */
+  private readonly getSessionKey: () => string | null;
+
+  constructor(getSessionKey: () => string | null = () => null) {
+    super();
+    this.getSessionKey = getSessionKey;
+  }
 
   /**
    * Remove and return buffered messages matching action (and optionally
@@ -54,11 +76,67 @@ export class MessageRouter extends EventEmitter {
       return;
     }
 
+    if (!this.verified(topic, envelope)) {
+      return;
+    }
+
     this.recentMessages.push(envelope);
     if (this.recentMessages.length > MessageRouter.MAX_BUFFER) {
       this.recentMessages.shift();
     }
     this.emit(envelope.action, envelope);
+  }
+
+  /**
+   * Fail closed, per §06-security.md:858. A refused message is neither emitted
+   * NOR buffered — `drainBuffered()` is what scenario `wait_for` steps read, so
+   * leaving a forgery there would let a scenario assert on it and pass.
+   *
+   * The refusal is logged rather than dropped silently: §5.7 forbids both
+   * publishing unsigned and dropping without a record, and a station that goes
+   * quiet for an unexplained reason is the failure mode operators cannot debug.
+   */
+  private verified(topic: string, envelope: OsppEnvelope): boolean {
+    // The three structural exemptions cannot carry a verifiable MAC. The
+    // BootNotification RESPONSE is the load-bearing one: it CARRIES the session
+    // key, so a MAC computed with that key is cryptographically void — and
+    // refusing it would make the message that delivers the key unusable.
+    if (!requiresMac(envelope.action, envelope.messageType)) {
+      return true;
+    }
+
+    const key = this.getSessionKey();
+    if (key === null) {
+      console.warn(
+        '[MessageRouter] REFUSED %s on %s: no session key held, so it cannot be verified (1013 MAC_MISSING)',
+        envelope.action,
+        topic,
+      );
+
+      return false;
+    }
+
+    if (typeof envelope.mac !== 'string' || envelope.mac === '') {
+      console.warn(
+        '[MessageRouter] REFUSED %s on %s: mac field missing on a message that must carry one (1013 MAC_MISSING)',
+        envelope.action,
+        topic,
+      );
+
+      return false;
+    }
+
+    if (!verifyMac(key, envelope as unknown as Record<string, unknown>)) {
+      console.warn(
+        '[MessageRouter] REFUSED %s on %s: mac did not verify (1012 MAC_VERIFICATION_FAILED)',
+        envelope.action,
+        topic,
+      );
+
+      return false;
+    }
+
+    return true;
   }
 
   onAction(action: OsppAction, callback: ActionHandler): this {

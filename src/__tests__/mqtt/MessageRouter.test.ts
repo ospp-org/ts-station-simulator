@@ -1,7 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MessageRouter } from '../../mqtt/MessageRouter.js';
-import { OsppAction, MessageType, MessageSource, OSPP_PROTOCOL_VERSION } from '@ospp/protocol';
+import { computeMac, OsppAction, MessageType, MessageSource, OSPP_PROTOCOL_VERSION } from '@ospp/protocol';
 import type { OsppEnvelope } from '@ospp/protocol';
+
+// The router verifies inbound MACs now and fails closed, so these routing tests
+// sign their envelopes rather than bypass the check. Signing here is not the
+// subject — routing and correlation are — but an unsigned envelope is no longer
+// routable at all, which is the point of the change.
+const TEST_SESSION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 
 function makeEnvelope(
   action: OsppAction,
@@ -21,51 +27,51 @@ function makeEnvelope(
 
 describe('MessageRouter', () => {
   it('parses valid JSON buffer and emits action event', () => {
-    const router = new MessageRouter();
+    const router = new MessageRouter(() => TEST_SESSION_KEY);
     const envelope = makeEnvelope(OsppAction.HEARTBEAT);
     const handler = vi.fn();
     router.on(OsppAction.HEARTBEAT, handler);
 
-    router.route('test/topic', Buffer.from(JSON.stringify(envelope)));
+    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) })));
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ action: OsppAction.HEARTBEAT }));
   });
 
   it('handles invalid JSON gracefully (no throw)', () => {
-    const router = new MessageRouter();
+    const router = new MessageRouter(() => TEST_SESSION_KEY);
     expect(() => {
       router.route('test/topic', Buffer.from('not json'));
     }).not.toThrow();
   });
 
   it('handles missing action field gracefully', () => {
-    const router = new MessageRouter();
+    const router = new MessageRouter(() => TEST_SESSION_KEY);
     const payload = { messageId: 'msg-001', payload: {} };
     expect(() => {
-      router.route('test/topic', Buffer.from(JSON.stringify(payload)));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...payload, mac: computeMac(TEST_SESSION_KEY, payload) })));
     }).not.toThrow();
   });
 
   it('onAction() registers typed listener', () => {
-    const router = new MessageRouter();
+    const router = new MessageRouter(() => TEST_SESSION_KEY);
     const handler = vi.fn();
     router.onAction(OsppAction.BOOT_NOTIFICATION, handler);
 
     const envelope = makeEnvelope(OsppAction.BOOT_NOTIFICATION);
-    router.route('test/topic', Buffer.from(JSON.stringify(envelope)));
+    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) })));
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ action: OsppAction.BOOT_NOTIFICATION }));
   });
 
   it('onceAction() fires listener only once', () => {
-    const router = new MessageRouter();
+    const router = new MessageRouter(() => TEST_SESSION_KEY);
     const handler = vi.fn();
     router.onceAction(OsppAction.RESET, handler);
 
     const envelope = makeEnvelope(OsppAction.RESET);
-    const buf = Buffer.from(JSON.stringify(envelope));
+    const buf = Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) }));
 
     router.route('test/topic', buf);
     router.route('test/topic', buf);
@@ -75,7 +81,7 @@ describe('MessageRouter', () => {
 
   describe('drainBuffered — Drift 7-E messageId filter', () => {
     it('returns only envelopes matching the given messageId; leaves non-matches buffered', () => {
-      const router = new MessageRouter();
+      const router = new MessageRouter(() => TEST_SESSION_KEY);
       const a = makeEnvelope(OsppAction.BOOT_NOTIFICATION, {
         messageId: 'req-A',
         messageType: MessageType.RESPONSE,
@@ -84,8 +90,8 @@ describe('MessageRouter', () => {
         messageId: 'req-B',
         messageType: MessageType.RESPONSE,
       });
-      router.route('test/topic', Buffer.from(JSON.stringify(a)));
-      router.route('test/topic', Buffer.from(JSON.stringify(b)));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: computeMac(TEST_SESSION_KEY, a) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: computeMac(TEST_SESSION_KEY, b) })));
 
       const drainedA = router.drainBuffered(
         OsppAction.BOOT_NOTIFICATION,
@@ -106,11 +112,11 @@ describe('MessageRouter', () => {
     });
 
     it('without messageId filter, drains all matches (back-compat)', () => {
-      const router = new MessageRouter();
+      const router = new MessageRouter(() => TEST_SESSION_KEY);
       const a = makeEnvelope(OsppAction.HEARTBEAT, { messageId: 'x' });
       const b = makeEnvelope(OsppAction.HEARTBEAT, { messageId: 'y' });
-      router.route('test/topic', Buffer.from(JSON.stringify(a)));
-      router.route('test/topic', Buffer.from(JSON.stringify(b)));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: computeMac(TEST_SESSION_KEY, a) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: computeMac(TEST_SESSION_KEY, b) })));
 
       const drained = router.drainBuffered(OsppAction.HEARTBEAT);
       expect(drained).toHaveLength(2);
