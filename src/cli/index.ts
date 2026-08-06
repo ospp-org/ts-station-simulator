@@ -56,6 +56,7 @@ import {
   type PoolBootstrapHandle,
   type SerializedPoolHandle,
 } from '../scenarios/bootstrap/PoolBootstrap.js';
+import { commitProvisioningKeySet } from '../provisioning/persistedKeySet.js';
 
 const POOL_HANDLE_PATH = path.resolve('tests/artifacts/pool-handle.json');
 
@@ -354,6 +355,7 @@ function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {
       cert: target.certs.cert,
       keyPattern: target.certs.keyPattern,
       certPattern: target.certs.certPattern,
+      chain: target.certs.stationCaChain,
       serverCa: target.certs.serverCa,
       minVersion: target.certs.minVersion,
       maxVersion: target.certs.maxVersion,
@@ -562,12 +564,13 @@ program
       }
 
       // Resolve cert paths
-      let tls: { key?: string; cert?: string; serverCa?: string } | undefined;
+      let tls: { key?: string; cert?: string; chain?: string; serverCa?: string } | undefined;
       if (target.certs) {
         const resolveP = (s: string | undefined) => s?.replace('{{stationId}}', stationId);
         tls = {
           key: resolveP(target.certs.keyPattern) ?? resolveP(target.certs.key),
           cert: resolveP(target.certs.certPattern) ?? resolveP(target.certs.cert),
+          chain: resolveP(target.certs.stationCaChain),
           serverCa: resolveP(target.certs.serverCa),
         };
       }
@@ -710,7 +713,15 @@ interface ProvisioningResponse {
   stationCaChain: string;
   brokerRootCa?: string;
   rootCaThumbprint: string;
-  bayIds?: string[];
+  /**
+   * v0.11.0: server-assigned bay identifiers, each paired EXPLICITLY with the
+   * bayNumber the station declared for it. `bayIds[]` is gone — it was a
+   * positional array, and provisioning-response.schema.json:21 says why the pair
+   * replaced it: "This is the mapping the station needs and the only one it is
+   * given." A declaration of {1,3} used to come back as a two-element array the
+   * station had to re-index by position, which silently mapped bay 3 to slot 2.
+   */
+  bays?: Array<{ bayId: string; bayNumber: number }>;
   serverVerifyKey?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
 }
@@ -740,22 +751,52 @@ program
       const url = `${target.csmsUrl}/api/v1/stations/provision`;
       console.log(chalk.blue(`Provisioning station ${chalk.bold(stationId)} via ${url}...`));
 
-      // TLS keypair + CSR (CN = stationId)
-      const tlsKeys = await generateEcdsaP256KeyPair();
-      const csr = await buildCsr(stationId, tlsKeys);
-      const csrPem = csr.toString('pem');
+      const keyPath = resolveStationTemplate(target.certs.key, stationId);
+      const certPath = resolveStationTemplate(target.certs.cert, stationId);
+      const chainPath = resolveStationTemplate(target.certs.stationCaChain, stationId);
+      // Receipt-signing artifacts live alongside the TLS material in
+      // certs/<env>/<stationId>-receipt-{key,pub}.pem so a future
+      // "send signed receipt" command can find them by stationId convention.
+      const receiptKeyPath = keyPath.replace(/-key\.pem$/, '-receipt-key.pem');
+      const receiptPubPath = keyPath.replace(/-key\.pem$/, '-receipt-pub.pem');
 
-      // Receipt-signing keypair (separate from TLS, per OSPP spec §4.4 — used by
-      // the station to sign offline-pass receipts; the public key is persisted
-      // server-side at provisioning time, the private key never leaves the device).
-      // Same ECDSA P-256 shape as the TLS keypair; only the usage role differs.
-      const receiptKeys = await generateEcdsaP256KeyPair();
-      const receiptSigningPublicKeyPem = exportPublicKeySpkiPem(receiptKeys.publicKey);
+      // TLS + receipt keypairs (separate keys per OSPP spec §4.3), COMMITTED
+      // DURABLY BEFORE THE POST — spec/04-flows.md:253 step 6b, "Before step 7
+      // leaves the device, the SSP MUST commit every private key generated in
+      // steps 5-6a to non-volatile storage, durably". This used to generate here
+      // and write after the response: kill the process in between and the server
+      // held a cert bound to keys this process no longer had, so the retry on the
+      // same token was answered 4015, which is recoverable:false.
+      const keySet = await commitProvisioningKeySet(path.dirname(keyPath), stationId, {
+        tlsKeyPath: keyPath,
+        receiptKeyPath,
+        receiptPubPath,
+      });
+      const csrPem = keySet.csrPem;
+      const receiptSigningPublicKeyPem = keySet.receiptPubPem;
+
+      // v0.11.0: the station DECLARES its topology here — bays, and the
+      // programs each one physically has. provisioning-request.schema.json:8
+      // makes `bays` required and `bayCount` is gone. §01-architecture.md:238:
+      // this is the declaration that carries LABELS, because "this is the moment
+      // the server creates the bay records and the moment an operator needs the
+      // labels to build the service bindings".
+      //
+      // Derived from the same deriveBays() the connect path uses, so what the
+      // station declares at provisioning is what it re-declares at boot. Deriving
+      // them separately is how a station ends up disagreeing with itself.
+      const { bays: declaredBays } = deriveBays(stationId, bayCount, new Map());
 
       const body = {
         provisioningToken: opts.token,
         serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
-        bayCount,
+        bays: declaredBays.map(b => ({
+          bayNumber: b.bayNumber,
+          programs: b.programs.map(p => ({
+            programNumber: p.programNumber,
+            label: p.label,
+          })),
+        })),
         tlsCsr: csrPem,
         receiptSigningPublicKey: receiptSigningPublicKeyPem,
       };
@@ -773,24 +814,11 @@ program
 
       const data = (await res.json()) as ProvisioningResponse;
 
-      const keyPath = resolveStationTemplate(target.certs.key, stationId);
-      const certPath = resolveStationTemplate(target.certs.cert, stationId);
-      const chainPath = resolveStationTemplate(target.certs.stationCaChain, stationId);
-      // Receipt-signing artifacts live alongside the TLS material in
-      // certs/<env>/<stationId>-receipt-{key,pub}.pem so a future
-      // "send signed receipt" command can find them by stationId convention.
-      const receiptKeyPath = keyPath.replace(/-key\.pem$/, '-receipt-key.pem');
-      const receiptPubPath = keyPath.replace(/-key\.pem$/, '-receipt-pub.pem');
-
-      await fs.mkdir(path.dirname(keyPath), { recursive: true });
+      // The private keys are already on disk and flushed; only the RESPONSE is
+      // written here.
       await fs.mkdir(path.dirname(certPath), { recursive: true });
       await fs.mkdir(path.dirname(chainPath), { recursive: true });
 
-      const privateKeyPem = exportPrivateKeyPkcs8Pem(tlsKeys.privateKey);
-      const receiptPrivatePem = exportPrivateKeyPkcs8Pem(receiptKeys.privateKey);
-      await fs.writeFile(keyPath, privateKeyPem, { mode: 0o600 });
-      await fs.writeFile(receiptKeyPath, receiptPrivatePem, { mode: 0o600 });
-      await fs.writeFile(receiptPubPath, receiptSigningPublicKeyPem);
       await fs.writeFile(certPath, data.clientCert);
       await fs.writeFile(chainPath, data.stationCaChain);
 
@@ -798,14 +826,23 @@ program
       // {{ provisioning.bayIds[N] }} template namespace from disk (V4
       // Finding #1 mitigation — no CLI --var override required).
       let baysJsonPath: string | undefined;
-      if (data.bayIds && data.bayIds.length > 0) {
+      if (data.bays && data.bays.length > 0) {
         baysJsonPath = path.join(
           path.dirname(keyPath),
           `${stationId}-bays.json`,
         );
+        // The pairs are written verbatim; `bayIds` stays a 0-indexed array for the
+        // {{ provisioning.bayIds[N] }} template namespace, sorted by bayNumber so
+        // its order is the station's declaration rather than whatever order the
+        // server answered in.
+        const ordered = [...data.bays].sort((a, b) => a.bayNumber - b.bayNumber);
         await fs.writeFile(
           baysJsonPath,
-          JSON.stringify({ stationId, bayIds: data.bayIds }, null, 2),
+          JSON.stringify(
+            { stationId, bays: ordered, bayIds: ordered.map(p => p.bayId) },
+            null,
+            2,
+          ),
         );
       }
 
@@ -830,8 +867,9 @@ program
       if (persistedArtifacts.mqttJsonPath) {
         console.log(`  MQTT config:      ${persistedArtifacts.mqttJsonPath}`);
       }
-      if (data.bayIds && data.bayIds.length > 0) {
-        console.log(`  Bay IDs (${data.bayIds.length}):    ${data.bayIds.join(', ')}`);
+      if (data.bays && data.bays.length > 0) {
+        const pairs = data.bays.map(b => `${b.bayNumber}=${b.bayId}`).join(', ');
+        console.log(`  Bays (${data.bays.length}):        ${pairs}`);
       }
       if (baysJsonPath) {
         console.log(`  Bays JSON:        ${baysJsonPath}`);

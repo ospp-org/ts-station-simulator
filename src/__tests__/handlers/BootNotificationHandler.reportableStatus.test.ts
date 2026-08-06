@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  EffectedBy,
   BayStatus,
   BayStateMachine,
   isReportableBayStatus,
@@ -30,8 +31,8 @@ import type { Handler, StationContext } from '../../handlers/Handler.js';
  */
 
 const BAYS = [
-  { bayId: 'bay_rs_a', bayNumber: 1, services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }] },
-  { bayId: 'bay_rs_b', bayNumber: 2, services: [{ serviceId: 'svc_y', serviceName: 'Y', available: true }] },
+  { bayId: 'bay_rs_a', bayNumber: 1, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }] },
+  { bayId: 'bay_rs_b', bayNumber: 2, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [{ serviceId: 'svc_y', serviceName: 'Y', available: true }] },
 ];
 
 function makeContext(
@@ -42,7 +43,16 @@ function makeContext(
   initial?: BayStatus,
 ) {
   const machines = new Map(
-    BAYS.map(b => [b.bayId, initial === undefined ? new BayStateMachine() : new BayStateMachine(initial)]),
+    BAYS.map(b => [
+      b.bayId,
+      // EffectedBy.STATION is required now: "a station machine that silently
+      // accepted the Server rows would model the server's job". Omitting the
+      // initial state still gives the SDK default, Unknown, which is what proves
+      // the guard fires.
+      initial === undefined
+        ? new BayStateMachine(EffectedBy.STATION)
+        : new BayStateMachine(EffectedBy.STATION, initial),
+    ]),
   );
 
   return {

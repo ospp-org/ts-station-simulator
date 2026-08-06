@@ -20,6 +20,7 @@ function makeMockStation(): { station: StationContext; sessions: Map<string, Ses
         {
           bayId: 'bay_test',
           bayNumber: 1,
+          programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
           services: [{ serviceId: 'svc_test', serviceName: 'Wash', available: true }],
         },
       ],
@@ -56,6 +57,9 @@ function makeEnvelope(): OsppEnvelope {
       serviceId: 'svc_test',
       durationSeconds: 300,
       sessionSource: 'MobileApp',
+      // REQUIRED since v0.11.0, and the station now refuses a start whose ordinal
+      // it never declared. 1 is what this fixture's bay declares.
+      programNumber: 1,
     },
   };
 }
@@ -69,6 +73,6 @@ describe('StartServiceHandler — v0.4.0 SessionInfo.seqNo init', () => {
 
     const session = sessions.get('sess_test');
     expect(session).toBeDefined();
-    expect(session!.seqNo).toBe(0);
+    expect(session!.seq.peek()).toBe(0);
   });
 });

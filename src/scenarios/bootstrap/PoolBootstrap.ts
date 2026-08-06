@@ -1,4 +1,4 @@
-import { assertBayIds } from '../../provisioning/assertBayIds.js';
+import { assertBays } from '../../provisioning/assertBays.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -27,6 +27,7 @@ import {
   uatDbConfigFromEnv,
   type UatDbConfig,
 } from './uatPrivileged.js';
+import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
 
 /**
  * Per-run station-pool bootstrap (F-PROC-1 fix).
@@ -171,7 +172,7 @@ interface ProvisionResponseData {
   clientCert: string;
   stationCaChain: string;
   brokerRootCa?: string;
-  bayIds?: string[];
+  bays?: unknown;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
 }
 
@@ -579,6 +580,14 @@ async function registerAndProvisionStation(
     bayNumber: b + 1,
     services: [{ serviceId: generateServiceId('wash_basic'), serviceName: 'Basic Wash' }],
   }));
+  // The same set, in the PROVISIONING shape: bayNumber + the programs the bay
+  // physically has. Registration is the operator's declaration and carries
+  // services; provisioning is the STATION's and carries programs with labels
+  // (§01-architecture.md:238). Derived from one `bays` so the two cannot drift.
+  const declaredBays = bays.map(b => ({
+    bayNumber: b.bayNumber,
+    programs: [{ programNumber: 1, label: 'Basic Wash' }],
+  }));
   await apiCall({
     method: 'POST',
     url: `${apiBaseUrl}/api/v1/admin/stations`,
@@ -600,19 +609,27 @@ async function registerAndProvisionStation(
   });
   const rawToken = requireString(pluck(tokenRes, 'data.rawToken'), 'data.rawToken');
 
-  // Provision: keygen + CSR + receipt key, POST /stations/provision (200 OK).
-  const tlsKeys = await generateEcdsaP256KeyPair();
-  const csr = await buildCsr(stationId, tlsKeys);
-  const receiptKeys = await generateEcdsaP256KeyPair();
+  // Provision. The key set is COMMITTED DURABLY BEFORE THE POST —
+  // spec/04-flows.md:253 step 6b, "Before step 7 leaves the device, the SSP MUST
+  // commit every private key generated in steps 5-6a to non-volatile storage,
+  // durably". This used to generate here and write after the response, so a
+  // crash in between left the server holding a cert bound to keys the process no
+  // longer had and the retry was answered 4015 (recoverable:false).
+  const paths = certPathsFor(target, stationId);
+  const keySet = await commitProvisioningKeySet(path.dirname(paths.keyPath), stationId, {
+    tlsKeyPath: paths.keyPath,
+    receiptKeyPath: paths.receiptKeyPath,
+    receiptPubPath: paths.receiptPubPath,
+  });
   const provRes = await apiCall({
     method: 'POST',
     url: `${apiBaseUrl}/api/v1/stations/provision`,
     body: {
       provisioningToken: rawToken,
       serialNumber: generateSerialNumber(),
-      bayCount,
-      tlsCsr: csr.toString('pem'),
-      receiptSigningPublicKey: exportPublicKeySpkiPem(receiptKeys.publicKey),
+      bays: declaredBays,
+      tlsCsr: keySet.csrPem,
+      receiptSigningPublicKey: keySet.receiptPubPem,
     },
     expectStatus: 200,
   });
@@ -622,26 +639,20 @@ async function registerAndProvisionStation(
   const data = provRes as ProvisionResponseData | undefined;
   if (!data) throw new Error(`provision response for ${stationId} missing body`);
   const clientCert = requireString(data.clientCert, `${stationId} data.clientCert`);
-  const bayIds = assertBayIds(data.bayIds, {
+  const bayPairs = assertBays(data.bays, {
     context: `provision response for ${stationId}`,
-    expectedCount: bayCount,
+    declaredBayNumbers: declaredBays.map(b => b.bayNumber),
   });
+  // 0-indexed template array, sorted by bayNumber — see ProvisioningArtifact.
+  const bayIds = [...bayPairs].sort((a, b) => a.bayNumber - b.bayNumber).map(p => p.bayId);
 
-  // Persist artifacts into the target's flat certs/<env>/ layout.
-  const paths = certPathsFor(target, stationId);
-  await fs.mkdir(path.dirname(paths.keyPath), { recursive: true });
+  // Persist the RESPONSE into the target's flat certs/<env>/ layout. The key
+  // set — including the receipt-signing private key SendStep needs to sign
+  // TransactionEvent.receipt with — is already on disk and flushed.
   const writes: Array<Promise<void>> = [
-    fs.writeFile(paths.keyPath, exportPrivateKeyPkcs8Pem(tlsKeys.privateKey), { mode: 0o600 }),
     fs.writeFile(paths.certPath, clientCert),
     fs.writeFile(paths.chainPath, data.stationCaChain ?? clientCert),
-    fs.writeFile(paths.baysJsonPath, JSON.stringify({ stationId, bayIds }, null, 2)),
-    // Receipt-signing keypair — paired with the receiptSigningPublicKey already
-    // POSTed to /api/v1/stations/provision above. Without persisting the
-    // private key, SendStep has no key to sign TransactionEvent.receipt with,
-    // and the Reconciler's ReceiptVerifier rejects every offline-tx as
-    // invalid_receipt_signature.
-    fs.writeFile(paths.receiptKeyPath, exportPrivateKeyPkcs8Pem(receiptKeys.privateKey), { mode: 0o600 }),
-    fs.writeFile(paths.receiptPubPath, exportPublicKeySpkiPem(receiptKeys.publicKey)),
+    fs.writeFile(paths.baysJsonPath, JSON.stringify({ stationId, bays: bayPairs, bayIds }, null, 2)),
   ];
   handle.certFiles.push(
     paths.keyPath,

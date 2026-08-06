@@ -1,22 +1,17 @@
-import { assertBayIds } from '../../provisioning/assertBayIds.js';
+import { assertBays } from '../../provisioning/assertBays.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
-import {
-  generateEcdsaP256KeyPair,
-  buildCsr,
-  exportPrivateKeyPkcs8Pem,
-  exportPublicKeySpkiPem,
-} from '../../cli/provision.js';
+import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
 
 interface ProvisioningResponseData {
   clientCert?: string;
   stationCaChain?: string;
   brokerRootCa?: string;
   mqttConfig?: { brokerUri?: string; [key: string]: unknown };
-  bayIds?: string[];
+  bays?: unknown;
 }
 
 /**
@@ -60,6 +55,16 @@ export class ProvisionStep implements Step {
     }
 
     const bayCount = definition.bay_count as number | undefined;
+    // A scenario still says bay_count; the topology it stands for is dense
+    // 1..bayCount with one program each, which is what the pre-0.11.0 scenarios
+    // meant by the scalar. A scenario needing a NON-DENSE set — the case the
+    // positional shape could not express — declares `bays` explicitly.
+    const declaredBays =
+      (definition.bays as Array<{ bayNumber: number; programs: Array<{ programNumber: number; label: string }> }> | undefined) ??
+      Array.from({ length: (definition.bay_count as number | undefined) ?? 0 }, (_, i) => ({
+        bayNumber: i + 1,
+        programs: [{ programNumber: 1, label: 'Basic Wash' }],
+      }));
     if (typeof bayCount !== 'number' || bayCount < 1) {
       throw new Error('ProvisionStep: "bay_count" field is required (integer ≥ 1)');
     }
@@ -73,16 +78,20 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: context.apiBaseUrl is not set');
     }
 
-    // 1. TLS keypair + CSR
-    const tlsKeys = await generateEcdsaP256KeyPair();
-    const csr = await buildCsr(stationId, tlsKeys);
-    const csrPem = csr.toString('pem');
-    const tlsKeyPem = exportPrivateKeyPkcs8Pem(tlsKeys.privateKey);
+    const artifactsBase =
+      (definition.artifacts_dir as string | undefined) ?? 'tests/artifacts/uat';
+    const stationDir = path.resolve(artifactsBase, stationId);
 
-    // 2. Receipt keypair
-    const receiptKeys = await generateEcdsaP256KeyPair();
-    const receiptKeyPem = exportPrivateKeyPkcs8Pem(receiptKeys.privateKey);
-    const receiptPubPem = exportPublicKeySpkiPem(receiptKeys.publicKey);
+    // 1-2. TLS + receipt keypairs, COMMITTED DURABLY BEFORE THE POST.
+    // spec/04-flows.md:253 step 6b — "Before step 7 leaves the device, the SSP
+    // MUST commit every private key generated in steps 5-6a to non-volatile
+    // storage, durably". This used to generate here and write at step 4, after
+    // the response: a crash in between left the server holding a cert bound to
+    // keys the simulator no longer had, and the retry was answered 4015.
+    // A key set already on disk is REUSED, which is the other half of :307.
+    const keySet = await commitProvisioningKeySet(stationDir, stationId);
+    const csrPem = keySet.csrPem;
+    const receiptPubPem = keySet.receiptPubPem;
 
     // 3. POST /api/v1/stations/provision
     const url = `${context.apiBaseUrl}/api/v1/stations/provision`;
@@ -95,7 +104,13 @@ export class ProvisionStep implements Step {
       body: JSON.stringify({
         provisioningToken: rawToken,
         serialNumber,
-        bayCount,
+        // v0.11.0: the station DECLARES its topology — bays, and the programs
+        // each one physically has. provisioning-request.schema.json:8 makes
+        // `bays` required and `bayCount` is gone. §01-architecture.md:238 — this
+        // is the declaration that carries LABELS, because it is "the moment the
+        // server creates the bay records and the moment an operator needs the
+        // labels to build the service bindings".
+        bays: declaredBays,
         tlsCsr: csrPem,
         receiptSigningPublicKey: receiptPubPem,
       }),
@@ -123,27 +138,21 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: response missing clientCert');
     }
 
-    const bayIds = assertBayIds(data.bayIds, {
+    const bays = assertBays(data.bays, {
       context: 'ProvisionStep',
-      expectedCount: bayCount,
+      declaredBayNumbers: declaredBays.map(b => b.bayNumber),
     });
 
-    // 4. Persist artifacts
-    const artifactsBase =
-      (definition.artifacts_dir as string | undefined) ?? 'tests/artifacts/uat';
-    const stationDir = path.resolve(artifactsBase, stationId);
-    await fs.mkdir(stationDir, { recursive: true });
-
-    const keyPath = path.join(stationDir, `${stationId}-key.pem`);
+    // 4. Persist the RESPONSE. The private keys are already on disk and flushed.
+    const keyPath = keySet.paths.tlsKeyPath;
     const certPath = path.join(stationDir, `${stationId}.pem`);
     const chainPath = path.join(stationDir, `${stationId}-chain.pem`);
-    const receiptKeyPath = path.join(stationDir, `${stationId}-receipt-key.pem`);
-    const receiptPubPath = path.join(stationDir, `${stationId}-receipt-pub.pem`);
+    const receiptKeyPath = keySet.paths.receiptKeyPath;
+    const receiptPubPath = keySet.paths.receiptPubPath;
     const brokerCaPath = path.join(stationDir, `${stationId}-broker-ca.pem`);
     const mqttJsonPath = path.join(stationDir, `${stationId}-mqtt.json`);
 
     await Promise.all([
-      fs.writeFile(keyPath, tlsKeyPem, { mode: 0o600 }),
       fs.writeFile(certPath, cert),
       fs.writeFile(
         chainPath,
@@ -151,8 +160,6 @@ export class ProvisionStep implements Step {
           ? cert + data.stationCaChain
           : cert,
       ),
-      fs.writeFile(receiptKeyPath, receiptKeyPem, { mode: 0o600 }),
-      fs.writeFile(receiptPubPath, receiptPubPem),
     ]);
 
     if (typeof data.brokerRootCa === 'string' && data.brokerRootCa.length > 0) {
@@ -166,9 +173,12 @@ export class ProvisionStep implements Step {
       );
     }
 
-    // 5. Capture bayIds into context for downstream steps
-    for (let i = 0; i < bayIds.length; i++) {
-      context.captured.set(`bayId_${i + 1}`, bayIds[i]);
+    // 5. Capture the pairs into context for downstream steps, keyed by the
+    // DECLARED bayNumber rather than by array position. `bayId_3` is now bay
+    // number 3's id, not the third element's — which for a non-dense {1,3} set
+    // are different bays.
+    for (const pair of bays) {
+      context.captured.set(`bayId_${pair.bayNumber}`, pair.bayId);
     }
 
     const capturePathVar =
@@ -181,9 +191,18 @@ export class ProvisionStep implements Step {
     //    {{ provisioning.bayIds[N] }}, {{ provisioning.stationId }}, etc.
     //    Fixes V4 Finding #1 by giving scenarios an explicit, fail-loud
     //    template namespace for real bayIds (no silent fallback to random).
+    // The WIRE now pairs explicitly; the TEMPLATE namespace stays a 0-indexed
+    // array, because that is what 20 scenario references say and because
+    // {{ provisioning.bayIds[0] }} means "the scenario's first bay", not "bay
+    // number 1". Sorted by bayNumber so the order is the station's declaration
+    // rather than whatever order the server answered in — which under the old
+    // contract was the same thing only by luck.
+    const orderedBayIds = [...bays].sort((a, b) => a.bayNumber - b.bayNumber).map(p => p.bayId);
+
     context.provisioning = {
       stationId,
-      bayIds: [...bayIds],
+      bays: [...bays],
+      bayIds: orderedBayIds,
       certPath,
       keyPath,
     };
@@ -193,11 +212,11 @@ export class ProvisionStep implements Step {
     const baysJsonPath = path.join(stationDir, 'bays.json');
     await fs.writeFile(
       baysJsonPath,
-      JSON.stringify({ stationId, bayIds }, null, 2),
+      JSON.stringify({ stationId, bays, bayIds: orderedBayIds }, null, 2),
     );
 
     console.log(
-      `[ProvisionStep] provisioned ${stationId} — ${bayIds.length} bay(s), artifacts at ${stationDir}`,
+      `[ProvisionStep] provisioned ${stationId} — ${bays.length} bay(s), artifacts at ${stationDir}`,
     );
   }
 }

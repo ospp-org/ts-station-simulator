@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { WaitForStep } from '../../../scenarios/steps/WaitForStep.js';
 import { createContext } from '../../../scenarios/ScenarioContext.js';
 import { MessageRouter } from '../../../mqtt/MessageRouter.js';
-import {
+import { computeMac,
   OsppAction,
   MessageType,
   MessageSource,
@@ -10,6 +10,12 @@ import {
   type OsppEnvelope,
 } from '@ospp/protocol';
 import type { Station } from '../../../station/Station.js';
+
+// The router verifies inbound MACs now and fails closed, so these routing tests
+// sign their envelopes rather than bypass the check. Signing here is not the
+// subject — routing and correlation are — but an unsigned envelope is no longer
+// routable at all, which is the point of the change.
+const TEST_SESSION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 
 function makeEnvelope(
   action: OsppAction,
@@ -29,13 +35,13 @@ function makeEnvelope(
 }
 
 function makeMockStation(): { station: Station; router: MessageRouter } {
-  const router = new MessageRouter();
+  const router = new MessageRouter(() => TEST_SESSION_KEY);
   const station = { router } as unknown as Station;
   return { station, router };
 }
 
 function publish(router: MessageRouter, env: OsppEnvelope): void {
-  router.route('test/topic', Buffer.from(JSON.stringify(env)));
+  router.route('test/topic', Buffer.from(JSON.stringify({ ...env, mac: computeMac(TEST_SESSION_KEY, env) })));
 }
 
 describe('WaitForStep — Drift 7-E messageId correlation', () => {

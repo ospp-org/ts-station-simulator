@@ -38,7 +38,7 @@ function buildStation() {
       serialNumber: 'SN-TEST0001',
       bayCount: 1,
       timezone: 'UTC',
-      bays: [{ bayId: 'bay_test0001', bayNumber: 1, services: [] }],
+      bays: [{ bayId: 'bay_test0001', bayNumber: 1, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [] }],
       behavior: {
         acceptRate: 1.0,
         responseDelayMs: [0, 0],

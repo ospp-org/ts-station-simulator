@@ -209,14 +209,19 @@ async function signTransactionEventReceipt(
 }
 
 /**
- * v0.4.0 ordering-field auto-injection.
+ * Ordering fields come from the STATION's counter.
  *
- * - MeterValues Event: stamp seqNo from session counter (if YAML omits), then advance counter.
- * - SessionEnded Event: stamp seqNo + finalSeqNo from session counter (if YAML omits).
- * - StopService Accepted Response: stamp finalSeqNo from session counter (if YAML omits).
+ * This used to read `session.seqNo`, stamp it only when the YAML omitted one, and
+ * then advance the counter to `payload.seqNo + 1` — from whatever the YAML said.
+ * So a scenario could assert on a sequence the station never produced, and could
+ * move the station's counter to any value by writing a number in a payload. A
+ * wire proof of "MeterValues arrive in sequence" would have been proving the YAML.
  *
- * Explicit YAML values always win — needed for negative tests that emit late
- * MeterValues with seqNo > finalSeqNo.
+ * A YAML value is still honoured, because negative tests need a late MeterValues
+ * with seqNo > finalSeqNo. What it no longer does is MOVE the counter: the
+ * station keeps issuing its own next number, so an override is confined to the
+ * one message that asked for it. To move the counter deliberately, a scenario
+ * calls forceTo() — which is named, and which refuses to go backwards.
  */
 function injectSeqNoFields(
   action: OsppAction,
@@ -230,19 +235,21 @@ function injectSeqNoFields(
   if (!session) return;
 
   if (action === OsppAction.METER_VALUES && msgType === MessageType.EVENT) {
-    if (payload.seqNo === undefined) payload.seqNo = session.seqNo;
-    const used = payload.seqNo as number;
-    session.seqNo = used + 1;
+    // The station issues its own next number whether or not the YAML overrode
+    // this message. An override no longer relocates the counter.
+    const issued = session.seq.next();
+    if (payload.seqNo === undefined) payload.seqNo = issued;
     return;
   }
   if (action === OsppAction.SESSION_ENDED && msgType === MessageType.EVENT) {
-    if (payload.seqNo === undefined) payload.seqNo = session.seqNo;
-    if (payload.finalSeqNo === undefined) payload.finalSeqNo = session.seqNo;
+    const at = session.seq.peek();
+    if (payload.seqNo === undefined) payload.seqNo = at;
+    if (payload.finalSeqNo === undefined) payload.finalSeqNo = at;
     return;
   }
   if (action === OsppAction.STOP_SERVICE && msgType === MessageType.RESPONSE) {
     if (payload.status === 'Accepted' && payload.finalSeqNo === undefined) {
-      payload.finalSeqNo = session.seqNo;
+      payload.finalSeqNo = session.seq.peek();
     }
   }
 }

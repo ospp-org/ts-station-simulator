@@ -24,6 +24,58 @@ type TlsVersionClientOptions = IClientOptions & {
   maxVersion?: SecureVersion;
 };
 
+const PEM_CERT_BLOCK = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+
+/**
+ * Build the certificate chain the station PRESENTS at the mTLS handshake:
+ * the leaf first, then every certificate from the stored Station CA chain
+ * (RFC 8446 §4.4.2 — the end-entity certificate is at position 0).
+ *
+ * Presenting the leaf alone (the pre-CONS-133 behaviour) works only against a
+ * broker that already holds the intermediate in its own bundle. Against one
+ * that does not, the handshake cannot build a path — and, more importantly for
+ * a conformance instrument, a station whose stored chain does not verify its
+ * own leaf (CONS-115, after a Station CA rotation inside the token TTL) is
+ * indistinguishable from a healthy one when the chain never leaves the disk.
+ *
+ * The two provisioning writers disagree on the file's format, so both are
+ * accepted and the leaf is emitted exactly once:
+ *   - `cli/index.ts` `provision`  → chain file = `data.stationCaChain` alone
+ *   - `ProvisionStep` / `ProvisionStationPoolStep` → `cert + data.stationCaChain`
+ * Duplicates elsewhere in the chain are dropped too; order is otherwise
+ * preserved, so a mis-ordered or non-verifying stored chain still reaches the
+ * wire as stored. That is deliberate: this function must not repair a defective
+ * chain, only present it.
+ */
+function buildPresentedCertChain(certPath: string, chainPath?: string): Buffer {
+  const leafPem = readFileSync(certPath, 'utf-8');
+  if (!chainPath) {
+    return Buffer.from(leafPem);
+  }
+
+  const blocks = [
+    ...(leafPem.match(PEM_CERT_BLOCK) ?? []),
+    ...(readFileSync(chainPath, 'utf-8').match(PEM_CERT_BLOCK) ?? []),
+  ];
+
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const block of blocks) {
+    const key = block.replace(/\s+/g, '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    ordered.push(block);
+  }
+
+  // A leaf file with no parsable PEM block (or an empty chain file) must not
+  // silently become an empty cert — fall back to the raw leaf bytes.
+  if (ordered.length === 0) {
+    return Buffer.from(leafPem);
+  }
+
+  return Buffer.from(`${ordered.join('\n')}\n`);
+}
+
 /**
  * MQTT 5 DISCONNECT reason code a broker sends when an operator
  * administratively force-closes a live client — EMQX's "kick"
@@ -81,7 +133,15 @@ export interface MqttConnectionOptions {
   stationId: string;
   tls?: {
     key?: string;      // file path — station client key (mTLS)
-    cert?: string;     // file path — station client cert (mTLS)
+    cert?: string;     // file path — station client cert (mTLS), the LEAF
+    /**
+     * File path — the Station CA chain persisted at provisioning time
+     * (`<stationId>-chain.pem`). When set, the certificate PRESENTED at the
+     * handshake is leaf + this chain, leaf first, rather than the leaf alone
+     * (CONS-133). See buildPresentedCertChain() for why both on-disk formats
+     * are accepted.
+     */
+    chain?: string;
     serverCa?: string; // file path — custom CA for server cert verification (private CA only)
     /**
      * TLS floor/ceiling for this connection, Node tls.connect() semantics
@@ -225,13 +285,14 @@ export class MqttConnection extends EventEmitter {
    * be written back to the SAME files and picked up on the next connect
    * (ADR-0002 T1 certificate renewal).
    */
-  getTlsPaths(): { key?: string; cert?: string; serverCa?: string } | undefined {
+  getTlsPaths(): { key?: string; cert?: string; chain?: string; serverCa?: string } | undefined {
     if (!this.tlsConfig) {
       return undefined;
     }
     return {
       key: this.tlsConfig.key,
       cert: this.tlsConfig.cert,
+      chain: this.tlsConfig.chain,
       serverCa: this.tlsConfig.serverCa,
     };
   }
@@ -302,11 +363,12 @@ export class MqttConnection extends EventEmitter {
         opts.key = readFileSync(this.tlsConfig.key);
       }
       if (this.tlsConfig.cert) {
-        opts.cert = readFileSync(this.tlsConfig.cert);
+        opts.cert = buildPresentedCertChain(this.tlsConfig.cert, this.tlsConfig.chain);
       }
-      // Only set opts.ca for private CA servers (server_ca in config).
-      // Station CA (ca) is for the broker to verify our client cert — NOT set client-side.
-      // For public CA servers (Let's Encrypt), Node.js system store handles verification.
+      // opts.ca is the SERVER-verification direction only (private CA servers,
+      // server_ca in config). For public CA servers (Let's Encrypt), Node's
+      // system store handles it. The Station CA belongs in the CLIENT direction
+      // instead — presented as part of opts.cert above, never here.
       if (this.tlsConfig.serverCa) {
         opts.ca = readFileSync(this.tlsConfig.serverCa);
       }

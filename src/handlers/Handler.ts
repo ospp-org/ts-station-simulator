@@ -1,3 +1,4 @@
+import type { SequenceCounter } from '../station/SequenceCounter.js';
 import type { OsppEnvelope, BayStatus } from '@ospp/protocol';
 
 /**
@@ -25,6 +26,16 @@ export interface StationContext {
   stopHeartbeat(): void;
   retryBoot(): Promise<void>;
   /**
+   * Settle one running session as an OPERATOR-INITIATED stop and report it.
+   *
+   * reset-request.schema.json, `force`: "the station settles every active session
+   * under the operator-disable policy FIRST — the session is stopped, metered and
+   * reported exactly as an operator-initiated stop, so the customer is billed for
+   * what they received — and only then reboots. Force is not a licence to drop a
+   * session on the floor; it is a licence to end it without waiting."
+   */
+  settleSessionAsOperatorStop(sessionId: string): Promise<void>;
+  /**
    * Persist a renewed leaf cert (+ optional issuing chain) and its retained
    * private key to the station's TLS file paths — the client-cert swap. ADR-0002 T1.
    */
@@ -44,7 +55,7 @@ export interface SessionInfo {
   serviceId: string;
   startedAt: string;
   durationSeconds: number;
-  seqNo: number;
+  seq: SequenceCounter;
   // Credits-per-minute used to compute `creditsCharged` on session end per OSPP
   // §03-messages.md:700: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
   // StartService Request schema does not carry pricing; sim defaults to 100 cr/min,

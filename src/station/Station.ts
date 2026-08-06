@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { SequenceCounter } from './SequenceCounter.js';
+import { TopologyStore, type DeclaredBay } from './TopologyStore.js';
 import type {
   OsppEnvelope,
   BootNotificationRequest,
@@ -7,11 +10,14 @@ import type {
   ServiceId,
 } from '@ospp/protocol';
 import {
+  EffectedBy,
   OsppAction,
   MessageType,
   BayStatus,
   BayStateMachine,
   BootReason,
+  SessionEndReason,
+  type SessionEndedPayload,
   toStationTopic,
 } from '@ospp/protocol';
 import {
@@ -33,9 +39,23 @@ export interface SessionInfo {
   sessionId: string;
   bayId: BayId;
   serviceId: ServiceId;
-  startedAt: Date;
+  /**
+   * ISO-8601, as StartServiceHandler stores it (`new Date().toISOString()`).
+   *
+   * This said `Date` and was wrong for as long as it existed. TWO interfaces
+   * named SessionInfo describe this map — Handler.ts's (string, correct) and this
+   * one — and TypeScript never saw the conflict because handlers write through
+   * the StationContext shape while Station declares its own. Nothing read the
+   * field back off a Station-held session until the forced-reset settle needed
+   * it, and then it threw on a live wire.
+   */
+  startedAt: string;
   durationSeconds: number;
-  seqNo: number;
+  /**
+   * The station's ordering counter for this session. Was a bare number the
+   * scenario read, wrote and advanced; see SequenceCounter for what that cost.
+   */
+  seq: SequenceCounter;
 }
 
 export interface ReservationInfo {
@@ -89,7 +109,10 @@ export class Station extends EventEmitter {
     super();
     this.config = config;
     this.connection = new MqttConnection(mqttOptions);
-    this.router = new MessageRouter();
+    // The getter, not a captured value: the session key arrives in the
+    // BootNotification response, necessarily AFTER this router exists. Passing
+    // `this.sessionKey` here would freeze null forever.
+    this.router = new MessageRouter(() => this.sessionKey);
     this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
 
     // Wire inbound MQTT messages to the router ONCE, here — NOT per connect().
@@ -128,7 +151,11 @@ export class Station extends EventEmitter {
     // StatusNotification — built by reading getBayState() straight into the
     // payload — put a non-reportable value on the wire.
     for (const bay of config.bays) {
-      this.bayMachines.set(bay.bayId, new BayStateMachine(BayStatus.AVAILABLE));
+      // EffectedBy.STATION is REQUIRED and is the point: "a station machine that
+      // silently accepted the Server rows would model the server's job — which is
+      // exactly the merge §2.3 exists to undo." A station may never effect the six
+      // inferences to Unknown.
+      this.bayMachines.set(bay.bayId, new BayStateMachine(EffectedBy.STATION, BayStatus.AVAILABLE));
     }
   }
 
@@ -415,6 +442,119 @@ export class Station extends EventEmitter {
    *   scenarios are unaffected. Reusing the id is what exercises the server's
    *   duplicate-REQUEST cached-RESPONSE replay path (02-transport §3.3).
    */
+  /**
+   * The topology this station declares, from its own persisted memory.
+   *
+   * Falls back to the config shape ONLY when no store directory is configured —
+   * i.e. a unit test constructing a Station without a TLS path. That fallback is
+   * narrow on purpose: it cannot be reached by a station that has certificates,
+   * which is every station that can actually connect.
+   */
+  private async declaredTopology(): Promise<DeclaredBay[]> {
+    const dir = this.topologyDir();
+    if (dir === null) {
+      return TopologyStore.toWireShape(this.config.bays);
+    }
+
+    return new TopologyStore(dir, this.config.stationId).declare(this.config.bays);
+  }
+
+  /** Alongside the station's certificates — the state it already keeps on disk. */
+  private topologyDir(): string | null {
+    // A unit test may hand in a bare fake connection with no TLS surface at all.
+    // That is the fallback's only legitimate caller: a station that can actually
+    // connect has certificates, so it has a directory and it persists.
+    if (typeof this.connection.getTlsPaths !== 'function') {
+      return null;
+    }
+
+    const certPath = this.connection.getTlsPaths()?.cert;
+
+    return certPath === undefined ? null : dirname(certPath);
+  }
+
+  /**
+   * Settle one running session as an OPERATOR-INITIATED stop and report it.
+   *
+   * reset-request.schema.json, `force`: the station "settles every active session
+   * under the operator-disable policy FIRST — the session is stopped, metered and
+   * reported exactly as an operator-initiated stop, so the customer is billed for
+   * what they received — and only then reboots."
+   *
+   * Metered from the session's real elapsed time, not from its requested
+   * duration: the customer receives what ran, and billing the full request would
+   * charge for a wash the reset cut short.
+   */
+  async settleSessionAsOperatorStop(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) {
+      return;
+    }
+
+    const actualDurationSeconds = Math.max(
+      0,
+      Math.round((Date.now() - new Date(session.startedAt).getTime()) / 1000),
+    );
+    // Station.SessionInfo carries no price; the SERVER is the authoritative
+    // billing engine (§04-flows.md:823-833) and this value is advisory. 100 cr/min
+    // is the same default the sim uses elsewhere.
+    const creditsCharged = Math.ceil((actualDurationSeconds / 60) * 100);
+
+    this.sessions.delete(sessionId);
+
+    // A bay-transition hiccup must not abort the reboot. The forced reset
+    // iterates every running session, and the settle's job is to REPORT the
+    // session so the customer is billed for what they received — losing that
+    // report because a bay was already Available would be the "drop it on the
+    // floor" the clause rules out, and it would strand the remaining sessions
+    // too.
+    try {
+      // Occupied -> Finishing -> Available, the same two steps StopServiceHandler
+      // takes. The FSM has no direct Occupied -> Available edge, and a live
+      // forced reset proved it: the settle went straight to Available and threw
+      // "Invalid bay transition for Station: Occupied → Available". A wash that
+      // is ending still passes through Finishing whether an operator ended it or
+      // a timer did.
+      if (this.getBayState(session.bayId) === BayStatus.OCCUPIED) {
+        this.setBayState(session.bayId, BayStatus.FINISHING);
+      }
+      this.setBayState(session.bayId, BayStatus.AVAILABLE);
+    } catch (err) {
+      console.log(
+        '[Reset] bay %s could not transition to Available (%s) — settling the session anyway',
+        session.bayId, err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    await this.sender.send<SessionEndedPayload>(
+      OsppAction.SESSION_ENDED,
+      MessageType.EVENT,
+      {
+        sessionId: session.sessionId,
+        bayId: session.bayId,
+        // SPEC DEFECT: `force` says the session is "reported exactly as an
+        // operator-initiated stop", but SessionEndReason has no operator-stop
+        // member — TimerExpired, Fault, Local, LocalOutOfCredit, Deauthorized.
+        // Deauthorized is the closest correct value, not an exact one: the server
+        // withdrew the authorisation to continue, and it is already the reason
+        // csms-server treats as an externally-driven terminal stop
+        // (AllOrNothingSettlement, UserDurationStrategy). Recorded, not invented.
+        reason: SessionEndReason.DEAUTHORIZED,
+        actualDurationSeconds,
+        creditsCharged,
+        // peek, not next: SessionEnded reports the FINAL position, it does not
+        // issue a new one.
+        seqNo: session.seq.peek(),
+        finalSeqNo: session.seq.peek(),
+      },
+    );
+
+    console.log(
+      '[Reset] settled session %s as an operator stop — %ds, %d credits',
+      sessionId, actualDurationSeconds, creditsCharged,
+    );
+  }
+
   async retryBoot(fixedMessageId?: string): Promise<void> {
     console.log('[Station] Retrying BootNotification...');
     const bootPayload: BootNotificationRequest = {
@@ -423,7 +563,18 @@ export class Station extends EventEmitter {
       stationModel: this.config.stationModel,
       stationVendor: this.config.stationVendor,
       serialNumber: this.config.serialNumber,
-      bayCount: this.config.bayCount,
+      // The RE-DECLARED PHYSICAL TOPOLOGY, replacing bayCount, which is deleted
+      // from the wire. Ordinals only: labels are descriptive and are never
+      // compared, so a corrected typo in a firmware constant must not put the
+      // station into Pending.
+      //
+      // Read from what THIS STATION wrote, not from config. First boot writes it;
+      // every later boot re-declares the same thing even if config changed —
+      // "the declaration MUST be STABLE between boots while the hardware is
+      // unchanged" (boot-notification-request.schema.json:50), and a station that
+      // re-derives from config each boot is silently agreeing with whatever it is
+      // told to be, which is what §05-state-machines.md:126 forbids.
+      bays: await this.declaredTopology(),
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
       uptimeSeconds: this.currentUptimeSeconds(),

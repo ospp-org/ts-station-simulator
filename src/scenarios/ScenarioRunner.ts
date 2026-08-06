@@ -87,6 +87,13 @@ export interface ScenarioDefinition {
      */
     cert?: string;
     key?: string;
+    /**
+     * The chain PRESENTED alongside `cert` (CONS-133). Since the connect path
+     * now presents leaf + chain, overriding `cert` alone would pair a foreign
+     * leaf with the target's unrelated chain; set this whenever `cert` names a
+     * leaf from another issuer. `{{stationId}}` is substituted.
+     */
+    chain?: string;
   };
   /**
    * When true, the automatic pre-steps `station.connect()` (see
@@ -176,6 +183,8 @@ export interface TargetConfig {
     cert?: string;
     keyPattern?: string;
     certPattern?: string;
+    /** Station CA chain presented alongside the leaf at connect (CONS-133) — `certs.station_ca_chain` in targets.yaml. */
+    chain?: string;
     serverCa?: string;
     /** Config-level TLS floor/ceiling — see ScenarioDefinition.tls for the per-scenario override that layers on top of this. */
     minVersion?: SecureVersion;
@@ -643,6 +652,9 @@ function createStationFromScenario(
     bays.push({
       bayId,
       bayNumber: i,
+      // Programs are the station's own firmware constants; services are what the
+      // server pushed. Only programs go on the wire in a StatusNotification.
+      programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
       services: [
         {
           serviceId: variables.get('serviceId_1') ?? generateServiceId('wash_basic'),
@@ -692,6 +704,7 @@ function createStationFromScenario(
     tls = {
       key: resolve(tls.keyPattern) ?? resolve(tls.key),
       cert: resolve(tls.certPattern) ?? resolve(tls.cert),
+      chain: resolve(tls.chain),
       serverCa: resolve(tls.serverCa),
       minVersion: tls.minVersion,
       maxVersion: tls.maxVersion,
@@ -711,18 +724,23 @@ function createStationFromScenario(
         : {}),
     };
     if (scenarioDef.tls.no_client_cert) {
-      tls = { ...tls, key: undefined, cert: undefined };
+      tls = { ...tls, key: undefined, cert: undefined, chain: undefined };
     }
     // Per-scenario client identity override (ADR-0005 §7): feed a SPECIFIC
     // cert/key (e.g. a revoked leaf) with `{{stationId}}` substituted. Layered
     // after no_client_cert so the two are mutually exclusive by authoring.
-    if (scenarioDef.tls.cert !== undefined || scenarioDef.tls.key !== undefined) {
+    if (
+      scenarioDef.tls.cert !== undefined ||
+      scenarioDef.tls.key !== undefined ||
+      scenarioDef.tls.chain !== undefined
+    ) {
       const sub = (s: string | undefined): string | undefined =>
         s?.replace('{{stationId}}', stationId);
       tls = {
         ...tls,
         ...(scenarioDef.tls.key !== undefined ? { key: sub(scenarioDef.tls.key) } : {}),
         ...(scenarioDef.tls.cert !== undefined ? { cert: sub(scenarioDef.tls.cert) } : {}),
+        ...(scenarioDef.tls.chain !== undefined ? { chain: sub(scenarioDef.tls.chain) } : {}),
       };
     }
   }

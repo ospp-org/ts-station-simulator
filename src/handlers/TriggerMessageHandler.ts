@@ -103,9 +103,10 @@ export class TriggerMessageHandler implements Handler {
             bayId,
             bayNumber: bay.bayNumber,
             status: bayState,
-            services: bay.services.map(s => ({
-              serviceId: s.serviceId,
-              available: s.available,
+            // PROGRAMS, not services — status-notification.schema.json.
+            programs: bay.programs.map(p => ({
+              programNumber: p.programNumber,
+              available: p.available,
             })),
           };
           await station.sender.send<StatusNotificationPayload>(
