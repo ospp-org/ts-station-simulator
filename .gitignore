@@ -9,5 +9,11 @@ reports/
 results/
 *.log
 CLAUDE.md
-tests/artifacts/uat/
+# Every E2E artifact is generated and may carry credentials or key material.
+# Ignore the whole directory and re-admit only the README, so a new sibling
+# file is covered by default. The previous rule named the uat/ subdirectory
+# only, which left pool-handle.json — five plaintext account passwords —
+# untracked but committable.
+tests/artifacts/*
+!tests/artifacts/README.md
 tsconfig.tsbuildinfo
