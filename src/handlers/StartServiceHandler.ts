@@ -54,6 +54,43 @@ export class StartServiceHandler implements Handler {
       return;
     }
 
+    // The ordinal MUST be one THIS bay declared.
+    //
+    // spec v0.11.0 start-service-request.schema.json, `programNumber`: "The
+    // station MUST verify the ordinal was declared for that bay and, if it was
+    // not, MUST reject with 3017 PROGRAM_NOT_DECLARED — never accept and do
+    // nothing, which is a customer who paid and got no wash."
+    //
+    // Per BAY, not against the union of the station: a station-wide "does any bay
+    // have this program" check would start the wrong hardware here. And a
+    // MISSING ordinal is refused rather than defaulted — defaulting to 1 runs
+    // whatever program 1 happens to be, which is the "charges for one thing and
+    // delivers another" that 3017's recommended action rules out in terms.
+    //
+    // Availability is deliberately NOT consulted: 3017 means "this bay does not
+    // have that program". A program that is present-but-broken is a different
+    // fault with a different remedy, and conflating them sends an operator to
+    // correct a binding that is correct.
+    if (
+      typeof request.programNumber !== 'number' ||
+      !bay.programs.some(p => p.programNumber === request.programNumber)
+    ) {
+      const response: StartServiceResponse = {
+        status: 'Rejected',
+        errorCode: OsppErrorCode.PROGRAM_NOT_DECLARED,
+        errorText: 'PROGRAM_NOT_DECLARED',
+        programNumber: request.programNumber,
+      };
+      await station.sender.send<StartServiceResponse>(
+        OsppAction.START_SERVICE, MessageType.RESPONSE, response, envelope.messageId,
+      );
+      console.log(
+        '[StartService] Rejected session %s — PROGRAM_NOT_DECLARED (bay %s has no program %s)',
+        request.sessionId, request.bayId, String(request.programNumber),
+      );
+      return;
+    }
+
     // Validate durationSeconds > 0
     if (request.durationSeconds <= 0) {
       const response: StartServiceResponse = {

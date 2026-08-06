@@ -57,6 +57,9 @@ function makeEnvelope(): OsppEnvelope {
       serviceId: 'svc_test',
       durationSeconds: 300,
       sessionSource: 'MobileApp',
+      // REQUIRED since v0.11.0, and the station now refuses a start whose ordinal
+      // it never declared. 1 is what this fixture's bay declares.
+      programNumber: 1,
     },
   };
 }
