@@ -90,6 +90,18 @@ describe('Station.settleSessionAsOperatorStop — the real one', () => {
     expect((sent[0] as Record<string, unknown>).finalSeqNo).toBeDefined();
   });
 
+  it('takes the bay Occupied -> Finishing -> Available, the FSM path', async () => {
+    // There is no direct Occupied -> Available edge. A live forced reset threw
+    // "Invalid bay transition for Station: Occupied → Available" and the settle
+    // only survived because a catch swallowed it — a safety net standing in for
+    // the design.
+    const { station } = stationWithSession(30);
+
+    await station.settleSessionAsOperatorStop('sess_1');
+
+    expect(station.getBayState('bay_settle01')).toBe(BayStatus.AVAILABLE);
+  });
+
   it('an unknown sessionId is a no-op, not a throw', async () => {
     // A forced reset iterates whatever is in the map; a race that removes one
     // mid-iteration must not abort the reboot.

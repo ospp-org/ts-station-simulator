@@ -509,6 +509,15 @@ export class Station extends EventEmitter {
     // floor" the clause rules out, and it would strand the remaining sessions
     // too.
     try {
+      // Occupied -> Finishing -> Available, the same two steps StopServiceHandler
+      // takes. The FSM has no direct Occupied -> Available edge, and a live
+      // forced reset proved it: the settle went straight to Available and threw
+      // "Invalid bay transition for Station: Occupied → Available". A wash that
+      // is ending still passes through Finishing whether an operator ended it or
+      // a timer did.
+      if (this.getBayState(session.bayId) === BayStatus.OCCUPIED) {
+        this.setBayState(session.bayId, BayStatus.FINISHING);
+      }
       this.setBayState(session.bayId, BayStatus.AVAILABLE);
     } catch (err) {
       console.log(
