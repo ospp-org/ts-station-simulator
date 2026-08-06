@@ -39,7 +39,17 @@ export interface SessionInfo {
   sessionId: string;
   bayId: BayId;
   serviceId: ServiceId;
-  startedAt: Date;
+  /**
+   * ISO-8601, as StartServiceHandler stores it (`new Date().toISOString()`).
+   *
+   * This said `Date` and was wrong for as long as it existed. TWO interfaces
+   * named SessionInfo describe this map — Handler.ts's (string, correct) and this
+   * one — and TypeScript never saw the conflict because handlers write through
+   * the StationContext shape while Station declares its own. Nothing read the
+   * field back off a Station-held session until the forced-reset settle needed
+   * it, and then it threw on a live wire.
+   */
+  startedAt: string;
   durationSeconds: number;
   /**
    * The station's ordering counter for this session. Was a bare number the
@@ -483,7 +493,7 @@ export class Station extends EventEmitter {
 
     const actualDurationSeconds = Math.max(
       0,
-      Math.round((Date.now() - session.startedAt.getTime()) / 1000),
+      Math.round((Date.now() - new Date(session.startedAt).getTime()) / 1000),
     );
     // Station.SessionInfo carries no price; the SERVER is the authoritative
     // billing engine (§04-flows.md:823-833) and this value is advisory. 100 cr/min
@@ -491,7 +501,21 @@ export class Station extends EventEmitter {
     const creditsCharged = Math.ceil((actualDurationSeconds / 60) * 100);
 
     this.sessions.delete(sessionId);
-    this.setBayState(session.bayId, BayStatus.AVAILABLE);
+
+    // A bay-transition hiccup must not abort the reboot. The forced reset
+    // iterates every running session, and the settle's job is to REPORT the
+    // session so the customer is billed for what they received — losing that
+    // report because a bay was already Available would be the "drop it on the
+    // floor" the clause rules out, and it would strand the remaining sessions
+    // too.
+    try {
+      this.setBayState(session.bayId, BayStatus.AVAILABLE);
+    } catch (err) {
+      console.log(
+        '[Reset] bay %s could not transition to Available (%s) — settling the session anyway',
+        session.bayId, err instanceof Error ? err.message : String(err),
+      );
+    }
 
     await this.sender.send<SessionEndedPayload>(
       OsppAction.SESSION_ENDED,
