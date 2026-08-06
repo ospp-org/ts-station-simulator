@@ -31,6 +31,12 @@ targets:
       key: "certs/sandbox/{{stationId}}-key.pem"
       cert: "certs/sandbox/{{stationId}}.pem"
       ca: "certs/sandbox/ca.pem"
+      # Present the full chain, not the leaf alone (CONS-133). ConnectMqttStep
+      # fs.access-checks this and falls back to leaf-only if the file is absent,
+      # so naming it here is safe before the chain files are written — and the
+      # naming is what makes writing them the obvious next step rather than a
+      # thing nobody notices is missing.
+      station_ca_chain: "certs/sandbox/{{stationId}}-chain.pem"
     station_pool:
       - stn_00000001
       - stn_00000002
@@ -73,5 +79,8 @@ targets:
     certs:
       key: "certs/sandbox-gm/{{stationId}}-key.pem"
       cert: "certs/sandbox-gm/{{stationId}}.pem"
+      # See the sandbox target: named so a leaf-only presentation is a missing
+      # FILE rather than a missing line nobody looks for.
+      station_ca_chain: "certs/sandbox-gm/{{stationId}}-chain.pem"
     station_pool:
       - stn_00000021

@@ -207,6 +207,11 @@ async function main(): Promise<void> {
         tls: {
           key: entry.keyPath,
           cert: entry.certPath,
+          // The full chain, not the leaf alone. bootstrapPool() already computes
+          // and writes entry.chainPath; these two scripts simply never read it
+          // back, so every wire proof they produced was made with a leaf-only
+          // presentation — the exact instrument defect this arc is chasing.
+          chain: entry.chainPath,
           // Only for a private CA; UAT's 8883 presents a public Let's Encrypt cert.
           serverCa: entry.brokerCaPath && existsSync(entry.brokerCaPath) ? entry.brokerCaPath : undefined,
           minVersion: 'TLSv1.2',
