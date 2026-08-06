@@ -6,6 +6,28 @@ targets:
     credentials:
       email: "admin@csms.local"
       password: "password"
+  # The local stack over mTLS on 8883. `local` is plaintext 1883 and proves
+  # nothing about TLS identity — the dev broker now runs verify_peer +
+  # peer_cert_as_username like prod, so a proof that must exercise mTLS runs here.
+  local-mtls:
+    mqtt_url: "mqtts://localhost:8883"
+    mqtt_tls: true
+    csms_url: "http://localhost:8080"
+    credentials:
+      email: "admin@csms.local"
+      password: "password"
+    certs:
+      key: "certs/local/{{stationId}}-key.pem"
+      cert: "certs/local/{{stationId}}.pem"
+      # The broker's server cert is issued by "OneStopPay MQTT CA", which is a
+      # DIFFERENT anchor from the Station CA that signs client certs — and the
+      # broker presents its leaf ALONE, no intermediate. So a client trusting only
+      # the Root CA gets "unable to verify the first certificate". This bundle is
+      # MQTT CA + Root CA. Named so a missing file is a missing FILE, not a silent
+      # fallback to system roots.
+      ca: "certs/local/broker-ca.pem"
+      station_ca_chain: "certs/local/{{stationId}}-chain.pem"
+
   uat:
     mqtt_url: "mqtts://mqtt-uat.onestoppay.ro:8883"
     mqtt_tls: true
