@@ -11,6 +11,7 @@ import {
 } from '@ospp/protocol';
 import { signMessage } from '@ospp/protocol/server';
 import type { MqttConnection } from './MqttConnection.js';
+import { resolveWireProtocolVersion } from './protocolVersion.js';
 
 export class MessageSender {
   private readonly connection: MqttConnection;
@@ -26,12 +27,18 @@ export class MessageSender {
     // 'All' is the default and one of two remaining modes; 'Critical' is deleted
     // — with everything signed it selected nothing.
     signingMode: MessageSigningMode = 'All',
-    // Overridable OSPP wire protocolVersion for every outgoing envelope. Omitted → the SDK default
-    // (OSPP_PROTOCOL_VERSION, currently 0.2.1), which a local-HEAD cascade negotiates fine (MAJOR-0
-    // matches dev/testing/prod-example). Set OSPP_PROTOCOL_VERSION in the env to target a server pinned
-    // to a different MAJOR (e.g. UAT 1.x) — otherwise those messages would be rejected 1007. Never
-    // hardcoded here so the same build can be pointed at either without an edit.
-    protocolVersion: string | undefined = process.env.OSPP_PROTOCOL_VERSION || undefined,
+    // The wire protocolVersion for every outgoing envelope, from the one resolver both
+    // publishers share (the LWT builder in MqttConnection is the other). Never hardcoded
+    // here, so one build can be pointed at any server.
+    //
+    // The comment this replaces said the SDK default "negotiates fine (MAJOR-0 matches
+    // dev/testing/prod-example)" and told the reader to set the env only for "a server
+    // pinned to a different MAJOR (e.g. UAT 1.x)". Both claims are false: negotiation is
+    // EXACT MATCH against a set (VERSIONING.md:25), the SDK's MAJOR gate
+    // `isCompatibleWith()` was deleted in 0.12.0, and csms-server's VersionNegotiator
+    // never called it — so a shared MAJOR has never made 0.2.1 acceptable to a server
+    // configured for anything else.
+    protocolVersion: string | undefined = resolveWireProtocolVersion(),
   ) {
     this.connection = connection;
     this.stationId = stationId;

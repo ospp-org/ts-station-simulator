@@ -9,6 +9,7 @@ import {
   createEnvelope,
   toServerTopic,
 } from '@ospp/protocol';
+import { resolveWireProtocolVersion } from './protocolVersion.js';
 
 /**
  * mqtt.js's IClientOptions (ISecureClientOptions) does not model TLS
@@ -346,6 +347,10 @@ export class MqttConnection extends EventEmitter {
           action: OsppAction.CONNECTION_LOST,
           source: MessageSource.SERVER,
           payload: { stationId: this.stationId, reason: 'UnexpectedDisconnect' as const },
+          // Omitting this inherited the SDK constant instead of the configured wire
+          // version, so every will was refused 1007 and dead-lettered — see
+          // resolveWireProtocolVersion().
+          protocolVersion: resolveWireProtocolVersion(),
         })),
         qos: 1 as const,
         retain: false,
