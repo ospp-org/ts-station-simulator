@@ -66,8 +66,17 @@ type BootPayload = {
   capabilities: Record<string, boolean | undefined>;
 };
 
+/**
+ * A station that has completed a boot, which is the only state in which a
+ * server-initiated command can reach it: the BootNotification RESPONSE carries
+ * the session key, and MessageSender now refuses to publish a MAC-requiring
+ * message without one (06-security.md §5.7 fail-closed). Before that guard these
+ * tests passed while publishing the TriggerMessage RESPONSE unsigned.
+ */
+const BOOTED_SESSION_KEY = Buffer.from(new Uint8Array(32).fill(9)).toString('base64');
+
 function buildStation(): InstanceType<typeof Station> {
-  return new Station(
+  const station = new Station(
     {
       stationId: 'stn_test0001',
       firmwareVersion: '1.0.0',
@@ -87,6 +96,8 @@ function buildStation(): InstanceType<typeof Station> {
     },
     { mqttUrl: 'mqtt://localhost:1883', stationId: 'stn_test0001' },
   );
+  station.sessionKey = BOOTED_SESSION_KEY;
+  return station;
 }
 
 /** A TriggerMessage REQUEST asking for the given message. */

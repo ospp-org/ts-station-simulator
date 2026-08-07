@@ -55,8 +55,16 @@ const { MessageType, MessageSource, OSPP_PROTOCOL_VERSION } = await import('@osp
 
 type BootPayload = { uptimeSeconds: number; bootReason: string };
 
+/**
+ * A booted station's session key. Only the CertificateInstall case below needs
+ * it — BootNotification REQUESTs are one of the three structural exemptions, so
+ * they publish unsigned either way. A CertificateInstall RESPONSE does not, and
+ * MessageSender now refuses to publish it without a key (06-security.md §5.7).
+ */
+const BOOTED_SESSION_KEY = Buffer.from(new Uint8Array(32).fill(9)).toString('base64');
+
 function buildStation() {
-  return new Station(
+  const station = new Station(
     {
       stationId: 'stn_test0001',
       firmwareVersion: '1.0.0',
@@ -76,6 +84,8 @@ function buildStation() {
     },
     { mqttUrl: 'mqtt://localhost:1883', stationId: 'stn_test0001' },
   );
+  station.sessionKey = BOOTED_SESSION_KEY;
+  return station;
 }
 
 /** Every BootNotification REQUEST payload published so far, in order. */

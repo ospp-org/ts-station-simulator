@@ -61,19 +61,52 @@ export class MessageSender {
     // requires it — this mirrors the server's MacSigner, which signs the full
     // envelope minus `mac`. signMessage adds the `mac` field.
     const sessionKey = this.getSessionKey();
-    const outgoing: OsppEnvelope<T> =
-      sessionKey !== null && requiresMac(action, messageType, this.signingMode)
-        ? (signMessage(
-            sessionKey,
-            envelope as unknown as Record<string, unknown>,
-          ) as unknown as OsppEnvelope<T>)
-        : envelope;
+    let outgoing: OsppEnvelope<T> = envelope;
+
+    if (requiresMac(action, messageType, this.signingMode)) {
+      // Fail CLOSED. 06-security.md:869-873 — "No session key held for the peer
+      // -> Refuse to send. The sender MUST NOT publish the message unsigned."
+      //
+      // The condition used to be `sessionKey !== null && requiresMac(...)`, so a
+      // message that REQUIRED a MAC but had no key fell through to the unsigned
+      // branch and was published anyway. That is the send path failing OPEN
+      // while MessageRouter::verified() (:113-154) already failed CLOSED on the
+      // very same condition — the two halves of §5.7 disagreeing inside one
+      // repo, which is the shape that has burned this programme before.
+      //
+      // Nothing in the suite trips this: every scenario waits for the
+      // BootNotification RESPONSE (which CARRIES the key, and is one of the
+      // three structural exemptions) before sending anything that needs one.
+      // Throwing is therefore a real guard, not a behaviour change.
+      if (sessionKey === null) {
+        throw new Error(
+          `MessageSender: refusing to publish ${action} ${messageType} unsigned — ` +
+            'no session key held (06-security.md §5.7 requires the sender to fail ' +
+            'closed). The key arrives on the BootNotification RESPONSE, so a station ' +
+            'that has not completed a boot cannot sign this message.',
+        );
+      }
+      outgoing = signMessage(
+        sessionKey,
+        envelope as unknown as Record<string, unknown>,
+      ) as unknown as OsppEnvelope<T>;
+    }
 
     await this.connection.publish(toServerTopic(this.stationId), JSON.stringify(outgoing), 1);
 
     return outgoing;
   }
 
+  /**
+   * Publish a pre-built envelope verbatim — no signing, no exemption check.
+   *
+   * CURRENTLY UNCALLED (verified across `src/`), and left in place rather than
+   * deleted only because it is a published surface. Flagged because it is a
+   * second unsigned-publish path: anything routed through here bypasses the
+   * §5.7 fail-closed guard in `send()` above. A caller MUST therefore pass an
+   * envelope that is already signed, or one of the three structural exemptions.
+   * If this ever acquires a real caller, the guard belongs here too.
+   */
   async sendEnvelope<T>(envelope: OsppEnvelope<T>): Promise<void> {
     await this.connection.publish(toServerTopic(this.stationId), JSON.stringify(envelope), 1);
   }
