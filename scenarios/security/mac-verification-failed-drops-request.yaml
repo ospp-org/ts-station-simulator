@@ -1,0 +1,145 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Shared/Protocol/Middleware/VerifyIncomingMiddleware.php:82-95
+#     $isValid = $signedContent !== null
+#         && $this->macSigner->verify($signedContent, $receivedMac, $sessionKey);
+#     if (! $isValid) {
+#         Log::critical('VerifyIncomingMiddleware: HMAC verification FAILED', ...);
+#         $this->emitSecurityEvent($stationId, $action, ..., 'MAC_VERIFICATION_FAILED');
+#         return VerificationResult::rejected('HMAC-SHA256 verification failed');
+#     }
+#   then app/Shared/Protocol/MessageDispatcher.php:147-169, whose REQUEST arm is
+#   a bare `return null` — no response is published.
+#
+#   Nothing in scenario mode could reach this before: MessageSender::send() always
+#   signed correctly with the real session key, and the only other publish path
+#   (sendEnvelope) has no caller. `tamper_mac: corrupt` exists for this.
+#
+# WHAT THIS SCENARIO CAN AND CANNOT DISTINGUISH — stated, not papered over
+#   A mac with flipped bytes and a mac computed with the WRONG KEY are the same
+#   server branch. MacSigner::verify() ends in one hash_equals, so both produce
+#   the identical reason string, log line and event. There is no wrong-key
+#   discriminator anywhere in csms-server. A second scenario for `wrong_key`
+#   would therefore reach no additional branch — it is covered instead by
+#   src/__tests__/mqtt/MessageSender.tamperMac.test.ts, which proves the two
+#   produce different bytes and are both unverifiable under the real key.
+#
+#   This scenario also cannot distinguish MAC_VERIFICATION_FAILED from
+#   MAC_MISSING (security/mac-missing-drops-request.yaml) ON THE WIRE, because
+#   both answer with silence. The two files exist because they reach two
+#   different server branches, not because the wire tells them apart.
+#
+# WHY THE PROOF IS SILENCE, AND WHY THE CONTROL IS NOT OPTIONAL
+#   csms-server publishes NOTHING on any MAC failure — no error, no disconnect;
+#   the worker even records outcome="ok". The only thing a station can observe is
+#   that its REQUEST is never answered. Silence alone is a hollow proof — a dead
+#   link, a wedged worker or a mistyped topic all produce it. The clean Heartbeat
+#   at the end is what makes it attributable: the same link, the same action,
+#   answered a moment later. Remove that step and this file proves nothing.
+#
+# REQUIRES the server to be running with OSPP_MESSAGE_SIGNING_MODE=All.
+#   Under `None`, VerifyIncomingMiddleware.php:37 returns skipped() before any of
+#   this and the tampered Heartbeat is ANSWERED — the scenario then fails at the
+#   expect_silence step, which is the correct outcome: it is reporting that the
+#   gate is off, not that the server is broken.
+name: "MAC Verification Failed Drops Request"
+description: "Publish a Heartbeat whose mac has one flipped bit. The server must refuse it silently; a clean Heartbeat on the same connection must still be answered."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot. Required: the BootNotification RESPONSE carries the session key,
+  #     and without a key the sender refuses to publish at all (fail closed,
+  #     06-security.md §5.7) — so there would be nothing to tamper WITH. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Prove the link answers a Heartbeat BEFORE the tamper. Without this, a station
+  # whose Heartbeats were never answered for an unrelated reason would sail
+  # through the expect_silence below.
+  - action: send
+    message: Heartbeat
+    messageType: Request
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 15000
+
+  # --- The tampered send. Heartbeat is NOT one of the three structural
+  #     exemptions, so it owes a mac and the server verifies it. The envelope is
+  #     otherwise perfect: the mac stays a base64 string of the same length, so
+  #     schema validation (MessageDispatcher.php:109, which runs BEFORE the MAC
+  #     gate at :146) passes and the refusal is attributable to the MAC gate
+  #     alone. A malformed envelope would instead be answered with a Rejected
+  #     RESPONSE on the wire — the opposite observable, from a different gate. ---
+  - action: send
+    message: Heartbeat
+    messageType: Request
+    tamper_mac: corrupt
+
+  # THE ASSERTION: no Heartbeat Response correlated to the tampered Request, ever.
+  # 6s is ~20x the observed round trip and well under the 15s the clean waits use.
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. Same station, same connection, same action, correct mac.
+  #     This answering is what turns the silence above into a refusal rather
+  #     than a broken link. ---
+  - action: send
+    message: Heartbeat
+    messageType: Request
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 15000
+    capture:
+      serverTime: "payload.serverTime"
+
+  # `serverTime` is minted by the server on the Heartbeat response and appears
+  # nowhere in this scenario's payloads — asserting it exists pins that a real
+  # server round trip completed, not that some buffered envelope was matched.
+  - action: assert
+    field: "payload.serverTime"
+    exists: true

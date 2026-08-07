@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { OsppAction, MessageType, canonicalize } from '@ospp/protocol';
 import { ecdsaSign, SIGNATURE_ALGORITHM } from '@ospp/protocol/server';
+import type { MacTamperMode } from '../../mqtt/MessageSender.js';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -276,6 +277,26 @@ function injectSeqNoFields(
  */
 type CorrelationSource = 'explicit' | 'auto-correlated' | 'generated';
 
+const MAC_TAMPER_MODES: ReadonlySet<string> = new Set(['corrupt', 'wrong_key', 'omit']);
+
+/**
+ * Read and validate the YAML `tamper_mac:` field.
+ *
+ * Rejects an unknown mode loudly rather than falling through to an untampered
+ * send: a typo'd `tamper_mac: corupt` that quietly published a VALID mac would
+ * make the scenario pass while proving the opposite of what it claims.
+ */
+function resolveMacTamper(definition: StepDefinition): MacTamperMode | undefined {
+  const raw = definition.tamper_mac;
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !MAC_TAMPER_MODES.has(raw)) {
+    throw new Error(
+      `SendStep: unknown tamper_mac "${String(raw)}" — valid: ${[...MAC_TAMPER_MODES].join(', ')}`,
+    );
+  }
+  return raw as MacTamperMode;
+}
+
 function resolveSendCorrelation(
   definition: StepDefinition,
   messageType: MessageType,
@@ -349,6 +370,7 @@ export class SendStep implements Step {
       messageType,
       payload,
       correlationId,
+      resolveMacTamper(definition),
     );
 
     context.sentMessages.push(envelope);

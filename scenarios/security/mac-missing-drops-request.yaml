@@ -1,0 +1,125 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Shared/Protocol/Middleware/VerifyIncomingMiddleware.php:51-65
+#     if ($receivedMac === null || $receivedMac === '') {
+#         Log::warning('VerifyIncomingMiddleware: MAC field missing on a message that must carry one', ...);
+#         $this->emitSecurityEvent($stationId, $action, ..., 'MAC_MISSING');
+#         return VerificationResult::rejected('MAC field missing on a message that must carry one');
+#     }
+#   A DIFFERENT branch from security/mac-verification-failed-drops-request.yaml:
+#   different reason string, different event label, and a different log LEVEL
+#   (warning here, critical there). It is reached earlier, before the session key
+#   is even looked up (:69), so an absent mac is refused whether or not the server
+#   still holds a key for this station.
+#
+#   `mac` is OPTIONAL in common/mqtt-envelope.schema.json (absent from `required`,
+#   `minLength: 1`), which is why omitting it is schema-VALID and therefore
+#   reaches the MAC gate at all. Sending `"mac": ""` would instead be a schema
+#   rejection — a different gate, which answers on the wire.
+#
+# WHAT IT CANNOT SHOW
+#   Nothing observable distinguishes this from MAC_VERIFICATION_FAILED at the
+#   station: both end in `return null` at MessageDispatcher.php:169 and publish
+#   nothing. The discriminating signals — reason string, log level, the
+#   `security_events` audit row — are server-internal, and there is no REST
+#   surface that exposes them (verified: no security-events route in routes/).
+#   So this file proves the message was REFUSED, not WHY. The why is pinned by
+#   the branch citation above and by the unit test on the tamper mode.
+#
+# WHY `omit` IS NOT THE SAME AS THE STATION HAVING NO KEY
+#   MessageSender still requires a real session key before it will publish an
+#   omitted-mac message (proved in MessageSender.tamperMac.test.ts). A keyless
+#   station is a different server branch — SESSION_KEY_UNAVAILABLE at :69 — and
+#   that one is reached by the SERVER's key expiring, not by anything a station
+#   can send. See the COULD NOT section of the arc report.
+#
+# REQUIRES OSPP_MESSAGE_SIGNING_MODE=All on the server. Under `None` the gate is
+#   skipped at :37 and the mac-less Heartbeat is answered; the scenario then fails
+#   at expect_silence, which is it correctly reporting that the gate is off.
+name: "MAC Missing Drops Request"
+description: "Publish a Heartbeat with no mac field at all on a station that holds a session key. The server must refuse it silently; a clean Heartbeat on the same connection must still be answered."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot. The RESPONSE carries the session key; the station must HOLD one for
+  #     this to be "withheld the mac" rather than "had nothing to sign with". ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Baseline: the link answers a signed Heartbeat.
+  - action: send
+    message: Heartbeat
+    messageType: Request
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 15000
+
+  # --- The mac-less send. ---
+  - action: send
+    message: Heartbeat
+    messageType: Request
+    tamper_mac: omit
+
+  # THE ASSERTION: the mac-less Request is never answered.
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. The silence above is only attributable because this one
+  #     comes back on the same connection immediately afterwards. ---
+  - action: send
+    message: Heartbeat
+    messageType: Request
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 15000
+
+  # Server-minted and REQUIRED on heartbeat-response.schema.json; nothing in this
+  # scenario supplies it.
+  - action: assert
+    field: "payload.serverTime"
+    exists: true

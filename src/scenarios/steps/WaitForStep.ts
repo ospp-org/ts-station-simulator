@@ -63,6 +63,70 @@ function pickExpectedMessageId(
   return undefined;
 }
 
+/**
+ * `expect_silence: true` — the inverse wait. Passes iff NOTHING matching arrives
+ * before `timeout_ms`, and FAILS if something does.
+ *
+ * Built for the branches csms-server answers by saying nothing. Its inbound-MAC
+ * gate is the case that forced it: every failure path in
+ * `VerifyIncomingMiddleware.php` ends in `VerificationResult::rejected(...)`, and
+ * `MessageDispatcher.php:169` then `return null`s — no error is published, the
+ * station is not disconnected, and the worker even records `outcome="ok"`. The
+ * ONLY thing a station can observe is that its REQUEST is never answered. With
+ * no way to assert an absence, three server branches could be provoked and none
+ * could be checked.
+ *
+ * An absence is a weak proof on its own — a dead link, a wedged worker or a
+ * mistyped topic all produce the same silence, which is the hollow-safety-net
+ * shape. So every scenario using this MUST follow it with an ordinary `wait_for`
+ * on a CLEAN message of the same action, and that control is what makes the
+ * silence attributable: the link answered a second later, so the first message
+ * was refused rather than lost. The step cannot enforce that pairing, so it is
+ * stated here and at each call site.
+ */
+async function waitForSilence(
+  station: Station,
+  action: OsppAction,
+  messageType: MessageType | undefined,
+  expectedMessageId: string | undefined,
+  matches: (env: OsppEnvelope) => boolean,
+  timeoutMs: number,
+  messageName: string,
+): Promise<void> {
+  // Anything already buffered from before this step counts as arrival — draining
+  // it silently would let a message the server DID send satisfy "silence".
+  const buffered = station.router
+    .drainBuffered(action, messageType, expectedMessageId)
+    .filter(matches);
+  if (buffered.length > 0) {
+    throw new Error(
+      `expect_silence: expected no ${messageName}${messageType ? ` ${messageType}` : ''} ` +
+        `but one was already buffered (messageId=${buffered[0].messageId})`,
+    );
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const handler = (env: OsppEnvelope): void => {
+      if (!matches(env)) return;
+      clearTimeout(timer);
+      station.router.offAction(action, handler);
+      reject(
+        new Error(
+          `expect_silence: expected no ${messageName}${messageType ? ` ${messageType}` : ''} ` +
+            `within ${timeoutMs}ms, but one arrived (messageId=${env.messageId})`,
+        ),
+      );
+    };
+
+    const timer = setTimeout(() => {
+      station.router.offAction(action, handler);
+      resolve();
+    }, timeoutMs);
+
+    station.router.onAction(action, handler);
+  });
+}
+
 export class WaitForStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -76,6 +140,13 @@ export class WaitForStep implements Step {
 
     const action = mapToOsppAction(messageName);
     const messageType = definition.messageType as string | undefined;
+    const expectSilence = definition.expect_silence === true;
+    if (expectSilence && definition.capture !== undefined) {
+      throw new Error(
+        'WaitForStep: "capture" is meaningless with "expect_silence: true" — there is ' +
+          'no message to capture from. Remove one of the two.',
+      );
+    }
     // 15s default gives ~30-50x headroom over typical ~300ms round-trip post-bridge-fix
     // (commit 44f81d1 in csms-mqtt-bridge). Scenarios needing tighter assertion
     // should set timeout_ms explicitly in YAML.
@@ -98,6 +169,28 @@ export class WaitForStep implements Step {
       }
       return true;
     };
+
+    if (expectSilence) {
+      await waitForSilence(
+        station,
+        action,
+        messageType as MessageType | undefined,
+        expectedMessageId,
+        matches,
+        timeoutMs,
+        messageName,
+      );
+      // Claim the correlation anyway. The outbound REQUEST this step was waiting
+      // on is spent — the server refused it and will never answer — so a LATER
+      // `wait_for ... Response` must correlate to the NEXT unconsumed Request
+      // (the clean control message), not re-target this one and time out on a
+      // response that can no longer exist.
+      if (expectedMessageId && !explicitCorrelation) {
+        context.consumedSentMessageIds.add(expectedMessageId);
+      }
+
+      return;
+    }
 
     const envelope = await new Promise<OsppEnvelope>((resolve, reject) => {
       const timer = setTimeout(() => {

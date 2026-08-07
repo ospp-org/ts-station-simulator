@@ -1,0 +1,182 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/Session/Handlers/StartServiceResponseHandler.php:172-190
+#     private function handleRejected(string $sessionId, StartServiceResponseDto $dto): void
+#     {
+#         Log::warning('StartServiceResponse: station rejected StartService', ...);
+#         $this->failSessionAction->execute(
+#             sessionId: $sessionId,
+#             failReason: "Station rejected StartService: {$dto->errorText} (code {$dto->errorCode})",
+#             failErrorCode: $dto->errorCode,
+#             reason: TerminalReason::NeverStarted,
+#         );
+#         $this->readySignal->signalRejected($sessionId, $dto->errorText ?? 'Rejected');
+#     }
+#
+#   NO scenario in the corpus reaches it. All four sessions/session-rejected-*
+#   files are PRE-DISPATCH refusals — the server answers 404/409 from
+#   StartSessionAction and never publishes a StartService at all, which their own
+#   comments say ("server returns 409 BAY_NOT_READY pre-MQTT-dispatch; no
+#   StartService Request is published"). The branch where the server DID dispatch
+#   and the STATION refused had never been on the wire.
+#
+# WHY THE STATION'S REFUSAL IS SCRIPTED RATHER THAN EARNED — the honest limit
+#   3017 PROGRAM_NOT_DECLARED means "the ordinal you sent is not one this bay
+#   declared". csms-server makes that state unreachable by construction from
+#   every supported direction:
+#     - StationServiceCatalogController::bindProgram:230 REFUSES 422/3017 for an
+#       ordinal absent from bay_programs, so no binding can name one;
+#     - the pool bootstrap JOINs program_number from bay_programs (MIN per bay),
+#       so a fixture cannot create what the endpoint would refuse;
+#     - BootTopologyComparator compares the boot's bays[] against bay_programs as
+#       a SET IN BOTH DIRECTIONS, so a station declaring a NARROWER set gets 3018
+#       TOPOLOGY_MISMATCH and a Pending boot, not an Accepted one with a gap;
+#     - and the testing API cannot emit StartService at all — trigger-command's
+#       SUPPORTED_COMMANDS is GetConfiguration, ChangeConfiguration, Reset,
+#       SetMaintenance, TriggerMessage.
+#   So the ordinal the server sends here IS one the bay declared, and the station
+#   refusing it is a scripted answer, not a decision. That is fine for what this
+#   file is for — it is proving the SERVER's handling of a refusal, and the
+#   station in scenario mode is a byte source. It is stated here so nobody later
+#   reads it as a station-conformance proof.
+#
+# WHAT IS ASSERTED, AND WHY EACH IS SERVER-PRODUCED
+#   1. payload.programNumber on the StartService the server SENT — resolved by
+#      ServiceProgramResolver from bay_services.program_number
+#      (StartSessionAction.php:259), never supplied by this scenario. Asserting it
+#      EXISTS is also the conformance check the corpus was missing: the field is
+#      REQUIRED by start-service-request.schema.json, and until the bootstrap
+#      seeded bay_services the server omitted it on every start while 29
+#      scenarios waved it through.
+#   2. data.status "failed" + data.fail_error_code 3017 after the refusal —
+#      written by FailSessionAction via the handler above. The 3017 VALUE
+#      originates in this scenario's payload, but that it reaches
+#      sessions.fail_error_code at all is the branch's own work: the alternative
+#      outcomes (session left pending, swept later as a timeout, or failed with a
+#      server-chosen code) are exactly what this discriminates against.
+name: "Start Service Refused - Program Not Declared"
+description: "Server dispatches StartService; the station refuses with 3017 PROGRAM_NOT_DECLARED. The server must fail the session as NeverStarted and record the station's error code."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # Background: /sessions/start blocks on the station's MQTT Response
+  # (SessionController.php:80 waits on SessionReadySignal), so the refusal below
+  # must be sent while the fetch is in flight. The endpoint's own 422 is
+  # therefore NOT the assertion here — background mode downgrades a status
+  # mismatch to a warning. The assertions are the two below, read back
+  # afterwards on a foreground call.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      programNumber: "payload.programNumber"
+
+  # ASSERTION 1 — the ordinal the SERVER resolved and put on the wire.
+  - action: assert
+    field: "payload.programNumber"
+    exists: true
+
+  # --- The refusal. ---
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3017
+      errorText: "PROGRAM_NOT_DECLARED"
+      programNumber: "{{captured.programNumber}}"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 2 — the session the server created is now terminal, failed, and
+  # carries the station's code. A server that ignored the rejection would leave
+  # this `pending`; one that failed it under its own code would not carry 3017.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.fail_error_code: 3017
+
+  # --- Pool-hygiene teardown: no session to end (the server failed it), so only
+  #     the bay is returned. It never went Occupied — the station refused — so
+  #     this simply restates Available for the next scenario on this station. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true

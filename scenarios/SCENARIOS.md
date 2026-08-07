@@ -1,6 +1,36 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 88** across 7 categories.
+**Total scenarios: 116** across 10 categories, counted on disk
+(`find scenarios -name '*.yaml' | wc -l`).
+
+> **The per-category tables below this line are STALE and are left as-is
+> deliberately.** They describe 88 scenarios across 7 categories — the
+> `e2e`, `multiunit-e2e` and `tls-floor` directories are missing entirely, and
+> every count is low. Correcting them is a sweep of its own; what is corrected
+> here is the header, which was the only claim a reader would take as current.
+> Measured counts on disk: chaos 7, core 18, device-management 23, e2e 3,
+> fleet 3, multiunit-e2e 3, reservations 6, security 24, sessions 23,
+> tls-floor 6.
+
+## Branch-targeted variations
+
+These nine were written against a named csms-server branch each, rather than
+against a message type. Each file's header cites the `file.php:line` it reaches
+and states what its assertion is read off. They exist because a scenario that
+sends a distinct value but asserts only `payload.status == "Accepted"` covers no
+branch that `core/happy-boot.yaml` does not.
+
+| File | csms-server branch reached | Asserted on |
+|------|----------------------------|-------------|
+| `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:343` preserve arm (`Reconnect`) | `GET /sessions/{id}` → `status: active` |
+| `core/boot-poweron-fails-live-session` | `BootNotificationHandler.php:355` + the force-fail UPDATE at `:425` | `status: failed`, `fail_error_code: 1010` |
+| `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
+| `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
+| `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |
+| `sessions/meter-values-seqno-gap-still-ingested` | `MeterValuesHandler.php:112` gap check | the three `meter_values` rows the server wrote |
+| `sessions/meter-values-seqno-out-of-order-still-ingested` | `MeterValuesHandler.php:112` + the watermark rule at `:126` | four rows — the repeated ordinal is not deduplicated |
+| `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction.php:91` pre-flight | `409` + `ospp_code 6005`, and no Reset on the wire |
+| `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction.php:100`, `SessionEndedHandler.php:111`, `BootNotificationHandler.php:355` | server-sent `force: true`; `completed`, surviving the reboot |
 
 ## Summary
 

@@ -1,0 +1,282 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# REQUIRES TESTING_TRIGGER_COMMAND_ENABLED=true on the target (default false).
+#
+# SERVER BRANCHES REACHED — three, in order
+#   1. app/Modules/DeviceManagement/Actions/ResetStationAction.php:100-112
+#        $message = MessageBuilder::request('Reset')->withPayload($dto->toPayload())->build();
+#      `force: true` short-circuits the active-session pre-flight at :91 (`! $dto->force`),
+#      so the command actually reaches the wire. ResetRequestDto::toPayload() is
+#      `['force' => $this->force]` — the ONLY place the forced-ness becomes observable.
+#
+#   2. app/Modules/Session/Handlers/SessionEndedHandler.php:111
+#        SessionEndReason::OPERATOR_STOPPED => $this->autonomousComplete($dto, TerminalReason::OperatorDisabled),
+#      No scenario in the corpus sends this reason. The 30 SessionEnded events across
+#      107 files are Local (12), TimerExpired (10), LocalOutOfCredit (2), Fault (2),
+#      Deauthorized (2), UnexpectedDisconnect (1), EXPIRED (1). The arm that bills a
+#      wash an operator cut short had never been exercised.
+#
+#   3. app/Modules/Station/Handlers/BootNotificationHandler.php:355 — the post-reset
+#      boot, which force-fails every session still in {pending, authorized, active,
+#      stopping}. Reached here deliberately as a NEGATIVE: by then the session is
+#      terminal, so the predicate at :420-424 must no longer match it.
+#
+# WHAT THIS IS ACTUALLY ABOUT — the money, not the reboot
+#   reset-request.schema.json: "True: the station settles every active session under
+#   the operator-disable policy FIRST … and only then reboots." The two routes to the
+#   same fact settle DIFFERENTLY: the settle-first arrives as SessionEnded/OperatorStopped
+#   and completes the session pro-rata on what ran; if it is skipped or lost, the
+#   RemoteReset boot force-fails it as ForceFailedReboot instead. So the ordering IS
+#   the invariant, and the last assertion is what pins it — the session must survive
+#   the reboot as `completed`, not be rewritten to `failed`.
+#
+# WHAT THE FORCED-NESS DOES NOT DO, once the station accepts
+#   ResetResponseHandler.php:72 dispatches StationReset(stationId, forced) — and
+#   StationReset has ZERO listeners anywhere in the server. So `force` is carried
+#   faithfully to an event nobody consumes: after the response, the server behaves
+#   identically forced or not. That is why this file asserts `force` on the REQUEST
+#   (where it is real) and not on any consequence of the response (where there is none).
+name: "Reset Forced Settles Session As Operator Stop"
+description: "Forced Reset with a live session: the server must send force:true, the settle-first SessionEnded/OperatorStopped must complete the session, and the post-reset RemoteReset boot must not rewrite it to failed."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay available, then the live session the reset must settle ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 600
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The forced Reset. 202, unlike the graceful twin's 409, because `force`
+  #     short-circuits the active-session pre-flight. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
+    body:
+      command: "Reset"
+      payload:
+        force: true
+    expect_status: 202
+
+  - action: wait_for
+    message: Reset
+    messageType: Request
+    timeout_ms: 15000
+
+  # ASSERTION 1 — server-produced. `force` on the wire comes from
+  # ResetRequestDto::toPayload(); nothing in this scenario's MQTT payloads carries
+  # it. It discriminates against the failure this arc's csms-server twin still has:
+  # DashboardStationController::reset validates a `type` of soft/hard, discards it,
+  # and builds the DTO from an unvalidated `force` — so a caller asking for a hard
+  # reset gets force:false. Pinning the field is how a scenario would catch that.
+  - action: assert
+    field: "payload.force"
+    equals: true
+
+  - action: send
+    message: Reset
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # --- The settle-first the schema mandates: every active session ends under the
+  #     operator-disable policy BEFORE the reboot. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "OperatorStopped"
+      actualDurationSeconds: 120
+      creditsCharged: 200
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 2 — server-written status. `completed` is the autonomousComplete arm;
+  # the Fault arm would write `failed`, and a reason the handler did not recognise
+  # would leave it `active`. (It does NOT discriminate OperatorStopped from Local —
+  # both complete, and they diverge only in the low-delivery floor, whose value is
+  # tariff-dependent and so not safe to pin across targets. Assertion 3 is what
+  # makes this file about OperatorStopped specifically.)
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+
+  # --- The reboot itself. RemoteReset is NOT in the preserve list
+  #     (BootNotificationHandler.php:343 admits only Reconnect and ErrorRecovery),
+  #     and uptimeSeconds 0 puts every earlier session inside the force-fail
+  #     window — the same setup core/boot-poweron-fails-live-session.yaml uses to
+  #     prove a live session DOES get failed here. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "RemoteReset"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 1500
+
+  # ASSERTION 3 — the ordering invariant, and the money. The force-fail UPDATE
+  # selects `whereIn('status', ['pending','authorized','active','stopping'])`, so a
+  # session the settle-first already completed is out of its reach. If the settle
+  # had been skipped or lost, this same boot would have rewritten the row to
+  # `failed` / 1010 and settled it as ForceFailedReboot instead — a different
+  # amount of money for the same wash. `completed` surviving the reboot is that
+  # invariant, read back off the server.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+
+  # --- Pool-hygiene teardown: the session is terminal and the bay was returned to
+  #     Available before the reboot; the boot reset bay state to unknown
+  #     server-side, so restate it for the next scenario on this station. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true

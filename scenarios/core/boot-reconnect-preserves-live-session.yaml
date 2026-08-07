@@ -1,0 +1,210 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/Station/Handlers/BootNotificationHandler.php:343-354
+#     $isReconnect = in_array($dto->bootReason,
+#                             [BootReason::RECONNECT->value, BootReason::ERROR_RECOVERY->value], true);
+#     if ($isReconnect) { ...log... } else { $this->failStuckSessions(...); }
+#
+#   The PRESERVE arm. `Reconnect` was added to it by csms-server 4f2b3f4
+#   ("fix: a conforming Reconnect had its live session killed") and, before this
+#   file, NO scenario in the corpus had ever put that value on the wire: of 107
+#   scenarios, 101 send PowerOn, 4 ErrorRecovery, 3 ManualReset, 1 each
+#   Watchdog / ScheduledReset / FirmwareUpdate. Zero send Reconnect.
+#
+# WHY uptimeSeconds IS 0, AND WHY THAT IS THE WHOLE POINT
+#   There are TWO layers that can save a live session across a boot, and only one
+#   of them is bootReason. The other is the uptime window: failStuckSessions is
+#   called with `now()->subSeconds($dto->uptimeSeconds)` and only fails sessions
+#   that started BEFORE that instant (:402-411). sessions/arc8-reconnect-preserve
+#   boots with uptimeSeconds 90000, so it proves the UPTIME layer and says nothing
+#   about bootReason — a `PowerOn` with the same uptime preserves identically.
+#
+#   uptimeSeconds 0 disarms that layer: the boot instant is now, every started_at
+#   precedes it, and every live session is inside the force-fail predicate. So the
+#   ONLY thing left that can decide the outcome is the bootReason string. Read the
+#   branch again and this is exact — with `Reconnect` the uptime is never even
+#   computed, because it is an argument to the call the `if` skips.
+#
+#   core/boot-poweron-fails-live-session.yaml is this file with ONE literal
+#   changed. The pair is the attribution: same station, same uptime, same session,
+#   opposite server-written outcome.
+name: "Boot Reconnect Preserves Live Session"
+description: "Start a session, then re-boot with bootReason Reconnect and uptimeSeconds 0. The server MUST leave the session active — the uptime layer is disarmed, so only the bootReason branch can produce that."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay available, then a live session ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 600
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # The session must be ACTIVE before the re-boot, or the scenario proves nothing:
+  # a session still PENDING would be failed by a different arm of the same
+  # predicate (`status = pending AND created_at < bootTime`). Asserted, not assumed
+  # — `status` here is the server's own sessions.status column, read back.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The re-boot under test. Reconnect + uptime 0. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "Reconnect"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION. Every field here is written by the server:
+  #   data.status          — sessions.status, which the force-fail UPDATE at :425
+  #                          would have set to 'failed'
+  #   data.fail_error_code — absent unless status is FAILED (SessionResource.php:66)
+  # Nothing the scenario sent supplies either.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- Pool-hygiene teardown: this scenario deliberately leaves the session
+  #     ALIVE, so it must end it explicitly. (Class: session-leak.)
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 3
+      creditsCharged: 5
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
