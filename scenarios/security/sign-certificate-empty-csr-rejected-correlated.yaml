@@ -65,6 +65,37 @@ steps:
     field: "payload.status"
     equals: "Rejected"
 
+  # WHAT THIS USED TO ASSERT, AND WHY IT CHANGED. This said
+  # `errorText == "CSR is required"` until 2026-08-07. Measured on UAT, the server
+  # answers `1005 / INVALID_MESSAGE_FORMAT`, and that is CORRECT for this input —
+  # the scenario was testing the wrong layer, not the server the wrong answer.
+  #
+  # `csr: ""` violates the schema pattern `^-----BEGIN CERTIFICATE REQUEST-----`
+  # (sign-certificate-request.schema.json), so it is refused by the payload-schema
+  # gate in MessageFactory BEFORE any SignCertificate handling runs. `expect_invalid:
+  # true` on the send above is the tell: this payload is deliberately schema-invalid,
+  # so the only answer it can ever produce is the generic schema rejection.
+  #
+  # The spec's own conformance case expects something different —
+  # conformance/test-cases/security/TC-SEC-003.md:117-123 gives
+  # `{"status":"Rejected","errorCode":4010,"errorText":"CSR_INVALID"}` — but that is
+  # for a CSR which is schema-VALID and still not a usable CSR (a well-formed PEM
+  # that will not parse). An empty string never reaches that code path.
+  #
+  # SO: 4010 CSR_INVALID has ZERO coverage over MQTT, and this file is not where it
+  # belongs. Reaching it needs a schema-valid-but-unparseable CSR, which is a
+  # separate scenario. Worth knowing while writing it: csms-server implements
+  # CSR_INVALID only on the REST provisioning path
+  # (ProvisioningController.php:153-158); whether the MQTT SignCertificate path
+  # answers 4010 at all is unverified and should be established first.
+  #
+  # What this file DOES prove, and what its name says it is for, is unaffected: the
+  # Response is correlated back to the Request by messageId. 1005 serves that guard
+  # exactly as well as 4010 would.
+  - action: assert
+    field: "payload.errorCode"
+    equals: 1005
+
   - action: assert
     field: "payload.errorText"
-    equals: "CSR is required"
+    equals: "INVALID_MESSAGE_FORMAT"
