@@ -202,6 +202,34 @@ describe('buildSeedCatalogSql', () => {
     expect(sql).toContain('updated_at = NOW();');
   });
 
+  it('seeds bay_services, and takes program_number from bay_programs rather than assuming one', () => {
+    const sql = buildSeedCatalogSql('org-1', ['stn_x'], DEFAULT_SEED_SERVICES);
+    expect(sql).toContain(
+      'INSERT INTO bay_services (bay_id, station_service_id, program_number, available)',
+    );
+    // The load-bearing invariant: the ordinal is JOINed from bay_programs, never
+    // a literal. StationServiceCatalogController::bindProgram answers 422/3017 for
+    // an ordinal the bay never declared, and a fixture must not be able to create
+    // what the real endpoint would refuse.
+    expect(sql).toContain('JOIN bay_programs bp ON bp.bay_id = b.id');
+    expect(sql).toContain('MIN(bp.program_number)');
+    expect(sql).not.toMatch(/program_number,\s*available\)\s*\n\s*SELECT[^\n]*,\s*1,/);
+    // Idempotent — the suite re-seeds on every bootstrap.
+    expect(sql).toContain('ON CONFLICT (bay_id, station_service_id) DO UPDATE SET');
+    // An INNER join, so a bay with no declared programs yields no binding at all
+    // rather than an invented one (the pre-bays[] fleet).
+    expect(sql).not.toContain('LEFT JOIN bay_programs');
+  });
+
+  it('binds only within the seeded org + service set, exactly as station_services is scoped', () => {
+    const sql = buildSeedCatalogSql('org-9', ['stn_x'], DEFAULT_SEED_SERVICES);
+    const bayServices = sql.slice(sql.indexOf('INSERT INTO bay_services'));
+    const upTo = bayServices.slice(0, bayServices.indexOf('ON CONFLICT'));
+    expect(upTo).toContain("sd.organization_id = 'org-9'");
+    expect(upTo).toContain('sd.service_id = ANY(');
+    expect(upTo).toContain("s.station_id = ANY(ARRAY['stn_x']::text[])");
+  });
+
   it('audit row INSERT + current_catalog_version bump are scoped to current_catalog_version IS NULL (re-seed-safe)', () => {
     const sql = buildSeedCatalogSql('org-1', ['stn_x'], DEFAULT_SEED_SERVICES);
     const catalogLine = sql.indexOf('INSERT INTO service_catalogs');

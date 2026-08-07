@@ -205,12 +205,29 @@ export function buildServicesPayloadJson(services: ReadonlyArray<SeededService>)
  *      Brief L-prime).
  *   2. `station_services`: `INSERT … ON CONFLICT (station_id, service_definition_id) DO
  *      UPDATE SET …` — mirrors Laravel `updateOrInsert`.
- *   3. `service_catalogs` audit row + `stations.current_catalog_version = '1'`: scoped to
+ *   3. `bay_services`: the service→program binding, one row per (bay × station_service).
+ *      This USED to be left empty on the grounds that the catalog handler does not write it
+ *      either. That was true and it made two things impossible:
+ *
+ *        - `service-catalog-update.yaml` could never pass. `UpdateServiceCatalogAction::
+ *          resolveBindings()` throws VALIDATION_ERROR when the join is empty, ungated by any
+ *          flag, so the PUT could not return 202 on any run. The scenario failed every time
+ *          for a fixture reason that read as a server regression.
+ *        - `ServiceProgramResolver::resolve()` returned null for every start, so
+ *          `StartSessionAction` OMITTED `programNumber` from the StartService REQUEST —
+ *          a field `start-service-request.schema.json` makes REQUIRED. 29 scenarios waved a
+ *          non-conformant server message through without noticing.
+ *
+ *      `program_number` is taken from `bay_programs` (MIN per bay) rather than assumed, so a
+ *      binding can only ever name an ordinal the station actually DECLARED at provisioning —
+ *      the same invariant `StationServiceCatalogController::bindProgram` enforces when it
+ *      answers 422/3017. A station with no `bay_programs` rows therefore gets no bindings
+ *      rather than an invented one: that is the pre-`bays[]` fleet, and guessing on its
+ *      behalf is what 3017 exists to prevent.
+ *
+ *   4. `service_catalogs` audit row + `stations.current_catalog_version = '1'`: scoped to
  *      stations whose `current_catalog_version IS NULL`, so re-seeding never double-writes
  *      an audit row or restarts the monotonic-version sequence.
- *
- * `bay_services` is intentionally not touched (handler doesn't write it either; the write
- * path is Brief L-prime; the table is empty by design until then).
  */
 export function buildSeedCatalogSql(
   orgId: string,
@@ -259,14 +276,34 @@ export function buildSeedCatalogSql(
     '  price_credits_per_minute = EXCLUDED.price_credits_per_minute,',
     '  available = EXCLUDED.available,',
     '  updated_at = NOW();',
-    // 3. service_catalogs audit row — only for never-seeded stations (current_catalog_version
+    // 3. bay_services: the service->program binding. Scoped exactly like step 2, and joined
+    //    to bay_programs so program_number can only be an ordinal the bay DECLARED. MIN()
+    //    picks the bay's lowest declared ordinal deterministically (the bootstrap declares
+    //    one program per bay, so this is that program). A bay with no declared programs
+    //    contributes no row — see the docblock.
+    'INSERT INTO bay_services (bay_id, station_service_id, program_number, available)',
+    'SELECT b.id, ss.id, MIN(bp.program_number), true',
+    'FROM bays b',
+    '  JOIN stations s ON s.id = b.station_id',
+    '  JOIN station_services ss ON ss.station_id = s.id',
+    '  JOIN service_definitions sd ON sd.id = ss.service_definition_id',
+    '  JOIN bay_programs bp ON bp.bay_id = b.id',
+    `WHERE s.station_id = ANY(${stationArr})`,
+    `  AND sd.organization_id = ${orgLit}`,
+    `  AND sd.service_id = ANY(${svcArr})`,
+    'GROUP BY b.id, ss.id',
+    'ON CONFLICT (bay_id, station_service_id) DO UPDATE SET',
+    '  program_number = EXCLUDED.program_number,',
+    '  available = EXCLUDED.available,',
+    '  updated_at = NOW();',
+    // 4. service_catalogs audit row — only for never-seeded stations (current_catalog_version
     //    IS NULL). Re-seeding never double-writes.
     'INSERT INTO service_catalogs (station_id, catalog_version, previous_catalog_version, services_data, applied_at, created_at)',
     `SELECT s.id, '1', NULL, ${servicesJsonLit}::jsonb, NOW(), NOW()`,
     'FROM stations s',
     `WHERE s.station_id = ANY(${stationArr})`,
     '  AND s.current_catalog_version IS NULL;',
-    // 4. stations.current_catalog_version bump — first-push only (preserves natural
+    // 5. stations.current_catalog_version bump — first-push only (preserves natural
     //    increment for any subsequent real UpdateServiceCatalog).
     "UPDATE stations SET current_catalog_version = '1', updated_at = NOW()",
     `WHERE station_id = ANY(${stationArr})`,
