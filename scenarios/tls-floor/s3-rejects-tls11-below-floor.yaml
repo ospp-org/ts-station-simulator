@@ -51,6 +51,17 @@ tls:
   min_version: "TLSv1.1"
   max_version: "TLSv1.1"
 expect_connect_failure: true
+# WHY the connect failed, not merely that it did. Without this key the pass
+# condition is "anything went wrong": a wrong port, an unreachable host, a DNS
+# failure, or a bounded hang classified `timeout` all satisfy
+# expect_connect_failure alone — while the file claims to prove a TLS floor.
+# Pinned to the reason C4 actually measured against UAT ("tls_setup_handshake:
+# no protocols available"), which classifyRefusalReason maps to
+# `client-tls-version`. That value is also the honest one: it says the CLIENT's
+# own stack refused to offer 1.1, which is what this scenario can observe. The
+# broker-side <1.2 refusal is the out-of-band nmap/config evidence above, and
+# naming the client reason here stops the file implying otherwise.
+expect_refusal_reason: client-tls-version
 station:
   stationId: "{{stationId}}"
   bayCount: 2

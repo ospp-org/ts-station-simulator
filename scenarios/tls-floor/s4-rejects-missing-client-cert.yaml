@@ -13,9 +13,12 @@
 # scenario proves that lowering the floor from 1.3-only to 1.2+ did NOT
 # also loosen client-certificate enforcement. Connection MUST be REJECTED.
 #
-# `expect_connect_failure: true` — see s3-rejects-tls11-below-floor.yaml
-# for the full doc on what "rejected" covers (explicit error OR a bounded
-# timeout, since some handshake failures surface as a bare reset).
+# `expect_connect_failure: true` — see s3-rejects-tls11-below-floor.yaml for
+# the full doc. Note the "OR a bounded timeout" latitude it describes no longer
+# applies HERE: `expect_refusal_reason` below narrows the pass to a broker
+# certificate alert, so a bare reset classified `timeout` is now a FAILURE for
+# this scenario. That is deliberate — a control that accepts a hang as proof of
+# enforcement is not a control.
 #
 # Run against a live broker, e.g.:
 #   simulator run --scenario scenarios/tls-floor/s4-rejects-missing-client-cert.yaml \
@@ -30,6 +33,15 @@ description: "Client omits the client certificate entirely (tls.no_client_cert: 
 tls:
   no_client_cert: true
 expect_connect_failure: true
+# WHY the connect failed, not merely that it did. This is a security control:
+# without this key its pass condition is "anything went wrong", so a wrong port,
+# an unreachable host, or the bounded hang this file's own header concedes counts
+# as "rejected" would all report PASSED while proving nothing about mTLS.
+# `broker-bad-certificate` is the bucket classifyRefusalReason assigns to the
+# alerts a broker raises when the peer presents no usable certificate
+# ("handshake failure", "peer did not return a certificate", "certificate
+# required"), so a refusal at the wrong layer — including `timeout` — now FAILS.
+expect_refusal_reason: broker-bad-certificate
 station:
   stationId: "{{stationId}}"
   bayCount: 2
