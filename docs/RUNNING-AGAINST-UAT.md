@@ -63,6 +63,7 @@ the variable; before that it printed a bare red scenario name and nothing else.
 |---|---|
 | `multiunit-e2e/single-session-drive` | `--var reason=<SessionEndReason>` e.g. `TimerExpired`. Its header says so. Passes 12/12 with it. |
 | `sessions/session-rejected-invalid-service-cross-station` | `--var stationA_bayId=… --var stationB_serviceId=…`, plus **two** manually provisioned stations in one org with disjoint catalogs. `skip_when_pooled` carries the reason. |
+| `security/offline-auth-transaction-reconcile{,-hostile}` | `--var offlineTxId=… --var authId=… --var sessionId=…` — the header says so. These describe a grant issued out of band; there is no API that mints one on UAT. |
 | most `sessions/*`, `reservations/*` | `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
 
 `{{bayId_N}}` is hydrated automatically from `<stationId>-bays.json`; serviceIds are not.
@@ -118,6 +119,38 @@ Also accumulating, from runs whose teardown did not complete: `certs/uat/` key s
 `tests/artifacts/uat/` directories, and `pool-handle.json` holding a finished run's
 credentials. `persistedKeySet` **reuses** an existing key set rather than flagging it, so a
 half-provisioned directory is silently adopted.
+
+**Accumulated state moves the failure, which is worse than repeating it.** The three
+`e2e/*` scenarios failed `409 "Station already exists"` on the first run. On the second
+they failed **earlier**, with `422 "The email has already been taken"` — because the first
+run got past registration and created the user before dying. Same root cause, different
+symptom, and nothing about the second message points at the first. If an `e2e` failure
+message changes between runs without the code changing, suspect residue rather than a
+regression.
+
+### A server defect this surfaced — `PATCH /active` can 500 with the flag committed
+
+`StopAllStationSessionsAction::execute()` catches **only** `OsppException`, with the
+comment *"The bulk stop must never fail the whole disable because one session cannot
+stop."* But `SignOutgoingMiddleware` throws `UnsignableMessageException`, and the two are
+sibling `final class … extends RuntimeException` — so it escapes the catch, propagates out
+of `setActive()`, and returns **500 Server Error** after `is_active` has already been
+written.
+
+There is an ordering irony in it: the same endpoint KICKS the station off the broker
+(deliberately, ADR-0004 §4), which ends the MQTT session and therefore the session key —
+so the auto-stop races the very condition that makes `StopService` unpublishable. And the
+kick immediately below it *is* wrapped best-effort, for exactly this reason.
+
+Symptom when it happens: the disable half-applies, the caller sees only "Server Error",
+and every later scenario on that station fails `502 STATION_OFFLINE`. On the 2026-08-07
+re-run this single defect accounted for **all three** `core` failures — the disable
+scenario itself, plus `data-transfer-response` and `reconnect-recovery` downstream of the
+station being left disabled. It reproduces only when the station has an in-flight session
+at disable time, which is why the same scenario passes standalone.
+
+Recorded, not fixed: csms-server code, outside the simulator, and the fix is one `catch`
+widening in an action whose intent is already written down.
 
 ---
 
