@@ -532,22 +532,12 @@ export class Station extends EventEmitter {
       {
         sessionId: session.sessionId,
         bayId: session.bayId,
-        // KNOWN WRONG, and blocked — see Station.operatorStopBlocked.test.ts.
-        //
-        // `Deauthorized` carries "Session MUST be billed at zero" (03-messages.md
-        // §5.4), while `force` requires the customer be "billed for what they
-        // received". A forced reset therefore delivers a wash and charges nothing.
-        //
-        // The correct value is `OperatorStopped`, added to the spec for exactly
-        // this. It cannot be emitted yet: @ospp/protocol has not been regenerated,
-        // and the reference server's schema rejects the string — a REJECTED
-        // SessionEnded is worse than a mis-billed one, because SessionEnded is the
-        // sole billing source when no StopService was issued, so the session goes
-        // unbilled entirely rather than billed at zero.
-        //
-        // Flip to SessionEndReason.OPERATOR_STOPPED once the SDK ships it. The
-        // pinned test fails at that moment, which is the signal.
-        reason: SessionEndReason.DEAUTHORIZED,
+        // spec v0.11.1 03-messages.md §5.4 — the only reason that bills a NON-ZERO
+        // amount for a session the station did not run to completion, which is
+        // exactly what a forced reset produces. This was `Deauthorized` until the
+        // member existed, and that carries "Session MUST be billed at zero" — so
+        // every forced reset delivered a wash and charged nothing for it.
+        reason: SessionEndReason.OPERATOR_STOPPED,
         actualDurationSeconds,
         creditsCharged,
         // peek, not next: SessionEnded reports the FINAL position, it does not
