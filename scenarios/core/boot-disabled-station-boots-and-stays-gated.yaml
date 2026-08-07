@@ -1,0 +1,253 @@
+# ADR-0004 §4.2 — a DISABLED station BOOTS, and stays gated.
+#
+# WHAT THIS FILE USED TO ASSERT, AND WHY IT CHANGED. Until 2026-08-07 this was
+# `boot-rejected.yaml`, and it asserted that disabling a station via
+# PATCH /admin/stations/{id}/active made the next BootNotification `Rejected`.
+# That WAS the server's behaviour, and it was removed ON PURPOSE in csms-server
+# `67aab07` (ADR-0004 TIER 1). It is not a regression, and the reject must not be
+# re-added — BootNotificationHandler.php:153 says so at the site:
+#
+#   "ADR-0004 §4.2 — a DISABLED station still BOOTS. Deliberate, and the absence
+#    of a reject here is load-bearing."
+#
+# The reasoning, from that comment: `is_active` is the POLICY axis, `is_online` is
+# the REACHABILITY axis, and rejecting the boot conflated them. `is_online = true`
+# is written only on the accepted path, and boot is the protocol's SOLE session-key
+# ceremony — so a rejected boot left a disabled station neither reachable nor
+# verifiable, refusing the entire repair surface that ADR-0004's gateway allow-list
+# exists to permit. A station disabled long enough to hit cert expiry was bricked
+# with no remote way back.
+#
+# So the differential moved axis. It is no longer "does the boot succeed" — it
+# always does — it is "does the station still earn nothing while disabled". This
+# file now asserts the two gates ADR-0004 leaves holding that line, which is what
+# csms-server's own DisabledStationBootsAndStaysGatedTest covers server-side:
+#
+#   disabled  -> boot Accepted, and POST /sessions/start refused
+#                502 / 6003 STATION_OFFLINE "Station is disabled"  (ADR-0003 §2.1,
+#                StartSessionAction.php:71-73 — the shared chokepoint for
+#                webpay + app/RFID)
+#   re-enabled -> boot Accepted, and the SAME start now succeeds
+#
+# Both halves are needed. Asserting only the refusal would pass against a server
+# that refused every start for any reason; asserting only the success would pass
+# against one with no gate at all. Disable is reversible, and this proves it.
+#
+# NOTE the refusal is asserted on ospp_code AND message. 6003 STATION_OFFLINE is
+# shared between "disabled by an operator" and "genuinely unreachable" — the
+# comment at StartSessionAction.php:69 records that the distinction is surfaced in
+# the dashboard, not in the protocol reject — so the code alone does not prove
+# WHICH. The message does.
+name: "Disabled station boots and stays gated (ADR-0004 §4.2 / ADR-0003 §2.1)"
+description: "Disable via PATCH /admin/stations/{id}/active: the boot is ACCEPTED (deliberate, 67aab07) while POST /sessions/start is refused 502/6003 'Station is disabled'. Re-enable and the same start succeeds — the reversibility ADR-0003 promises."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    auto_retry_boot: false
+steps:
+  # ---- Disable ----
+  - action: api_call
+    method: PATCH
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/active"
+    body:
+      is_active: false
+    expect_status: 200
+
+  - action: delay
+    ms: 2000
+
+  # ---- ADR-0004 TIER 1: the disable KICKS us off the broker ----
+  # Discovered by running: the first draft of this rewrite sent the boot straight
+  # after the PATCH and timed out waiting for a response, because there was no
+  # connection left to answer on. `is_active: false` severs the session.
+  - action: assert
+    field: "connection.kicked"
+    equals: true
+
+  # ...and the station can come BACK. This is the repair invariant `67aab07`
+  # restored and the one that must not regress: the durable reconnect BAN was
+  # removed, so a disabled station is reachable for repair. If a ban is ever
+  # re-added this step is where it surfaces, as a connect timeout.
+  - action: wait_for_connect
+    timeout_ms: 20000
+
+  # ---- Boot while disabled: MUST be Accepted ----
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      sessionKeyPresent: "payload.sessionKey"
+
+  # The load-bearing line. This said "Rejected" until 67aab07 made it wrong.
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Report the bay Available so the refusal below cannot be the BAY gate (3002)
+  # wearing the station gate's clothes — every bay is reset to `unknown` on each
+  # boot (BootNotificationHandler.php:358).
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # ---- Gate 1: a disabled station earns nothing ----
+  # FOREGROUND: refused pre-dispatch, so there is no station Response to overlap
+  # with, and background mode would downgrade the mismatch to a console.warn.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 502
+    expect_body:
+      error.ospp_code: 6003
+      error.message: "Station is disabled"
+
+  # ---- Re-enable ----
+  - action: api_call
+    method: PATCH
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/active"
+    body:
+      is_active: true
+    expect_status: 200
+
+  - action: delay
+    ms: 2000
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 5
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      heartbeatInterval: "payload.heartbeatIntervalSec"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # That boot reset the bays to `unknown`, so report Available again.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # ---- Gate 2: re-enabling restores starts (the other half of the differential) ----
+  # BACKGROUND here, unlike the refusal above: this one SUCCEEDS, so the endpoint
+  # blocks on the station's MQTT Response and the wait_for + send below must run
+  # while the fetch is in flight.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+      serviceId: "payload.serviceId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # ---- Pool hygiene: end the session this scenario started. ----
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 1
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

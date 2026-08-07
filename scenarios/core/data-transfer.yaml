@@ -62,6 +62,26 @@ steps:
     messageType: Response
     timeout_ms: 10000
 
+  # WHAT THIS USED TO ASSERT, AND WHY IT CHANGED. This said `Accepted` until
+  # 2026-08-07. That WAS the server's answer, and the blanket Accept was removed ON
+  # PURPOSE as AUDIT-01 F-14 — it is not a regression and must not be restored.
+  # DataTransferHandler.php:22-27 records both the rule and the reason:
+  #
+  #   "The registry (`config('ospp.data_transfer.vendors')`, vendorId => list<dataId>)
+  #    is EMPTY by default, so every inbound DataTransfer is answered UnknownVendor.
+  #    This server implements no vendor extensions — it only logs the payload — so the
+  #    prior blanket Accepted falsely told the vendor its data had been processed."
+  #
+  # `UnknownVendor` is the CONFORMING answer for an unregistered vendorId and is
+  # explicitly NOT an error condition (profiles/core/data-transfer.md §5.1). The
+  # three-value rule is UnknownVendor (vendor unknown) / UnknownData (vendor known,
+  # dataId not implemented, §5.2) / Accepted (a pair this server really implements).
+  #
+  # So the assertion below is the one this scenario can honestly make: "TestVendor"
+  # is not in the registry and cannot be, since a vendor is registered only alongside
+  # real handling for its dataIds. Asserting `Accepted` would be asserting that the
+  # server lies. If a vendor is ever registered, THAT is when this expectation moves —
+  # and the scenario should then name the registered pair rather than "TestVendor".
   - action: assert
     field: "payload.status"
-    equals: "Accepted"
+    equals: "UnknownVendor"
