@@ -462,6 +462,25 @@ function printConsoleReport(results: ScenarioResult[]): void {
         console.log(chalk.red(`    Error: ${step.error}`));
       }
     }
+
+    // A scenario can fail with NO failing step: anything that throws before the
+    // step loop records a result (pre-step setup, pool/identity allocation, a
+    // connect the scenario did not mark as expected-to-fail) lands only on
+    // `result.error`. This block printed steps and nothing else, so those failures
+    // rendered as a bare red name — no step, no reason. A scenario that fails
+    // invisibly is worse than one that fails wrongly: the second is a wrong answer,
+    // the first is no answer at all.
+    if (result.status === 'failed' && result.error) {
+      // `includes`, not equality: a step may wrap the same cause with context
+      // (e.g. "template substitution failed: <cause>"), and printing both the
+      // wrapped and bare form twice is noise, not detail.
+      const alreadyOnAStep = result.steps.some(
+        s => s.error !== undefined && s.error.includes(result.error as string),
+      );
+      if (!alreadyOnAStep) {
+        console.log(chalk.red(`    Error: ${result.error}`));
+      }
+    }
     console.log();
   }
 

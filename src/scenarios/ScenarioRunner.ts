@@ -1250,13 +1250,35 @@ export class ScenarioRunner {
         const rawStep = scenario.steps[i];
         const stepStart = Date.now();
 
-        // Apply template substitution to the entire step definition
-        const substitutedStep = substituteTemplates(rawStep, {
-          variables: context.variables,
-          captured: context.captured,
-          provisioning: context.provisioning,
-          pool: context.pool,
-        }) as StepDefinition;
+        // Apply template substitution to the entire step definition.
+        //
+        // Inside its own try/catch, because this throws on an unresolved
+        // `{{var}}`/`{{captured.x}}` and used to do so OUTSIDE the step loop's
+        // recording — so the step result was never pushed, the console printed a
+        // bare red scenario name with no steps and no message, and the failure was
+        // untriageable. Two files failed exactly this way on the UAT run
+        // (single-session-drive, missing a documented `--var reason`; and
+        // session-rejected-invalid-service-cross-station, missing two). Attribute it
+        // to the step that could not be built.
+        let substitutedStep: StepDefinition;
+        try {
+          substitutedStep = substituteTemplates(rawStep, {
+            variables: context.variables,
+            captured: context.captured,
+            provisioning: context.provisioning,
+            pool: context.pool,
+          }) as StepDefinition;
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          context.stepResults.push({
+            stepIndex: i,
+            action: (rawStep as StepDefinition | undefined)?.action ?? '(unresolved)',
+            status: 'failed',
+            durationMs: Date.now() - stepStart,
+            error: `template substitution failed: ${errorMsg}`,
+          });
+          throw err;
+        }
 
         const stepImpl = STEP_REGISTRY.get(substitutedStep.action);
         if (!stepImpl) {
