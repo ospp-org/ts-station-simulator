@@ -83,6 +83,12 @@ npx simulator run --all --output junit --output-file results/run.xml
 npx simulator run --all --output json --output-file results/run.json
 ```
 
+> **Running against UAT: read [`docs/RUNNING-AGAINST-UAT.md`](docs/RUNNING-AGAINST-UAT.md)
+> first.** On the 2026-08-07 full run, 11 of 18 failures were not defects — missing env,
+> missing fixtures, missing `--var`s, or the wrong run mode. That file lists what has to be
+> true, which scenarios `--station` cannot run and why, the required `--var`s, and why the
+> `session-mutate` rate limit must not be raised.
+
 ### connect
 
 Run a station against a target and keep it connected to respond to
