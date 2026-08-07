@@ -436,6 +436,16 @@ export class ApiCallStep implements Step {
           'ApiCallStep: "capture" is not supported with "background: true" (response not awaited)',
         );
       }
+      // Same reason, and worth failing loudly on: in background mode a status
+      // mismatch is only a console.warn (below), so a scenario that believes
+      // "the 4xx is the final assertion" has no assertion at all. expect_body
+      // cannot be honoured here either — refuse it rather than silently ignore.
+      if (definition.expect_body !== undefined) {
+        throw new Error(
+          'ApiCallStep: "expect_body" is not supported with "background: true" ' +
+            '(response not awaited — use a foreground call to assert on the body)',
+        );
+      }
       fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
         .then(async (response) => {
           if (definition.expect_status !== undefined) {
@@ -473,10 +483,36 @@ export class ApiCallStep implements Step {
 
     const needsBody =
       (definition.capture && typeof definition.capture === 'object') ||
+      (definition.expect_body && typeof definition.expect_body === 'object') ||
       typeof definition.set_auth_token === 'string';
 
     if (needsBody) {
       const responseBody: unknown = await response.json();
+
+      // `expect_status` alone cannot tell one refusal from another: a bay that
+      // is Unavailable answers 3011 BAY_MAINTENANCE and a bay the server has
+      // never heard a status for answers 3002 BAY_NOT_READY, and BOTH are 409.
+      // A scenario asserting only the HTTP code passes on either, so it cannot
+      // detect that its own precondition never landed. `expect_body` pins the
+      // discriminating field. Dotted paths, strict equality per key.
+      if (definition.expect_body && typeof definition.expect_body === 'object') {
+        for (const [path, want] of Object.entries(
+          definition.expect_body as Record<string, unknown>,
+        )) {
+          const got = getNestedValue(responseBody, path);
+          const same =
+            got === want ||
+            (typeof got === 'object' && got !== null &&
+              JSON.stringify(got) === JSON.stringify(want));
+          if (!same) {
+            throw new Error(
+              `ApiCallStep: expected body "${path}" to equal ` +
+                `${JSON.stringify(want)}, but got ${JSON.stringify(got)} ` +
+                `(full body: ${JSON.stringify(responseBody)})`,
+            );
+          }
+        }
+      }
 
       if (typeof definition.set_auth_token === 'string') {
         const tokenPath = definition.set_auth_token;

@@ -99,17 +99,28 @@ steps:
         - programNumber: 1
           available: false
   # --- Trigger second StartService on same bay via API ---
+  # FOREGROUND deliberately, unlike the FIRST api_call in this file. That one
+  # must stay background: it is a real session start, so the endpoint blocks on
+  # the station's MQTT Response and the scenario's wait_for + send Response have
+  # to run while the fetch is in flight. THIS one is refused pre-dispatch, so
+  # nothing overlaps it — and background mode would downgrade the mismatch to a
+  # console.warn, which is why "the 409 is the final assertion" was not one.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
-    background: true
     body:
       bay_id: "{{captured.bayId}}"
       service_id: "{{captured.serviceId}}"
       duration_seconds: 300
     expect_status: 409
-  # Per C-005: server returns 409 BAY_BUSY (state conflict) pre-MQTT-dispatch;
-  # no StartService Request is published. The 409 is the final assertion.
+    # 3001 BAY_BUSY is reachable ONLY from OCCUPIED
+    # (SessionStateMachine.php:74-81), so this proves the first session really
+    # holds the bay — not that some unrelated 409 came back. Without it the bay
+    # could have been `unknown` (3002) and the scenario would still have passed.
+    expect_body:
+      error.ospp_code: 3001
+  # Per C-005: server returns 409 BAY_BUSY pre-MQTT-dispatch; no StartService
+  # Request is published.
 
   # --- Pool-hygiene teardown: end the (first) session this scenario started so the
   #     reused pooled station is returned clean. Appended after all assertions — does

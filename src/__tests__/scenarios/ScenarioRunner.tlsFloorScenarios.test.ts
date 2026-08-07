@@ -126,6 +126,9 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     const runner = new ScenarioRunner();
     const def = await runner.loadScenario(scenarioPath('s3-rejects-tls11-below-floor.yaml'));
     expect(def.expect_connect_failure).toBe(true);
+    // The stub's default 'unsupported protocol' is exactly what C4 measured
+    // live against UAT, and it classifies as this reason.
+    expect(def.expect_refusal_reason).toBe('client-tls-version');
     expect(def.steps).toHaveLength(0);
 
     const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
@@ -136,11 +139,18 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     expect(connectCalls[0]?.opts.maxVersion).toBe('TLSv1.1');
   });
 
-  it('S4 strips key/cert via no_client_cert, expect_connect_failure, reports PASSED on a broker rejection', async () => {
+  it('S4 strips key/cert via no_client_cert and reports PASSED on a broker CERTIFICATE rejection', async () => {
     behavior = 'error';
+    // S4 now pins expect_refusal_reason: broker-bad-certificate, so the stub has
+    // to emit the alert a broker actually raises when mTLS is enforced and the
+    // peer presented nothing. The default 'unsupported protocol' is S3's
+    // client-side version refusal and classifies as `client-tls-version` — it
+    // would (correctly) FAIL S4 now, which is the whole point of the pin.
+    errorMessage = 'peer did not return a certificate';
     const runner = new ScenarioRunner();
     const def = await runner.loadScenario(scenarioPath('s4-rejects-missing-client-cert.yaml'));
     expect(def.expect_connect_failure).toBe(true);
+    expect(def.expect_refusal_reason).toBe('broker-bad-certificate');
     expect(def.tls).toEqual({ no_client_cert: true });
     expect(def.steps).toHaveLength(0);
 
@@ -154,6 +164,32 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     expect(result.status).toBe('passed');
     expect(connectCalls[0]?.opts.key).toBeUndefined();
     expect(connectCalls[0]?.opts.cert).toBeUndefined();
+  });
+
+  it('S4 reports FAILED when the refusal is a bounded TIMEOUT — a hang is not proof of mTLS enforcement', async () => {
+    behavior = 'error';
+    // No connect and no error would classify `timeout`; drive the same outcome
+    // through the classifier with a detail it maps there. Before
+    // expect_refusal_reason was pinned, this reported PASSED — which is what
+    // made S4 a security control whose pass condition was "anything failed".
+    errorMessage = 'no connect/error event within 50ms (treated as rejection)';
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s4-rejects-missing-client-cert.yaml'));
+    const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
+    const result = await runner.runScenario(def, target);
+
+    expect(result.status).toBe('failed');
+  });
+
+  it('S4 reports FAILED when the refusal is a client-side TLS-VERSION error — wrong layer, wrong proof', async () => {
+    behavior = 'error';
+    errorMessage = 'unsupported protocol';
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s4-rejects-missing-client-cert.yaml'));
+    const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
+    const result = await runner.runScenario(def, target);
+
+    expect(result.status).toBe('failed');
   });
 
   it('S5b (positive control) pins TLS 1.2 and its assert passes when a valid cert negotiates 1.2 under enable_crl_check', async () => {

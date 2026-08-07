@@ -61,14 +61,25 @@ steps:
         - programNumber: 1
           available: true
   # --- Trigger StartService with unknown serviceId via API ---
+  # FOREGROUND deliberately. This rejection is decided pre-dispatch, so the
+  # endpoint does NOT block on a station MQTT Response and there is nothing for
+  # a background call to overlap with. Background mode downgrades an
+  # expect_status mismatch to a console.warn (ApiCallStep.ts:439-455), so while
+  # this step said "the 404 is the final assertion" it had no assertion at all:
+  # a server that answered 201 and started a session on an unknown serviceId
+  # passed it.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
-    background: true
     body:
       bay_id: "{{bayId_1}}"
       service_id: "svc_nonexistent"
       duration_seconds: 300
     expect_status: 404
-  # Per C-007: server returns 404 INVALID_SERVICE (not found) pre-MQTT-dispatch;
-  # no StartService Request is published. The 404 is the final assertion.
+    # 3004 INVALID_SERVICE is discriminating here — it is the only code
+    # StartSessionAction raises for an unresolvable serviceId, so this cannot be
+    # satisfied by an unrelated 404 (wrong route, missing bay).
+    expect_body:
+      error.ospp_code: 3004
+  # Per C-007: server returns 404 INVALID_SERVICE pre-MQTT-dispatch; no
+  # StartService Request is published.

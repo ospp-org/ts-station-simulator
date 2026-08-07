@@ -64,14 +64,27 @@ steps:
         - programNumber: 1
           available: false
   # --- Trigger StartService on faulted bay via API ---
+  # FOREGROUND deliberately — the rejection is pre-dispatch, so there is no
+  # station Response for a background call to overlap with, and background mode
+  # downgrades an expect_status mismatch to a console.warn.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
-    background: true
     body:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
       duration_seconds: 300
     expect_status: 409
-  # Per C-006: server returns 409 BAY_NOT_READY (state conflict) pre-MQTT-dispatch;
-  # no StartService Request is published. The 409 is the final assertion.
+    # HONEST LIMIT, stated rather than papered over: 3002 does NOT prove the bay
+    # is Faulted. SessionStateMachine.php:74-81 returns 3002 BAY_NOT_READY for
+    # FAULTED, FINISHING *and* UNKNOWN alike, so this scenario still cannot
+    # distinguish "the Faulted report landed and refused the start" from "the
+    # report never landed and the bay is simply unknown". Pinning 3002 is
+    # therefore an improvement on asserting nothing — it rules out 3001/3011/3004
+    # and any unrelated 409 — but it is NOT a positive proof of the faulted path.
+    # Closing that gap needs either a code the server does not currently
+    # distinguish, or an out-of-band read of bays.status. Recorded, not invented.
+    expect_body:
+      error.ospp_code: 3002
+  # Per C-006: server returns 409 BAY_NOT_READY pre-MQTT-dispatch; no
+  # StartService Request is published.
