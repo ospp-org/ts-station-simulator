@@ -60,10 +60,9 @@ steps:
       previousStatus: "Available"
       errorCode: 5001
       errorText: "PUMP_SYSTEM"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Trigger StartService on faulted bay via API ---
   - action: api_call
     method: POST

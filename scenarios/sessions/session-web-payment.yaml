@@ -57,10 +57,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger StartService with WebPayment source via API ---
   - action: api_call
     method: POST
@@ -103,10 +102,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Pool-hygiene teardown: end the session this scenario started so the reused
   #     pooled station is returned clean. Appended after all assertions — does not
   #     change what the scenario tests. (Class: session-leak.)
@@ -127,6 +125,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: true

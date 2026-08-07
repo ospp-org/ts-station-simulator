@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger ReserveBay via CSMS API
   - action: api_call
     method: POST
@@ -90,10 +89,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Reserved"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger CancelReservation via CSMS API
   - action: api_call
     method: POST
@@ -118,6 +116,6 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

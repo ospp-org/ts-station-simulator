@@ -53,10 +53,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
@@ -123,6 +122,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

@@ -56,10 +56,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -67,10 +66,9 @@ steps:
       bayId: "{{bayId_2}}"
       bayNumber: 2
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger ReserveBay via CSMS API
   - action: api_call
     method: POST
@@ -102,10 +100,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Reserved"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger StartService with reservationId via CSMS API
   - action: api_call
     method: POST
@@ -142,10 +139,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Pool-hygiene teardown: end the session this scenario started so the reused
   #     pooled station is returned clean. Appended after all assertions — does not
   #     change what the scenario tests. (Class: session-leak.)
@@ -166,6 +162,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

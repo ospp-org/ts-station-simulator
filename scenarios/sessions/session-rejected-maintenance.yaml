@@ -58,10 +58,9 @@ steps:
       bayNumber: 1
       status: "Unavailable"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Trigger StartService on maintenance bay via API ---
   - action: api_call
     method: POST

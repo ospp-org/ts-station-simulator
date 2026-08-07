@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger StartService to occupy the bay first
   - action: api_call
     method: POST
@@ -91,10 +90,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # Trigger ReserveBay on the same occupied bay - should be rejected.
   # Server propagates the station's Rejected MQTT Response as HTTP 422.
   - action: api_call
@@ -128,6 +126,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

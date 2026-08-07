@@ -49,10 +49,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Unavailable"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # Discover real persisted bayIds for this station (Drift 6 fix).
   - action: api_call
     method: GET
@@ -89,6 +88,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Unavailable"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

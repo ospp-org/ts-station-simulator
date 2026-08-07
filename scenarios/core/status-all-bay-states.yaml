@@ -53,10 +53,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: delay
     ms: 300
 
@@ -69,10 +68,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -85,10 +83,9 @@ steps:
       bayNumber: 1
       status: "Reserved"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -101,10 +98,9 @@ steps:
       bayNumber: 1
       status: "Finishing"
       previousStatus: "Reserved"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -119,10 +115,9 @@ steps:
       previousStatus: "Finishing"
       errorCode: 5001
       errorText: "PUMP_SYSTEM"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -135,7 +130,6 @@ steps:
       bayNumber: 1
       status: "Unavailable"
       previousStatus: "Faulted"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-

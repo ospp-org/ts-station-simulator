@@ -57,10 +57,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger StopService for nonexistent session via API ---
   # New endpoint pre-validates sessionId server-side. Unknown sessions return
   # HTTP 404 SESSION_NOT_FOUND directly; no MQTT dispatch to the station occurs,

@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -66,6 +65,6 @@ steps:
       bayId: "{{bayId_2}}"
       bayNumber: 2
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

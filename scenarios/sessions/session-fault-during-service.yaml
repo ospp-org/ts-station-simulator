@@ -57,10 +57,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger StartService via API ---
   - action: api_call
     method: POST
@@ -97,10 +96,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Simulate service running briefly before fault ---
   - action: delay
     ms: 1000
@@ -127,6 +125,6 @@ steps:
       previousStatus: "Occupied"
       errorCode: 5001
       errorText: "PUMP_SYSTEM"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false

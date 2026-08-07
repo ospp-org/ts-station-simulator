@@ -97,10 +97,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # =========================================================================
   # UNIT 1 — full delivery (TimerExpired). Hardcoded so the batch advances.
   # =========================================================================
@@ -129,10 +128,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -158,10 +156,9 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # =========================================================================
   # UNIT 2 — full delivery (TimerExpired). Hardcoded so the batch advances.
   # =========================================================================
@@ -189,10 +186,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -214,10 +210,9 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # =========================================================================
   # UNIT 3 — final unit, parameterized {{reason}}:
   #   TimerExpired         -> whole 3-unit batch delivered
@@ -247,10 +242,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -272,10 +266,9 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trailing wait so the server-side batch finalizer can run (per-unit settlement
   #     + tail-refund sweep). The DSL calls this step `delay` (there is no `wait`). ---
   - action: delay

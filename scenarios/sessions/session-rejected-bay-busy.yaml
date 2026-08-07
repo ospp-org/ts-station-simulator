@@ -57,10 +57,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger first StartService via API ---
   - action: api_call
     method: POST
@@ -96,10 +95,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Trigger second StartService on same bay via API ---
   - action: api_call
     method: POST
@@ -133,6 +131,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: true

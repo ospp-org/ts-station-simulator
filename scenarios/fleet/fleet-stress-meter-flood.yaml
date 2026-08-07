@@ -51,10 +51,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger StartService via API ---
   - action: api_call
     method: POST
@@ -92,10 +91,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Rapid MeterValues flood: 10 events, 100ms apart ---
 
   # MeterValues 1
@@ -265,6 +263,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: true

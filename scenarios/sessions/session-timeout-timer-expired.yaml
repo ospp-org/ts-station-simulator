@@ -57,10 +57,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger StartService via API ---
   - action: api_call
     method: POST
@@ -98,10 +97,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Simulate timer expiring (short delay for test) ---
   - action: delay
     ms: 2000
@@ -126,10 +124,9 @@ steps:
       bayNumber: 1
       status: "Finishing"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -142,6 +139,6 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Finishing"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: true

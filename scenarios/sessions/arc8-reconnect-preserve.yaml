@@ -58,7 +58,7 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services: [ { serviceId: "{{serviceId_1}}", available: true } ]
+      programs: [ { programNumber: 1, available: true } ]
 
   - action: api_call
     method: POST
@@ -86,7 +86,7 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services: [ { serviceId: "{{captured.serviceId}}", available: false } ]
+      programs: [ { programNumber: 1, available: false } ]
 
   # ---- MARKER: session is now ACTIVE (external DB snapshot #1) ----
   - action: delay

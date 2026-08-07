@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # First ReserveBay - should succeed
   - action: api_call
     method: POST
@@ -90,10 +89,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Reserved"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Second ReserveBay on the same bay - should be rejected.
   # Server propagates the station's Rejected MQTT Response as HTTP 422.
   - action: api_call

@@ -213,10 +213,9 @@ steps:
       bayId: "{{captured.bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -224,10 +223,9 @@ steps:
       bayId: "{{captured.bayId_2}}"
       bayNumber: 2
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_2}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -235,10 +233,9 @@ steps:
       bayId: "{{captured.bayId_3}}"
       bayNumber: 3
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_3}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -246,10 +243,9 @@ steps:
       bayId: "{{captured.bayId_4}}"
       bayNumber: 4
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_4}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: api_call
     method: PUT
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
@@ -343,10 +339,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -383,10 +378,9 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # 20 s drain — Path B latency before next variant.
   - action: delay
     ms: 20000
@@ -436,10 +430,9 @@ steps:
       bayNumber: 2
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_2}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
@@ -461,10 +454,9 @@ steps:
       bayNumber: 2
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_2}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: delay
     ms: 20000
 
@@ -513,10 +505,9 @@ steps:
       bayNumber: 3
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_3}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -593,10 +584,9 @@ steps:
       bayNumber: 3
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_3}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Larger drain before Bay 4 — by this point the consumer has 3 bays' worth
   # of inbound traffic (Start/Status/MV/SessionEnded × 3) accumulated in
   # mqtt:incoming. 60s gives the single-threaded worker (drift 11, ~5s/msg)
@@ -653,10 +643,9 @@ steps:
       bayNumber: 4
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_4}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 300
 
@@ -738,10 +727,9 @@ steps:
       bayNumber: 4
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{serviceId_4}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # 30 s final drain — give consumer time to process all messages before
   # external DB verification.
   - action: delay

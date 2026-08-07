@@ -84,10 +84,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trigger the session via API (background: the endpoint blocks on the
   #     station's StartService round-trip, which the steps below fulfil).
   #     duration_seconds is the requested duration (UserDuration input; ignored /
@@ -129,10 +128,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # --- Brief run before ending ---
   - action: delay
     ms: 1000
@@ -158,10 +156,9 @@ steps:
       bayNumber: 1
       status: "Available"
       previousStatus: "Occupied"
-      services:
-        - serviceId: "{{captured.serviceId}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # --- Trailing wait so the server-side session finalizer / settlement can run. ---
   - action: delay
     ms: 10000

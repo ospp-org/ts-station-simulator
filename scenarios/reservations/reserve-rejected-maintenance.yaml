@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Unavailable"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   # Trigger ReserveBay on a bay in maintenance - should be rejected.
   # Server propagates the station's Rejected MQTT Response as HTTP 422.
   - action: api_call

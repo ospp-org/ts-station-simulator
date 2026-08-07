@@ -55,10 +55,9 @@ steps:
       bayId: "{{bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Trigger ReserveBay via CSMS API
   # Note: duration_minutes is the minimum (1) so the reservation expires
   # quickly. The delay below waits for that expiration.
@@ -92,10 +91,9 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Reserved"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # Wait for the reservation to expire
   - action: delay
     ms: 5000
@@ -107,6 +105,6 @@ steps:
       bayId: "{{captured.bayId}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true

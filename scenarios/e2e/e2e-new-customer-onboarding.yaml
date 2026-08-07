@@ -248,10 +248,9 @@ steps:
       bayId: "{{captured.bayId_1}}"
       bayNumber: 1
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -259,10 +258,9 @@ steps:
       bayId: "{{captured.bayId_2}}"
       bayNumber: 2
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_2}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -270,10 +268,9 @@ steps:
       bayId: "{{captured.bayId_3}}"
       bayNumber: 3
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_3}}"
+      programs:
+        - programNumber: 1
           available: true
-
   - action: send
     message: StatusNotification
     messageType: Event
@@ -281,10 +278,9 @@ steps:
       bayId: "{{captured.bayId_4}}"
       bayNumber: 4
       status: "Available"
-      services:
-        - serviceId: "{{serviceId_4}}"
+      programs:
+        - programNumber: 1
           available: true
-
   # ---------- Operator: PUT service catalog with prices ----------
   # Sets pricing for all 4 services at 10/15/20/25 credits per minute.
   # Returns 202 fire-and-forget; server publishes UpdateServiceCatalog
@@ -387,10 +383,9 @@ steps:
       bayNumber: 1
       status: "Occupied"
       previousStatus: "Available"
-      services:
-        - serviceId: "{{serviceId_1}}"
+      programs:
+        - programNumber: 1
           available: false
-
   - action: delay
     ms: 500
 
