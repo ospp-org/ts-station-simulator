@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { generateVariables, type ScenarioDefinition, type TargetConfig } from '../../scenarios/ScenarioRunner.js';
-import { generateOfflineTxId } from '../../station/StationConfig.js';
+import { generateOfflineTxId, generateSecurityEventId } from '../../station/StationConfig.js';
 
 /**
  * Regression guard for the poisoned-fixture class.
@@ -124,5 +124,61 @@ describe('indexed runOfflineTxId_N — for a scenario reconciling several in one
     // 5 sends + 5 response waits = 10 mentions; 5 tx asserts + 1 boot assert = 6.
     expect(sends).toBe(10);
     expect(statusAsserts).toBe(6);
+  });
+});
+
+// common/security-event.schema.json
+const SECURITY_EVENT_ID = /^sec_[a-f0-9]{8,}$/;
+
+describe('runSecurityEventId — the same poisoned-fixture class, in security_events', () => {
+  it('is schema-shaped and distinct per call', () => {
+    expect(generateSecurityEventId()).toMatch(SECURITY_EVENT_ID);
+    expect(new Set(Array.from({ length: 200 }, generateSecurityEventId)).size).toBe(200);
+  });
+
+  it('generateVariables exposes it', () => {
+    expect(generateVariables(scenario(), TARGET).get('runSecurityEventId'))
+      .toMatch(SECURITY_EVENT_ID);
+  });
+
+  it('differs between runs — the server dedups event_id GLOBALLY, so a literal is insertable once ever', () => {
+    const a = generateVariables(scenario(), TARGET).get('runSecurityEventId');
+    const b = generateVariables(scenario(), TARGET).get('runSecurityEventId');
+    expect(a).not.toBe(b);
+  });
+});
+
+describe('the eleven security-event scenarios', () => {
+  const files = fs.readdirSync(path.resolve('scenarios/security'))
+    .filter(f => f.startsWith('security-event-') && f.endsWith('.yaml'))
+    .map(f => path.resolve('scenarios/security', f));
+
+  it('there are eleven of them', () => {
+    expect(files).toHaveLength(11);
+  });
+
+  it('none hardcodes an eventId — all eleven were deduped from 2026-06-15 until 2026-08-10', () => {
+    for (const f of files) {
+      const src = fs.readFileSync(f, 'utf8');
+      expect(src).toMatch(/eventId: "\{\{runSecurityEventId\}\}"/);
+      expect(src).not.toMatch(/eventId: "sec_[a-f0-9]+"/);
+    }
+  });
+
+  it('each reads its event back and asserts the id it sent — not a count, not the most recent', () => {
+    for (const f of files) {
+      const src = fs.readFileSync(f, 'utf8');
+      expect(src).toContain('/api/v1/admin/security/events?station_id={{captured.stationUuid}}');
+      expect(src).toContain('data.0.eventId: "{{runSecurityEventId}}"');
+      expect(src).toContain('data.length: 1');
+    }
+  });
+
+  it('asserts severity in the LOWERCASE the column stores, not the wire enum case', () => {
+    for (const f of files) {
+      const m = fs.readFileSync(f, 'utf8').match(/data\.0\.severity: "([^"]+)"/);
+      expect(m).not.toBeNull();
+      expect(m![1]).toBe(m![1].toLowerCase());
+    }
   });
 });

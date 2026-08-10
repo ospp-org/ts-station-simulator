@@ -49,6 +49,10 @@ function replaceTemplates(obj: unknown): unknown {
       if (obj.includes('offlineTxId') || obj.includes('runOfflineTxId') || obj.includes('otx_')) {
         return 'otx_00000001';
       }
+      // Same case-sensitivity trap as runOfflineTxId: capital E misses 'eventId'.
+      if (obj.includes('runSecurityEventId') || obj.includes('eventId') || obj.includes('sec_')) {
+        return 'sec_00000001';
+      }
       if (obj.includes('authId') || obj.includes('auth_')) return 'auth_00000001';
       if (obj.includes('userId') || obj.includes('sub_')) return 'sub_testuser01';
       if (obj.includes('deviceId') || obj.includes('dev_')) return 'dev_00000001';

@@ -14,6 +14,7 @@ import {
   generateBayId,
   generateServiceId,
   generateOfflineTxId,
+  generateSecurityEventId,
 } from '../station/StationConfig.js';
 import type { StationConfig, BayConfig } from '../station/StationConfig.js';
 import { SendStep } from './steps/SendStep.js';
@@ -557,6 +558,11 @@ export function generateVariables(
   for (let i = 1; i <= 8; i++) {
     vars.set(`runOfflineTxId_${i}`, generateOfflineTxId());
   }
+
+  // Fresh per run, for the same reason: the server dedups security events on a GLOBAL
+  // unique event_id (SecurityAuditLogger.php:67), so a hardcoded one is insertable exactly
+  // once per database. See generateSecurityEventId.
+  vars.set('runSecurityEventId', generateSecurityEventId());
 
   const bayCount = scenarioDef.station.bayCount;
   for (let i = 1; i <= bayCount; i++) {

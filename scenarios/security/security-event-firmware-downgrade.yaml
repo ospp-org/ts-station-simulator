@@ -1,3 +1,18 @@
+# WHAT THE ASSERTION IS AND IS NOT WORTH
+#   eventId  — PROVES INGESTION: the row exists only if the dedup insert won and the
+#              security_events insert followed. This is the load-bearing part.
+#   type / severity — ECHOED, not derived. SecurityEventHandler.php:41-43 takes both straight
+#              off the payload ($severity = $payload['severity'] ?? Info); an unknown severity
+#              is only WARNED about (:65-71), never corrected. So this proves round-trip
+#              persistence, not server judgement. Stated so it is not read as stronger.
+#   case     — the wire enum is Critical|Error|Warning|Info; the column stores LOWERCASE and
+#              the endpoint returns it verbatim (DashboardSecurityController:94).
+#   scoping  — a fresh single-station pool owns exactly ONE event, so data.0 is deterministic:
+#              not a count, not "most recent", nothing to race.
+#
+# Until 2026-08-10 this file asserted only that its BootNotification was Accepted, and its
+# eventId was a hardcoded literal already present in security_events since 2026-06-15 —
+# therefore deduped on every run since, so the send wrote NOTHING and the file passed anyway.
 name: "SecurityEvent: FirmwareDowngradeAttempt"
 description: "Boot station and report a firmware downgrade attempt with Warning severity."
 station:
@@ -48,10 +63,35 @@ steps:
     message: SecurityEvent
     messageType: Event
     payload:
-      eventId: "sec_0000000b"
+      eventId: "{{runSecurityEventId}}"
       type: "FirmwareDowngradeAttempt"
       severity: "Warning"
       timestamp: "2026-01-01T12:00:00.000Z"
       details:
         currentVersion: "2.0.0"
         attemptedVersion: "1.0.0"
+
+  # --- Read it back. ?station_id= filters on the station UUID
+  #     (DashboardSecurityController:60 -> where('stations.id', ...)), and the admin station
+  #     GET is the only place a scenario can obtain it. Shape verified on the wire first with
+  #     security-event-tamper-detected.yaml before these ten were written. ---
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    capture:
+      stationUuid: "data.id"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/security/events?station_id={{captured.stationUuid}}"
+    expect_status: 200
+    expect_body:
+      data.length: 1
+      data.0.eventId: "{{runSecurityEventId}}"
+      data.0.type: "FirmwareDowngradeAttempt"
+      data.0.severity: "warning"
+      data.0.stationId: "{{stationId}}"

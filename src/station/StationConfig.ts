@@ -101,3 +101,26 @@ export function generateOfflineTxId(): string {
     .join('');
   return `otx_${hex}`;
 }
+
+/**
+ * A per-run SecurityEvent id, matching mqtt/security-event.schema.json
+ * (`^sec_[a-f0-9]{8,}$`, minLength 12).
+ *
+ * Same class of bug as generateOfflineTxId, and measured the same way. The server dedups
+ * security events on a GLOBAL unique key — SecurityAuditLogger.php:67,
+ * `INSERT INTO security_event_dedup (event_id) VALUES (?) ON CONFLICT (event_id) DO NOTHING`,
+ * and the security_events insert is skipped when that conflicts. So a hardcoded eventId is
+ * insertable exactly ONCE per database, ever.
+ *
+ * The eleven scenarios/security/security-event-*.yaml files each hardcoded one
+ * (sec_00000001..sec_0000000b). Measured on UAT 2026-08-10: all eleven were already present
+ * in security_events with created_at 2026-06-15, and all were in security_event_dedup — so
+ * every run of those scenarios for nearly two months wrote NOTHING, and every one still
+ * passed, because each asserted only that its BootNotification was Accepted.
+ */
+export function generateSecurityEventId(): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `sec_${hex}`;
+}

@@ -1,5 +1,29 @@
 name: "SecurityEvent: TamperDetected"
-description: "Boot station and report a physical tamper detection event with Critical severity."
+description: >
+  Report a physical tamper detection event and prove the server INGESTED and PERSISTED it,
+  by reading it back off GET /api/v1/admin/security/events scoped to this station.
+  Until 2026-08-10 this file asserted only that its BootNotification was Accepted, and its
+  eventId was the literal sec_00000004 — already in security_events since 2026-06-15 and
+  therefore deduped on every run since (SecurityAuditLogger.php:67 does
+  INSERT INTO security_event_dedup ... ON CONFLICT (event_id) DO NOTHING, and skips the
+  security_events insert on conflict). So for nearly two months the send wrote NOTHING and
+  the file passed anyway. The id is now generated per run.
+
+# WHAT THE ASSERTION IS AND IS NOT WORTH
+#   eventId  — server-produced in the sense that it PROVES INGESTION: the row only exists
+#              if the dedup insert won and the security_events insert followed. This is the
+#              load-bearing part.
+#   type / severity — ECHOED, not derived. SecurityEventHandler.php:41-43 takes both straight
+#              off the payload ($severity = $payload['severity'] ?? Info), and an unknown
+#              severity is only WARNED about (:65-71), never corrected. So asserting them
+#              proves round-trip persistence, not server judgement. Said plainly here so the
+#              assertion is not read as stronger than it is.
+#   NOTE the case: the wire enum is Critical|Error|Warning|Info but the column stores
+#              lowercase, and the endpoint returns the column verbatim
+#              (DashboardSecurityController:94). Asserting "Critical" fails; it is "critical".
+#   station scoping — ?station_id= takes the station UUID, not the stn_ id, hence the capture
+#              below. With a fresh single-station pool this station owns exactly ONE event,
+#              so data.0 is deterministic: not a count, not "most recent", nothing to race.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -48,10 +72,34 @@ steps:
     message: SecurityEvent
     messageType: Event
     payload:
-      eventId: "sec_00000004"
+      eventId: "{{runSecurityEventId}}"
       type: "TamperDetected"
       severity: "Critical"
       timestamp: "2026-01-01T12:00:00.000Z"
       details:
         sensor: "enclosure"
         bayId: "{{bayId_1}}"
+
+  # --- Read it back. The station UUID is what ?station_id= filters on
+  #     (DashboardSecurityController:60 -> where('stations.id', ...)), and the admin
+  #     station GET is the only place a scenario can obtain it. ---
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    capture:
+      stationUuid: "data.id"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/security/events?station_id={{captured.stationUuid}}"
+    expect_status: 200
+    expect_body:
+      data.length: 1
+      data.0.eventId: "{{runSecurityEventId}}"
+      data.0.type: "TamperDetected"
+      data.0.severity: "critical"
+      data.0.stationId: "{{stationId}}"
