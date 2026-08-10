@@ -1,3 +1,38 @@
+# WHAT DISTINGUISHES THIS FILE FROM ITS SIBLINGS — nothing, and that is a SERVER DEFECT
+#   change-configuration-{accepted,reboot-required,rejected} send the SAME key and value and
+#   differ only in the status the station reports. On the server that difference is currently
+#   inert, so no observable separates the three. Marked rather than dressed up.
+#
+#   THE DEFECT (csms-server, reported not fixed — outside this repo):
+#     ChangeConfigurationHandler.php:43-47 reads the response as
+#         $status = $envelope->payload['status'] ?? ChangeConfigResultStatus::REJECTED->value;
+#         $errorCode = $envelope->payload['errorCode'] ?? null;
+#         $errorText = $envelope->payload['errorText'] ?? null;
+#     but mqtt/change-configuration-response.schema.json is
+#         required: ['results'], properties: ['results'], additionalProperties: FALSE
+#     — a top-level `status` is schema-FORBIDDEN. So on any schema-valid response the read
+#     misses, $status defaults to REJECTED, and handleAccepted() — the branch that does
+#     StationConfiguration::updateOrCreate and dispatches ConfigurationChanged — is
+#     UNREACHABLE. The per-key results[] array the station actually sends is never read.
+#
+#   MEASURED 2026-08-10, which is how this was found rather than assumed: after
+#   change-configuration-accepted ran green against UAT, station_configurations for that
+#   station held ZERO rows — identical to the rejected variant. Had the accepted branch
+#   worked, the read-back would also have distinguished accepted from reboot-required:
+#   handleAccepted stores mutability 'static' for RebootRequired and 'dynamic' otherwise
+#   (:128), and StationConfigurationResource exposes `mutability`.
+#
+#   WHEN THE SERVER IS FIXED, the assertion to add here is
+#     GET /api/v1/admin/stations/{{stationId}}/config
+#     accepted        -> data[key=HeartbeatIntervalSeconds].value "30", mutability "dynamic"
+#     reboot-required -> same value, mutability "static"
+#     rejected        -> the key absent (no row is ever written on a rejection)
+#
+# WHAT IS ASSERTED BELOW, and it is real: the server pushed the key and value the REST call
+#   asked for. That is server-resolved and on the wire — it fails if the request/push
+#   translation breaks — but it is identical in all three files and does NOT separate them.
+#   payload.keys has exactly one element here because the PUT sends one key, so index 0 is
+#   deterministic (unlike data.bays, which is unordered — see maintenance-mode-on.yaml).
 name: "Change Configuration Rejected"
 description: "Change a readonly configuration key and receive Rejected status"
 station:
@@ -60,6 +95,15 @@ steps:
     message: ChangeConfiguration
     messageType: Request
     timeout_ms: 15000
+
+  # The pushed Request carries what the REST call asked for.
+  - action: assert
+    field: "payload.keys.0.key"
+    equals: "HeartbeatIntervalSeconds"
+
+  - action: assert
+    field: "payload.keys.0.value"
+    equals: "30"
 
   - action: send
     message: ChangeConfiguration
