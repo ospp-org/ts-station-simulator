@@ -1,16 +1,35 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 116** across 10 categories, counted on disk
+**Total scenarios: 113** across 10 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
+
+> The header said 116 from the moment it was written until 2026-08-11. It was
+> true when written and false three commits later: `5219baa` deleted
+> `reset-rejected-active-sessions` and `session-seqno-monotonic`, and `57063cc`
+> deleted `session-final-seqno-terminal` — each for a stated reason, none of
+> which reached back to this line. A count is a claim with an expiry date, and
+> this one is the only claim on the page a reader would take as current.
 
 > **The per-category tables below this line are STALE and are left as-is
 > deliberately.** They describe 88 scenarios across 7 categories — the
 > `e2e`, `multiunit-e2e` and `tls-floor` directories are missing entirely, and
-> every count is low. Correcting them is a sweep of its own; what is corrected
-> here is the header, which was the only claim a reader would take as current.
-> Measured counts on disk: chaos 7, core 18, device-management 23, e2e 3,
-> fleet 3, multiunit-e2e 3, reservations 6, security 24, sessions 23,
+> every count is low. Correcting them is a sweep of its own.
+> Measured counts on disk: chaos 7, core 18, device-management 22, e2e 3,
+> fleet 3, multiunit-e2e 3, reservations 6, security 24, sessions 21,
 > tls-floor 6.
+
+## What each file states about itself
+
+Every scenario states what it proves and what it cannot. Measured by YAML key —
+`expect_body` / `expect_body_text` / `expect_body_absent` in a step's value
+position, never a substring of the file's own prose, which inflates the count by
+11 because the ceiling notes name the very keys they say are unavailable:
+
+| | Count |
+|---|---|
+| Carry a server-state assertion | 82 |
+| Carry an explicit ceiling label with file:line evidence | 20 |
+| Skip transparently (`skip` / `skip_when_pooled`) | 11 |
 
 ## Branch-targeted variations
 
