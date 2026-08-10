@@ -1,3 +1,21 @@
+# WHAT IS COVERABLE HERE, AND WHAT IS NOT — established 2026-08-10
+#   COVERABLE, and asserted below: the server published a TriggerMessage carrying the
+#   requestedMessage the REST call asked for. That value is server-resolved (POST body ->
+#   TriggerMessageDto -> the pushed Request), and it is what SEPARATES the three
+#   trigger-message files: swap two of their POST bodies and both assertions break. Before
+#   this, all three asserted only that the boot was Accepted and the POST returned 202, so
+#   they were interchangeable.
+#
+#   NOT COVERABLE, and deliberately not faked: that the station's SUBSEQUENT message was
+#   CAUSED by the trigger. Nothing server-side links the two — `requestedMessage` appears
+#   only in the request DTO/validation and TriggerMessageResponseHandler; no correlation id
+#   is stored and the resulting Heartbeat/StatusNotification/BootNotification carries no
+#   "triggered" marker. The reply this scenario sends is its OWN scripted literal, so
+#   asserting the server ingested it (last_seen_at moves for a Heartbeat, bays.status for a
+#   StatusNotification, boot_reason for a BootNotification) would prove ingestion and NOT
+#   causation — an unsolicited message updates exactly the same state. Closing that gap needs
+#   the server to correlate the reply to the pending TriggerMessage; until then the trigger's
+#   EFFECT is unobservable from a scenario and only its DISPATCH is proven.
 name: "Trigger Message StatusNotification"
 description: "Server triggers StatusNotification messages for each bay"
 station:
@@ -53,6 +71,11 @@ steps:
     message: TriggerMessage
     messageType: Request
     timeout_ms: 15000
+
+  # Server-resolved from the POST body — and the only thing separating these three files.
+  - action: assert
+    field: "payload.requestedMessage"
+    equals: "StatusNotification"
 
   - action: send
     message: TriggerMessage

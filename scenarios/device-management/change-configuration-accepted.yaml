@@ -107,3 +107,18 @@ steps:
       results:
         - key: "HeartbeatIntervalSeconds"
           status: "Accepted"
+
+  # THE DISCRIMINATOR — the server's own persisted record, not the response this file sent.
+  # Live since csms-server fixed ChangeConfigurationHandler to read results[] (2026-08-10).
+  # `mutability: dynamic` is what separates this file from change-configuration-reboot-required,
+  # which sends the identical key and value and differs only in the status reported.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
+    expect_status: 200
+    expect_body:
+      data[key=HeartbeatIntervalSeconds].value: "30"
+      data[key=HeartbeatIntervalSeconds].mutability: "dynamic"

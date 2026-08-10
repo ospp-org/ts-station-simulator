@@ -1,3 +1,20 @@
+# WHAT IS ASSERTED, WHAT DOES NOT DISTINGUISH, AND WHAT IS UNCOVERABLE — 2026-08-10
+#   ASSERTED, and real: the server pushed a CertificateInstall carrying the certificateType
+#   and certificate the REST call supplied. Server-resolved (POST body -> the pushed Request),
+#   so it fails if the request/push translation breaks. Before this both files asserted only
+#   that the boot was Accepted and the POST returned 202.
+#
+#   DOES NOT DISTINGUISH THE PAIR, and is not dressed up as if it did:
+#   certificate-install and certificate-install-rejected POST the SAME certificateType and the
+#   SAME certificate. The only difference is the status the STATION scripts into its Response,
+#   so this assertion is identical in both files. Same shape as the change-configuration
+#   triplet.
+#
+#   UNCOVERABLE — the install OUTCOME. There is no read endpoint for installed-certificate
+#   state: routes/api/v1/admin.php carries install, revoke and renew, and no GET. So whether
+#   the server recorded an accept differently from a reject cannot be observed from a
+#   scenario at all, and nothing adjacent is asserted in its place. Closing it needs a
+#   csms-server read path; until then only the DISPATCH is proven.
 name: "Certificate Install Rejected"
 description: "Boot station, trigger CertificateInstall via API, wait for the request on MQTT, and respond with Rejected status due to invalid certificate chain."
 
@@ -64,6 +81,15 @@ steps:
     message: CertificateInstall
     messageType: Request
     timeout_ms: 15000
+
+  # Server-resolved: what the REST call supplied, as it reached the wire.
+  - action: assert
+    field: "payload.certificateType"
+    equals: "StationCertificate"
+
+  - action: assert
+    field: "payload.certificate"
+    exists: true
 
   # --- Respond Rejected ---
   - action: send

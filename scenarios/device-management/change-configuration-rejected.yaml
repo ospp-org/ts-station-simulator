@@ -69,7 +69,7 @@ steps:
         # (2007) unless device_management_supported === true. NULL is "not stated" and
         # is withheld too (OSPP §5.1 rule 3), so this must be declared, not omitted.
         # Declared at boot like the other device-management scenarios (e.g.
-        # change-configuration-accepted.yaml:33) — there is no admin call for it here.
+        # change-configuration-accepted.yaml:68) — there is no admin call for it here.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -114,3 +114,23 @@ steps:
           status: "Rejected"
           errorCode: 5108
           errorText: "CONFIGURATION_KEY_READONLY"
+
+  # THE DISCRIMINATOR — nothing is persisted on a refusal, so the collection stays empty.
+  # Live since csms-server fixed ChangeConfigurationHandler to read results[] (2026-08-10).
+  #
+  # PRECONDITION: a station with no prior station_configurations rows — i.e. run this with
+  # `--bootstrap-pool`, or on a station that has not run the accepted/reboot-required variants.
+  # Asserted as the empty collection rather than "key absent" deliberately: ApiCallStep's
+  # expect_body is strict per-key equality (ApiCallStep.ts:557-573), so an absent path yields
+  # `undefined` and cannot be pinned directly. On a fresh station only ChangeConfiguration and
+  # GetConfiguration ever write this table, and this scenario calls neither successfully, so
+  # `data: []` is exactly the "no row is ever written on a rejection" claim.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
+    expect_status: 200
+    expect_body:
+      data: []

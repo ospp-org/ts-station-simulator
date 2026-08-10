@@ -69,7 +69,7 @@ steps:
         # (2007) unless device_management_supported === true. NULL is "not stated" and
         # is withheld too (OSPP §5.1 rule 3), so this must be declared, not omitted.
         # Declared at boot like the other device-management scenarios (e.g.
-        # change-configuration-accepted.yaml:33) — there is no admin call for it here.
+        # change-configuration-accepted.yaml:68) — there is no admin call for it here.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -112,3 +112,20 @@ steps:
       results:
         - key: "HeartbeatIntervalSeconds"
           status: "RebootRequired"
+
+  # THE DISCRIMINATOR — the server's own persisted record, not the response this file sent.
+  # Live since csms-server fixed ChangeConfigurationHandler to read results[] (2026-08-10).
+  # RebootRequired is a SUCCESS status: the value IS persisted and takes effect on the next
+  # boot (spec/08-configuration.md:58, Processing Rule 7). The server records that as
+  # `mutability: static`, which is the sole observable separating this file from
+  # change-configuration-accepted.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
+    expect_status: 200
+    expect_body:
+      data[key=HeartbeatIntervalSeconds].value: "30"
+      data[key=HeartbeatIntervalSeconds].mutability: "static"

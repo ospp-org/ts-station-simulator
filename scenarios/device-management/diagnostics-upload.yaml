@@ -1,3 +1,24 @@
+# WHAT DISTINGUISHES THIS FILE FROM ITS SIBLING — measured on the wire 2026-08-10
+#   diagnostics-upload and diagnostics-failure both asserted only the boot and a 202. Each now
+#   reads GET /admin/stations/{stationId}/diagnostics — a COLLECTION, selected by upload_url
+#   (which this file supplies in the POST, so it is a key the scenario owns) rather than by an
+#   index.
+#
+#   MEASURED, on fresh single-station pools:
+#     diagnostics-upload   status "uploaded"  progress 100  error_text null
+#     diagnostics-failure  status "failed"    progress 0    error_text "Upload failed: connection refused"
+#
+#   Unlike the firmware triplet, this pair DOES separate on a server-derived value.
+#   DiagnosticsStatus carries a single FAILED state (protocol enum:13) — but because this
+#   cluster is two files rather than three, success-vs-failure IS the distinction, and
+#   `status` is the FSM state the handler maps from the station's notification, not a value
+#   echoed off the payload. `error_text` IS echoed (:160, with a default) and is asserted only
+#   as round-trip persistence.
+#
+#   Swap the two files' notification payloads and both assertions break — the variant is real.
+#
+#   TEARDOWN: diagnostics_uploads held 4 rows before these runs and 4 after, so the
+#   station-scoped sweep covers it. No residue.
 name: "Diagnostics Upload"
 description: "Full diagnostics lifecycle: collect, upload, and report success"
 station:
@@ -97,3 +118,15 @@ steps:
     payload:
       status: "Uploaded"
       fileName: "diag_{{stationId}}.tar.gz"
+
+  # THE ASSERTION — the server's own diagnostics record, not the notifications this file sent.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    expect_status: 200
+    expect_body:
+      data[upload_url=https://diagnostics.example.com/upload].status: "uploaded"
+      data[upload_url=https://diagnostics.example.com/upload].progress: 100
