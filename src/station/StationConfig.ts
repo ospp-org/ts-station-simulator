@@ -78,3 +78,26 @@ export function generateServiceId(name: string): ServiceId {
 export function generateSerialNumber(): string {
   return `SN-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
+
+/**
+ * A per-run offline transaction id, matching common/offline-tx-id.schema.json
+ * (`^otx_[a-f0-9]{8,}$`, minLength 12).
+ *
+ * Exists because a scenario must not hardcode one. `offline_transactions` is keyed on
+ * offlineTxId and the server's Reconciler dedups on it BEFORE verify/score/debit, so a
+ * fixed literal is reconciled exactly once EVER against a given database: every later run
+ * gets `Duplicate` instead of `Accepted`. Measured on UAT 2026-08-10 — one row,
+ * `otx_a0000000001`, reconciled 2026-08-07, still poisoning the scenario three days later.
+ *
+ * Teardown is not the fix. It already sweeps the table (uatPrivileged.ts, `DELETE FROM
+ * offline_transactions WHERE user_id IN (...)`), and the row survived anyway because that
+ * sweep is user-scoped and the poisoning run was outside its scope. Even a perfect sweep
+ * would not make a fixed global id safe under two concurrent runs. 16 hex chars, so
+ * collisions are not a practical concern.
+ */
+export function generateOfflineTxId(): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `otx_${hex}`;
+}

@@ -357,8 +357,9 @@ steps:
         energyWh: 60
 
   # SessionEnded EVENT — station-autonomous, reason=LocalOutOfCredit.
-  # SendStep auto-injects seqNo + finalSeqNo from the session counter
-  # (see injectSeqNoFields in SendStep.ts). The payload's creditsCharged
+  # NOTE: seqNo/finalSeqNo are NOT injected — injectSeqNoFields early-returns in
+  # scenario mode (SendStep.ts:236, station.sessions is never populated), so this
+  # SessionEnded goes out with neither field. The payload's creditsCharged
   # is informational only — server forces 0 via creditsChargedOverride.
   - action: send
     message: SessionEnded
@@ -463,9 +464,11 @@ steps:
   # =========================================================================
   # Bay 3 — TimerExpired with multiple MeterValues (seqNo monotonic)
   #
-  # 5 MeterValues with auto-injected seqNo 0..4, then SessionEnded
-  # (TimerExpired) with auto-injected seqNo=5 and finalSeqNo=5. Server
-  # persists meter_values rows with monotonic seq_no per session.
+  # KNOWN GAP — 5 MeterValues with NO seqNo, then SessionEnded (TimerExpired) with
+  # no seqNo/finalSeqNo: nothing is auto-injected in scenario mode (SendStep.ts:236).
+  # The stated DB expectation below (meter_values rows with seq_no 0..4) therefore
+  # CANNOT hold — the rows are written with a null seq_no. To make this real the
+  # frames need explicit `seqNo:` values, as sessions/meter-values-seqno-*.yaml do.
   # Expected DB state:
   #   sessions.status = completed
   #   sessions.final_seq_no = 5
@@ -598,11 +601,18 @@ steps:
   # =========================================================================
   # Bay 4 — TimerExpired + late MeterValues (finalSeqNo terminal marker)
   #
-  # 3 MeterValues with auto-injected seqNo 0,1,2. SessionEnded
-  # (TimerExpired) auto-injects seqNo=3, finalSeqNo=3 — at which point
-  # the SendStep removes the session from station.sessions so the next
-  # MeterValues no longer auto-increments. Two late MeterValues with
-  # explicit seqNo=99 and 100 propagate to the broker. Server MUST
+  # KNOWN GAP — two false mechanisms in one paragraph, both corrected here:
+  # (a) nothing is auto-injected (SendStep.ts:236), so the 3 MeterValues and the
+  #     SessionEnded carry no seqNo/finalSeqNo at all; and
+  # (b) SendStep NEVER removes a session from station.sessions — the only deletes are
+  #     Station.ts:503 and StopServiceHandler.ts:71, neither reachable in scenario mode.
+  # Consequence: sessions.final_seq_no stays NULL, so the server's discard guard
+  # (MeterValuesHandler.php:60) is a no-op and the 'late' seqNo 99/100 frames below are
+  # INGESTED, not discarded. The working version of this proof is
+  # sessions/session-final-seqno-terminal.yaml, which sends the StopService Response
+  # carrying finalSeqNo and asserts on the server-written meter_values collection.
+  # Left as written here rather than half-repaired. Two late MeterValues with
+  # explicit seqNo=99 and 100 propagate to the broker. Server WOULD
   # discard them per spec v0.4.0 §3.2 (seqNo > finalSeqNo).
   # Expected DB state:
   #   sessions.status = completed
@@ -692,9 +702,9 @@ steps:
       actualDurationSeconds: 30
       creditsCharged: 13
 
-  # Late MeterValues — explicit seqNo > finalSeqNo. SendStep no longer
-  # auto-increments because the session was removed on SessionEnded;
-  # explicit YAML values propagate. Server discards these per spec.
+  # Late MeterValues with explicit seqNo. SendStep never auto-incremented and never
+  # removed any session (see the KNOWN GAP above); the explicit YAML values propagate.
+  # The server does NOT discard them here, because no finalSeqNo was ever recorded.
   - action: send
     message: MeterValues
     messageType: Event

@@ -47,6 +47,7 @@ Fine for a single scenario or a suite that does not need the above. Costs you, m
 | 2 × offline pass | wallet balance 0 or negative; `offline_enabled` alone is not enough |
 | `device-management/service-catalog-update` | `bay_services` empty → `400 VALIDATION_ERROR (6004)` "has no (bay, program) binding", ungated by any flag |
 | `tls-floor/s5-rejects-revoked-cert` | needs a genuinely revoked certificate |
+| 2 × offline pass, **in pooled mode too** | `uatPrivileged.ts` seeds wallets at `balance 0` and `AuthorizeOfflineSessionAction` pre-debits with `allowNegative:false`. Bootstrapping does NOT fix this; fund the fixture. Do not flip `allowNegative`. |
 | whole-suite runs | rate limiting — see §4 |
 
 None of these are defects. They are the mode's boundary, and a summary line cannot tell
@@ -120,6 +121,17 @@ Also accumulating, from runs whose teardown did not complete: `certs/uat/` key s
 credentials. `persistedKeySet` **reuses** an existing key set rather than flagging it, so a
 half-provisioned directory is silently adopted.
 
+**A fixed id in a shared environment poisons itself permanently.**
+`security/offline-transaction-reconcile.yaml` hardcoded `offlineTxId: otx_a0000000001`. The
+server's Reconciler dedups on that id before verify/score/debit, so it is reconcilable exactly
+ONCE per database — a row written on 2026-08-07 was still making the scenario answer
+`Duplicate` instead of `Accepted` on 2026-08-10. Teardown was not the gap (it already sweeps
+`offline_transactions`, but user-scoped, and the poisoning run was outside that scope), and no
+sweep makes a fixed global id safe against two concurrent runs. **Fixed 2026-08-10:** the
+scenario now uses `{{runOfflineTxId}}`, generated fresh per run. Same shape as the depleting
+wallet — a scenario must not depend on shared mutable state it does not own. If you add a
+scenario that writes a keyed row, generate the key.
+
 **Accumulated state moves the failure, which is worse than repeating it.** The three
 `e2e/*` scenarios failed `409 "Station already exists"` on the first run. On the second
 they failed **earlier**, with `422 "The email has already been taken"` — because the first
@@ -149,8 +161,12 @@ scenario itself, plus `data-transfer-response` and `reconnect-recovery` downstre
 station being left disabled. It reproduces only when the station has an in-flight session
 at disable time, which is why the same scenario passes standalone.
 
-Recorded, not fixed: csms-server code, outside the simulator, and the fix is one `catch`
-widening in an action whose intent is already written down.
+**FIXED and deployed — verified 2026-08-10.** csms-server `a566336` added `catch (\Throwable $e)`
+at `StopAllStationSessionsAction.php:67`, confirmed present INSIDE the running `csms-app-uat`
+container (not merely in git). The 116-scenario run of 2026-08-10 showed zero
+`502 STATION_OFFLINE` and zero stations left disabled. Keep the paragraph above as the
+explanation of a real failure mode, but do NOT attribute a fresh `502` cluster to it without
+re-checking `is_active` first.
 
 ---
 
@@ -173,12 +189,31 @@ widening in an action whose intent is already written down.
 
 ## A known-good baseline
 
-Verified against UAT on 2026-08-07, `--station stn_d4811083`, `OSPP_PROTOCOL_VERSION=0.3.0`:
+**SUPERSEDED — this block is the 2026-08-07 `--station` run, kept for history only.**
+It predates the 107→116 scenario additions and the audit repairs, so its denominators are
+wrong for `core`, `device-management`, `sessions` and `security`.
 
 ```
 core 12/16 · chaos 6/7 · device-management 19/21 · sessions 18/20 · security 17/22
 reservations 6/6 · tls-floor 5/6 · fleet 3/3 · multiunit-e2e 0/3 · e2e 0/3
 ```
+
+**CURRENT baseline — 2026-08-10, `--bootstrap-pool --pool-size 5`, 116 scenarios,
+`OSPP_PROTOCOL_VERSION=0.3.0`, csms-server `de8d2fc`: 98 passed / 11 failed / 7 skipped
+in 12m21s, and ZERO of the 11 was a server defect.**
+
+```
+chaos 6/7 · core 17/18 · device-management 19/23 · e2e 0/3 (all skipped) · fleet 3/3
+multiunit-e2e 1/3 · reservations 6/6 · security 19/24 · sessions 22/23 · tls-floor 5/6
+```
+
+Read a pooled run against THIS line, never against the `--station` one. Pooled mode is the
+more honest instrument and legitimately fails MORE: pool stations are provisioned fresh, so
+`device_management_supported` starts NULL, whereas the long-lived `stn_d4811083` carried
+`true` as residue from a sibling scenario and masked three scenarios that never declared the
+capability they need. Comparing the two counts directly manufactures phantom regressions.
+
+Also note zero 429s: 116 scenarios drew 116 single-use identities, which is what §4 is for.
 
 Read against `docs/audits/adjudication/SCENARIO-AUDIT-0.13.0.md` in csms-server, which
 classifies every failure. A run that reproduces those numbers is telling you the same

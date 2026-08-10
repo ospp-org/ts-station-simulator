@@ -5,7 +5,36 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Session finalSeqNo Terminal Marker"
-description: "3 MeterValues emitted (seqNo 0,1,2). StopService Accepted carries finalSeqNo=3. Two late MeterValues with explicit seqNo 99 and 100 emitted post-stop. Per spec v0.4.0 §3.2, csms-server MUST discard the late events as seqNo > finalSeqNo."
+description: "3 MeterValues with EXPLICIT seqNo 0,1,2; the scenario itself sends StopService Response Accepted carrying finalSeqNo=3, which is what writes sessions.final_seq_no. A control frame at seqNo=3 is then INGESTED (proving a terminal session still accepts frames), and late frames at seqNo 99/100 are DISCARDED. Asserted on the server-written meter_values collection, not on silence."
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/Session/Handlers/MeterValuesHandler.php:60-69
+#     if ($session->final_seq_no !== null && $dto->seqNo !== null
+#         && $dto->seqNo > $session->final_seq_no) { ...discard...; return null; }
+#   The guard is a no-op unless final_seq_no is non-null. It is written by
+#   CompleteSessionAction.php:137, reached from StopServiceResponseHandler.php:72-79
+#   (handleAccepted -> completeSessionAction->execute(finalSeqNo: $dto->finalSeqNo)).
+#   `finalSeqNo` is a declared member of stop-service-response.schema.json
+#   (additionalProperties:false, so it must be declared to survive validation).
+#
+# WHY THIS FILE WAS REWRITTEN (2026-08-10)
+#   The prior version asserted NOTHING after its two late frames, and rested on an
+#   auto-responder that scenario mode does not register: ScenarioRunner.ts:756-769
+#   registers ONLY BootNotificationHandler(autoReact=false). So no StopService Response
+#   was ever sent, final_seq_no stayed NULL, the discard guard above was a no-op, and
+#   the "late" seqNo 99/100 frames were INGESTED. Measured on UAT 2026-08-10:
+#   final_seq_no NULL on every session in the run, last_seq_no=100 on this one. The file
+#   passed while the exact opposite of its thesis happened. Its "auto-inject seqNo 0,1,2"
+#   and "handler auto-emits StopServiceResponse" comments described mechanisms that do
+#   not run — which is how it survived.
+#
+# WHY THE CONTROL FRAME IS LOAD-BEARING
+#   "Nothing was appended after the terminal write" is ALSO what you would see if the
+#   server dropped every frame on a completed session for any reason. MeterValuesHandler
+#   has no such status guard (findBySessionId is unfiltered; the only status branch is an
+#   AUTHORIZED->ACTIVE promotion at :77), so a frame at seqNo == finalSeqNo MUST still be
+#   ingested. Step 5 proves that, which is what makes step 6's absence attributable to the
+#   seqNo filter specifically rather than to the session having ended.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -97,7 +126,11 @@ steps:
       programs:
         - programNumber: 1
           available: false
-  # --- 3 MeterValues — auto-inject seqNo 0, 1, 2 ---
+  # --- 3 MeterValues carrying EXPLICIT seqNo 0, 1, 2 ---
+  # Explicit, not injected: SendStep::injectSeqNoFields (SendStep.ts:227-256) early-returns
+  # because station.sessions is only written by StartServiceHandler.ts:161, which scenario
+  # mode never registers. An explicit `seqNo:` here reaches the wire untouched — the
+  # injector only ever fills a MISSING value (`payload.seqNo === undefined`, :242).
   - action: delay
     ms: 300
 
@@ -108,6 +141,7 @@ steps:
       bayId: "{{captured.bayId}}"
       sessionId: "{{captured.sessionId}}"
       timestamp: "2026-05-09T12:00:30.000Z"
+      seqNo: 0
       values:
         liquidMl: 300
         energyWh: 75
@@ -122,6 +156,7 @@ steps:
       bayId: "{{captured.bayId}}"
       sessionId: "{{captured.sessionId}}"
       timestamp: "2026-05-09T12:01:00.000Z"
+      seqNo: 1
       values:
         liquidMl: 600
         energyWh: 150
@@ -136,15 +171,13 @@ steps:
       bayId: "{{captured.bayId}}"
       sessionId: "{{captured.sessionId}}"
       timestamp: "2026-05-09T12:01:30.000Z"
+      seqNo: 2
       values:
         liquidMl: 900
         energyWh: 225
 
-  # --- Trigger StopService — handler stamps finalSeqNo=3 on the
-  # Accepted Response and trailing SessionEnded. After this point,
-  # session is removed from station.sessions, so subsequent MeterValues
-  # with the same sessionId no longer auto-advance the counter — they
-  # propagate to the broker with their explicit seqNo from YAML. ---
+  # --- Trigger StopService. The Response is sent BY THIS SCENARIO below;
+  # nothing auto-emits it. ---
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
@@ -155,17 +188,35 @@ steps:
     messageType: Request
     timeout_ms: 15000
 
-  # Handler auto-emits StopServiceResponse Accepted with finalSeqNo=3
-  # and trailing SessionEnded EVENT with seqNo=3, finalSeqNo=3, then
-  # removes the session from station.sessions.
-  - action: delay
-    ms: 500
+  # THE TERMINAL WRITE. finalSeqNo=3 is the whole point of the file: it is the
+  # only thing that makes MeterValuesHandler.php:60 anything other than a no-op.
+  # StopServiceResponseHandler::handleAccepted -> CompleteSessionAction:137.
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 90
+      creditsCharged: 150
+      finalSeqNo: 3
 
-  # --- 2 late MeterValues with explicit seqNo > finalSeqNo.
-  # csms-server MUST discard these per spec v0.4.0 §3.2 stale-event filter. ---
   - action: delay
-    ms: 100
+    ms: 2000
 
+  # --- BASELINE. Three frames written, session terminal, finalSeqNo recorded. ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.meter_values.length: 3
+      data.meter_values.2.energy_wh: 225
+
+  # --- CONTROL: seqNo == finalSeqNo, so NOT `> finalSeqNo`, so NOT discarded.
+  # This is the frame the terminal marker declares exists. It arrives after the
+  # session went terminal and MUST still be ingested — that is what proves the
+  # next step's absence is the seqNo filter and not a blanket post-terminal drop. ---
   - action: send
     message: MeterValues
     messageType: Event
@@ -173,14 +224,23 @@ steps:
       bayId: "{{captured.bayId}}"
       sessionId: "{{captured.sessionId}}"
       timestamp: "2026-05-09T12:02:00.000Z"
-      seqNo: 99
+      seqNo: 3
       values:
-        liquidMl: 1100
-        energyWh: 280
+        liquidMl: 1000
+        energyWh: 333
 
   - action: delay
-    ms: 100
+    ms: 2000
 
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.meter_values.length: 4
+      data.meter_values.3.energy_wh: 333
+
+  # --- THE TEST: 2 late frames with seqNo > finalSeqNo=3. Both MUST be discarded. ---
   - action: send
     message: MeterValues
     messageType: Event
@@ -188,7 +248,52 @@ steps:
       bayId: "{{captured.bayId}}"
       sessionId: "{{captured.sessionId}}"
       timestamp: "2026-05-09T12:02:30.000Z"
+      seqNo: 99
+      values:
+        liquidMl: 1100
+        energyWh: 777
+
+  - action: delay
+    ms: 300
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-09T12:03:00.000Z"
       seqNo: 100
       values:
         liquidMl: 1200
-        energyWh: 300
+        energyWh: 888
+
+  - action: delay
+    ms: 2000
+
+  # THE ASSERTION. Still 4 rows, and index 3 is still the control frame — so
+  # neither late frame was appended. Length alone would pass if a late frame had
+  # REPLACED one; pinning index 3 closes that. energy_wh 777/888 exist nowhere else
+  # in this file, so an ingested late frame could only show up here.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.meter_values.length: 4
+      data.meter_values.3.energy_wh: 333
+
+  # --- Pool-hygiene teardown. (Class: bay-leak.) The session is already terminal;
+  # only the bay needs returning to Available for the next scenario on this station. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

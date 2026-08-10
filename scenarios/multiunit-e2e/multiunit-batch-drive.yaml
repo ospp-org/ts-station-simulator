@@ -134,8 +134,8 @@ steps:
   - action: delay
     ms: 500
 
-  # SessionEnded EVENT — station-autonomous. seqNo/finalSeqNo are auto-handled by
-  # SendStep (not injected in scenario mode, matching the proven session-* scenarios);
+  # SessionEnded EVENT — station-autonomous. seqNo/finalSeqNo are NOT injected in
+  # scenario mode (SendStep.ts:236) and are absent from the wire;
   # creditsCharged is informational only — the server's settlement policy decides the
   # actual per-unit charge/refund for the batch.
   - action: send

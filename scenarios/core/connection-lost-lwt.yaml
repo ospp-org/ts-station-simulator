@@ -1,5 +1,15 @@
 name: "Connection Lost LWT"
-description: "Boot, then disconnect to trigger MQTT Last Will and Testament. The broker sends ConnectionLost automatically."
+description: >
+  KNOWN GAP — asserts nothing, and the automatic behaviour it names is contested.
+  The will IS configured (MqttConnection.ts:342-358) but with willDelayInterval:10, while
+  the sim auto-reconnects on a fixed 5s period — sessions/arc8-reconnect-preserve.yaml:7-10
+  records from a live UAT run that "the 5s auto-reconnect cancels the real 10s-delayed will",
+  which is exactly why THAT file injects ConnectionLost as an explicit send step instead.
+  Here `fault: disconnect` is also the LAST step, so ScenarioRunner.ts:1333 immediately
+  issues a clean station.disconnect(); and there is no wait_for, api_call or assert after it.
+  So whether or not the broker publishes the will, this file cannot observe it and passes
+  either way. To make it real: inject ConnectionLost explicitly (arc8 pattern) or assert
+  server-side state after the fault.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

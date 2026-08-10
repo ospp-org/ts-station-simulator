@@ -70,6 +70,13 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: ResetStationAction.php:59 refuses with COMMAND_NOT_SUPPORTED (2007)
+        # unless device_management_supported === true, and that gate runs BEFORE the
+        # active-session pre-flight at :91 — so without this the file dies at the wrong
+        # gate and never reaches the forced-reset branch it exists to test. NULL is "not
+        # stated" and is withheld too (OSPP §5.1 rule 3). Declared at boot, matching
+        # change-configuration-accepted.yaml:33; no admin call sets it in this corpus.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -238,6 +245,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Restated on the post-reset boot. Not strictly required — §5.1 rule 2 leaves an
+        # unstated capability OUT of the update, so the value from the PowerOn boot above
+        # survives (BootNotificationHandler.php:184-190) — but a real station declares its
+        # capabilities on every boot, and restating it keeps this file independent of that
+        # rule rather than silently relying on it.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 

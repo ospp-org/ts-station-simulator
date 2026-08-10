@@ -18,8 +18,15 @@ station:
     accept_rate: 1.0
     response_delay_ms: [50, 200]
 steps:
-  # 1. Boot WITHOUT device-management capability — csms persists
-  #    device_management_supported=false (BootNotificationHandler.php:101).
+  # 1. Boot DECLARING deviceManagementSupported:false (see the payload below) — csms
+  #    persists device_management_supported=false.
+  #    The distinction is load-bearing and is NOT "boot without the capability":
+  #    OSPP §5.1 rule 2 leaves an UNSTATED capability out of the update entirely, so a
+  #    previously declared `true` would SURVIVE an omitting boot
+  #    (BootNotificationHandler.php:184-190). On a shared pool station where a sibling
+  #    scenario declared true, omitting would leave the gate OPEN and the command would
+  #    dispatch — this file would then fail expecting its 422. Declaring false explicitly
+  #    is what makes it deterministic regardless of what ran on the station before.
   - action: send
     message: BootNotification
     payload:

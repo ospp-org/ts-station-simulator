@@ -87,8 +87,7 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/session-stop-local.yaml` | Session Stop Local (v0.4.0) | User physical stop → SessionEnded reason: Local; pro-rated charge | new |
 | `sessions/session-local-out-of-credit.yaml` | Session Local Out Of Credit (v0.4.0) | Offline credit pool exhausted → SessionEnded reason: LocalOutOfCredit; creditsCharged=0 | new |
 | `sessions/session-deauthorized-revocation-epoch.yaml` | Session Deauthorized via RevocationEpoch (v0.4.0) | RevocationEpoch bump → SessionEnded reason: Deauthorized; creditsCharged=0 | new |
-| `sessions/session-seqno-monotonic.yaml` | Session seqNo Monotonic (v0.4.0) | 5 MeterValues with auto-injected seqNo 0..4; finalSeqNo=5 | new |
-| `sessions/session-final-seqno-terminal.yaml` | Session finalSeqNo Terminal (v0.4.0) | Late MeterValues with seqNo > finalSeqNo discarded server-side | new |
+| `sessions/session-final-seqno-terminal.yaml` | Session finalSeqNo Terminal Marker | Sends StopService Response finalSeqNo=3 (the only writer of `sessions.final_seq_no`); a control frame at seqNo=3 is ingested, seqNo 99/100 are discarded — asserted on the server-written `meter_values` collection | rewritten 2026-08-10 |
 
 ## Reservations (6 scenarios)
 
@@ -117,7 +116,6 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/change-configuration-rejected.yaml` | Change Config Rejected | Readonly key rejected (5108) | new |
 | `device-management/soft-reset.yaml` | Soft Reset | Reset Soft → reboot → re-register | migrated |
 | `device-management/hard-reset.yaml` | Hard Reset | Reset Hard → full restart → re-register | new |
-| `device-management/reset-rejected-active-sessions.yaml` | Reset Rejected - Active Sessions | Reset rejected due to active session (3016) | new |
 | `device-management/trigger-message-heartbeat.yaml` | Trigger Heartbeat | TriggerMessage → Heartbeat sent | migrated |
 | `device-management/trigger-message-status.yaml` | Trigger StatusNotification | TriggerMessage → StatusNotification sent | new |
 | `device-management/trigger-message-boot.yaml` | Trigger BootNotification | TriggerMessage → BootNotification sent | new |
@@ -209,7 +207,7 @@ All 26 MQTT actions are covered by at least one scenario:
 | SecurityEvent | Station→Server | 11 security-event-* scenarios |
 | ChangeConfiguration | Server→Station | change-configuration-accepted, -reboot-required, -rejected |
 | GetConfiguration | Server→Station | get-configuration, get-configuration-filtered |
-| Reset | Server→Station | soft-reset, hard-reset, reset-rejected-active-sessions |
+| Reset | Server→Station | soft-reset, hard-reset, reset-graceful-refused-with-active-session, reset-forced-settles-session-as-operator-stop |
 | UpdateFirmware | Server→Station | firmware-update-success, -download-failure, -install-failure |
 | FirmwareStatusNotification | Station→Server | firmware-update-success, -download-failure, -install-failure |
 | GetDiagnostics | Server→Station | diagnostics-upload, diagnostics-failure |

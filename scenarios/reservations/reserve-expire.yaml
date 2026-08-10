@@ -5,7 +5,12 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Reserve and Expire"
-description: "Reserve a bay and let the TTL expire - verifies the bay auto-returns to Available after expiration."
+description: >
+  Reserve a bay and let the TTL expire. NOTE what is and is not proven: the "Available"
+  StatusNotification after the delay is sent BY THIS SCENARIO, not observed from the server,
+  so this file does not verify that the bay auto-returns to Available — it asserts its own
+  message. The server-side expiry (ExpireReservation) is real and does run, but reading it
+  back would need an api_call against the reservation or bay state.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

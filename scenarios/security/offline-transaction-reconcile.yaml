@@ -72,7 +72,7 @@ steps:
   - action: send
     message: TransactionEvent
     payload:
-      offlineTxId: "otx_a0000000001"
+      offlineTxId: "{{runOfflineTxId}}"
       offlinePassId: "{{captured.offlinePassId}}"
       passCounter: 1
       userId: "{{captured.offlineUserSub}}"
@@ -109,7 +109,12 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- Idempotency re-send (same offlineTxId, fresh envelope messageId) ---
+  # --- Idempotency re-send (SAME offlineTxId, fresh envelope messageId).
+  # {{runOfflineTxId}} is generated once per run (ScenarioRunner.generateVariables) and
+  # resolves to the same string at both sites, so this is still a genuine re-send — while
+  # no longer colliding with a previous run. It used to be the literal `otx_a0000000001`,
+  # which the server reconciles exactly ONCE per database: a row from 2026-08-07 was still
+  # making this file answer `Duplicate` instead of `Accepted` on 2026-08-10. ---
   # Reconciler dedups on offlineTxId before verify/score/debit (Reconciler.php
   # line 55-68). Same idempotencyKey ('otx_'.offlineTxId) means the wallet
   # debit would otherwise re-fire, but wallet_entries.idempotency_key UNIQUE
@@ -120,7 +125,7 @@ steps:
   - action: send
     message: TransactionEvent
     payload:
-      offlineTxId: "otx_a0000000001"
+      offlineTxId: "{{runOfflineTxId}}"
       offlinePassId: "{{captured.offlinePassId}}"
       passCounter: 1
       userId: "{{captured.offlineUserSub}}"

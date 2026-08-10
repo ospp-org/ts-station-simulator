@@ -42,7 +42,13 @@ function replaceTemplates(obj: unknown): unknown {
       if (obj.includes('serialNumber')) return 'SN-12345678';
       if (obj.includes('reservationId') || obj.includes('rsv_')) return 'rsv_00000001';
       if (obj.includes('offlinePassId') || obj.includes('opass_')) return 'opass_00000001';
-      if (obj.includes('offlineTxId') || obj.includes('otx_')) return 'otx_00000001';
+      // `runOfflineTxId` is the per-run generated variable (ScenarioRunner.generateVariables)
+      // that replaced the hardcoded `otx_a0000000001`. Listed explicitly because these hints
+      // are case-sensitive substring matches and its capital O misses `offlineTxId`, which
+      // would silently fall through to 'test_dummy_value' and fail the otx_ pattern.
+      if (obj.includes('offlineTxId') || obj.includes('runOfflineTxId') || obj.includes('otx_')) {
+        return 'otx_00000001';
+      }
       if (obj.includes('authId') || obj.includes('auth_')) return 'auth_00000001';
       if (obj.includes('userId') || obj.includes('sub_')) return 'sub_testuser01';
       if (obj.includes('deviceId') || obj.includes('dev_')) return 'dev_00000001';

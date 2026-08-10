@@ -22,17 +22,21 @@
 #   6005 instead — a documented fidelity gap (the comment at :87-90 records it),
 #   which is precisely why it deserves a wire proof rather than a code reading.
 #
-# WHAT THIS CONTRADICTS IN THE EXISTING CORPUS
-#   device-management/reset-rejected-active-sessions.yaml drives the same
-#   endpoint with an active session and `expect_status: 202`, then waits for a
-#   Reset REQUEST and answers 3016. Both cannot be right. Its payload is
+# THE FILE THIS REPLACED — resolved 2026-08-10
+#   device-management/reset-rejected-active-sessions.yaml drove the SAME endpoint
+#   with an active session and `expect_status: 202`, then waited for a Reset
+#   REQUEST and answered 3016. Both could not be right. Its payload was
 #   `{type: "Soft"}` — `type` is not a member of the Reset validator
 #   (TriggerCommandController.php:135-139 accepts only `force`) and Laravel's
-#   validate() returns only validated keys, so it is dropped and `force`
-#   defaults to false. That is the graceful path, which this pre-flight refuses.
-#   Reported in the arc report, not repaired here: repairing it is a separate
-#   decision about a file whose intent (proving the STATION's 3016) no longer has
-#   a reachable path.
+#   validate() returns only validated keys, so it was dropped and `force`
+#   defaulted to false. That is the graceful path, which this pre-flight refuses,
+#   so it failed 409/6005 on every run.
+#   It was DELETED, on the precedent of 32714b3 (which deleted boot-rejected.yaml
+#   when it wrote the replacement rather than leaving two files disagreeing).
+#   Nothing it covered is now uncovered: its intent — proving the STATION's 3016 —
+#   has no reachable path while the server pre-empts at :91, and the Reset DISPATCH
+#   path it walked is covered by soft-reset.yaml, hard-reset.yaml and
+#   reset-forced-settles-session-as-operator-stop.yaml.
 #
 # WHAT IS ASSERTED — both server-produced
 #   1. HTTP 409 + error.ospp_code 6005 from the trigger endpoint. The status is

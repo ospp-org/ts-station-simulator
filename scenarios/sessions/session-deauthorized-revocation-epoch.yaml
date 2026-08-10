@@ -103,8 +103,11 @@ steps:
   # OSPP spec ch.08 §5 defines the station-side config key as
   # `RevocationEpoch` (PascalCase). The OfflinePass JSON field is the
   # lowercase `revocationEpoch` — different identifier. Server pushes
-  # the new epoch; ChangeConfigurationHandler persists it onto the
-  # station's currentRevocationEpoch via the v0.4.0 sniff. ---
+  # the new epoch. NOTE: no ChangeConfigurationHandler runs in scenario mode
+  # (ScenarioRunner.ts:766-769), so nothing persists it onto the station's
+  # currentRevocationEpoch and no ChangeConfiguration RESPONSE is ever sent —
+  # the server's pendingCommand for it stays unresolved. The epoch push is
+  # observed on the wire, not round-tripped. ---
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
@@ -120,13 +123,16 @@ steps:
     messageType: Request
     timeout_ms: 15000
 
-  # Handler auto-accepts (results: Accepted) AND captures revocationEpoch
-  # onto station.currentRevocationEpoch via the v0.4.0 sniff.
+  # Nothing auto-accepts: no ChangeConfiguration RESPONSE is sent and the
+  # station's currentRevocationEpoch is never updated. Plain wait.
   - action: delay
     ms: 500
 
   # --- SessionEnded (Deauthorized) — full refund per spec.
-  # Auto-injected seqNo: 0, finalSeqNo: 0.
+  # NO seqNo/finalSeqNo is published: injectSeqNoFields early-returns because
+  # station.sessions is empty in scenario mode (SendStep.ts:236). Both fields are
+  # optional in session-ended-event.schema.json, so this validates and passes with
+  # neither present — the server's sequence block is skipped entirely.
   - action: send
     message: SessionEnded
     messageType: Event

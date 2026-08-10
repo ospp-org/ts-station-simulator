@@ -104,7 +104,7 @@ steps:
     ms: 1500
 
   # --- SessionEnded (Local) — autonomous emission, pro-rated charge.
-  # Auto-injected seqNo: 0, finalSeqNo: 0 (no MeterValues emitted).
+  # NO seqNo/finalSeqNo published (SendStep.ts:236 early-return); both optional in schema.
   - action: send
     message: SessionEnded
     messageType: Event

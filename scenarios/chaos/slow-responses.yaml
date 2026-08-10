@@ -1,5 +1,13 @@
 name: "Slow Responses"
-description: "Station configured with very slow response behavior (3-5 seconds). Tests that the server tolerates delayed responses without timing out or erroring."
+description: >
+  KNOWN GAP — does NOT currently test what its name says. `behavior.response_delay_ms`
+  is inert: its only reader is src/auto-responder/AutoResponder.ts:20,26, which has zero
+  production importers (scenario mode registers only BootNotificationHandler, autoReact=false,
+  ScenarioRunner.ts:766-769). SendStep.execute publishes immediately (SendStep.ts:368), so every
+  Response below goes out in ~0ms and the server never sees a slow station. What this file
+  actually exercises is an ordinary round-trip. To make it real the delays must be explicit
+  `action: delay` steps BEFORE each Response send. Not done here because it needs a wire run
+  to confirm the server-side timeout it is supposed to probe.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -68,7 +76,8 @@ steps:
       duration_seconds: 300
     expect_status: 201
 
-  # --- Wait for StartService (slow response delay applied by behavior) ---
+  # --- Wait for StartService. NOTE: no delay is applied — see the KNOWN GAP in the
+  # description. `response_delay_ms` is dead config; this Response is immediate. ---
   # Per C-017: response_delay_ms [3000, 5000] applies to multiple round-trips;
   # bump timeout to 30s to absorb chaos-induced latency.
   - action: wait_for
@@ -80,7 +89,7 @@ steps:
       bayId: "payload.bayId"
       serviceId: "payload.serviceId"
 
-  # --- Accept StartService (response_delay_ms [3000,5000] is applied by behavior) ---
+  # --- Accept StartService. NOT delayed (response_delay_ms is inert — see description). ---
   - action: send
     message: StartService
     messageType: Response

@@ -1,5 +1,9 @@
 name: "Hard Reset"
-description: "Hard reset flow: handler accepts, disconnects, reconnects, auto-boots"
+description: >
+  Hard reset: the server publishes Reset REQUEST and this scenario observes it.
+  KNOWN GAP — no Reset RESPONSE is ever sent and the station never disconnects.
+  Scenario mode registers no ResetHandler (ScenarioRunner.ts:766-769). What IS proven:
+  the server dispatches Reset to a station that declared the profile.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -49,13 +53,14 @@ steps:
       type: "Hard"
     expect_status: 202
 
-  # Handler auto-responds Accepted + destroyConnection after 2s delay
+  # No handler answers this — scenario mode registers none. The Reset REQUEST is observed
+  # and left unanswered (see the KNOWN GAP in the description).
   - action: wait_for
     message: Reset
     messageType: Request
     timeout_ms: 15000
 
-  # Wait for: handler 2s delay + disconnect + reconnect 5s
+  # A plain wait on a still-connected station. Nothing disconnects or reconnects here.
   - action: delay
     ms: 13000
 

@@ -13,6 +13,7 @@ import {
   generateSerialNumber,
   generateBayId,
   generateServiceId,
+  generateOfflineTxId,
 } from '../station/StationConfig.js';
 import type { StationConfig, BayConfig } from '../station/StationConfig.js';
 import { SendStep } from './steps/SendStep.js';
@@ -524,6 +525,15 @@ export function generateVariables(
   vars.set('stationId', stationId);
   vars.set('serialNumber', generateSerialNumber());
   vars.set('target_url', target.apiBaseUrl ?? target.mqttUrl);
+
+  // Fresh per run, so a scenario reconciling an offline transaction never hardcodes an
+  // offlineTxId. The server dedups on it permanently, so a literal is reconcilable exactly
+  // once per database and every later run gets `Duplicate` (see generateOfflineTxId).
+  // Deliberately NOT named `offlineTxId`: security/offline-auth-transaction-reconcile*.yaml
+  // REQUIRE that one as an explicit --var describing an out-of-band grant, and generating a
+  // default for it would turn their honest "Template variable not found" into a confusing
+  // downstream failure against a grant the server never issued.
+  vars.set('runOfflineTxId', generateOfflineTxId());
 
   const bayCount = scenarioDef.station.bayCount;
   for (let i = 1; i <= bayCount; i++) {

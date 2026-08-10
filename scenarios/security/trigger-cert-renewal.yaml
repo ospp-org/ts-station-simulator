@@ -1,5 +1,10 @@
 name: "Trigger Certificate Renewal"
-description: "Boot station, trigger TriggerCertificateRenewal via API, handler auto-responds and sends SignCertificate CSR."
+description: >
+  Boot station, trigger TriggerCertificateRenewal via API, observe the REQUEST on the wire.
+  KNOWN GAP — no TriggerCertificateRenewal RESPONSE and no SignCertificate CSR are ever sent:
+  scenario mode registers no TriggerCertificateRenewalHandler (ScenarioRunner.ts:766-769) and
+  this file ENDS at the wait_for below. The renewal round-trip it is named for is unproven;
+  only the server-to-station dispatch is.
 
 # Platform-managed cert lifecycle — platform admin + omit_org_header (NULL team).
 # See certificate-install.yaml for the full rationale.
@@ -58,7 +63,7 @@ steps:
       certificateType: "StationCertificate"
     expect_status: 202
 
-  # Handler auto-responds Accepted + auto-sends SignCertificate Request
+  # Nothing auto-responds. This file ends at this wait_for — see the KNOWN GAP above.
   - action: wait_for
     message: TriggerCertificateRenewal
     messageType: Request

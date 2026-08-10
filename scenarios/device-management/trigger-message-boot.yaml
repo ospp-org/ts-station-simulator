@@ -1,5 +1,9 @@
 name: "Trigger Message BootNotification"
-description: "Server triggers a BootNotification message from the station — handler auto-responds and auto-sends BootNotification"
+description: >
+  Server triggers a BootNotification from the station via TriggerMessage. The station
+  side is scripted explicitly by this file — scenario mode registers no TriggerMessageHandler
+  (see the note at the TriggerMessage wait_for below), so nothing auto-responds and nothing
+  auto-sends the BootNotification.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

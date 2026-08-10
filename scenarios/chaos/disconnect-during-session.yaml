@@ -1,5 +1,11 @@
 name: "Disconnect During Session"
-description: "Disconnect in the middle of an active session. Tests that MQTT LWT ConnectionLost fires and the server handles the orphaned session correctly."
+description: >
+  Disconnect in the middle of an active session, leaving the session ACTIVE and the station
+  disconnected — which is its real, used purpose (other work relies on it to produce exactly
+  that state). KNOWN GAP — it does NOT test what its old description claimed: `fault: disconnect`
+  is the last step and nothing is asserted afterwards, so neither the LWT firing nor the
+  server's handling of the orphaned session is observed. Same 5s-reconnect vs 10s-will race
+  recorded in sessions/arc8-reconnect-preserve.yaml:7-10.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

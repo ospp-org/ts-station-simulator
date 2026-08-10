@@ -1,5 +1,11 @@
 name: "Soft Reset"
-description: "Soft reset flow: handler accepts, disconnects, reconnects, auto-boots"
+description: >
+  Soft reset: the server publishes Reset REQUEST and this scenario observes it.
+  KNOWN GAP — no Reset RESPONSE is ever sent and the station never disconnects.
+  Scenario mode registers no ResetHandler (ScenarioRunner.ts:766-769), so the prior
+  "handler accepts, disconnects, reconnects, auto-boots" was describing a handler that
+  does not run. The server-side pendingCommand for this Reset is therefore never resolved.
+  What IS proven: the server dispatches Reset to a station that declared the profile.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -49,13 +55,14 @@ steps:
       type: "Soft"
     expect_status: 202
 
-  # Handler auto-responds Accepted + destroyConnection after 1s delay
+  # No handler answers this — scenario mode registers none. The Reset REQUEST is observed
+  # and left unanswered (see the KNOWN GAP in the description).
   - action: wait_for
     message: Reset
     messageType: Request
     timeout_ms: 15000
 
-  # Wait for: handler 1s delay + disconnect + reconnect 5s
+  # A plain wait on a still-connected station. Nothing disconnects or reconnects here.
   - action: delay
     ms: 10000
 

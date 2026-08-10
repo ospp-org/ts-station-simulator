@@ -135,7 +135,8 @@ steps:
   - action: delay
     ms: 1000
 
-  # --- SessionEnded (reason parameterized). seqNo/finalSeqNo auto-handled;
+  # --- SessionEnded (reason parameterized). seqNo/finalSeqNo are NOT injected in
+  #     scenario mode (SendStep.ts:236) and are absent from the wire;
   #     creditsCharged informational — server settlement policy decides the charge. ---
   - action: send
     message: SessionEnded

@@ -24,12 +24,18 @@
 #   explicit `seqNo:` here reaches the wire untouched. Even if handlers were
 #   registered later the YAML value still wins (`if (payload.seqNo === undefined)`).
 #
-#   The same fact means sessions/session-seqno-monotonic.yaml and
-#   sessions/session-final-seqno-terminal.yaml do NOT do what they say: both
-#   describe "auto-injected seqNo 0..4" / "0,1,2", and both actually publish
-#   MeterValues with NO seqNo at all, so `if ($dto->seqNo !== null)` skips the
-#   whole block and the server's sequence logic never runs. Recorded in the arc
-#   report; not repaired here.
+#   The same fact used to mean sessions/session-seqno-monotonic.yaml and
+#   sessions/session-final-seqno-terminal.yaml did NOT do what they said: both
+#   described "auto-injected seqNo 0..4" / "0,1,2" and actually published
+#   MeterValues with NO seqNo at all, so `if ($dto->seqNo !== null)` skipped the
+#   whole block and the server's sequence logic never ran. Both went green for it.
+#   RESOLVED 2026-08-10: session-final-seqno-terminal.yaml now sends explicit
+#   seqNo AND the StopService Response that writes final_seq_no, and asserts the
+#   discard against the server-written meter_values collection.
+#   session-seqno-monotonic.yaml was DELETED — its only distinguishing claim was
+#   the auto-injection, and the clean monotonic ingest it nominally covered is
+#   asserted by sessions/meter-values-seqno-out-of-order-still-ingested.yaml
+#   (indices 0-2, energy_wh 10/20/30).
 #
 # WHAT IS ASSERTED — and the branch's own effect is NOT assertable
 #   The gap branch produces exactly two things: a log line, and

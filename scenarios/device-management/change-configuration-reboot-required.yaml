@@ -30,6 +30,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: WriteConfigurationAction.php:86 refuses with COMMAND_NOT_SUPPORTED
+        # (2007) unless device_management_supported === true. NULL is "not stated" and
+        # is withheld too (OSPP §5.1 rule 3), so this must be declared, not omitted.
+        # Declared at boot like the other device-management scenarios (e.g.
+        # change-configuration-accepted.yaml:33) — there is no admin call for it here.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
