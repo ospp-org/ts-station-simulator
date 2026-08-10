@@ -107,3 +107,29 @@ steps:
   # --- Disconnect abruptly mid-session ---
   - action: fault
     type: disconnect
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — the file's own stated purpose, verified for the first time.
+  # Its description says the point is "leaving the session ACTIVE and the station
+  # disconnected — which is its real, used purpose (other work relies on it to
+  # produce exactly that state)". That state was never checked: the file
+  # disconnected and ended, so a session the server had already failed or settled
+  # looked identical to one left correctly active.
+  #
+  # data.status active is server-derived and is precisely the invariant the rest
+  # of the corpus leans on this file for. Losing the MQTT link must NOT terminate
+  # a running session — the wash is still running on real hardware, and the
+  # reconnect path (boot-reconnect-preserves-live-session, boot-error-recovery)
+  # exists to hand it back. If this ever reads `failed`, every scenario that
+  # depends on this file to set up a live-session-plus-offline-station has been
+  # building on a state that was not there.
+  #
+  # The api_call is plain HTTP and is unaffected by the disconnect.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"

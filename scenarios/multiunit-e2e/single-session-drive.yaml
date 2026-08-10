@@ -163,3 +163,30 @@ steps:
   # --- Trailing wait so the server-side session finalizer / settlement can run. ---
   - action: delay
     ms: 10000
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION, and it deliberately does NOT touch settlement.
+  #
+  # This file ends with reason "{{reason}}" — a REQUIRED --var, not a literal.
+  # The settlement arm therefore changes with the caller: TimerExpired charges the
+  # full window, Local bills pro-rata, LocalOutOfCredit refunds everything, and
+  # Fault lands in `failed` rather than `completed`. Pinning credits or status
+  # would pin this file to ONE value of its own parameter and go red for every
+  # other legitimate invocation.
+  #
+  # data.duration_actual is the invariant. SessionEndedHandler persists the
+  # reported actualDurationSeconds BEFORE settlement and independently of which
+  # arm runs, so it holds for every reason the var can take. It proves the
+  # SessionEnded was received and committed, which is what this drive scenario is
+  # for — the settlement arms themselves are covered, one file each, in sessions/.
+  #
+  # Echoed rather than derived: the value is this scenario's own literal. It
+  # proves the write path ran, not that anything was computed.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.duration_actual: 1

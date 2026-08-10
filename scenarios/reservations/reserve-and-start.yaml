@@ -165,3 +165,38 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — on the RESERVATION, because that is what this file adds.
+  #
+  # It ends with reason Local, so its settlement is the pro-rata arm already
+  # asserted once in session-stop-local; restating it here would be a sixth copy
+  # of the same rule. What is specific to reserve-and-start is the CONVERSION —
+  # it is one of only two files that start a session from a reservation.
+  #
+  # data.converted_session_id resolves the stored uuid back to the PUBLIC session
+  # id (ReservationResource:41-44 via resolveSessionPublicId), which is exactly
+  # what this scenario captured off the StartService Request. Matching them proves
+  # the server bound THIS session to THIS reservation — not merely that some
+  # conversion happened.
+  #
+  # data.status active is the terminal reservation state, distinguishing a
+  # converted reservation from one that expired or was cancelled — the two arms
+  # its siblings reserve-expire and reserve-cancel assert.
+  #
+  # WHY THIS IS WORTH HAVING TWICE. session-with-reservation asserts the same
+  # pair, and both matter: ConvertReservationAction had ZERO CALLERS until
+  # csms-server b68b396, and the live harm was that reservation:check-expiry
+  # expired reservations out from under running sessions every minute. Two
+  # independent files now fail if that regresses, on a path where the failure is
+  # silent — a reservation quietly expiring under a live wash produces no error
+  # anywhere.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+      data.converted_session_id: "{{captured.sessionId}}"
