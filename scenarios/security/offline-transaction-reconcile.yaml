@@ -1,5 +1,23 @@
 name: "Offline Transaction Reconciliation"
 description: "Boot station and send a TransactionEvent request to reconcile an offline transaction with full receipt and meter values."
+# CEILING REACHED — do not go looking for a REST read-back; there is none.
+# This file already asserts the two COMPUTED verdicts, which is the strongest
+# thing available on this path: the first TransactionEvent is Accepted and the
+# replay of the same offlineTxId is Duplicate. Both come from the Reconciler
+# dedup decision, not from anything this scenario declares.
+#
+# What CANNOT be added, verified 2026-08-10: routes/api/v1/offline.php exposes
+# only GET /passes, POST /passes, POST /reconcile and GET /passes/{passId}/status.
+# NOTHING reads an offline_transactions row back — not its status, not its
+# fraud_score, not its fraud_signals. The score is also deliberately off the wire
+# (transaction-event-response.schema.json is {status, reason},
+# additionalProperties:false). So the row this file writes is observable only by
+# querying the database out of band.
+#
+# The ids ARE per-run generated ({{runOfflineTxId}}) since 2026-08-10. Do not
+# reintroduce a literal: the Reconciler dedups on the id before verify/score/debit,
+# so a fixed id is reconcilable exactly ONCE per database and poisons itself
+# permanently — otx_a0000000001 is still sitting on UAT proving that.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

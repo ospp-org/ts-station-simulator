@@ -13,6 +13,15 @@ description: >
   userId, deviceId, bayId, serviceId. creditsCharged is fixed at 30 (< credits_authorized
   so the true-up refunds a positive amount). The station must boot first so the engine
   captures the HMAC sessionKey (csms UAT SigningMode=Critical signs the TransactionEvent).
+# Not auto-runnable in a pooled suite, and marked so it SKIPS rather than fails.
+# This file needs --var offlineTxId/authId/sessionId naming an auth-form grant
+# that was issued OUT OF BAND: there is no API on UAT that mints one, so a pooled
+# run has nothing to substitute and template substitution THROWS. Before this
+# line that surfaced as a hard failure whose message named a missing variable
+# rather than a missing fixture — the exact attribution cost RUNNING-AGAINST-UAT
+# was written about. Same treatment, same reason, as
+# sessions/session-rejected-invalid-service-cross-station.yaml.
+skip_when_pooled: "Needs an out-of-band auth-form grant via --var offlineTxId/authId/sessionId; no UAT API mints one, so substitution throws in a pooled run. Run with --scenario <file> --target uat --var ... (see header)."
 station:
   stationId: "{{stationId}}"
   bayCount: 2

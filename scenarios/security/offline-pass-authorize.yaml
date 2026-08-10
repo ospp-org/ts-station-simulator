@@ -15,6 +15,51 @@ description: "Boot a station, obtain a genuine server-signed offline pass via PO
 # object, not a stringified copy), so the server's canonical-form re-verification
 # matches the original signature.
 # --------------------------------------------------------------------------
+#
+# STATUS 2026-08-10: THIS FILE CANNOT PASS. THE SERVER ISSUES A PASS THE WIRE
+# SCHEMA FORBIDS. No assertion was added, because a shape that has never been
+# observed working cannot be asserted against.
+#
+# Measured, with the reason read off the wire rather than inferred:
+#
+#   AuthorizeOfflinePass -> Response {status: "Rejected", reason:
+#     "/offlinePass: Additional object properties are not allowed: organization_id"}
+#
+# The two halves, each verified:
+#   - The server PUTS it there. OfflinePassDto::toArray():38 and :65 emit
+#     `'organization_id' => $this->organizationId`, and the comment at :54 cites
+#     "Per OSPP v0.4.2 offline-pass.md §2, `organization_id` is a REQUIRED..."
+#   - The schema FORBIDS it. common/offline-pass.schema.json (@ospp/protocol
+#     0.13.0) is `additionalProperties: false` over exactly passId, sub, deviceId,
+#     issuedAt, expiresAt, policyVersion, revocationEpoch, offlineAllowance,
+#     constraints, signatureAlgorithm, signature. `organization_id` is not among
+#     them.
+#
+# So this is a VERSION CONFLICT, not a scenario bug and not a forgery: the server
+# implements the v0.4.2 pass shape while the deployed schema is the v0.11.x one.
+# The consequence is not confined to this file — a real mobile app doing exactly
+# what this scenario does (fetch a pass online, present it verbatim) is rejected
+# too. Offline pass authorization is broken end to end on the money path, and it
+# fails at schema validation BEFORE any wallet, signature or replay check runs.
+#
+# THIS CORRECTS A STANDING ATTRIBUTION. The offline-pass failures have been
+# recorded as the wallet gap (pooled wallets seed at balance 0 and
+# AuthorizeOfflineSessionAction pre-debits with allowNegative:false). That is a
+# real gap, but it is NOT what fails here — the request never gets far enough to
+# touch a wallet. Do not "fix" this by funding the fixture or by flipping
+# allowNegative; neither would move this file.
+#
+# WHAT TO ASSERT ONCE THE CONFLICT IS RESOLVED — the surface exists and is good:
+# GET /api/v1/offline/passes/{passId}/status returns OfflinePassStatusResource,
+# whose usage block is SERVER-DERIVED, not echoed:
+#     data.attributes.usage.usedCount        1   (after this one presentation)
+#     data.attributes.usage.remainingUses    9   (maxUses 10 minus usedCount)
+#     data.attributes.usage.remainingCredits     (maxTotalCredits minus spent)
+# That is the assertion this file wants, and the only read-back surface in the
+# whole offline block: routes/api/v1/offline.php exposes GET /passes, POST
+# /passes, POST /reconcile and GET /passes/{passId}/status — and nothing that
+# reads an offline_transactions row back at all.
+# --------------------------------------------------------------------------
 station:
   stationId: "{{stationId}}"
   bayCount: 2
