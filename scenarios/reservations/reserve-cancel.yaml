@@ -5,7 +5,7 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Reserve and Cancel"
-description: "Reserve a bay, then cancel the reservation - verifies the bay returns to Available after cancellation."
+description: "Reserve a bay, then cancel the reservation, and read the reservation's terminal state back off the server. NOTE: the bay's return to Available is a StatusNotification THIS SCENARIO SENDS, not an observation — despite what this description used to claim, the bay side is not verified here. What is verified is the reservation row: status cancelled, and expired_at null to prove it got there by cancellation rather than TTL expiry."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -119,3 +119,52 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # 1000ms, not 300ms. The StatusNotification above is an EVENT with no Response
+  # to synchronise on, so a read-back races the consumer; 300ms was measured
+  # INSIDE that window on UAT (2026-08-10) and 1000ms outside it. The reservation
+  # write does not depend on that Event, but the delay costs nothing and keeps
+  # every read-back in this corpus on the same side of the race.
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION. Both fields are server-written; neither is echoed.
+  #
+  # Until now this file asserted a 200 on the cancel call and nothing about the
+  # reservation itself, so it could not tell "cancelled" from "the row was
+  # already in some other terminal state" — and its description claims the bay
+  # returns to Available, which is a StatusNotification THIS SCENARIO SENDS, not
+  # an observation. The read-back is the only server-derived evidence here.
+  #
+  #   data.status      — reservations.status, set to CANCELLED by
+  #                      CancelReservationAction:81-83. That write happens BEFORE
+  #                      the MQTT publish (:133), so the value is durable
+  #                      independently of whether the station answered.
+  #   data.expired_at  — the DISCRIMINATOR, and the reason this is not just a
+  #                      restatement of the 200. `cancelled` and `expired` are
+  #                      both terminal, both reached by a background path, and
+  #                      the sibling reserve-expire.yaml asserts the mirror
+  #                      image. expired_at is written ONLY by
+  #                      ExpireReservationAction:50-51, so asserting it is null
+  #                      proves this row reached its terminal state by
+  #                      CANCELLATION and not by TTL expiry.
+  #
+  # WHY null IS EXPRESSIBLE HERE, when absence is not. ReservationResource:37-38
+  # emits `cancelled_at` and `expired_at` unconditionally —
+  # `$this->resource->expired_at?->toISOString()` — so the key is always PRESENT
+  # with a JSON null value. expect_body compares `got === want` and null === null
+  # holds. This is different from `time_remaining_seconds` and
+  # `converted_session_id`, which are wrapped in `$this->when(...)` and are
+  # genuinely ABSENT when their condition is false; those cannot be asserted
+  # either way and are deliberately not touched here.
+  #
+  # NOT asserted: that cancelled_at is non-null. Its value is a timestamp this
+  # scenario cannot predict, and expect_body has no "is present and not null"
+  # form. data.status carries that meaning already — the same update sets both.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "cancelled"
+      data.expired_at: null

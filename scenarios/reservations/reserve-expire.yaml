@@ -6,11 +6,25 @@
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Reserve and Expire"
 description: >
-  Reserve a bay and let the TTL expire. NOTE what is and is not proven: the "Available"
-  StatusNotification after the delay is sent BY THIS SCENARIO, not observed from the server,
-  so this file does not verify that the bay auto-returns to Available — it asserts its own
-  message. The server-side expiry (ExpireReservation) is real and does run, but reading it
-  back would need an api_call against the reservation or bay state.
+  Reserve a bay, let the TTL genuinely expire, and read the expiry back off the server.
+  NOTE what is still not proven: the "Available" StatusNotification after the delay is sent
+  BY THIS SCENARIO, not observed from the server, so this file does not verify that the bay
+  auto-returns to Available — it asserts its own message. What IS now proven is the
+  reservation's own terminal state, which is server-derived.
+# 180s, raised from the 90s DEFAULT_SCENARIO_TIMEOUT_MS (ScenarioRunner.ts:44).
+#
+# This scenario is SLOW BY CONSTRUCTION and cannot be made fast. The floor is
+# ReservationTransitions::MIN_TTL_MINUTES = 1, so the earliest any reservation can
+# expire is creation + 60s. Expiry is not evaluated on read — it is a scheduled
+# sweep, `Schedule::command('reservation:check-expiry')->everyMinute()`
+# (routes/console.php:69) — so the row flips on the first tick strictly AFTER the
+# expiration time, i.e. somewhere in creation+60s .. creation+120s. The 130s delay
+# below is the worst case plus margin.
+#
+# The old file delayed 5000ms and called that "waits for that expiration". It could
+# not have: at T+5s a 1-minute reservation has 55 seconds left. Nothing was expiring,
+# and nothing was read back, so the file passed while its central claim was false.
+scenario_timeout_ms: 180000
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -99,9 +113,47 @@ steps:
       programs:
         - programNumber: 1
           available: true
-  # Wait for the reservation to expire
+  # Wait for the reservation to actually expire. See the scenario_timeout_ms note
+  # at the top for why this is 130s and not 5s: TTL floor 60s + a sweep that runs
+  # everyMinute means the flip lands in the 60-120s band after creation.
   - action: delay
-    ms: 5000
+    ms: 130000
+
+  # THE ASSERTION, and the whole point of the wait. Both fields are server-written
+  # by a path this scenario never touches — no API call, no MQTT message, nothing
+  # in this file causes the transition. The scheduler does, on its own clock.
+  #
+  #   data.status       — reservations.status, set to EXPIRED by
+  #                       ExpireReservationAction:50-51. Nothing this scenario
+  #                       sends can produce it.
+  #   data.cancelled_at — the DISCRIMINATOR, mirroring reserve-cancel.yaml.
+  #                       `expired` and `cancelled` are both terminal states
+  #                       reached by a background path. cancelled_at is written
+  #                       ONLY by CancelReservationAction:81-83, so asserting it
+  #                       is null proves this row reached its terminal state by
+  #                       TTL EXPIRY and not by cancellation. Without it, a file
+  #                       asserting only `status` would be one careless edit away
+  #                       from being satisfied by the wrong terminal path.
+  #
+  # null is expressible here because ReservationResource:37-38 emits both
+  # timestamps UNCONDITIONALLY — the key is always present, carrying JSON null.
+  # Contrast `time_remaining_seconds`, wrapped in $this->when(CONFIRMED): on an
+  # expired reservation that key is genuinely ABSENT, and expect_body cannot
+  # express absence (an unmatched path yields undefined, which never equals null).
+  # So its disappearance is NOT asserted, though it is a real consequence of the
+  # transition.
+  #
+  # If this file ever fails on `status` while the reservation looks correct in the
+  # database, suspect the scheduler before the scenario: `schedule:work` must be
+  # running in csms-app-uat for the sweep to fire at all. Verified running
+  # 2026-08-10, and 8 rows on UAT have reached `expired`, so the path is live.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "expired"
+      data.cancelled_at: null
 
   - action: send
     message: StatusNotification

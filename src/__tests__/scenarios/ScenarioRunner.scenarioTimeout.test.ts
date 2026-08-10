@@ -119,7 +119,7 @@ describe('per-scenario timeout — THE POINT: a hang must not cost the other res
   });
 });
 
-describe('the one legitimate override in the corpus', () => {
+describe('the legitimate overrides in the corpus', () => {
   it('arc8-reconnect-preserve declares a budget above its measured 347.8s', () => {
     const src = fs.readFileSync(
       path.resolve('scenarios/sessions/arc8-reconnect-preserve.yaml'), 'utf8');
@@ -128,15 +128,56 @@ describe('the one legitimate override in the corpus', () => {
     expect(Number(m![1])).toBeGreaterThan(347_831);
   });
 
-  it('and it is the ONLY file that overrides — every new override should be argued for', () => {
+  // THE ARGUMENT, as this describe block demands of every new override.
+  //
+  // reserve-expire cannot be made to fit the 90s default, and not because it is
+  // written wastefully. Two server facts set the floor and neither is under the
+  // scenario's control:
+  //
+  //   1. ReservationTransitions::MIN_TTL_MINUTES = 1. The shortest reservation
+  //      the API will accept expires 60s after creation. duration_minutes: 1 is
+  //      already the minimum.
+  //   2. Expiry is a scheduled sweep, not a read-time evaluation —
+  //      Schedule::command('reservation:check-expiry')->everyMinute(). The row
+  //      flips on the first tick strictly AFTER the expiration time, so the
+  //      observable transition lands in the 60-120s band after creation.
+  //
+  // 60s floor + up to 60s of sweep latency + boot and the ReserveBay round trip
+  // exceeds 90s on the worst case, so the default would make this file flaky
+  // rather than slow — the worst of both. 130s of delay inside a 180s budget is
+  // the worst case plus margin.
+  //
+  // The alternative was to keep the old 5000ms delay, which fit the default
+  // comfortably and proved nothing: at T+5s the reservation has 55 seconds left.
+  // That is what this file did for months. A budget that forces a scenario to
+  // assert something untrue is not a budget worth keeping.
+  it('reserve-expire declares a budget covering the TTL floor plus the sweep interval', () => {
+    const src = fs.readFileSync(
+      path.resolve('scenarios/reservations/reserve-expire.yaml'), 'utf8');
+    const m = src.match(/^scenario_timeout_ms:\s*(\d+)/m);
+    expect(m).not.toBeNull();
+
+    // 60s TTL floor + 60s worst-case sweep latency = 120s before the row can
+    // flip. The budget must clear that, not merely clear the delay it happens
+    // to declare today.
+    expect(Number(m![1])).toBeGreaterThan(120_000);
+
+    // And the delay it waits must itself sit inside the budget it declares.
+    const delay = Math.max(...[...src.matchAll(/^\s+ms:\s*(\d+)/gm)].map(d => Number(d[1])));
+    expect(delay).toBeGreaterThan(120_000);
+    expect(Number(m![1])).toBeGreaterThan(delay);
+  });
+
+  it('and those are the ONLY files that override — every new override should be argued for', () => {
     const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true })
       .flatMap(e => e.isDirectory() ? walk(path.join(d, e.name))
         : e.name.endsWith('.yaml') ? [path.join(d, e.name)] : []);
 
     const overriding = walk(path.resolve('scenarios'))
       .filter(f => /^scenario_timeout_ms:/m.test(fs.readFileSync(f, 'utf8')))
-      .map(f => path.basename(f));
+      .map(f => path.basename(f))
+      .sort();
 
-    expect(overriding).toEqual(['arc8-reconnect-preserve.yaml']);
+    expect(overriding).toEqual(['arc8-reconnect-preserve.yaml', 'reserve-expire.yaml']);
   });
 });
