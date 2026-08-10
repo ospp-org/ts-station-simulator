@@ -68,3 +68,34 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION, server-recorded. Until now this file sent two StatusNotification
+  # Events and asserted nothing about them: StatusNotification is an EVENT, so
+  # there is no Response to wait_for and nothing comes back on the wire to check.
+  # A rejected report is not visible to the sender at all — a schema-invalid one
+  # lands in the DLQ (observed: chaos/malformed-messages.yaml is what moves that
+  # counter), and a session-gated one is dropped with a bare `return null`
+  # (StatusNotificationHandler.php:87-100). The scenario passed whether or not
+  # either report ever reached a bay row.
+  #
+  # Server-produced: `status` is the bays.status column the handler wrote,
+  # lowercased by the enum — the wire literal is `Available`, the persisted form
+  # is `available`. Both bays are pinned because the two Events are independent
+  # writes; asserting one would leave the other exactly as unproven as before.
+  #
+  # BOTH bays also start at `unknown` (bays table default), and `unknown` is a
+  # value no station may put on the wire — so reading `available` cannot be
+  # satisfied by the initial state and the assertion has a real failure mode.
+  #
+  # `[bayNumber=N]` and never an index: measured on UAT 2026-08-10, a 4-bay
+  # station returned bayNumber 3 and 4 first. Order is not guaranteed.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"

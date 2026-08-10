@@ -68,5 +68,21 @@ steps:
       duration_minutes: 5
       session_source: "MobileApp"
     expect_status: 409
+    # This is the file in the triplet where the bare 409 was actively misleading,
+    # and its sessions/ sibling (session-rejected-maintenance.yaml) already
+    # documented and fixed the identical hole for itself.
+    #
+    # ReservationTransitions.php:58 maps UNAVAILABLE to 3011 BAY_MAINTENANCE,
+    # but :59 maps UNKNOWN to 3002 BAY_NOT_READY — and ErrorCodeRegistry.php:107-108
+    # renders BOTH as 409. A bay the server has never heard a status for sits at
+    # 'unknown' by column default (create_bays_table:18). So if the `Unavailable`
+    # report above were schema-rejected, this scenario took its 409 from 3002, on
+    # a bay that was never in maintenance, and passed while proving the opposite
+    # of its own name.
+    #
+    # 3011 is reachable ONLY from UNAVAILABLE, so pinning it proves the
+    # maintenance report landed AND that maintenance is what refused the reserve.
+    expect_body:
+      error.ospp_code: 3011
   # Per C-013: server returns 409 (resource state conflict) pre-MQTT-dispatch;
   # no ReserveBay Request is published. The 409 is the final assertion.

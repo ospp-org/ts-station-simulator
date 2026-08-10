@@ -47,3 +47,18 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # Server-recorded, and ECHOED rather than derived — see boot-watchdog.yaml for
+  # the full statement of what this does and does not prove. In short: it proves
+  # the boot was persisted onto stations.boot_reason rather than merely answered,
+  # and it does NOT prove any behaviour, because nothing branches on the column.
+  # `ManualReset` is in the force-fail class at BootNotificationHandler.php:343.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "ManualReset"

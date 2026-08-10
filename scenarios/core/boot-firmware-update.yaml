@@ -47,3 +47,31 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # Server-recorded, and ECHOED rather than derived — see boot-watchdog.yaml for
+  # the full statement of what this does and does not prove. In short: it proves
+  # the boot was persisted onto stations.boot_reason rather than merely answered,
+  # and it does NOT prove any behaviour, because nothing branches on the column.
+  # `FirmwareUpdate` is in the force-fail class at BootNotificationHandler.php:343.
+  #
+  # This file boots firmwareVersion 2.0.0, so it also pins the version the server
+  # recorded for the same boot. That IS a second echoed literal, not a derived
+  # one — but the pair is what makes the row attributable to THIS boot rather
+  # than to any earlier one on a reused pooled station.
+  #
+  # NOT asserted here, deliberately: the post-firmware-update reconciliation at
+  # HandleBootAfterFirmwareUpdate.php compares bootReason against the snake_case
+  # literal 'error_recovery', which the schema pins as `ErrorRecovery` — so no
+  # conforming station can reach that branch. Asserting anything about it would
+  # be asserting a branch that cannot execute; it is recorded in the branch map,
+  # not manufactured into a scenario here.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "FirmwareUpdate"
+      data.firmwareVersion: "2.0.0"

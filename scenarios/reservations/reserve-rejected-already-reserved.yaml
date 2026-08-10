@@ -102,5 +102,27 @@ steps:
       duration_minutes: 5
       session_source: "MobileApp"
     expect_status: 409
+    # The 409 alone does NOT name this scenario. FOUR codes share it on this
+    # endpoint — ErrorCodeRegistry.php:107-111 puts BAY_NOT_READY and
+    # BAY_MAINTENANCE in the same 409 family the vendor already gives BAY_BUSY
+    # and BAY_RESERVED. So a bare 409 passes whether the bay is Reserved,
+    # Occupied, Faulted, Finishing, in maintenance, or simply never reported.
+    #
+    # That last one is the live hazard here, not a hypothetical. There is NO
+    # "does this bay already have a reservation row?" guard in this path:
+    # ReservationRepository::findActiveOnBay() exists and is never called, and
+    # the reservations table has no unique constraint on bay_id. "Already
+    # reserved" is represented ONLY as bay.status = RESERVED
+    # (ReserveBayAction.php:56-66 -> ReservationTransitions.php:54). The bay
+    # column defaults to 'unknown' (create_bays_table:18), and UNKNOWN maps to
+    # 3002 BAY_NOT_READY — also 409.
+    #
+    # So if the `Reserved` StatusNotification above were schema-rejected, this
+    # scenario would still get its 409, from a bay the server has no status for,
+    # and would prove nothing about double-reservation. 3014 is reachable ONLY
+    # from RESERVED, so pinning it proves the report landed AND that the prior
+    # reservation is what refused this one.
+    expect_body:
+      error.ospp_code: 3014
   # Per C-011: server returns 409 (resource state conflict) pre-MQTT-dispatch;
   # no ReserveBay Request is published. The 409 is the final assertion.

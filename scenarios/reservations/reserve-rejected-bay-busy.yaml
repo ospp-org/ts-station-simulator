@@ -103,6 +103,18 @@ steps:
       duration_minutes: 5
       session_source: "MobileApp"
     expect_status: 409
+    # The 409 alone cannot tell "the bay is busy" from "the bay never reported".
+    # Four codes share 409 on this endpoint (ErrorCodeRegistry.php:107-111), and
+    # the bay column defaults to 'unknown' (create_bays_table:18), which maps to
+    # 3002 BAY_NOT_READY — also 409. This scenario's whole precondition is the
+    # `Occupied` report above; without pinning the code, that report could fail
+    # to land and the scenario would still pass.
+    #
+    # 3001 is reachable ONLY from BayStatus::OCCUPIED
+    # (ReservationTransitions.php:55), so it proves the StartService round trip
+    # completed AND that occupancy is what refused the reservation.
+    expect_body:
+      error.ospp_code: 3001
   # Per C-012: server returns 409 (resource state conflict) pre-MQTT-dispatch;
   # no ReserveBay Request is published. The 409 is the final assertion.
 

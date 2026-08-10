@@ -1,5 +1,45 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# WHAT THIS FILE USED TO DO, AND WHY IT WAS CHANGED
+#
+#   It booted, then read GET /admin/stations/{id}/config and asserted a bare 200.
+#   On a fresh station that endpoint returns `{"data":[]}` — measured on UAT
+#   2026-08-10 — because NOTHING had written station_configurations. So the file
+#   asserted a 200 on an empty collection and named itself "Get Configuration"
+#   while never performing a GetConfiguration.
+#
+#   Swept 2026-08-10: the ONLY production writers of station_configurations are
+#   GetConfigurationHandler (from the station's Response) and
+#   ChangeConfigurationHandler. No seeder, no boot sync, no provisioning write.
+#   BootNotificationHandler::buildStationConfiguration() is a red herring — it
+#   builds a two-key array for the boot RESPONSE payload and never touches the
+#   table.
+#
+#   So the read-back can only mean something if this scenario causes the write
+#   itself. It now does: it triggers the real GetConfiguration round trip and
+#   reads back what the STATION reported.
+#
+# WHAT IS SERVER-PRODUCED HERE AND WHAT IS ECHOED
+#
+#   Echoed: the key/value literals below are sent by this scenario in the
+#   GetConfiguration Response, so reading them back does not prove the server
+#   understood them.
+#   Server-produced, and the point of the assertion: that the response was
+#   CORRELATED to the pending request and COMMITTED. GetConfigurationHandler:31
+#   resolves the messageId against PendingCommandRegistry and returns early if it
+#   does not match, writing nothing. A row therefore proves the correlation held
+#   and the transaction at :61 committed — neither of which a 200 on an empty
+#   collection could show.
+#   `readonly` is asserted on a key sent with readonly:true to prove the flag
+#   survives the upsert rather than defaulting.
+#
+# FIELD CASING: only casing-neutral fields are asserted (key/value/readonly).
+# StationConfigurationResource emits snake_case (`value_type`, `changed_by`)
+# while GET /admin/stations/{id} emits camelCase (`bootReason`); the two are not
+# consistent, so an assertion on a two-word field here would be a coin flip.
 name: "Get Configuration"
-description: "Read the station's persisted configuration via admin REST endpoint."
+description: "Trigger a real GetConfiguration round trip with no key filter, have the station report three entries, and read them back from the admin REST endpoint. Proves the response correlated to the pending request and committed."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -30,19 +70,72 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # REQUIRED now that this file triggers a real command, and it was not
+        # required before, which is why it was absent. Measured 2026-08-10: a
+        # fresh pool station without this answers the trigger
+        # `422 COMMAND_NOT_SUPPORTED 2007 "Station does not support device
+        # management"` and the scenario never reaches the read-back.
+        #
+        # The flag is STICKY per station: BootNotificationHandler §5.1 rule 2
+        # leaves an unstated capability OUT of the update, so a prior value
+        # survives. Scenarios that omit it have historically passed only by
+        # inheriting `true` from a sibling on a reused long-lived station —
+        # declaring it here is what makes this file independent of run order.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
   - action: wait_for
     message: BootNotification
     messageType: Response
-    timeout_ms: 10000
+    timeout_ms: 15000
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
 
+  # --- Trigger the read. No `keys` in the payload: per
+  #     get-configuration-request.schema.json, "If keys is empty or absent, all
+  #     keys are returned." The filtered twin covers the other arm. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
+    body:
+      command: "GetConfiguration"
+    expect_status: 202
+
+  - action: wait_for
+    message: GetConfiguration
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: GetConfiguration
+    messageType: Response
+    payload:
+      configuration:
+        - key: "HeartbeatIntervalSeconds"
+          value: "30"
+          readonly: false
+        - key: "MeterValuesInterval"
+          value: "60"
+          readonly: false
+        - key: "FirmwareVersion"
+          value: "1.0.0"
+          readonly: true
+
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION. `[key=...]` selectors, never indices: getPersistedConfiguration
+  # orders by key, so the array order is NOT the order sent above — FirmwareVersion
+  # sorts first. An index here would be luck.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
+    expect_body:
+      data[key=HeartbeatIntervalSeconds].value: "30"
+      data[key=MeterValuesInterval].value: "60"
+      data[key=FirmwareVersion].value: "1.0.0"
+      data[key=FirmwareVersion].readonly: true

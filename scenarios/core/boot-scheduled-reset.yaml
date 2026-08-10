@@ -47,3 +47,24 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # Server-recorded, and ECHOED rather than derived — see boot-watchdog.yaml for
+  # the full statement of what this does and does not prove. In short: it proves
+  # the boot was persisted onto stations.boot_reason rather than merely answered,
+  # and it does NOT prove any behaviour, because nothing branches on the column.
+  # `ScheduledReset` is in the force-fail class at BootNotificationHandler.php:343.
+  #
+  # Note this file boots with uptimeSeconds 86400. That is NOT inert: the
+  # force-fail arm calls failStuckSessions(now()->subSeconds(uptimeSeconds)), so
+  # a 24h window would spare any session started inside it. There is no live
+  # session here, so nothing is spared and nothing is failed — but a future edit
+  # that adds one to this file would be proving the uptime layer, not the reason.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "ScheduledReset"

@@ -57,11 +57,11 @@ branch that `core/happy-boot.yaml` does not.
 | `core/boot-firmware-update.yaml` | Boot Firmware Update | bootReason: FirmwareUpdate, new version | new |
 | `core/boot-manual-reset.yaml` | Boot Manual Reset | bootReason: ManualReset | new |
 | `core/boot-scheduled-reset.yaml` | Boot Scheduled Reset | bootReason: ScheduledReset, 24h uptime | new |
-| `core/boot-error-recovery.yaml` | Boot Error Recovery | bootReason: ErrorRecovery, pending offline txns | new |
+| `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot PRESERVES a live session — pins the second member of the preserve set that the Reconnect proof does not cover | new |
 | `core/heartbeat-cycle.yaml` | Heartbeat Cycle | 3 heartbeat request/response cycles | migrated |
 | `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout | new |
 | `core/status-notification.yaml` | Status Notification | StatusNotification Available with services | migrated |
-| `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for all 7 bay statuses | new |
+| `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for the 6 REPORTABLE bay statuses; 4 persist, Occupied/Finishing are session-gated and discarded | new |
 | `core/connection-lost-lwt.yaml` | Connection Lost LWT | Disconnect triggers MQTT LWT | new |
 | `core/reconnect-recovery.yaml` | Reconnect Recovery | Disconnect → reconnect → ErrorRecovery boot | migrated |
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |

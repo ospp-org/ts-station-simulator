@@ -1,5 +1,51 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# WHY THIS FILE IS NOT JUST ANOTHER BOOT-REASON VARIANT
+#
+#   Its five siblings (boot-watchdog, -manual-reset, -scheduled-reset,
+#   -firmware-update, reconnect-recovery) can assert only that the server
+#   PERSISTED the reason they sent. That is an echoed literal: nothing in the
+#   server branches on stations.boot_reason.
+#
+#   `ErrorRecovery` is the exception, and the only one among the six. The server
+#   DOES branch on the wire value, at BootNotificationHandler.php:343:
+#
+#     $isReconnect = in_array($dto->bootReason,
+#       [BootReason::RECONNECT->value, BootReason::ERROR_RECOVERY->value], true);
+#
+#   The preserve set has exactly TWO members. `ErrorRecovery` is one of them,
+#   and the comment above that line says it is KEPT ALONGSIDE `Reconnect` on
+#   purpose — a fleet mid-upgrade emits both, and dropping the older value would
+#   force-fail live washes on every station that has not moved to `Reconnect`
+#   yet. That is a deliberate compatibility guarantee with no other test.
+#
+# WHY IT IS NOT A DUPLICATE OF boot-reconnect-preserves-live-session.yaml
+#
+#   That file pins `Reconnect`. This one pins `ErrorRecovery`. They are two
+#   separate literals in one in_array, so deleting `ErrorRecovery` from it —
+#   exactly the "tidy up the old value" edit the handler comment warns against —
+#   leaves the Reconnect proof GREEN and breaks only this file. A guarantee whose
+#   removal no test detects is not guaranteed.
+#
+# WHY uptimeSeconds IS 0
+#
+#   Same reason as the Reconnect proof, and it is load-bearing. The fail arm is
+#   failStuckSessions(now()->subSeconds($dto->uptimeSeconds)) — a nonzero uptime
+#   spares any session started inside that window, so a boot with uptime 3600
+#   would preserve the session identically whatever the reason, and prove the
+#   UPTIME layer instead. uptimeSeconds 0 disarms it: the boot instant is now,
+#   the session started before it, and the ONLY thing left that can spare the
+#   session is the bootReason string.
+#
+# WHAT THIS FILE DELIBERATELY DOES NOT PROVE
+#
+#   pendingOfflineTransactions: 3 is kept from the original file for continuity,
+#   but it is NOT a differential. BootNotificationHandler.php:244-249 does
+#   nothing with a nonzero count except Log::info — no column, no queue, no
+#   response field. It is unobservable over REST and is not asserted below.
 name: "Boot Error Recovery"
-description: "Boot after error recovery with pending offline transactions, assert Accepted."
+description: "Start a live session, then re-boot with bootReason ErrorRecovery and uptimeSeconds 0. The server MUST leave the session active — the uptime layer is disarmed, so only the bootReason branch can produce that. Pins the second member of the preserve set, which the Reconnect proof does not cover."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -9,6 +55,105 @@ station:
     accept_rate: 1.0
     response_delay_ms: [100, 300]
 steps:
+  # --- Baseline boot. PowerOn, so the ErrorRecovery re-boot below is a genuine
+  #     transition of stations.boot_reason rather than a re-assertion of it. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Wifi"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- Establish the live session the re-boot must not kill. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 600
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # The session must be ACTIVE before the re-boot, or this proves nothing: a
+  # session still PENDING is failed by a DIFFERENT arm of the same predicate
+  # (`status = pending AND created_at < bootTime`), so a preserved-looking
+  # outcome could come from the wrong branch. Asserted, not assumed — `status`
+  # is the server's own sessions.status column, read back.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The re-boot under test. ErrorRecovery + uptime 0. ---
   - action: send
     message: BootNotification
     payload:
@@ -36,14 +181,60 @@ steps:
   - action: wait_for
     message: BootNotification
     messageType: Response
-    # Aligned with global default bump (5s → 15s, commit 9e57ce2). Sprint B2
-    # timeout sweep — sister scenario from Sprint B P5.1/P5.11 fix (commit
-    # 3fdc7a6). UAT first-round-trip can exceed 5s.
     timeout_ms: 15000
-    capture:
-      heartbeatInterval: "payload.heartbeatIntervalSec"
-      bootStatus: "payload.status"
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION. Both fields are written by the server, neither is echoed:
+  #   data.status          — sessions.status. The force-fail UPDATE in the else
+  #                          arm would have set this to 'failed'.
+  #   data.fail_error_code — 1010 on that same UPDATE, and absent entirely unless
+  #                          status is FAILED (SessionResource.php:66). Its
+  #                          ABSENCE is therefore part of what 'active' asserts.
+  # The control for this assertion is boot-poweron-fails-live-session.yaml, which
+  # is this scenario with one literal changed and expects 'failed' + 1010.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # Secondary, and echoed rather than derived — see boot-watchdog.yaml. Worth
+  # keeping only because it transitions PowerOn -> ErrorRecovery on one station
+  # within one scenario, so it proves the SECOND boot is the one that landed and
+  # that the preserve above was decided by this boot rather than an earlier one.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "ErrorRecovery"
+
+  # --- Pool-hygiene teardown: this scenario deliberately leaves the session
+  #     ALIVE, so it must end it explicitly. (Class: session-leak.)
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 3
+      creditsCharged: 5
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

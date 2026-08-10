@@ -1,5 +1,55 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# THE FINDING THIS FILE EXISTS TO RECORD: THE REST `?keys=` FILTER IS NOT A FEATURE
+#
+#   This file previously called
+#     GET /admin/stations/{id}/config?keys=HeartbeatIntervalSeconds,MeterValuesInterval
+#   under a comment reading "server returns only the requested keys". That was
+#   untrue twice over, and both halves were measured on 2026-08-10:
+#
+#   1. There is no such filter. StationManagementController::getConfiguration
+#      takes NO Request parameter at all — its signature is
+#      `getConfiguration(string $stationId)` — and delegates to
+#      ReadConfigurationAction::getPersistedConfiguration($stationId), which is
+#      `StationConfiguration::where('station_id', $uuid)->orderBy('key')->get()`.
+#      No filter argument, no `keys` anywhere in that controller. The query
+#      string was parsed by nobody and changed nothing.
+#   2. There was nothing to filter. Nothing had written station_configurations,
+#      so the endpoint returned `{"data":[]}` and the assertion was a 200 on an
+#      empty collection — it would have passed against ANY filter string,
+#      including a malformed one.
+#
+#   So "filtered" is not a property of the read-back. It is a property of the
+#   MQTT REQUEST: TriggerCommandController::dispatchGetConfiguration:87 lifts
+#   `payload.keys` and passes it to ReadConfigurationAction::execute($id, $keys),
+#   which publishes it as `keys[]` on the GetConfigurationRequest. The filtering
+#   decision is then the STATION's — the server neither validates the keys nor
+#   filters the response against them.
+#
+#   The `?keys=` query string is therefore GONE from the URL below. Leaving it in
+#   while asserting correct results would be the same defect in a new costume: an
+#   assertion that appears to test a filter and cannot fail if the filter is
+#   removed.
+#
+# WHAT THE THREE FILTER CASES ACTUALLY DO — the question this file was asked to settle:
+#   - a key that EXISTS      -> server forwards it verbatim in keys[]; station
+#                               answers with it; the row is written.
+#   - a key that does NOT    -> server forwards it verbatim too. It performs no
+#                               validation, so there is no server-side "unknown
+#                               key" behaviour to assert. The protocol's answer is
+#                               the station's optional `unknownKeys[]` in the
+#                               Response (get-configuration-response.schema.json),
+#                               which the server only LOGS
+#                               (GetConfigurationHandler:87) — no column, no
+#                               response field, nothing observable over REST.
+#                               Asserted below on the REQUEST, which is the only
+#                               place it is observable at all.
+#   - an EMPTY filter        -> covered by get-configuration.yaml, which omits
+#                               `keys` entirely. Per the request schema, "If keys
+#                               is empty or absent, all keys are returned."
 name: "Get Configuration (filtered)"
-description: "Read a subset of the station's persisted configuration via the admin REST endpoint with a ?keys=... filter."
+description: "Trigger GetConfiguration with an explicit key filter including one key the station does not have. Asserts the filter on the MQTT Request, where it is real, and the read-back on exactly what the station answered. The admin REST endpoint has no ?keys= filter."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -30,23 +80,90 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required for the trigger to be accepted — see get-configuration.yaml
+        # for the full note. Sticky per station, so declaring it is what makes
+        # this file independent of run order rather than dependent on a sibling
+        # having set it on a reused station.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
   - action: wait_for
     message: BootNotification
     messageType: Response
-    timeout_ms: 10000
+    timeout_ms: 15000
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
 
-  # Filtered admin read — server returns only the requested keys.
-  # Companion to get-configuration.yaml (unfiltered variant). Mirrors the
-  # OSPP GetConfiguration `keys` semantics (zero-or-more ConfigKey filter)
-  # at the admin-REST level.
+  # --- Trigger the filtered read. `NoSuchConfigKey` is deliberate: it proves the
+  #     server forwards keys unvalidated. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
+    body:
+      command: "GetConfiguration"
+      payload:
+        keys:
+          - "HeartbeatIntervalSeconds"
+          - "NoSuchConfigKey"
+    expect_status: 202
+
+  - action: wait_for
+    message: GetConfiguration
+    messageType: Request
+    timeout_ms: 15000
+
+  # ASSERTION 1 — server-produced, and the only place the filter is observable.
+  # This scenario's MQTT payloads carry no `keys`; the array on the wire was built
+  # by the server from the REST body (dispatchGetConfiguration:87 ->
+  # ReadConfigurationAction::execute). Pinning it proves the filter survived the
+  # REST -> DTO -> publish path in order and intact. `NoSuchConfigKey` arriving
+  # here is the proof that the server does NOT validate keys before forwarding.
+  - action: assert
+    field: "payload.keys"
+    equals: ["HeartbeatIntervalSeconds", "NoSuchConfigKey"]
+
+  # The station answers with the one key it has, and declares the other unknown.
+  - action: send
+    message: GetConfiguration
+    messageType: Response
+    payload:
+      configuration:
+        - key: "HeartbeatIntervalSeconds"
+          value: "30"
+          readonly: false
+      unknownKeys:
+        - "NoSuchConfigKey"
+
+  - action: delay
+    ms: 1500
+
+  # ASSERTION 2 — the read-back reflects what the station answered.
+  #
+  # NOT ASSERTED, and recorded rather than faked: that `NoSuchConfigKey` is
+  # ABSENT from the table. That is the half this scenario would most like to
+  # pin — the station declared it unknown, so no row should exist — but
+  # `expect_body` cannot express it. An unmatched `[key=...]` selector resolves
+  # to `undefined` (ApiCallStep getNestedValue: `arr.find()` returns undefined,
+  # and the next hop's null-guard returns undefined), while a YAML `null` is JS
+  # `null`; the comparison is `got === want` with an object-only JSON fallback,
+  # so `undefined === null` is false and an absence assertion would fail against
+  # a CORRECT server. Writing one would produce a permanently red file that looks
+  # like a server defect.
+  #
+  # Closing this needs a runner change — an `expect_body_absent` list, or
+  # treating YAML null as "resolves to null or undefined" — with its own unit
+  # tests. Out of scope here; the gap is named so the next pass can size it.
+  #
+  # What IS asserted below is still not vacuous: a green expect_body cannot be
+  # hollow, because an unresolvable path yields undefined and fails rather than
+  # silently passing. So the positive assertion proves the correlated write
+  # committed with the station's value.
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config?keys=HeartbeatIntervalSeconds,MeterValuesInterval"
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
+    expect_body:
+      data[key=HeartbeatIntervalSeconds].value: "30"

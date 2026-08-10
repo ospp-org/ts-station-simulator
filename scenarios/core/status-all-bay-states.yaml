@@ -1,5 +1,5 @@
 name: "Status All Bay States"
-description: "Boot and send StatusNotification for every REPORTABLE bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable. `Unknown` is the FSM's seventh state and is deliberately absent — no station may put it on the wire (spec v0.10.0, 05-state-machines.md 1.2)."
+description: "Boot and send StatusNotification for every REPORTABLE bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable — then read each one back. FOUR of the six persist. Occupied and Finishing are session-bound and are DISCARDED without an active session (StatusNotificationHandler.php:87-100), which this scenario now proves by asserting the retained value instead. `Unknown` is the FSM's seventh state and is deliberately absent — no station may put it on the wire (spec v0.10.0, 05-state-machines.md 1.2)."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -56,8 +56,42 @@ steps:
       programs:
         - programNumber: 1
           available: true
+  # THE ASSERTIONS: one read-back per state, not one at the end.
+  #
+  # WHY EACH, AND NOT JUST THE TERMINAL STATE. StatusNotificationHandler
+  # validates the transition and then accepts it ANYWAY — :149 logs "invalid bay
+  # transition (accepting as authoritative)" and records the anomaly in
+  # bay_transition_anomalies, but :216 writes the new status regardless. So the
+  # server has no transition gate that a terminal-state assertion could lean on:
+  # reading `unavailable` at the end would prove only that the LAST report
+  # landed, and all five earlier ones could have been dropped without changing
+  # it. For a file whose name claims every reportable status, that is not enough.
+  #
+  # Server-produced: `status` here is the bays.status column the handler wrote,
+  # lowercased by the enum (`available`, not the wire's `Available`). The
+  # scenario supplies the wire literal; the server supplies the persisted form,
+  # the bay identity resolution, and the decision to accept the report at all.
+  #
+  # `[bayNumber=1]` and never an index: bays come back in no guaranteed order —
+  # measured on UAT 2026-08-10, a 4-bay station returned bayNumber 3 and 4 first.
+  #
+  # WHY 1000ms AND NOT THE 300ms THIS FILE ALREADY USED BETWEEN SENDS. Measured,
+  # not guessed: with 300ms the FIRST read (available) passed and the SECOND
+  # (occupied) read back `available` — the Event had not been consumed yet.
+  # StatusNotification is fire-and-forget over MQTT, so there is no Response to
+  # synchronise on and the read races the consumer. 300ms is inside that race on
+  # UAT; 1000ms is outside it. This is also why the failure mode matters: a read
+  # that races the consumer reports the PREVIOUS state, which looks exactly like
+  # a dropped report rather than a slow one.
   - action: delay
-    ms: 300
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
 
   # Status: Occupied
   - action: send
@@ -72,7 +106,35 @@ steps:
         - programNumber: 1
           available: false
   - action: delay
-    ms: 300
+    ms: 1000
+
+  # NOT "occupied" — and this is the scenario's most valuable assertion.
+  #
+  # MEASURED ON UAT 2026-08-10: the bay is still `available` here. Occupied is
+  # DISCARDED. StatusNotificationHandler.php:87-100 gates the two session-bound
+  # states on an active session for the bay:
+  #
+  #   if (in_array($newStatus, [BayStatus::OCCUPIED, BayStatus::FINISHING], true)) {
+  #       $activeSession = $this->sessionRepository->findActiveByBayId($bay->id);
+  #       if ($activeSession === null) { Log::warning('… (discarding)'); return null; }
+  #
+  # This scenario never starts a session, so the Occupied report above is dropped
+  # before the transition check, before the timestamp floor, and before any write.
+  # `return null` — no Response (it is an Event), no error, nothing on the wire.
+  #
+  # So this file's own name was half untrue for as long as it asserted nothing:
+  # it claims every REPORTABLE status, and two of its six are unreachable in the
+  # shape it is written in. Asserting `available` here is not settling for less —
+  # it PROVES the gate fired, which is a server rule with no other coverage in
+  # the corpus. A future edit that gives this scenario a live session would flip
+  # this assertion to "occupied", and that is the correct way to cover the other
+  # arm; it should not be done by deleting this one.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
 
   # Status: Reserved
   - action: send
@@ -87,7 +149,14 @@ steps:
         - programNumber: 1
           available: false
   - action: delay
-    ms: 300
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "reserved"
 
   # Status: Finishing
   - action: send
@@ -102,7 +171,19 @@ steps:
         - programNumber: 1
           available: false
   - action: delay
-    ms: 300
+    ms: 1000
+
+  # NOT "finishing" — same gate as Occupied above. FINISHING is the second member
+  # of the session-bound pair at StatusNotificationHandler.php:87, so with no
+  # active session this report is discarded too and the bay holds `reserved`.
+  # Asserting the RETAINED value proves the discard; asserting "finishing" would
+  # be asserting a state this scenario cannot reach.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "reserved"
 
   # Status: Faulted
   - action: send
@@ -119,7 +200,14 @@ steps:
         - programNumber: 1
           available: false
   - action: delay
-    ms: 300
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "faulted"
 
   # Status: Unavailable
   - action: send
@@ -133,3 +221,13 @@ steps:
       programs:
         - programNumber: 1
           available: false
+
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "unavailable"

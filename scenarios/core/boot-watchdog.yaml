@@ -47,3 +47,37 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # THE ASSERTION, server-recorded — and deliberately weaker than it looks.
+  # The five sibling boot-reason variants carry a short form of this note; this
+  # is the long one they point at.
+  #
+  # WHAT IT PROVES: the boot was PERSISTED, not merely answered.
+  # BootNotificationHandler.php:203 writes `boot_reason => $dto->bootReason` onto
+  # the stations row, and the admin read-back exposes it as `bootReason`
+  # (camelCase on the wire — measured 2026-08-10, NOT the `boot_reason` spelling
+  # in Admin/StationResource.php:33). Until now this file asserted only
+  # `payload.status == Accepted`, which is a property of the Response envelope
+  # and holds whether or not the handler ever committed anything. Pinning the
+  # column proves THIS boot moved the row, and separates it from a stale value
+  # left by an earlier boot on a reused pooled station.
+  #
+  # WHAT IT DOES NOT PROVE: the value is ECHOED, not derived. The handler stores
+  # the wire literal verbatim, nothing validates it against station behaviour,
+  # and nothing in the server branches on the persisted column. This is a
+  # write-path assertion, not a behavioural one, and must not be read as one.
+  #
+  # The behavioural split is TWO classes, not six. BootNotificationHandler.php:343
+  # preserves in-flight sessions for {Reconnect, ErrorRecovery} and force-fails
+  # them with fail_error_code 1010 for everything else. `Watchdog` is in the
+  # force-fail class; that arm is proven by boot-poweron-fails-live-session.yaml,
+  # which this file does not duplicate.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "Watchdog"

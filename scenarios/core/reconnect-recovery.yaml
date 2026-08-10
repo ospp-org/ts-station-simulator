@@ -86,3 +86,26 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # Server-recorded. The value is ECHOED, not derived — see boot-watchdog.yaml —
+  # but this file gets more out of it than its siblings do, because it boots
+  # TWICE on one station across a real disconnect. The column starts at `PowerOn`
+  # from the first boot at the top of this file; reading `ErrorRecovery` back
+  # proves the SECOND boot was accepted and committed AFTER the fault, which is
+  # the whole subject of the scenario. A `payload.status == Accepted` assertion
+  # alone cannot distinguish that from a Response to the FIRST boot.
+  #
+  # What it does NOT prove: that in-flight state survived the reconnect. This
+  # scenario has no live session, so the {Reconnect, ErrorRecovery} preserve arm
+  # at BootNotificationHandler.php:343 is entered with nothing to preserve. That
+  # branch is proven by boot-error-recovery.yaml, and by
+  # boot-reconnect-preserves-live-session.yaml for the other member of the pair.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "ErrorRecovery"
