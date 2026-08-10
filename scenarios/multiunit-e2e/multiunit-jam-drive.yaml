@@ -1,32 +1,50 @@
 name: "Multi-Unit Jam Drive (unit 1 delivered, unit 2 jams)"
 description: "Boot single-bay station, report Available, then answer 2 server-pushed StartService rounds: unit 1 TimerExpired (delivered), unit 2 Fault (jam → batch stops, unit 3 never started → tail refund of the undelivered units)."
-# BLOCKED, NOT MERELY UNASSERTED — nothing in the server can start this batch.
+# BLOCKED ON THE CARD LEG — the server-side batch driver EXISTS.
 #
 # This file is REACTIVE by design (see the wire model above): it waits for the
-# SERVER to push StartService, one round per unit. Establishing whether that is
-# fixable, 2026-08-10:
+# SERVER to push StartService, one round per unit.
 #
-#   - There is NO batch/multi-unit purchase endpoint. Nothing in routes/api/v1
-#     matches batch, multi, purchase or units, and no `MultiUnit`/`TokenDispenser`
-#     route exists at all.
-#   - NO CONTROLLER DISPATCHES StartService. Grepping StartService across
-#     app/Http/Controllers returns nothing — the only server-side push path is
-#     StartSessionAction, reached from POST /sessions/start, which starts ONE
-#     session and is what multiunit-e2e/single-session-drive calls (and passes).
+# CORRECTION, 2026-08-10. This header previously said "nothing in the server can
+# start this batch" and told the next reader to un-skip "when a batch driver
+# exists". That was wrong, and wrong in a way worth recording: the search behind it
+# was scoped to `routes/api/v1`, and the entry point lives in `routes/web.php`,
+# because webpay is the card-landing flow rather than an API flow. Verified on
+# csms-server master:
 #
-# So the trigger this file waits for cannot be produced over HTTP by any caller,
-# test or otherwise. It times out at wait_for after 60s in every unattended mode,
-# and an assertion added here would sit behind a step that never completes.
+#   - THE ENTRY EXISTS: POST /w/{slug}/process (routes/web.php:29,
+#     PaymentLandingController::process) takes `unit_count: N`
+#     (WebPaymentRequest:27), charges N x the per-unit quote, and stamps
+#     metadata.unit_count only when N > 1 (PaymentLandingController:167,:179,:226).
+#   - THE DRIVER EXISTS: on capture, WebPaymentOrchestrator:82-90 branches on
+#     unit_count > 1 into initiateUnitBatch, inserts the batch (:167) and drives
+#     unit 1 (:196); UnitBatchCoordinator:239 drives units 2..N, with
+#     `units:resume-stalled` as the crash backstop.
+#   - IT IS TESTED: csms-server tests/Feature/Web/WebPaymentMultiUnitTest.php:65
+#     posts unit_count: 3 and asserts amount_cents 600 = 3 x 200.
+#   - Also corrected: a batch is N SEQUENTIAL UNITS ON ONE BAY, not a fan-out
+#     across bays — unit_batches.bay_id is a single NOT NULL column, and bay
+#     exclusivity is enforced twice (PaymentLandingController:119,
+#     StartSessionAction:106).
 #
-# skip_when_pooled turns that 60s timeout into a transparent skip in the mode the
+# WHAT ACTUALLY BLOCKS THIS FILE is the payment leg, not a missing driver. Reaching
+# unit_count means completing a real BT iPay round-trip: register.do, the hosted
+# form, and a settled capture. The unit test above only gets past it with
+# Http::fake, which a live scenario run cannot do. So the batch never starts, the
+# reactive wait_for times out at 60s, and an assertion added here would sit behind
+# a step that never completes.
+#
+# skip_when_pooled turns that timeout into a transparent skip in the mode the
 # corpus is actually validated in, rather than a failure that reads like a defect.
 # It is NOT a claim the file is pooled-specific — it cannot run unattended in any
-# mode. Un-skip it when a batch driver exists.
+# mode without a card leg. UN-SKIP WHEN THE HARNESS CAN SETTLE A CARD PAYMENT and
+# drive POST /w/{slug}/process with unit_count=N; a webpay card round-trip recipe
+# already exists in this programme, so this is affordance, not absence.
 #
 # Rewriting it to drive N units via repeated POST /sessions/start would make it
 # pass and would destroy its subject: client-initiated starts are the opposite of
 # the server-pushed batch rounds this file exists to prove.
-skip_when_pooled: "No server-side batch driver exists: no batch/multi-unit endpoint in routes/api/v1 and no controller dispatches StartService, so the server-pushed StartService this file waits for cannot be triggered by any HTTP caller. Times out at wait_for in every unattended mode. Un-skip when a batch driver exists."
+skip_when_pooled: "Blocked on the CARD LEG, not on a missing driver — the earlier reason here was wrong. The batch entry is POST /w/{slug}/process with unit_count=N (routes/web.php:29; the old search was scoped to routes/api/v1), and WebPaymentOrchestrator drives the units. Reaching it needs a settled BT iPay round-trip, which a live scenario run cannot fake. Times out at wait_for in every unattended mode. Un-skip when the harness can settle a card payment."
 station:
   stationId: "{{stationId}}"
   bayCount: 1
