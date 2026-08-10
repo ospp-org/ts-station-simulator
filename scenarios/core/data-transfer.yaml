@@ -1,5 +1,14 @@
 name: "Data Transfer"
 description: "Boot, then send a DataTransfer request from station to server and wait for response."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — DataTransfer PERSISTS NOTHING.
+# DataTransferHandler writes no row: it Log::info()s the inbound message and
+# returns a Response whose status it computes from the vendorId/messageId pair
+# (UNKNOWN_VENDOR, UNKNOWN_DATA, or ACCEPTED). There is no table, no column and
+# no REST surface behind this message.
+#
+# So the Response status this file already asserts IS the complete observable,
+# and it is a good one: the status is server-computed from a lookup, not echoed.
+# Marked so the next sweep does not go hunting for a read-back that cannot exist.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

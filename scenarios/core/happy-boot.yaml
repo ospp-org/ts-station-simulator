@@ -68,3 +68,34 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION. This is the corpus's baseline boot, and until now it asserted
+  # only that a Response came back saying Accepted — a property of the envelope,
+  # which holds whether or not the handler committed anything.
+  #
+  #   data.isOnline    — SERVER-DERIVED, and the load-bearing half. Nothing this
+  #                      scenario sends carries an online flag; the server decides
+  #                      it on the boot it just accepted. A fresh pool station is
+  #                      provisioned offline, so `true` here cannot be inherited
+  #                      from the initial state.
+  #   data.bootReason  — ECHOED, not derived (see boot-watchdog.yaml for the full
+  #                      statement). It proves the boot was PERSISTED rather than
+  #                      merely answered, and separates this boot from a stale row
+  #                      left by an earlier one on a reused pooled station. It
+  #                      proves nothing behavioural: nothing in the server
+  #                      branches on the persisted column.
+  #
+  # NOT asserted: data.lastBootAt and data.lastSeenAt, both of which this boot
+  # does move. They are timestamps the scenario cannot predict, and expect_body
+  # compares by equality with no is-recent form — the same ceiling recorded in
+  # trigger-message-heartbeat.yaml.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bootReason: "PowerOn"

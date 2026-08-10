@@ -1,5 +1,14 @@
 name: "Heartbeat Cycle"
 description: "Boot and send 3 distinct heartbeats with delay between each, capturing serverTime from every response."
+# NO SERVER-STATE ASSERTION — same ceiling as trigger-message-heartbeat.yaml.
+# HeartbeatHandler:29-33 does exactly two things: updateLastSeen(), which moves
+# stations.last_seen_at, and a Redis recordHeartbeat(). last_seen_at is exposed as
+# data.lastSeenAt but is a timestamp no scenario can predict, and expect_body has
+# only equality — no changed-since or is-recent form. The tracker state is Redis
+# and no route reads it. data.isOnline is already true from the boot above, so a
+# Heartbeat cannot move it either, and asserting it would be an assertion that
+# cannot fail. The three Heartbeat Responses this file already asserts are the
+# ceiling until the runner grows an is-recent comparison.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
