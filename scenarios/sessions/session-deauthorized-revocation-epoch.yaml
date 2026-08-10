@@ -37,6 +37,23 @@ steps:
         bleSupported: false
         offlineModeSupported: true
         meterValuesSupported: true
+        # THE REASON THIS FILE WAS FAILING, and it was never a server defect.
+        #
+        # Step 8 drives the RevocationEpoch bump through
+        # POST /testing/trigger-command with command ChangeConfiguration. That
+        # endpoint refuses with 422 COMMAND_NOT_SUPPORTED 2007 "Station does not
+        # support device management" unless the station has declared the
+        # capability — so the scenario died three steps before the SessionEnded
+        # it exists to test, and the failure named device management rather than
+        # anything about revocation.
+        #
+        # The flag is STICKY per station (BootNotificationHandler §5.1 rule 2
+        # leaves an unstated capability OUT of the update, so a prior value
+        # survives). On a long-lived reused station this file inherited `true`
+        # from a sibling and passed; on a fresh pool station it starts NULL and
+        # the latent gap surfaces. Declaring it here is what makes the file
+        # independent of run order. Same fix as get-configuration.yaml.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -169,3 +186,48 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # THE ASSERTION — the spec mandate this file is named for, finally read back.
+  #
+  # Its description has always claimed "spec v0.4.0 mandates creditsCharged: 0",
+  # and until now the only evidence for that was the literal this scenario sends
+  # in its own SessionEnded. The server's number is what the mandate is about.
+  #
+  #   credits_charged 0 / refund_amount 500 — UserDurationStrategy:42-46 groups
+  #       Deauthorized with LocalOutOfCredit and NeverStarted under
+  #       fullRefund($authorized): "not billable regardless of elapsed". Two
+  #       delivered seconds are charged NOTHING. refund_amount is derived
+  #       (SessionResource:53-56) and appears in no message this scenario sends,
+  #       so it is the non-echoed half — credits_charged 0 coincides with the
+  #       literal above and cannot prove the server computed anything on its own.
+  #
+  #   status failed — this is a FIFTH settlement arm, not a repeat of
+  #       LocalOutOfCredit. Both are fullRefund, but Deauthorized lands in
+  #       `failed` while LocalOutOfCredit completes. Revocation is a security
+  #       event, not a clean end.
+  #
+  #   fail_reason — THE discriminator, and the only one available. Deauthorized
+  #       and Fault are otherwise byte-identical on every asserted field:
+  #       failed / 0 / 500. The strings differ, and nothing else does, so
+  #       dropping this line would collapse a revoked pass and a hardware fault
+  #       into one indistinguishable assertion. Server-composed: the station
+  #       sends `reason: "Deauthorized"`, the row stores the sentence below.
+  #
+  # NOT asserted: fail_error_code, which is present-but-null here (status IS
+  # failed so SessionResource:64-67 includes the key, but this path sets a reason
+  # string and no code). Asserting null would pass and prove nothing about
+  # revocation. Also not asserted: the security audit record the description
+  # mentions — it is not exposed on this endpoint, and no assertion here reaches
+  # it. Measured on UAT 2026-08-10.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.credits_charged: 0
+      data.refund_amount: 500
+      data.fail_reason: "SessionEnded: deauthorized (offline pass revoked)"

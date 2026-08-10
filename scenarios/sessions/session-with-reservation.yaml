@@ -161,3 +161,66 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — on the RESERVATION, not the session, and it turned out to
+  # pin a GAP rather than a guarantee. Deliberately not a
+  # fifth copy of the settlement rule.
+  #
+  # This file ends with reason `Local` like session-stop-local,
+  # meter-values-streaming, session-web-payment and start-service. Same
+  # TerminalReason::VoluntaryStop, same pro-rata rule, and no end_reason field to
+  # separate them — so the money is asserted once, in session-stop-local.
+  #
+  # What is specific here is the CONVERSION: this is the only session in the
+  # corpus born from a reservation. The obvious place to look is the session's
+  # own `reservation_id`, and that does NOT work — the column is a `uuid` (the
+  # internal FK), while everything this scenario captures is the public `rsv_*`
+  # id off the wire. The scenario cannot know the uuid, and expect_body has no
+  # "is present and not null" form, so the session side of the link is
+  # unassertable.
+  #
+  # The reservation side is where the link would be recorded — and this is where
+  # the file stopped being a proof and became a report:
+  #
+  # THIS ASSERTION PINS A GAP. IT IS NOT AN ENDORSEMENT OF THE VALUE.
+  #
+  # The intended assertion was `status: active` + `converted_session_id` equal to
+  # the captured session. Measured on UAT 2026-08-10, the reservation is still
+  # `confirmed`, converted_session_id is ABSENT from the body, and
+  # time_remaining_seconds was 298 — the TTL is still counting down on a
+  # reservation whose session is already running.
+  #
+  # The reason is not a race and not this scenario: ConvertReservationAction has
+  # ZERO CALL SITES. Nothing in the application ever invokes it. Grep for the
+  # class name outside its own declaration and there is nothing;
+  # `converted_session_id` is READ in three places (ReservationResource:47,
+  # DashboardReservationController:86 and :176) and WRITTEN by nothing. So the
+  # `confirmed -> active` edge in ReservationTransitions::TRANSITIONS is
+  # unreachable in production, and the reservation->session link the server
+  # models is never actually recorded.
+  #
+  # Asserting `active` here would produce a permanently red file describing a
+  # feature that does not exist. Asserting nothing would leave the gap invisible
+  # again. So this pins the CURRENT behaviour deliberately, as a tripwire: the
+  # day conversion is wired, this file goes red, and the correct fix is to change
+  # these two lines to `active` plus a converted_session_id match — not to delete
+  # the assertion.
+  #
+  # NOT assertable either way: that converted_session_id is absent. It is wrapped
+  # in $this->when(!== null), so the key does not exist at all rather than being
+  # null, and expect_body cannot express absence. The `confirmed` status is the
+  # observable that stands in for it.
+  #
+  # Also not assertable, and worth knowing before anyone tries: the SESSION side
+  # of the link. sessions.reservation_id is a `uuid` (the internal FK) while
+  # everything this scenario captures is the public `rsv_*` id, so the scenario
+  # cannot predict the value, and there is no is-present form.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "confirmed"

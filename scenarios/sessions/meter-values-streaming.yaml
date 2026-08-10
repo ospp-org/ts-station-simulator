@@ -179,3 +179,43 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # 1000ms: the MeterValues and SessionEnded above are EVENTS with no Response to
+  # synchronise on, and 300ms was measured INSIDE the consumer race on UAT.
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — deliberately NOT a fifth copy of the settlement rule.
+  #
+  # This file ends with reason `Local`, exactly like session-stop-local,
+  # session-web-payment, session-with-reservation and start-service. All five map
+  # to TerminalReason::VoluntaryStop and settle pro-rata by the same rule, and
+  # there is no end_reason column or field to tell them apart. The money is
+  # asserted ONCE, in session-stop-local. Repeating it here would look like a
+  # second proof and be the same one.
+  #
+  # What is specific to this file is INGESTION. It publishes three MeterValues
+  # Events mid-session and, before this, asserted nothing about whether any of
+  # them survived. MeterValues is an Event: no Response, and a rejected frame is
+  # silent, so the file passed whether the server stored three rows or zero.
+  # Reading them back off the session proves the ingest path ran.
+  #
+  # HONEST about strength: the energy figures are literals this scenario sent, so
+  # matching them proves STORAGE AND RETRIEVAL, not computation. That is still
+  # the thing this file exists to exercise, and it has a real failure mode — a
+  # dropped frame, a wrong session binding, or a silent schema rejection all
+  # break it.
+  #
+  # [sampled_at=...] selectors, never indices. SessionResource:73-77 does order
+  # by sampled_at so an index would happen to work today, but the ordering is the
+  # resource's choice and not part of any contract — and the sibling
+  # meter-values-seqno-gap-still-ingested.yaml already pins .0/.1/.2 positionally,
+  # which is the fragile form. Keyed selectors say what is meant.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.meter_values[sampled_at=2026-01-30T12:01:00.000Z].energy_wh: 100
+      data.meter_values[sampled_at=2026-01-30T12:02:00.000Z].energy_wh: 250
+      data.meter_values[sampled_at=2026-01-30T12:03:00.000Z].energy_wh: 400
