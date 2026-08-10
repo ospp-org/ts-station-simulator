@@ -293,3 +293,37 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — added 2026-08-10, and it does NOT overturn the header note
+  # above. The per-transaction fraud SCORE is still unreachable from a scenario
+  # for exactly the reasons recorded there: it is absent from the wire by design,
+  # the one endpoint returning it needs a signed receipt ApiCallStep cannot
+  # produce, and no GET reads it back.
+  #
+  # What changed is that the runner grew expect_body_text, which reaches
+  # /metrics — Prometheus exposition text, previously unparseable because
+  # response.json() was unconditional. The scoring pipeline publishes a histogram
+  # there, so its EXISTENCE is now assertable even though a specific row's score
+  # is not.
+  #
+  # WHAT IT PROVES: the fraud scorer ran and recorded observations. Before this,
+  # a scorer that had been disabled or was silently throwing looked identical to
+  # one working perfectly — the five Accepted responses this file asserts are
+  # produced either way, because 40 is below the review threshold of 50 and
+  # Accepted is the correct answer whether or not anything was scored.
+  #
+  # WHAT IT DOES NOT PROVE: that THESE five transactions produced those
+  # observations, or that any of them scored 40. The histogram carries no station,
+  # no transaction and no run label, so it is global and cumulative and an earlier
+  # run satisfies it. Proving the 40 still requires reading offline_transactions
+  # out of band, as the header says. Same limitation, and same honest framing, as
+  # the two MAC files.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/metrics"
+    expect_status: 200
+    expect_body_text:
+      - /csms_fraud_score_distribution_count [1-9]/

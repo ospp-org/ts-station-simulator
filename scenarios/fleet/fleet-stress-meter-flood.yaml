@@ -266,3 +266,28 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — and establishing it showed this file is NOT an aggregate test.
+  # "Fleet" here is the RUN MODE (--parallel --workers N), not the subject: each
+  # instance is one station flooding its own session, so it has ordinary
+  # per-session state to read back and needs no throughput surface.
+  #
+  # What it proves: the LAST frame of a 10-deep 100ms burst survived ingestion.
+  # That is the point of a flood — not that the server stayed up, which a passing
+  # run already shows, but that it did not shed frames under rate. Before this the
+  # file published ten Events and asserted nothing about any of them; MeterValues
+  # is fire-and-forget, so a server dropping every frame passed identically.
+  #
+  # Honest about strength: the energy figure is this scenario's own literal, so
+  # this proves INGESTION, not computation. The failure modes it does catch are
+  # real — a dropped tail frame, a wrong session binding, a schema rejection
+  # under load.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.meter_values[sampled_at=2026-03-22T10:00:10.000Z].energy_wh: 200

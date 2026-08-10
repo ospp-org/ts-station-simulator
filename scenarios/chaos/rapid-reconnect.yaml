@@ -118,3 +118,28 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION. The claim is server stability under rapid connection churn,
+  # and the observable is the state the churn LEFT BEHIND — which exists and is
+  # readable, so this file was not a ceiling.
+  #
+  #   data.isOnline true  — the station is registered connected after the final
+  #                         cycle. Server-decided.
+  #   data.bootReason     — the LAST boot in the sequence is ErrorRecovery (the
+  #                         first is PowerOn), so reading it back proves the final
+  #                         reconnect is the one that committed, rather than an
+  #                         earlier boot whose row survived the churn.
+  #
+  # Together they say the server converged on the last cycle instead of being left
+  # in a state from the middle of it — which is what "stability under churn"
+  # means, and what a passing run alone never showed.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bootReason: "ErrorRecovery"

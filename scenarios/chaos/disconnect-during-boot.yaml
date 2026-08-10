@@ -40,3 +40,33 @@ steps:
   # --- Disconnect before response arrives ---
   - action: fault
     type: disconnect
+
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION — and this file was not a ceiling either.
+  # The claim is that the server handles an incomplete boot handshake: the station
+  # publishes BootNotification and drops the link before the Response can reach
+  # it. What that must NOT do is lose the boot — the server processed a valid
+  # message, and the station's failure to hear the answer is not the server's
+  # business.
+  #
+  # data.bootReason proves it committed. On a fresh pool station the column starts
+  # NULL — this file sends exactly ONE BootNotification and no other scenario has
+  # touched the station — so reading `PowerOn` cannot be inherited from an earlier
+  # boot and cannot be satisfied by the initial state. Before this the file
+  # disconnected mid-handshake and asserted nothing at all about the outcome.
+  #
+  # The api_call is plain HTTP and is unaffected by the MQTT link being gone.
+  #
+  # NOT asserted: data.isOnline. The station is deliberately disconnected here, so
+  # its value depends on whether the broker published the Last Will and whether
+  # the server consumed it in time — the same race connection-lost-lwt.yaml
+  # measured and could not close. Asserting it would import that flakiness into a
+  # file about something else.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "PowerOn"

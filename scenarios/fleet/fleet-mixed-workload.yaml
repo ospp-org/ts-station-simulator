@@ -200,3 +200,42 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — two findings, one of them a correction.
+  #
+  # FIRST: this is not an aggregate or throughput file. One station, one full
+  # lifecycle, DESIGNED to be run with many workers — so the observable is
+  # ordinary session state, and *fleet* names the run mode, not the subject. The
+  # same held for both its siblings, so the fleet suite was never a ceiling.
+  #
+  # SECOND, and measured rather than assumed: it settles PRO-RATA, not full.
+  # This was written expecting 500 — it books duration_seconds 300, and its
+  # trailing SessionEnded says TimerExpired, which is the fullCharge arm. The
+  # server charged 100 and refunded 400.
+  #
+  # The cause is the same one stop-service.yaml records, and this is the second
+  # independent file to show it: settlement happens on the STOP, not on the
+  # SessionEnded. This scenario calls POST /sessions/{id}/stop (:156) and answers
+  # with actualDurationSeconds 60, so the operator-stop path bills delivered time
+  # — ceil(60/60 * 100) = 100 against 500 authorized, refund 400. By the time the
+  # SessionEnded arrives the session is already terminal and its reason never
+  # chooses an arm. The wire says TimerExpired; the money says voluntary stop.
+  #
+  # So a file that looked like a duplicate of the fullCharge arm is actually a
+  # second witness for the operator-stop arm — which is worth more, because that
+  # arm had exactly one file until now.
+  #
+  # refund_amount 400 is derived (SessionResource:53-56) and appears in no
+  # message this scenario sends: the non-echoed half, since 100 coincides with
+  # what the StopService Response declares.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 100
+      data.refund_amount: 400

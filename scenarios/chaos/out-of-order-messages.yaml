@@ -67,3 +67,30 @@ steps:
       reason: "TimerExpired"
       actualDurationSeconds: 60
       creditsCharged: 100
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — and this file was not a ceiling, though it looked like one.
+  # The claim is that the server is resilient to protocol violations: an orphaned
+  # MeterValues and a SessionEnded for a session that never existed. "Resilient"
+  # was previously proven only by the run not crashing, which is indistinguishable
+  # from the messages never having been published.
+  #
+  # The observable is the session that MUST NOT have been created. sess_deadbeef
+  # is the id those orphaned Events name; a server that auto-created a row on an
+  # unknown sessionId — the actual failure mode a protocol-violation test is for —
+  # would leave it fetchable. 404 with ospp_code 3006 SESSION_NOT_FOUND says it
+  # did not.
+  #
+  # Note this is the inverse of the usual read-back: the proof is that a specific
+  # id resolves to NOTHING, and it works because the id is a fixed literal the
+  # scenario chose rather than a server-generated one. A fixed id is safe HERE
+  # precisely because nothing must ever create it — the opposite of the offline
+  # transaction ids, where a literal poisons itself on first use.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/sess_deadbeef"
+    expect_status: 404
+    expect_body:
+      error.ospp_code: 3006

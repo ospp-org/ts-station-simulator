@@ -1,5 +1,21 @@
 name: "Heartbeat Timeout"
 description: "Boot, send heartbeat, and wait with a very short timeout to test timeout handling. Expected to fail if server is slow."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE SUBJECT IS THE CLIENT.
+# This file sends a Heartbeat and waits with a deliberately short timeout. What
+# it exercises is the SIMULATOR own wait_for budget, not anything the server
+# does: the server answers a Heartbeat identically whether or not the client is
+# still listening. Its sibling chaos/connection-timeout.yaml is the same test and
+# already carries skip: true for the same reason.
+#
+# The server-side effect of a Heartbeat is exactly two writes
+# (HeartbeatHandler:29-33): updateLastSeen(), which moves a timestamp no
+# scenario can predict, and a Redis recordHeartbeat() no route reads.
+# data.isOnline is already true from the boot above, so it cannot move either,
+# and asserting it would be an assertion that cannot fail.
+#
+# Note this is a DIFFERENT ceiling from trigger-message-heartbeat.yaml, which
+# also cannot assert its effect: there the message is real and the effect is
+# merely unreadable; here the subject is not a server behaviour at all.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

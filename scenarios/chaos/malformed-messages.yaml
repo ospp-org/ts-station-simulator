@@ -1,5 +1,25 @@
 name: "Malformed Messages"
 description: "Send messages with minimal and unusual payloads to test server robustness against edge-case message formats."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE OBSERVABLE IS THE DLQ, AND THE DLQ
+# HAS NO SURFACE. Established 2026-08-10 rather than assumed.
+#
+# This file publishes deliberately schema-invalid frames (its sends carry
+# expect_invalid: true). The server rejects them at validation and routes them to
+# the dead-letter queue — which is the correct behaviour and the whole subject.
+#
+# Where that is observable, and where it is not:
+#   - No REST route reads the DLQ. There is no admin endpoint for it.
+#   - No Prometheus metric either. /metrics was swept for a dlq series on
+#     2026-08-10 and carries none, so expect_body_text does not reach it despite
+#     unlocking /metrics generally.
+#   - Nothing comes back on the wire: a rejected EVENT is answered with silence.
+#
+# So the DLQ depth this file moves can only be read by querying the queue out of
+# band — which is how the +2 it contributes to a full run has always been
+# attributed. This file is also WHY that residue accumulates, and that is by
+# design, not a leak to fix.
+#
+# Closing it needs a DLQ surface (a metric or an admin read), not a scenario edit.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

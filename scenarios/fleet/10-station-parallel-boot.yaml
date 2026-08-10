@@ -65,3 +65,31 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — and establishing it overturned the guess that the fleet suite
+  # was ceilinged. The description says it plainly: "Each instance gets its own
+  # unique stationId and boots, asserts Accepted, then reports bays Available."
+  # That is a per-instance boot, not a parallel aggregate; the 10-station part is
+  # --parallel --workers 10, a way of RUNNING it. So it has exactly the state a
+  # single boot has, and that state is readable.
+  #
+  # data.isOnline is server-decided — a pool station is provisioned offline, so
+  # `true` cannot be inherited. The bay rows prove both StatusNotification Events
+  # landed, and both bays start at `unknown`, a value no station may put on the
+  # wire, so `available` cannot be satisfied by the initial state.
+  #
+  # Worth more under N workers than at N=1: this is the assertion that catches a
+  # station whose boot was accepted but whose bay reports were dropped under
+  # concurrency — exactly the failure a parallel-boot file exists to find and
+  # previously could not see.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
