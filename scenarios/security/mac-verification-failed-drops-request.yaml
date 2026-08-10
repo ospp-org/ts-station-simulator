@@ -159,3 +159,40 @@ steps:
   - action: assert
     field: "payload.serverTime"
     exists: true
+
+  # 1000ms: the probe above is dropped silently, so there is no Response to
+  # synchronise on — the metric write races the consumer exactly as a DB write would.
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — the first this file has ever had about its own subject, and
+  # it is honest about being a weak one.
+  #
+  # This branch is WIRE-SILENT by construction (see the note above): the
+  # middleware drops the message, publishes nothing and does not disconnect, so
+  # there is no Response to wait_for and no row to read. /metrics is the ONLY
+  # surface on which it is observable at all, and it was unreachable until the
+  # runner grew expect_body_text — response.json() was unconditional, and
+  # Prometheus exposition format is text/plain.
+  #
+  # WHAT IT PROVES: the branch is wired and has fired — the series exists with a
+  # nonzero value for reason="MAC_VERIFICATION_FAILED". Before this the file asserted only
+  # SILENCE, which is indistinguishable from the probe never having been sent at
+  # all: a scenario that failed to publish anything passed identically.
+  #
+  # WHAT IT DOES NOT PROVE: that THIS run incremented it. The counter carries
+  # only action and reason labels — no station, no run — so it is global and
+  # cumulative, and a series left behind by any earlier run satisfies this. A
+  # per-run assertion would need capture-then-compare arithmetic the DSL does not
+  # have; that is the honest next capability, not something to fake with a
+  # tighter regex.
+  #
+  # Regex form (/…/) rather than a literal: a Prometheus line is full of regex
+  # metacharacters and the label ORDER is not guaranteed, so matching on
+  # reason= alone inside the brace group survives a label being added or reordered.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/metrics"
+    expect_status: 200
+    expect_body_text:
+      - /csms_mqtt_mac_verification_failures_total\{[^}]*reason="MAC_VERIFICATION_FAILED"[^}]*\} [1-9]/

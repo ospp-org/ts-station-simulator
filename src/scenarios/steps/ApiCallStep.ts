@@ -505,6 +505,20 @@ export class ApiCallStep implements Step {
             '(response not awaited — use a foreground call to assert on the body)',
         );
       }
+      // Same reasoning for the two siblings: both are assertions, and an
+      // assertion nobody awaits is not one.
+      if (definition.expect_body_absent !== undefined) {
+        throw new Error(
+          'ApiCallStep: "expect_body_absent" is not supported with "background: true" ' +
+            '(response not awaited — use a foreground call to assert on the body)',
+        );
+      }
+      if (definition.expect_body_text !== undefined) {
+        throw new Error(
+          'ApiCallStep: "expect_body_text" is not supported with "background: true" ' +
+            '(response not awaited — use a foreground call to assert on the body)',
+        );
+      }
       fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
         .then(async (response) => {
           if (definition.expect_status !== undefined) {
@@ -540,13 +554,118 @@ export class ApiCallStep implements Step {
       }
     }
 
+    // ------------------------------------------------------------------
+    // expect_body_text — the NON-JSON assertion form.
+    //
+    // Exists because response.json() is unconditional below, which made every
+    // non-JSON surface unreachable: /metrics is Prometheus exposition text
+    // (`text/plain; version=0.0.4`) and is the ONLY place the MAC-verification
+    // branch is observable at all — the middleware drops the message silently,
+    // so there is nothing on the wire and nothing in a table.
+    //
+    // THE GUARD THAT MATTERS: this must not become a weaker expect_body. A
+    // substring match against a JSON body passes when the value appears ANYWHERE
+    // — a bay id in a `services[]` entry satisfies a match meant for `bay.id`,
+    // and `"status":"failed"` is satisfied by a `fail_reason` that merely
+    // contains the word. So a JSON content-type is REFUSED here and the caller
+    // is sent to expect_body, which resolves a path. The refusal is on the
+    // response's own Content-Type, not on a guess from the URL, so it cannot be
+    // dodged by pointing at a JSON endpoint that happens to be undeclared.
+    // ------------------------------------------------------------------
+    if (definition.expect_body_text !== undefined) {
+      if (definition.expect_body !== undefined || definition.capture !== undefined ||
+          definition.expect_body_absent !== undefined ||
+          typeof definition.set_auth_token === 'string') {
+        throw new Error(
+          'ApiCallStep: "expect_body_text" cannot be combined with expect_body, ' +
+            'expect_body_absent, capture or set_auth_token — the body is consumed once, ' +
+            'and those four require it parsed as JSON',
+        );
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (/\bjson\b/i.test(contentType)) {
+        throw new Error(
+          `ApiCallStep: "expect_body_text" refused for a JSON response ` +
+            `(content-type: ${contentType}). A substring match on JSON passes when the ` +
+            `value appears anywhere in the body rather than at a path — use "expect_body", ` +
+            `which resolves a path, or "expect_body_absent" to assert a field is missing.`,
+        );
+      }
+
+      const text = await response.text();
+      const patterns = Array.isArray(definition.expect_body_text)
+        ? (definition.expect_body_text as unknown[])
+        : [definition.expect_body_text];
+
+      for (const raw of patterns) {
+        if (typeof raw !== 'string') {
+          throw new Error(
+            `ApiCallStep: "expect_body_text" entries must be strings, got ${typeof raw}`,
+          );
+        }
+        // `/…/` delimits a regex; anything else is a literal substring. Keeping
+        // the literal form the default matters — a Prometheus line carries `{`,
+        // `}` and `.`, which are all regex metacharacters, so treating every
+        // pattern as a regex would silently change what most callers meant.
+        const isRegex = raw.length > 1 && raw.startsWith('/') && raw.endsWith('/');
+        const hit = isRegex
+          ? new RegExp(raw.slice(1, -1)).test(text)
+          : text.includes(raw);
+
+        if (!hit) {
+          throw new Error(
+            `ApiCallStep: expected body text to ${isRegex ? 'match' : 'contain'} ` +
+              `${JSON.stringify(raw)} (content-type: ${contentType}, ${text.length} bytes). ` +
+              `First 400 bytes: ${text.slice(0, 400)}`,
+          );
+        }
+      }
+      return;
+    }
+
     const needsBody =
       (definition.capture && typeof definition.capture === 'object') ||
       (definition.expect_body && typeof definition.expect_body === 'object') ||
+      Array.isArray(definition.expect_body_absent) ||
       typeof definition.set_auth_token === 'string';
 
     if (needsBody) {
       const responseBody: unknown = await response.json();
+
+      // ----------------------------------------------------------------
+      // expect_body_absent — asserts a path is NOT THERE.
+      //
+      // Absence is genuinely different from null and the corpus needs both.
+      // ReservationResource emits cancelled_at/expired_at UNCONDITIONALLY, so
+      // those keys are present carrying JSON null and `expect_body: {x: null}`
+      // is the right tool. SessionResource wraps fail_reason/fail_error_code in
+      // $this->when(status === FAILED), so on a completed session the keys do
+      // not exist — and `null` would FAIL there, because getNestedValue returns
+      // `undefined` and `undefined === null` is false.
+      //
+      // Conflating the two is the bug this guards: asserting null where the
+      // field is absent produces a red file against a CORRECT server, and
+      // asserting absence where the field is null lets a real regression pass.
+      // ----------------------------------------------------------------
+      if (Array.isArray(definition.expect_body_absent)) {
+        for (const path of definition.expect_body_absent) {
+          if (typeof path !== 'string') {
+            throw new Error(
+              `ApiCallStep: "expect_body_absent" entries must be strings, got ${typeof path}`,
+            );
+          }
+          const got = getNestedValue(responseBody, path);
+          if (got !== undefined) {
+            throw new Error(
+              `ApiCallStep: expected body "${path}" to be ABSENT, but it resolved to ` +
+                `${JSON.stringify(got)}. Note a JSON null is PRESENT-but-null, not absent — ` +
+                `assert that with "expect_body: {${path}: null}" instead. ` +
+                `(full body: ${JSON.stringify(responseBody)})`,
+            );
+          }
+        }
+      }
 
       // `expect_status` alone cannot tell one refusal from another: a bay that
       // is Unavailable answers 3011 BAY_MAINTENANCE and a bay the server has

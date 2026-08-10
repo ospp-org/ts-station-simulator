@@ -142,28 +142,20 @@ steps:
 
   # ASSERTION 2 — the read-back reflects what the station answered.
   #
-  # NOT ASSERTED, and recorded rather than faked: that `NoSuchConfigKey` is
-  # ABSENT from the table. That is the half this scenario would most like to
-  # pin — the station declared it unknown, so no row should exist — but
-  # `expect_body` cannot express it. An unmatched `[key=...]` selector resolves
-  # to `undefined` (ApiCallStep getNestedValue: `arr.find()` returns undefined,
-  # and the next hop's null-guard returns undefined), while a YAML `null` is JS
-  # `null`; the comparison is `got === want` with an object-only JSON fallback,
-  # so `undefined === null` is false and an absence assertion would fail against
-  # a CORRECT server. Writing one would produce a permanently red file that looks
-  # like a server defect.
+  # NOW ASSERTED. This was recorded as unassertable — expect_body could not
+  # express absence, so "the unknown key was not persisted" had to be left to
+  # prose. expect_body_absent closes it: the station answered with one key and
+  # declared the other unknown, so NoSuchConfigKey must have NO row, and an
+  # unmatched [key=...] selector resolves to undefined rather than null.
   #
-  # Closing this needs a runner change — an `expect_body_absent` list, or
-  # treating YAML null as "resolves to null or undefined" — with its own unit
-  # tests. Out of scope here; the gap is named so the next pass can size it.
-  #
-  # What IS asserted below is still not vacuous: a green expect_body cannot be
-  # hollow, because an unresolvable path yields undefined and fails rather than
-  # silently passing. So the positive assertion proves the correlated write
-  # committed with the station's value.
+  # This is the load-bearing half of the file. The positive assertion proves the
+  # correlated write committed; the ABSENCE proves the server did not invent a
+  # row for a key the station said it does not have.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
     expect_body:
       data[key=HeartbeatIntervalSeconds].value: "30"
+    expect_body_absent:
+      - data[key=NoSuchConfigKey].key

@@ -160,19 +160,18 @@ steps:
   # credits_authorized - credits_charged. Pinning 0 says the customer was charged
   # in full with nothing returned, which is the whole meaning of TimerExpired.
   #
-  # NOT ASSERTED, and marked rather than approximated: that fail_error_code is
-  # ABSENT. A completed session should carry no failure code, and that is a real
-  # property worth pinning — SessionResource:60-67 wraps both fail_reason and
-  # fail_error_code in $this->when(status === FAILED), so on this body neither key
-  # exists at all. expect_body cannot express that: an unmatched path resolves to
-  # `undefined`, a YAML null is `null`, and the comparison is `got === want`, so
-  # `data.fail_error_code: null` would FAIL against this correct response.
+  # NOW ASSERTED — this was marked unassertable twice, and the runner grew the
+  # form that closes it. expect_body_absent asserts the path is NOT THERE, which
+  # is what a completed session owes: SessionResource:60-67 wraps fail_reason and
+  # fail_error_code in $this->when(status === FAILED), so on this body neither
+  # key exists.
   #
-  # The adjacent assertion that would have "worked" is asserting status
-  # `completed` and calling it equivalent. It is not — status is already asserted
-  # above for its own reasons, and it does not say that the failure fields are
-  # gone. Closing this properly needs an expect_body_absent list in the runner;
-  # until then the gap is named here rather than papered over.
+  # It is NOT the same as asserting null, and the difference is load-bearing here.
+  # getNestedValue returns undefined for a missing key, a YAML null is JS null,
+  # and the compare is ===, so `expect_body: {data.fail_error_code: null}` would
+  # go RED against this correct response. The sibling that legitimately uses null
+  # is reserve-cancel.yaml, where ReservationResource emits the timestamp
+  # unconditionally and it is present-carrying-null.
   #
   # Measured on UAT 2026-08-10. The sibling rule arms are covered by
   # session-stop-local (pro-rata), session-local-out-of-credit (full refund) and
@@ -190,3 +189,6 @@ steps:
       data.status: "completed"
       data.credits_charged: 500
       data.refund_amount: 0
+    expect_body_absent:
+      - data.fail_error_code
+      - data.fail_reason
