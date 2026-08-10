@@ -165,8 +165,7 @@ steps:
   - action: delay
     ms: 1000
 
-  # THE ASSERTION — on the RESERVATION, not the session, and it turned out to
-  # pin a GAP rather than a guarantee. Deliberately not a
+  # THE ASSERTION — on the RESERVATION, not the session. Deliberately not a
   # fifth copy of the settlement rule.
   #
   # This file ends with reason `Local` like session-stop-local,
@@ -182,45 +181,50 @@ steps:
   # "is present and not null" form, so the session side of the link is
   # unassertable.
   #
-  # The reservation side is where the link would be recorded — and this is where
-  # the file stopped being a proof and became a report:
+  # The reservation side is where the link is recorded, and this file spent its
+  # first life pinning the ABSENCE of that record as a tripwire:
+  # ConvertReservationAction had ZERO CALL SITES, so `confirmed -> active` was
+  # unreachable in production and the reservation->session link the server models
+  # was never written. Measured on UAT 2026-08-10: status stayed `confirmed`,
+  # converted_session_id was absent, and time_remaining_seconds read 298 — a TTL
+  # still counting down on a reservation whose session was already running.
   #
-  # THIS ASSERTION PINS A GAP. IT IS NOT AN ENDORSEMENT OF THE VALUE.
+  # THE TRIPWIRE FIRED AS DESIGNED. csms-server b68b396 wires the conversion into
+  # StartServiceResponseHandler::handleAccepted, this file went red against the
+  # deployed UAT stack with `expected "confirmed", but got "active"`, and per its
+  # own instruction the assertion is now upgraded rather than deleted.
   #
-  # The intended assertion was `status: active` + `converted_session_id` equal to
-  # the captured session. Measured on UAT 2026-08-10, the reservation is still
-  # `confirmed`, converted_session_id is ABSENT from the body, and
-  # time_remaining_seconds was 298 — the TTL is still counting down on a
-  # reservation whose session is already running.
+  # Re-measured on UAT after that deploy, same run that turned this green:
+  #   status                "active"
+  #   converted_session_id  "sess_98ecfa0d2e21aee6b500d399"  (was absent)
+  #   time_remaining_seconds  absent                          (was 298)
   #
-  # The reason is not a race and not this scenario: ConvertReservationAction has
-  # ZERO CALL SITES. Nothing in the application ever invokes it. Grep for the
-  # class name outside its own declaration and there is nothing;
-  # `converted_session_id` is READ in three places (ReservationResource:47,
-  # DashboardReservationController:86 and :176) and WRITTEN by nothing. So the
-  # `confirmed -> active` edge in ReservationTransitions::TRANSITIONS is
-  # unreachable in production, and the reservation->session link the server
-  # models is never actually recorded.
+  # WHY THE MOMENT MATTERS, and why this scenario is the one that proves it.
+  # The conversion is bound to the ACCEPTED StartService RESPONSE, not to the
+  # start request: spec 05-state-machines.md:501 guards `Confirmed -> Active` on
+  # "reservationId matches; within TTL", a check the STATION performs (§4.5:519),
+  # and §4.5:520 converts only "if matched". A rejected start is refunded in full
+  # and released via CancelReservation (04-flows.md:670), never converted. This
+  # scenario sends `StartService Response Accepted` at step [10]; that send is the
+  # trigger for everything asserted below. A sibling asserting the REJECTED arm
+  # stays un-converted would be the other half of the pair.
   #
-  # Asserting `active` here would produce a permanently red file describing a
-  # feature that does not exist. Asserting nothing would leave the gap invisible
-  # again. So this pins the CURRENT behaviour deliberately, as a tripwire: the
-  # day conversion is wired, this file goes red, and the correct fix is to change
-  # these two lines to `active` plus a converted_session_id match — not to delete
-  # the assertion.
+  # converted_session_id is assertable after all, and the earlier note here was
+  # wrong about it: the resource resolves the stored uuid back to the PUBLIC
+  # session id (ReservationResource::resolveSessionPublicId), which is exactly
+  # what step [9] captured off the StartService REQUEST. The two are comparable.
   #
-  # NOT assertable either way: that converted_session_id is absent. It is wrapped
-  # in $this->when(!== null), so the key does not exist at all rather than being
-  # null, and expect_body cannot express absence. The `confirmed` status is the
-  # observable that stands in for it.
-  #
-  # Also not assertable, and worth knowing before anyone tries: the SESSION side
-  # of the link. sessions.reservation_id is a `uuid` (the internal FK) while
-  # everything this scenario captures is the public `rsv_*` id, so the scenario
-  # cannot predict the value, and there is no is-present form.
+  # Still NOT assertable, unchanged: the SESSION side of the link.
+  # sessions.reservation_id is a `uuid` (the internal FK) while everything this
+  # scenario captures is the public `rsv_*` id, so the scenario cannot predict
+  # the value and expect_body has no is-present form. Likewise the ABSENCE of
+  # time_remaining_seconds — it is wrapped in $this->when(status === CONFIRMED),
+  # so on an active reservation the key does not exist rather than being null.
+  # The `active` status is the observable that stands in for both.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
     expect_status: 200
     expect_body:
-      data.status: "confirmed"
+      data.status: "active"
+      data.converted_session_id: "{{captured.sessionId}}"
