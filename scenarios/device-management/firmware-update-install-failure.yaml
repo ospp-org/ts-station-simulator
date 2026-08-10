@@ -1,3 +1,27 @@
+# WHAT DISTINGUISHES THIS FILE FROM ITS SIBLINGS — measured on the wire 2026-08-10
+#   The three firmware-update files asserted the same two things (boot Accepted, POST 202)
+#   and nothing about the outcome. Each now reads the server's own record back off
+#   GET /api/v1/admin/stations/{stationId}/firmware, which is a COLLECTION — hence the
+#   [firmware_version=2.0.0] selector rather than an index (data.bays taught that lesson).
+#
+#   MEASURED, all three on fresh single-station pools:
+#     success           status "rebooting"  error_text null   completed_at unset
+#     download-failure  status "failed"     error_text "Download failed: network error"
+#     install-failure   status "failed"     error_text "Installation failed: checksum mismatch"
+#
+#   `status` is genuinely SERVER-DERIVED and separates success from failure: the station
+#   reports "Installed" and the handler stores REBOOTING
+#   (FirmwareStatusNotificationHandler.php:147), so asserting "rebooting" pins a
+#   transformation the server performs rather than a value it was handed.
+#
+#   THE TWO FAILURE VARIANTS ARE NOT SEPARATED BY ANY SERVER-DERIVED VALUE, and that is
+#   recorded rather than papered over. FirmwareUpdateStatus has ONE failure state — `failed`
+#   (vendor/ospp/protocol/src/Enums/FirmwareUpdateStatus.php:18); there is no DownloadFailed
+#   vs InstallationFailed. Measured, download-failure and install-failure agree on status,
+#   progress AND completed_at. The only difference is `error_text`, which is ECHOED from the
+#   station's own payload (`$updates['error_text'] = $errorText ?? 'Unknown error'`, :135).
+#   Asserting it proves the report round-tripped and persisted — real, but persistence, not
+#   server judgement. It is the same category as the security-event severity assertions.
 name: "Firmware Update Install Failure"
 description: "Firmware update fails during installation due to checksum mismatch"
 station:
@@ -105,3 +129,15 @@ steps:
       status: "Failed"
       firmwareVersion: "{{captured.firmwareVersion}}"
       errorText: "Installation failed: checksum mismatch"
+
+  # THE ASSERTION — the server's own firmware record, not the notifications this file sent.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      data[firmware_version=2.0.0].error_text: "Installation failed: checksum mismatch"

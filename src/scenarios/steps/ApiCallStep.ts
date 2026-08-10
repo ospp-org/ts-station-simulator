@@ -227,8 +227,35 @@ function substituteTemplates(
  */
 const ARRAY_SELECTOR_RE = /^([^[\]]+)\[([^=[\]]+)=([^[\]]*)\]$/;
 
+/**
+ * Split a path on `.` but NEVER inside `[...]`.
+ *
+ * A plain `path.split('.')` tears a selector apart the moment its VALUE contains a dot —
+ * `data[firmware_version=2.0.0].status` became `data[firmware_version=2`, `0`, `0]`, `status`
+ * and resolved to undefined. It survived review because the first selector written used
+ * `[bayNumber=1]`, and a bay number has no dot; a firmware version does. Anything
+ * version-shaped, IP-shaped or hostname-shaped would have hit it.
+ */
+function splitPath(path: string): string[] {
+  const parts: string[] = [];
+  let buf = '';
+  let depth = 0;
+  for (const ch of path) {
+    if (ch === '[') depth++;
+    else if (ch === ']') depth--;
+    if (ch === '.' && depth === 0) {
+      parts.push(buf);
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  parts.push(buf);
+  return parts;
+}
+
 function getNestedValue(obj: unknown, path: string): unknown {
-  const parts = path.split('.');
+  const parts = splitPath(path);
   let current: unknown = obj;
   for (const part of parts) {
     if (current === null || current === undefined) {

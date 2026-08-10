@@ -53,3 +53,32 @@ describe('getNestedValue — array selection by field', () => {
     expect(get(BODY, 'data.missing.deeper')).toBeUndefined();
   });
 });
+
+describe('selector values containing dots — the bug the bay case could not expose', () => {
+  const FW = {
+    data: [
+      { firmware_version: '2.0.0', status: 'failed', error_text: 'Download failed: network error' },
+      { firmware_version: '1.0.0', status: 'activated', error_text: null },
+    ],
+  };
+
+  it('resolves a dotted value instead of splitting the path through it', () => {
+    expect(get(FW, 'data[firmware_version=2.0.0].status')).toBe('failed');
+    expect(get(FW, 'data[firmware_version=1.0.0].status')).toBe('activated');
+  });
+
+  it('picks the right row when only the dotted value differs', () => {
+    expect(get(FW, 'data[firmware_version=2.0.0].error_text'))
+      .toBe('Download failed: network error');
+    expect(get(FW, 'data[firmware_version=1.0.0].error_text')).toBeNull();
+  });
+
+  it('still returns undefined for a dotted value that matches nothing', () => {
+    expect(get(FW, 'data[firmware_version=9.9.9].status')).toBeUndefined();
+  });
+
+  it('handles a selector at the end of a path and one nested deeper', () => {
+    const nested = { a: { b: [{ k: 'x.y', v: { deep: 1 } }] } };
+    expect(get(nested, 'a.b[k=x.y].v.deep')).toBe(1);
+  });
+});
