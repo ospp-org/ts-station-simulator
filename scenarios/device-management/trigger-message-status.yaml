@@ -103,3 +103,38 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # 1000ms: StatusNotification is an EVENT with no Response to synchronise on,
+  # and 300ms was measured INSIDE the consumer race on UAT (2026-08-10).
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION PROVES THE EFFECT, NOT THE TRIGGER. Stated plainly because the
+  # distinction is the whole subject of this file.
+  #
+  # What it proves: the two StatusNotification Events above LANDED and moved
+  # bays.status. Both bays start at `unknown` (create_bays_table:18) on a fresh
+  # pool station, and `unknown` is a value no station may put on the wire, so
+  # reading `available` cannot be satisfied by the initial state — it has a real
+  # failure mode. Until now this file asserted only that the TriggerMessage
+  # round-tripped, so a StatusNotification that was schema-rejected and dropped to
+  # the DLQ would have changed nothing about the result.
+  #
+  # What it does NOT prove: that the TRIGGER caused them. A bay row written by a
+  # solicited StatusNotification is byte-identical to one written by an
+  # unsolicited one — the server stores no correlation between the TriggerMessage
+  # and the message that follows, and the StatusNotification carries no marker
+  # saying it was requested. This is the same ceiling the trigger-message pattern
+  # already documented one level up: dispatch is provable, causation is not.
+  #
+  # So the honest reading is: TriggerMessage was dispatched and accepted (asserted
+  # above, on the wire), AND a StatusNotification subsequently landed (asserted
+  # here, server-side). The arrow between them is inferred, not measured, and no
+  # assertion available on this server can close it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"

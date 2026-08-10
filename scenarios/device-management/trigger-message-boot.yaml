@@ -22,6 +22,31 @@ description: >
   side is scripted explicitly by this file — scenario mode registers no TriggerMessageHandler
   (see the note at the TriggerMessage wait_for below), so nothing auto-responds and nothing
   auto-sends the BootNotification.
+# NO SERVER-STATE ASSERTION — THE EFFECT IS INDISTINGUISHABLE. Marked, not asserted.
+#
+# The triggered message here is a BootNotification, and its server effect is
+# stations.boot_reason. That column is already `PowerOn` from the FIRST boot at
+# the top of this file, and the triggered boot writes `PowerOn` again — see the
+# note at the send below, which explains why that is correct and deliberate:
+# bootReason means "why the station booted", not "why it is sending now". So a
+# read-back of data.bootReason would return the same value whether the triggered
+# boot landed, or landed as something else, or never happened at all. It is an
+# assertion that cannot fail, which is worse than none.
+#
+# The one column that DOES move is stations.last_boot_at. It is not assertable:
+# its value is a timestamp the scenario cannot predict, and expect_body compares
+# by equality with no changed-since or is-recent form.
+#
+# Changing the triggered boot to a different bootReason WOULD make it
+# distinguishable, and is refused on purpose: it would manufacture a difference
+# the protocol does not have, and encode a wrong reading of bootReason into the
+# corpus to buy a green assertion.
+#
+# What IS asserted, on the wire and already present: TriggerMessage carries
+# requestedMessage BootNotification, and the subsequent BootNotification Response
+# is Accepted. Dispatch is proven; causation is not, for the same reason as
+# trigger-message-status.yaml — no correlation is stored and the resulting
+# message carries no marker.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

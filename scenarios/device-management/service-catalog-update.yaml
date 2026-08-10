@@ -59,6 +59,28 @@ steps:
           priceCreditsPerMinute: 100
           available: true
     expect_status: 202
+    # ASSERTION 1 — the version is SERVER-GENERATED, and that is established
+    # rather than assumed. UpdateServiceCatalogAction:80-83:
+    #
+    #   $current = $station->current_catalog_version;
+    #   $nextVersion = ($current === null) ? '1' : (string) ((int) $current + 1);
+    #
+    # monotonic integer-as-string, per station, derived from the row. The request
+    # body above carries NO version — the scenario cannot echo what it never
+    # sends, so this is a genuinely derived value and not a restatement.
+    #
+    # Why "2" and not "1": the pool bootstrap seeds current_catalog_version = '1'
+    # at provisioning (uatPrivileged.ts, scoped to stations where it IS NULL), so
+    # a fresh pool station's FIRST push through this endpoint increments 1 -> 2.
+    # A station that had never been seeded would answer '1' here. If this file
+    # ever fails with "1", the bootstrap stopped seeding; if it fails with "3" or
+    # higher, the station is not fresh and the run is reusing state.
+    #
+    # Response is FLAT — StationManagementController:570-576 returns
+    # {message, message_id, station_id, catalog_version, service_count} with no
+    # `data` wrapper. Unlike every other read-back in this corpus.
+    expect_body:
+      catalog_version: "2"
 
   - action: wait_for
     message: UpdateServiceCatalog
@@ -66,6 +88,14 @@ steps:
     timeout_ms: 15000
     capture:
       catalogVersion: "payload.catalogVersion"
+
+  # ASSERTION 2 — the same server-generated version CROSSES THE WIRE. The REST
+  # response above proves the server computed it; this proves it reached the
+  # station in the published Request, which is the half that actually matters to
+  # a fleet. Two surfaces, one value, neither supplied by this scenario.
+  - action: assert
+    field: "payload.catalogVersion"
+    equals: "2"
 
   - action: send
     message: UpdateServiceCatalog

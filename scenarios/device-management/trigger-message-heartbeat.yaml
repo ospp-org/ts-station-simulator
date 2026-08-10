@@ -18,6 +18,27 @@
 #   EFFECT is unobservable from a scenario and only its DISPATCH is proven.
 name: "Trigger Message Heartbeat"
 description: "Server triggers a Heartbeat message from the station"
+# NO SERVER-STATE ASSERTION — THE EFFECT IS NOT EQUALITY-ASSERTABLE. Marked, not asserted.
+#
+# The triggered message is a Heartbeat, and its entire server effect is two
+# writes (HeartbeatHandler:29-33): stationRepository->updateLastSeen(), which
+# moves stations.last_seen_at, and heartbeatTracker->recordHeartbeat(), which
+# writes Redis.
+#
+# Neither is assertable from a scenario:
+#   - last_seen_at is exposed as data.lastSeenAt, but its value is a timestamp
+#     the scenario cannot predict. expect_body compares by equality and has no
+#     changed-since or is-recent form, so there is nothing to write.
+#   - the heartbeat tracker state lives in Redis and no REST route reads it back.
+#
+# There is also no derived flag to lean on: data.isOnline is already true from
+# the boot at the top of this file, so a Heartbeat cannot move it, and asserting
+# it would be an assertion that cannot fail.
+#
+# What IS asserted, on the wire and already present: TriggerMessage carries
+# requestedMessage Heartbeat and is Accepted. Closing the gap needs either an
+# is-recent form in expect_body or a server surface exposing heartbeat state —
+# not a scenario edit.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
