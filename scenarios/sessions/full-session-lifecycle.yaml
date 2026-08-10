@@ -202,3 +202,32 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — the fullCharge arm, and the value is deliberately NOT 500.
+  #
+  # This file books duration_seconds 60, not the 300 every other settlement
+  # scenario books. At 100 cr/min that authorizes 100 credits, and TimerExpired
+  # routes to SettlementResult::fullCharge($authorized)
+  # (UserDurationStrategy:38-40), so the charge is 100.
+  #
+  # That is the point of asserting it here rather than treating this as a copy of
+  # session-timeout-timer-expired: the two files run the SAME rule over DIFFERENT
+  # booked windows and get different money. A constant 500 would satisfy the other
+  # file and fail this one, so the pair together prove the charge tracks the
+  # window rather than being a fixed number.
+  #
+  # refund_amount 0 is derived (SessionResource:53-56) and appears in no message
+  # this scenario sends: charged in full, nothing returned, which is what
+  # TimerExpired means.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_authorized: 100
+      data.credits_charged: 100
+      data.refund_amount: 0

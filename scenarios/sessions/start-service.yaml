@@ -87,6 +87,36 @@ steps:
     payload:
       status: "Accepted"
 
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION, placed BEFORE the teardown on purpose, and it is what makes
+  # this file distinct from the rest of its cluster.
+  #
+  # start-service ends with reason `Local` like session-stop-local,
+  # meter-values-streaming, session-web-payment and session-with-reservation. All
+  # five settle by one rule (TerminalReason::VoluntaryStop, pro-rata) and there is
+  # no end_reason field to separate them, so the money is asserted ONCE, in
+  # session-stop-local. A fifth restatement here would look like a fifth proof
+  # and be the same one.
+  #
+  # What IS specific to this file is ACTIVATION — it is the only scenario whose
+  # subject is the StartService round trip itself. `active` is a state that
+  # exists only between the accepted Response and the SessionEnded below, so the
+  # read-back has to sit here; appended after teardown it would read `completed`
+  # and become the cluster restatement this file is trying not to be.
+  #
+  # Server-derived: SessionStateMachine drives AUTHORIZED -> ACTIVE on the
+  # accepted Response, and nothing this scenario sends carries a status. Before
+  # this, the file asserted only that it had SENT an Accepted Response — which is
+  # its own message, not the server's reaction to it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
   # --- Pool-hygiene teardown: end the session this scenario started so the reused
   #     pooled station is returned clean. Appended after all assertions — does not
   #     change what the scenario tests. (Class: session-leak.)

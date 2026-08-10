@@ -128,3 +128,30 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — and it is weaker than its siblings, which is stated rather
+  # than disguised.
+  #
+  # This file is in the Local cluster (TerminalReason::VoluntaryStop, pro-rata),
+  # so the money is asserted once in session-stop-local and not restated here.
+  # What is nominally specific is the SOURCE: it starts the session with
+  # session_source WebPayment where every sibling uses MobileApp.
+  #
+  # data.source is ECHOED. The scenario supplies "WebPayment" in the start body
+  # and reads the same string back, so this proves the source was PERSISTED and
+  # round-tripped, not that anything about web payment behaved differently. It is
+  # a write-path assertion.
+  #
+  # The field that would make it a real one — sessions.payment_intent_id — is on
+  # the table and is NOT in SessionResource, so the payment binding this file is
+  # named for cannot be read back at all. Recorded rather than approximated.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.source: "WebPayment"

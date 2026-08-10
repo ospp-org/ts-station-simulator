@@ -163,3 +163,46 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — and it CORRECTS the prediction this file was written with.
+  #
+  # The expectation here was 500: the trailing SessionEnded carries
+  # reason "TimerExpired", and TimerExpired routes to fullCharge($authorized),
+  # which on a 300s booking at 100 cr/min is 500. Measured on UAT 2026-08-10 the
+  # server charged 75, so the operator-stop path does NOT take the TimerExpired
+  # arm at all.
+  #
+  # The mechanism, and it is the finding: settlement happens on the STOP, not on
+  # the SessionEnded. This scenario answers POST /sessions/{id}/stop with a
+  # StopService Response carrying actualDurationSeconds 45, and that path settles
+  # PRO-RATA on delivered time — ceil(45/60 * 100) = 75, refund 425. By the time
+  # the SessionEnded arrives the session is already terminal, so its reason never
+  # gets to choose an arm. The wire says TimerExpired and the money says
+  # voluntary stop; the money is what happened.
+  #
+  # So this file is NOT a second copy of the fullCharge arm, which is what it
+  # looked like from its reason literal. It is the operator-stop arm, and the
+  # only file that exercises it. session-timeout-timer-expired remains the
+  # fullCharge proof, and full-session-lifecycle proves that arm scales with the
+  # booked window (60s -> 100, not a constant 500).
+  #
+  # HONESTY: 75 is also the creditsCharged this scenario declares in its
+  # StopService Response, so the figure alone cannot prove the server computed it.
+  # refund_amount 425 is derived (SessionResource:53-56) and appears in no message
+  # this scenario sends — that is the non-echoed half.
+  #
+  # NOT asserted, because it is not exposed: sessions.stop_origin, the column that
+  # records that this stop came from an operator rather than the station. It is on
+  # the table and absent from SessionResource, so the field that would name this
+  # path directly is unreadable.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 75
+      data.refund_amount: 425

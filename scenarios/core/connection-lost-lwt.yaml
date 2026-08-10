@@ -60,3 +60,35 @@ steps:
 
   - action: fault
     type: disconnect
+
+# NO SERVER-STATE ASSERTION — THE LWT EFFECT IS NOT OBSERVABLE IN THIS WINDOW.
+# Attempted, measured, and reverted rather than reshaped into a green.
+#
+# The intended assertion was data.isOnline false after the disconnect:
+# ConnectionLostHandler:69 calls StationOfflineService::markOffline on the Last
+# Will, broker-driven, and an api_call still works after the MQTT link is gone
+# because it is plain HTTP. Measured on UAT 2026-08-10 with a 3000ms settle:
+# isOnline was still TRUE. The station-side close is ungraceful — FaultStep
+# disconnect calls destroyConnection() — so the will should not be suppressed by
+# a clean MQTT DISCONNECT, and two candidate causes remain, neither diagnosable
+# from a scenario:
+#   - the broker had not yet declared the client gone (EMQX publishes the will on
+#     ITS detection, which may wait for keepalive expiry rather than the TCP
+#     reset), or
+#   - the will was published and REJECTED server-side. A ConnectionLost is an
+#     EVENT, and a non-REQUEST that fails version negotiation goes to the DLQ
+#     silently, so a will carrying the wrong protocolVersion would vanish exactly
+#     like this. That failure mode has bitten this message before.
+#
+# WHY NOT JUST WAIT LONGER. isOnline WOULD eventually flip: a second detector,
+# CheckStationHeartbeatsCommand, sweeps every minute for 3.5 x heartbeatIntervalSec
+# of silence (config/ospp.php:163-166, ~105s at 30s) and converges on the same
+# markOffline (StationOfflineService:18). A ~170s delay would therefore turn this
+# file green — while proving the SLOW SWEEP, which is not what a file named
+# connection-lost-lwt is for. It would be a green that asserts the wrong
+# mechanism, and it would hide the very regression it looks like it covers.
+#
+# So: no assertion, and the gap is stated. Closing it needs the LWT path
+# diagnosed server-side (is the will published, and does it survive negotiation),
+# not a scenario edit. If that is fixed, the assertion to add is
+# data.isOnline false after a short settle — and it should stay short on purpose.
