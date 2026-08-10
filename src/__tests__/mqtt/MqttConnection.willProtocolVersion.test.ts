@@ -21,6 +21,7 @@ vi.mock('mqtt', () => ({
 
 const { MqttConnection } = await import('../../mqtt/MqttConnection.js');
 const { OSPP_PROTOCOL_VERSION } = await import('@ospp/protocol');
+const { WIRE_PROTOCOL_VERSION } = await import('../../mqtt/protocolVersion.js');
 
 /**
  * The Last Will is the ONE envelope the station never publishes itself — it is
@@ -82,9 +83,39 @@ describe('MqttConnection — the Last Will carries the CONFIGURED wire protocolV
     expect(sent.protocolVersion).toBe(willEnvelope().protocolVersion);
   });
 
-  it('falls back to the SDK default when the env is unset — unchanged prior behaviour', () => {
+  /**
+   * This assertion used to read `toBe(OSPP_PROTOCOL_VERSION)` and was described as
+   * "unchanged prior behaviour". That is what kept the defect alive: the first fix
+   * routed the will through the resolver but left the unset-env path resolving to
+   * the SDK's 0.2.1, and this test pinned it there. Nothing sets the env — not the
+   * repo .env, not ~/.config/osp-e2e-secrets.env, not config/targets.yaml — so the
+   * unset path is the ONLY path in practice. Re-proved on the wire against UAT on
+   * 2026-08-10: lwt-stn_674b55ca, protocolVersion 0.2.1, dead-lettered.
+   */
+  it('emits the spec wire version when the env is unset — the path that actually runs', () => {
     new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_abc' }).connect();
-    expect(willEnvelope().protocolVersion).toBe(OSPP_PROTOCOL_VERSION);
+    expect(willEnvelope().protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
+    expect(willEnvelope().protocolVersion).not.toBe(OSPP_PROTOCOL_VERSION);
+  });
+
+  it('leaves no silent non-conformant path — both publishers agree with the env unset', async () => {
+    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_abc' });
+    conn.connect();
+
+    const { MessageSender } = await import('../../mqtt/MessageSender.js');
+    let published: string | null = null;
+    const sender = new MessageSender(
+      { publish: async (_t: string, p: string) => { published = p; } } as never,
+      'stn_abc',
+      () => null,
+      'None',
+    );
+    const { OsppAction, MessageType } = await import('@ospp/protocol');
+    await sender.send(OsppAction.HEARTBEAT, MessageType.REQUEST, {});
+
+    const sent = JSON.parse(published as unknown as string) as Record<string, unknown>;
+    expect(sent.protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
+    expect(willEnvelope().protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
   });
 
   it('still builds a conforming will otherwise — source, action and the lwt- id prefix', () => {

@@ -2,12 +2,23 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MessageType, OSPP_PROTOCOL_VERSION, OsppAction } from '@ospp/protocol';
 import { MessageSender } from '../../mqtt/MessageSender.js';
 import type { MqttConnection } from '../../mqtt/MqttConnection.js';
+import { WIRE_PROTOCOL_VERSION } from '../../mqtt/protocolVersion.js';
 
 /*
- * The wire protocolVersion must be OVERRIDABLE, never hardcoded: a local-HEAD cascade negotiates on the
- * SDK default (OSPP_PROTOCOL_VERSION, MAJOR-0, matches dev/testing/prod-example), but the SAME build must
- * be able to target a server pinned to a different MAJOR (e.g. UAT 1.x) via OSPP_PROTOCOL_VERSION — else
- * every message is rejected 1007. These pin all three: default → SDK, explicit override → wire, env → wire.
+ * The wire protocolVersion must be OVERRIDABLE, and its DEFAULT must be conformant.
+ *
+ * The comment this replaces said an unset env "negotiates on the SDK default
+ * (OSPP_PROTOCOL_VERSION, MAJOR-0, matches dev/testing/prod-example)". That is the same
+ * false claim MessageSender.ts already documents: negotiation is EXACT MATCH against a set
+ * (VERSIONING.md:25), the SDK's MAJOR gate isCompatibleWith() was deleted in 0.12.0, and
+ * csms-server's VersionNegotiator never called it. A shared MAJOR has never made 0.2.1
+ * acceptable to a server configured for anything else.
+ *
+ * Leaving the default at the SDK constant is what kept the Last-Will defect alive after it
+ * was "fixed" — nothing in this repo or the e2e env file sets OSPP_PROTOCOL_VERSION, so the
+ * unset path is the only path that runs, and it put 0.2.1 on the wire. Proven against UAT
+ * on 2026-08-10. These pin all three: default → spec wire version, explicit override → wire,
+ * env → wire.
  */
 
 function makeSender(protocolVersion?: string): { sender: MessageSender; published: () => string | null } {
@@ -33,10 +44,13 @@ describe('MessageSender protocolVersion (overridable, not hardcoded)', () => {
     else process.env.OSPP_PROTOCOL_VERSION = previous;
   });
 
-  it('defaults to the SDK OSPP_PROTOCOL_VERSION when nothing overrides it (a local-HEAD cascade negotiates)', async () => {
+  it('defaults to the SPEC wire version when nothing overrides it — not the SDK constant', async () => {
     delete process.env.OSPP_PROTOCOL_VERSION;
     const { sender, published } = makeSender(undefined);
-    expect(await versionOnWire(sender, published)).toBe(OSPP_PROTOCOL_VERSION);
+    expect(await versionOnWire(sender, published)).toBe(WIRE_PROTOCOL_VERSION);
+    // The SDK constant is still 0.2.1 and is NOT conformant on the wire; if this
+    // ever coincides, the SDK default was corrected and WIRE_PROTOCOL_VERSION can go.
+    expect(await versionOnWire(sender, published)).not.toBe(OSPP_PROTOCOL_VERSION);
   });
 
   it('emits an explicit override on the wire (target a server pinned to a different MAJOR, e.g. UAT 1.x)', async () => {
