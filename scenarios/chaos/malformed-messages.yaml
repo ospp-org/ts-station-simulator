@@ -7,19 +7,37 @@ description: "Send messages with minimal and unusual payloads to test server rob
 # expect_invalid: true). The server rejects them at validation and routes them to
 # the dead-letter queue — which is the correct behaviour and the whole subject.
 #
-# Where that is observable, and where it is not:
-#   - No REST route reads the DLQ. There is no admin endpoint for it.
-#   - No Prometheus metric either. /metrics was swept for a dlq series on
-#     2026-08-10 and carries none, so expect_body_text does not reach it despite
-#     unlocking /metrics generally.
+# Where that is observable, and where it is not — RE-MEASURED 2026-08-11, and the
+# reason recorded here on 2026-08-10 was WRONG:
+#   - No REST route reads the DLQ. Still true: routes/ carries the four
+#     mqtt:dlq:* artisan commands' backing class (App\Shared\Protocol\
+#     DeadLetterQueue, which already has all()/at()/count()) and no HTTP route.
+#   - "No Prometheus metric either" was FALSE. UAT /metrics carries three DLQ
+#     series right now — csms_mqtt_queue_depth{queue="dlq"}, and
+#     csms_mqtt_worker_processed_total{outcome="dlq"} / {outcome="hard_fail"}.
+#     The gauge is set by MqttConsume.php:503 on the worker's poll cadence. The
+#     earlier sweep concluded absence; the series were there to be found.
 #   - Nothing comes back on the wire: a rejected EVENT is answered with silence.
 #
-# So the DLQ depth this file moves can only be read by querying the queue out of
-# band — which is how the +2 it contributes to a full run has always been
-# attributed. This file is also WHY that residue accumulates, and that is by
-# design, not a leak to fix.
+# THE CEILING STANDS, FOR A DIFFERENT REASON, and this is the one that matters:
+# all three series are FLEET-WIDE CUMULATIVE with no station or run dimension.
+# `csms_mqtt_queue_depth{queue="dlq"} 25` is every dead letter the deployment has
+# accumulated since the last purge, from every station and every concurrent run.
+# A scenario asserting it is non-zero asserts something that was already true
+# before the scenario started — an assertion that cannot fail, which is what this
+# file exists to avoid. expect_body_text matches substrings; it cannot capture a
+# number, subtract, or compare across two scrapes, so there is no delta form
+# either.
 #
-# Closing it needs a DLQ surface (a metric or an admin read), not a scenario edit.
+# So the DLQ movement this file causes can still only be attributed out of band —
+# which is how the +2 it contributes to a full run has always been accounted. This
+# file is also WHY that residue accumulates, and that is by design, not a leak to
+# fix (docs/DLQ-INVENTORY-20260810.md in csms-server: the records are evidence
+# for four defects and are explicitly not to be drained).
+#
+# Closing it needs a DLQ read SCOPED TO A STATION — the dead-letter wrapper
+# already carries envelope.stationId, so the filter exists in the data. A wider
+# metric does not close it; a narrower read does.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

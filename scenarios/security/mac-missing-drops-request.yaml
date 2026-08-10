@@ -50,12 +50,18 @@ description: "Publish a Heartbeat with no mac field at all on a station that hol
 #
 # The one place the branch IS observable is Prometheus:
 # csms_mqtt_mac_verification_failures_total, labelled by action and reason, which
-# incremented first-ever on 2026-08-10 for exactly these two files. No api_call
-# can assert on it — /metrics is Prometheus text and expect_body calls
-# response.json(). security_events stays 0 here and correctly so: spec 5.7 needs
-# 3 failures per 60s per station, and one probe is under threshold.
+# incremented first-ever on 2026-08-10 for exactly these two files.
+# security_events stays 0 here and correctly so: spec 5.7 needs 3 failures per
+# 60s per station, and one probe is under threshold.
 #
-# Closing this needs a metrics-scrape step in the runner, not a scenario edit.
+# CORRECTED 2026-08-11 — the header title above is now wrong for this file and is
+# kept only because the WIRE half of it still holds. This used to end "No api_call
+# can assert on it — /metrics is Prometheus text and expect_body calls
+# response.json()", and "Closing this needs a metrics-scrape step in the runner,
+# not a scenario edit". The runner grew `expect_body_text`, the scrape was added
+# to this very file at the api_call below, and nobody came back to this
+# paragraph — so the file asserted the thing its own header said was impossible.
+# A ceiling note outlives the ceiling unless something re-reads it.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
