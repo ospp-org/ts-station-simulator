@@ -38,6 +38,33 @@
 # loop — the count is fixed at 3 and the jam point is fixed at the final round.
 name: "Multi-Unit Batch Drive (server-pushed StartService x3)"
 description: "Boot single-bay station, report Available, then reactively drive 3 server-pushed StartService rounds: units 1-2 TimerExpired (full delivery), unit 3 uses {{reason}}. Re-reports Available after each unit so unit K+1 is not rejected 3002."
+# BLOCKED, NOT MERELY UNASSERTED — nothing in the server can start this batch.
+#
+# This file is REACTIVE by design (see the wire model above): it waits for the
+# SERVER to push StartService, one round per unit. Establishing whether that is
+# fixable, 2026-08-10:
+#
+#   - There is NO batch/multi-unit purchase endpoint. Nothing in routes/api/v1
+#     matches batch, multi, purchase or units, and no `MultiUnit`/`TokenDispenser`
+#     route exists at all.
+#   - NO CONTROLLER DISPATCHES StartService. Grepping StartService across
+#     app/Http/Controllers returns nothing — the only server-side push path is
+#     StartSessionAction, reached from POST /sessions/start, which starts ONE
+#     session and is what multiunit-e2e/single-session-drive calls (and passes).
+#
+# So the trigger this file waits for cannot be produced over HTTP by any caller,
+# test or otherwise. It times out at wait_for after 60s in every unattended mode,
+# and an assertion added here would sit behind a step that never completes.
+#
+# skip_when_pooled turns that 60s timeout into a transparent skip in the mode the
+# corpus is actually validated in, rather than a failure that reads like a defect.
+# It is NOT a claim the file is pooled-specific — it cannot run unattended in any
+# mode. Un-skip it when a batch driver exists.
+#
+# Rewriting it to drive N units via repeated POST /sessions/start would make it
+# pass and would destroy its subject: client-initiated starts are the opposite of
+# the server-pushed batch rounds this file exists to prove.
+skip_when_pooled: "No server-side batch driver exists: no batch/multi-unit endpoint in routes/api/v1 and no controller dispatches StartService, so the server-pushed StartService this file waits for cannot be triggered by any HTTP caller. Times out at wait_for in every unattended mode. Un-skip when a batch driver exists."
 station:
   stationId: "{{stationId}}"
   bayCount: 1

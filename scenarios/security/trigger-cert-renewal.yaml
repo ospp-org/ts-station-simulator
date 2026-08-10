@@ -6,6 +6,47 @@ description: >
   this file ENDS at the wait_for below. The renewal round-trip it is named for is unproven;
   only the server-to-station dispatch is.
 
+# NO SERVER-STATE ASSERTION IS POSSIBLE — AND IT IS THE WHOLE BLOCK, NOT JUST INSTALL.
+#
+# certificate-install.yaml already marks the install OUTCOME uncoverable for want
+# of a read endpoint. That was checked here against renewal specifically, because
+# renewal DOES leave state install does not — and the conclusion still holds, for
+# a different reason at each layer. All four checked 2026-08-10:
+#
+#   1. NO ROUTE READS THE certificates TABLE. The table exists and is written
+#      (CertificateManager:269 and :859 insert into it), but across routes/ the
+#      only certificate-adjacent GET in the entire application is
+#      /pki/station-ca.crl. admin.php carries install-certificate,
+#      trigger-cert-renewal and revoke-certificate — three POSTs, no read.
+#   2. THE STATION RESOURCE CARRIES NO CERT FIELDS. GET /admin/stations/{id}
+#      returns id, stationId, locationId, model, vendor, serialNumber,
+#      firmwareVersion, protocolVersion, bayCount, isOnline, isActive, lastSeenAt,
+#      lastBootAt, bootReason, bays, services. Nothing about certificates.
+#   3. THE ONE READ SURFACE IS NOT JSON. Renewal is genuinely different from
+#      install: it RETIRES its predecessor — CertificateManager:44 /:468 set
+#      status='revoked' with REASON_SUPERSEDED_BY_REISSUANCE, and :441-442 says
+#      that set is exactly what CertificateRevocationRepository::revokedSerials()
+#      feeds to CrlGenerator. So a completed renewal is observable, in the CRL.
+#      But CrlController:32-33 serves `Content-Type: application/pkix-crl` — a
+#      binary DER blob. ApiCallStep calls response.json() whenever expect_body is
+#      present, so the CRL is outside expect_body's reach entirely, regardless of
+#      what it contains.
+#   4. AND THIS FILE NEVER GETS THERE ANYWAY. It ends at the wait_for below, as
+#      the description says: no RESPONSE, no CSR, so no certificate is ever
+#      issued and no predecessor is ever superseded. There is nothing to read
+#      even if a JSON surface existed.
+#
+# So the honest verdict for the block: install is uncoverable because nothing
+# records the outcome anywhere readable; renewal is uncoverable because the one
+# thing that WOULD record it is a binary CRL and this scenario stops before
+# reaching it. Different reasons, same answer.
+#
+# Making renewal assertable needs BOTH: scenario mode registering the cert
+# handlers so the CSR round-trip completes (ScenarioRunner.ts:766-769 registers
+# only BootNotificationHandler), and a JSON surface for revoked serials — or an
+# api_call mode that can read a non-JSON body. Two capabilities, neither a
+# scenario edit. The wire-level dispatch this file already asserts is its ceiling.
+#
 # Platform-managed cert lifecycle — platform admin + omit_org_header (NULL team).
 # See certificate-install.yaml for the full rationale.
 auth:
