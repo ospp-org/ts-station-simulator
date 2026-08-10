@@ -71,3 +71,25 @@ steps:
     method: POST
     url: "{{target_url}}/api/v1/sessions/sess_00000099/stop"
     expect_status: 404
+    # This file is NOT a settlement scenario despite living in sessions/ — nothing
+    # here ever starts a session, so there is no terminal state to read back. It
+    # belongs to the rejection pattern, and gets the rejection pattern's assertion.
+    #
+    # 404 alone is weaker than it looks on this endpoint. SessionController::stop
+    # answers 404 SESSION_NOT_FOUND (:119-125) for an unknown id, and the same
+    # controller answers 403 SESSION_MISMATCH for a session owned by someone else —
+    # but a MISSING route, a typo'd path segment, or a station id that fails route
+    # binding would also surface as a 404 carrying no ospp_code at all. Pinning
+    # 3006 proves the request reached the controller and was refused for the
+    # documented reason, rather than never arriving.
+    #
+    # The nuance this file's own header raises, now pinned rather than only
+    # described: 3006 used to be the STATION's rejection code, reached over MQTT.
+    # It is now produced SERVER-SIDE, pre-dispatch, and the station never sees a
+    # StopService Request. Same number, different origin — so the assertion
+    # confirms the pre-validation path, not the station one. The absence of any
+    # StopService on the wire is what distinguishes them, and that absence is not
+    # assertable here (there is no "no message arrived" step); it is a documented
+    # consequence, not a proof.
+    expect_body:
+      error.ospp_code: 3006

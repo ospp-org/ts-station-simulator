@@ -128,3 +128,42 @@ steps:
       programs:
         - programNumber: 1
           available: false
+
+  # THE ASSERTION. Fault is the only settlement arm that lands in a DIFFERENT
+  # terminal STATE, and that is what separates it from its siblings.
+  #
+  #   status failed        — not `completed`. SessionEndedHandler:95-102 forks Fault
+  #                          to TerminalReason::Fault down the fail path, while
+  #                          LocalOutOfCredit reaches the same credits_charged 0 via
+  #                          `completed`. Without this field the two are identical
+  #                          on the wire; with it they are unambiguous.
+  #   credits_charged 0    — Fault carries the low-delivery floor
+  #                          (TerminalReason::appliesLowDeliveryFloor():100 lists
+  #                          Fault, BayFault, ForceFailedReboot and nothing else).
+  #                          1 delivered second out of 300 is below the floor, so
+  #                          the pro-rata bill collapses to a full refund. The
+  #                          identical-input sibling session-stop-local, whose
+  #                          VoluntaryStop does NOT carry the floor, is charged 4
+  #                          for 2 seconds — same strategy, same tariff, different
+  #                          floor, visibly different money.
+  #   fail_reason          — server-composed, not echoed: the station sends
+  #                          `reason: "Fault"`, and the string persisted is
+  #                          "SessionEnded: hardware fault".
+  #
+  # NOT asserted: fail_error_code. It is null here — present in the body because
+  # SessionResource:64-67 wraps it in $this->when(status === FAILED) and the status
+  # IS failed, but carrying no value, because this fail path sets a reason string
+  # and no code. Asserting null would pass; it would just assert nothing about the
+  # fault. Measured on UAT 2026-08-10.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.credits_charged: 0
+      data.refund_amount: 500
+      data.fail_reason: "SessionEnded: hardware fault"

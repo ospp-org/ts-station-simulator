@@ -183,3 +183,33 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # THE ASSERTION. LocalOutOfCredit is NOT billed pro-rata despite having
+  # delivered service: UserDurationStrategy:42-46 groups it with Deauthorized and
+  # NeverStarted under SettlementResult::fullRefund($authorized) — "not billable
+  # regardless of elapsed". So 2 delivered seconds are charged NOTHING, where the
+  # identical-input sibling session-stop-local is charged 4 for the same 2
+  # seconds. That difference is the whole content of this file.
+  #
+  # data.status `completed` is what separates this from
+  # session-fault-during-service, which also settles to credits_charged 0 and
+  # refund 500 but lands in `failed`. Without status the two bodies are identical
+  # on every asserted field, so dropping it would collapse two distinct rule arms
+  # into one indistinguishable assertion.
+  #
+  # HONESTY ABOUT credits_charged 0: this scenario's SessionEnded also declares
+  # `creditsCharged: 0`, so that field coincides with the station's literal and
+  # cannot by itself prove the server computed anything. data.refund_amount 500
+  # is the non-echoed half — derived by SessionResource:53-56 and present in no
+  # message this scenario sends. Measured on UAT 2026-08-10.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 0
+      data.refund_amount: 500

@@ -142,3 +142,51 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # THE ASSERTION, and the strongest non-echoed one in the sessions suite.
+  #
+  # This scenario's SessionEnded declares `creditsCharged: 4`. The server recorded
+  # 500. It does not take the station's number: UserDurationStrategy:38-40 routes
+  # TimerExpired to SettlementResult::fullCharge($authorized), so a session that
+  # ran its booked window is billed the whole window — 300s at 100 cr/min = 500 —
+  # no matter what the station claims or how little time actually elapsed
+  # (duration_actual here is 2, and it changes nothing).
+  #
+  # That gap between 4 and 500 is what makes this assertion worth having. It is
+  # impossible to satisfy by echoing the scenario's own literal, and it pins the
+  # rule that decides real money on the full-charge path.
+  #
+  # data.refund_amount is derived, not stored — SessionResource:53-56 computes
+  # credits_authorized - credits_charged. Pinning 0 says the customer was charged
+  # in full with nothing returned, which is the whole meaning of TimerExpired.
+  #
+  # NOT ASSERTED, and marked rather than approximated: that fail_error_code is
+  # ABSENT. A completed session should carry no failure code, and that is a real
+  # property worth pinning — SessionResource:60-67 wraps both fail_reason and
+  # fail_error_code in $this->when(status === FAILED), so on this body neither key
+  # exists at all. expect_body cannot express that: an unmatched path resolves to
+  # `undefined`, a YAML null is `null`, and the comparison is `got === want`, so
+  # `data.fail_error_code: null` would FAIL against this correct response.
+  #
+  # The adjacent assertion that would have "worked" is asserting status
+  # `completed` and calling it equivalent. It is not — status is already asserted
+  # above for its own reasons, and it does not say that the failure fields are
+  # gone. Closing this properly needs an expect_body_absent list in the runner;
+  # until then the gap is named here rather than papered over.
+  #
+  # Measured on UAT 2026-08-10. The sibling rule arms are covered by
+  # session-stop-local (pro-rata), session-local-out-of-credit (full refund) and
+  # session-fault-during-service (fault -> failed); all four run identical inputs —
+  # duration_requested 300, credits_authorized 500 — so the ONLY variable across
+  # them is the settlement rule. That is deliberate and should be preserved.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 500
+      data.refund_amount: 0

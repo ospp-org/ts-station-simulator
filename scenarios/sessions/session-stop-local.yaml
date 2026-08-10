@@ -142,3 +142,44 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # THE ASSERTION — and this file is the CANONICAL member of a five-file cluster,
+  # which is the more important thing it records.
+  #
+  # meter-values-streaming, session-web-payment, session-with-reservation and
+  # start-service all end with reason `Local` exactly as this one does. `Local`
+  # maps to TerminalReason::VoluntaryStop, which UserDurationStrategy:56-62
+  # settles pro-rata with no low-delivery floor. There is no `end_reason` column
+  # and no end-reason field on SessionResource, so on GET /sessions/{id} those
+  # five sessions are DISTINGUISHABLE ONLY BY AMOUNT — and the amount follows
+  # from duration_actual, which each scenario supplies itself.
+  #
+  # So the settlement rule is asserted ONCE, here, rather than copied five times.
+  # The other four assert what is actually specific to them (their reservation
+  # binding, their payment source, their meter values), not a fifth restatement
+  # of this rule. Five identical assertions would look like five proofs and be
+  # one.
+  #
+  # HONESTY ABOUT credits_charged 4. The server computes it —
+  # RefundCalculator on 2 delivered seconds of 300 at 100 cr/min, ceil(2/60 * 100)
+  # = 4 — but this scenario's SessionEnded also declares `creditsCharged: 4`, so
+  # the two COINCIDE and this field alone cannot prove the server ignored the
+  # station. It is asserted because it is the correct value, not because it
+  # discriminates. The file that proves the settlement authority overrides the
+  # station is session-timeout-timer-expired, where the station says 4 and the
+  # server records 500.
+  #
+  # data.refund_amount 496 is derived (SessionResource:53-56,
+  # credits_authorized - credits_charged) and appears in no message this scenario
+  # sends, so it is genuinely server-produced. Measured on UAT 2026-08-10.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 4
+      data.refund_amount: 496
