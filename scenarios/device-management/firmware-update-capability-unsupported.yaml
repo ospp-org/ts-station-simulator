@@ -1,14 +1,17 @@
-name: "Firmware Update — Capability Not Supported (6008, pre-flight REST rejection)"
+name: "Firmware Update — Capability Not Supported (2007, pre-flight REST rejection)"
 description: >
   OBSERVATION INSTRUMENT (not RED-first). A station boots advertising
   deviceManagementSupported:false. When the operator triggers UpdateFirmware via the
   admin REST API, csms pre-flight check 3 (InitiateFirmwareUpdateAction.php:72) rejects
-  the request SERVER-SIDE before any MQTT command is dispatched, returning HTTP 422 with
-  ospp_code 6008 CAPABILITY_NOT_SUPPORTED to the OPERATOR (server->operator). Nothing
-  reaches the station on the wire. This documents the REAL direction: 6008 is an
-  operator-facing HTTP error, NOT a server->station wire code. 6008 is absent from spec +
-  sdk-ts; the canonical spec code for "command not supported" is 2007 (blanket-implicit
-  for all Server->Station REQUESTs, 07-errors.md:399).
+  the request SERVER-SIDE before any MQTT command is dispatched, returning HTTP 422 to the
+  OPERATOR (server->operator). Nothing reaches the station on the wire. CORRECTED
+  2026-08-10: this file previously documented ospp_code 6008 CAPABILITY_NOT_SUPPORTED in
+  its name, here, and in the sample body below. The server answers 2007
+  COMMAND_NOT_SUPPORTED, measured on UAT. The claim survived because it lived in prose
+  beside an unasserted capture; it is now pinned by expect_body. Note the file already
+  observed that 6008 is absent from spec + sdk-ts and that 2007 is the canonical code for
+  "command not supported" (07-errors.md:399) — it drew the right conclusion about the
+  spec and the wrong one about this server.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -65,7 +68,7 @@ steps:
   #    Pre-flight checks: 1 exists (pass), 2 online (pass — just booted), 3 capability
   #    (FAIL: device_management_supported === false) -> throw CAPABILITY_NOT_SUPPORTED.
   #    Global OsppException render handler (bootstrap/app.php:96) -> HTTP 422 JSON:
-  #      { "error": { "code": "...", "ospp_code": 6008, "message": "Station does not support device management" } }
+  #      { "error": { "code": "COMMAND_NOT_SUPPORTED", "ospp_code": 2007, "message": "Station does not support device management" } }
   #    The MQTT sendCommand (InitiateFirmwareUpdateAction.php:158) is NEVER reached.
   - action: api_call
     method: POST
@@ -76,9 +79,29 @@ steps:
       checksum: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       signature: "MEUCIQDexample"
     expect_status: 422                     # <-- the operator-facing pre-flight rejection (NOT 202)
+    # The file already said "expect 6008" — in a comment, next to a CAPTURE. A
+    # capture stores a value; it never compares it, so the expectation was written
+    # down and never checked, and any 422 satisfied this step.
+    #
+    # It was also WRONG, which is the part that makes the point. Measured on UAT
+    # 2026-08-10 the server answers 2007 COMMAND_NOT_SUPPORTED, "Station does not
+    # support device management" — not 6008. The comment had been sitting beside
+    # an unasserted capture long enough that nobody found out.
+    #
+    # 2007 is the CORRECT answer, not a defect: this station declares
+    # deviceManagementSupported false on purpose (see the boot above), so the
+    # firmware request is refused at the device-management gate before any
+    # firmware-specific capability check runs. That is what this file exercises,
+    # and the name reads slightly wider than the behaviour.
+    #
+    # Pinning it matters because 422 is the generic validation status here — a
+    # malformed firmwareUrl, a bad checksum or a missing signature all produce one
+    # too, and each would let this file pass while the capability gate never ran.
+    expect_body:
+      error.ospp_code: 2007
     capture:
-      ospp_code: "error.ospp_code"         # expect 6008
-      error_code: "error.code"             # expect CAPABILITY_NOT_SUPPORTED
+      ospp_code: "error.ospp_code"
+      error_code: "error.code"             # COMMAND_NOT_SUPPORTED (measured)
       error_message: "error.message"       # expect "Station does not support device management"
 
   # 3. NO wait_for UpdateFirmware on the wire: csms dispatched nothing for a
