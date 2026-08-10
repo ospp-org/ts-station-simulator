@@ -550,6 +550,14 @@ export function generateVariables(
   // downstream failure against a grant the server never issued.
   vars.set('runOfflineTxId', generateOfflineTxId());
 
+  // Indexed siblings, for a scenario that reconciles SEVERAL transactions in one run and
+  // needs them distinct from each other as well as from every previous run —
+  // security/offline-fraud-rapid-transactions.yaml sends five. Eight is headroom, not a
+  // measured limit; add more here rather than hardcoding a literal in a scenario.
+  for (let i = 1; i <= 8; i++) {
+    vars.set(`runOfflineTxId_${i}`, generateOfflineTxId());
+  }
+
   const bayCount = scenarioDef.station.bayCount;
   for (let i = 1; i <= bayCount; i++) {
     vars.set(`bayId_${i}`, generateBayId());

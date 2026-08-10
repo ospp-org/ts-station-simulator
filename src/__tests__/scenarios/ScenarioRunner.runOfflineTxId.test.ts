@@ -94,3 +94,35 @@ describe('the scenario that was poisoned', () => {
     expect(payloadIds[0].trim()).toBe(payloadIds[1].trim());
   });
 });
+
+describe('indexed runOfflineTxId_N — for a scenario reconciling several in one run', () => {
+  it('exposes 1..8, all schema-shaped and all distinct from each other and from runOfflineTxId', () => {
+    const vars = generateVariables(scenario(), TARGET);
+    const ids = Array.from({ length: 8 }, (_, i) => vars.get(`runOfflineTxId_${i + 1}`));
+
+    for (const id of ids) expect(id).toMatch(OFFLINE_TX_ID);
+    expect(new Set([...ids, vars.get('runOfflineTxId')]).size).toBe(9);
+  });
+
+  it('the fraud scenario uses five of them and hardcodes none', () => {
+    const lines = fs.readFileSync(
+      path.resolve('scenarios/security/offline-fraud-rapid-transactions.yaml'), 'utf8')
+      .split('\n').filter(l => /^\s*offlineTxId:/.test(l));
+
+    expect(lines).toHaveLength(5);
+    lines.forEach((l, i) => expect(l).toContain(`{{runOfflineTxId_${i + 1}}}`));
+    // The literals that poisoned it: otx_aa00000001..5, reconciled 2026-08-07.
+    for (const l of lines) expect(l).not.toMatch(/otx_[a-f0-9]{8,}/);
+  });
+
+  it('and it now asserts every TransactionEvent response, not just the boot', () => {
+    const src = fs.readFileSync(
+      path.resolve('scenarios/security/offline-fraud-rapid-transactions.yaml'), 'utf8');
+    const sends = (src.match(/^\s*message: TransactionEvent$/gm) ?? []).length;
+    const statusAsserts = (src.match(/field: "payload\.status"/g) ?? []).length;
+
+    // 5 sends + 5 response waits = 10 mentions; 5 tx asserts + 1 boot assert = 6.
+    expect(sends).toBe(10);
+    expect(statusAsserts).toBe(6);
+  });
+});
