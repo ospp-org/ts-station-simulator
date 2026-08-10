@@ -29,13 +29,27 @@
 #   described "auto-injected seqNo 0..4" / "0,1,2" and actually published
 #   MeterValues with NO seqNo at all, so `if ($dto->seqNo !== null)` skipped the
 #   whole block and the server's sequence logic never ran. Both went green for it.
-#   RESOLVED 2026-08-10: session-final-seqno-terminal.yaml now sends explicit
-#   seqNo AND the StopService Response that writes final_seq_no, and asserts the
-#   discard against the server-written meter_values collection.
-#   session-seqno-monotonic.yaml was DELETED — its only distinguishing claim was
-#   the auto-injection, and the clean monotonic ingest it nominally covered is
-#   asserted by sessions/meter-values-seqno-out-of-order-still-ingested.yaml
-#   (indices 0-2, energy_wh 10/20/30).
+#   RESOLVED 2026-08-10 — both DELETED, for different reasons.
+#   session-seqno-monotonic.yaml: its only distinguishing claim was the auto-injection;
+#   the clean monotonic ingest it nominally covered is asserted by
+#   meter-values-seqno-out-of-order-still-ingested.yaml (indices 0-2, energy_wh 10/20/30).
+#   session-final-seqno-terminal.yaml: a rewrite was attempted and RUN on UAT, and the wire
+#   disproved it. Writing final_seq_no from a scenario works (an explicit StopService Response
+#   carrying finalSeqNo=3 produced sessions.final_seq_no=3, measured). But the DISCARD it
+#   exists to prove is not observable from any scenario:
+#     - final_seq_no is written ONLY by CompleteSessionAction:137 / FailSessionAction:139,
+#       each in the same update that makes the session terminal — it never coexists with an
+#       active session;
+#     - MeterValueCollector.php:29 refuses to persist for any status outside
+#       {AUTHORIZED, ACTIVE, STOPPING}, so once final_seq_no exists EVERY frame is dropped
+#       there anyway, discarded-by-seqNo or not. The meter_values row count cannot tell the
+#       two apart (measured: the control frame at seqNo == finalSeqNo advanced
+#       sessions.last_seq_no to 3 and still wrote NO row);
+#     - the only discriminating state — sessions.last_seq_no and requires_reconciliation —
+#       is exposed by NO HTTP resource (grep over app/Http returns nothing).
+#   So the branch is real server behaviour with no scenario-reachable observable. Testing it
+#   would need csms-server to expose last_seq_no (or requires_reconciliation) on the session
+#   resource; until then any such file can only decorate.
 #
 # WHAT IS ASSERTED — and the branch's own effect is NOT assertable
 #   The gap branch produces exactly two things: a log line, and

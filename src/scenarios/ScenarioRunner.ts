@@ -34,11 +34,26 @@ import type { StationPool, PoolEntry } from './stations/StationPool.js';
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Wall-clock budget for ONE scenario before the runner abandons it and moves on.
+ * Measured from the 2026-08-10 116-scenario run, not guessed — see runScenarioBounded.
+ * 90s clears the 60.8s band (a scenario exhausting its own 60s `wait_for` must report its
+ * own error, not ours) and sits ~6x above the 14.4s slowest successful scenario.
+ */
+export const DEFAULT_SCENARIO_TIMEOUT_MS = 90_000;
+
 export interface ScenarioDefinition {
   name: string;
   target_url?: string;
   skip?: boolean;
   skip_reason?: string;
+  /**
+   * Override the per-scenario wall-clock budget (ms). Only for a scenario whose slowness is
+   * DELIBERATE — arc8-reconnect-preserve holds a connection past the server's 300s recovery
+   * deadline and legitimately runs ~348s. Raising this to paper over a scenario that hangs
+   * for an unknown reason is the failure this whole mechanism exists to surface.
+   */
+  scenario_timeout_ms?: number;
   /**
    * Conditional skip: when set AND the run is a `--bootstrap-pool` run, the scenario is
    * skipped with this reason (status 'skipped' — never failed/passed). For scenarios that are
@@ -1089,6 +1104,74 @@ export class ScenarioRunner {
     };
   }
 
+  /**
+   * `runScenario` under a wall-clock bound, so one blocked scenario cannot cost the run.
+   *
+   * There is no per-step watchdog anywhere below this: a step awaiting something that never
+   * arrives blocks forever, and because verdicts are only printed by the final report, ONE
+   * such scenario destroys all 113 other results. That happened on the 2026-08-10 full run —
+   * the log went silent for ~5 minutes and the run was nearly killed; it turned out to be a
+   * slow scenario, but nothing structural distinguished the two cases.
+   *
+   * The bound is measured, not guessed — from the 116-scenario run of 2026-08-10:
+   *   - slowest SUCCESSFUL scenario, excluding the deliberate outlier:  14.4s (Hard Reset)
+   *   - slowest scenario overall, excluding the outlier:                60.8s — and those two
+   *     (multiunit-*-drive) spend it inside their own `wait_for … timeout_ms: 60000`
+   *   - the deliberate outlier: arc8-reconnect-preserve at 347.8s, which by design holds a
+   *     connection past the server's 300s offline-recovery deadline
+   * DEFAULT_SCENARIO_TIMEOUT_MS sits above the 60.8s band so a scenario that legitimately
+   * exhausts a 60s `wait_for` still reports ITS OWN error rather than being masked by ours,
+   * and ~6x above the real success ceiling. arc8 carries `scenario_timeout_ms` of its own.
+   *
+   * HONEST LIMIT: a JS promise cannot be cancelled. On timeout we return a failed result and
+   * let the run continue, but the orphaned scenario keeps running; its own `finally` still
+   * disconnects the station and releases it back to the pool, just later than the report
+   * suggests. We attach a no-op catch so an eventual rejection cannot surface as an unhandled
+   * rejection and kill the process. Bounding the RUN is the goal; reclaiming the station
+   * promptly would need cancellation plumbed through every step.
+   */
+  private async runScenarioBounded(
+    scenario: ScenarioDefinition,
+    target: TargetConfig,
+    userVars?: Map<string, string>,
+  ): Promise<ScenarioResult> {
+    const budgetMs = scenario.scenario_timeout_ms ?? DEFAULT_SCENARIO_TIMEOUT_MS;
+    const startTime = Date.now();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const running = this.runScenario(scenario, target, userVars);
+
+    const timeout = new Promise<ScenarioResult>(resolve => {
+      timer = setTimeout(() => {
+        resolve({
+          name: scenario.name,
+          status: 'failed',
+          durationMs: Date.now() - startTime,
+          steps: [{
+            stepIndex: -1,
+            action: 'scenario',
+            status: 'failed',
+            durationMs: Date.now() - startTime,
+            error:
+              `Scenario exceeded its ${budgetMs}ms budget and was abandoned so the run could ` +
+              `continue. This is the RUNNER giving up, not an assertion failing — the scenario ` +
+              `was still blocked on whatever its last step awaited. Raise it for this file with ` +
+              `\`scenario_timeout_ms:\` if the wait is legitimate, or fix the step that hangs.`,
+          }],
+        });
+      }, budgetMs);
+    });
+
+    try {
+      // Whichever settles first wins; the loser is neutralised below.
+      return await Promise.race([running, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      // If the timeout won, `running` is orphaned — never let it reject into the void.
+      void running.catch(() => undefined);
+    }
+  }
+
   async runScenario(
     scenario: ScenarioDefinition,
     target: TargetConfig,
@@ -1396,7 +1479,7 @@ export class ScenarioRunner {
       if (i > 0 && cooldownMs > 0) {
         await new Promise<void>(r => setTimeout(r, cooldownMs));
       }
-      const result = await this.runScenario(scenarios[i], target, options.userVars);
+      const result = await this.runScenarioBounded(scenarios[i], target, options.userVars);
       results.push(result);
     }
     return results;
@@ -1413,7 +1496,7 @@ export class ScenarioRunner {
     const tasks = scenarios.map(async (scenario) => {
       await semaphore.acquire();
       try {
-        return await this.runScenario(scenario, target, userVars);
+        return await this.runScenarioBounded(scenario, target, userVars);
       } finally {
         semaphore.release();
       }

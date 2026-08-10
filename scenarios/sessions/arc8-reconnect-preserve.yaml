@@ -8,6 +8,11 @@
 # 5s auto-reconnect cancels the real 10s-delayed will, so we reproduce the exact
 # message the will would publish (same action/handler path) to arm the recovery
 # timer, then reconnect with a session-spanning uptime.
+# Deliberately the slowest file in the corpus: it holds a connection past the server's
+# 300s offline-recovery deadline, and measured 347.8s on the 2026-08-10 run. That is
+# well over the 90s default budget (ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS), so it
+# declares its own. This is the ONLY legitimate reason to raise it.
+scenario_timeout_ms: 600000
 name: "ARC8 reconnect preserve (uptime continuity, past 300s)"
 description: "Boot(uptime huge) -> start session -> inject ConnectionLost -> reconnect Boot(uptime huge) -> hold connected past the 300s recovery deadline. Session must stay ACTIVE, no refund."
 tls:

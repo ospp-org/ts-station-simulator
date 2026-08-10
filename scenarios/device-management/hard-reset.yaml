@@ -34,6 +34,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
+        # device_management_supported === true, and NULL is "not stated" and withheld too
+        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
+        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -53,16 +59,27 @@ steps:
       type: "Hard"
     expect_status: 202
 
-  # No handler answers this — scenario mode registers none. The Reset REQUEST is observed
-  # and left unanswered (see the KNOWN GAP in the description).
   - action: wait_for
     message: Reset
     messageType: Request
     timeout_ms: 15000
 
-  # A plain wait on a still-connected station. Nothing disconnects or reconnects here.
+  # ANSWER IT. Scenario mode registers no ResetHandler, so if this file does not send the
+  # Response nobody does: the server's pending command is left to expire on its Redis TTL
+  # and the round trip the file is named for never completes.
+  # Note what this Response does and does not leave behind — ResetResponseHandler resolves
+  # the pending command, logs, and dispatches StationReset, which has ZERO listeners. So the
+  # Response itself writes NOTHING queryable; what is assertable is the post-reset boot below.
+  - action: send
+    message: Reset
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # Brief settle only. The old 13s here was budgeted for a handler delay + disconnect +
+  # reconnect that scenario mode never performs; the station stays connected throughout.
   - action: delay
-    ms: 13000
+    ms: 500
 
   # Per spec reset.md §5.4-5, station MUST send BootNotification post-reset.
   # autoBoot was removed from sim (commit ac9b2e8) — scenarios must send explicitly.
@@ -82,11 +99,17 @@ steps:
       uptimeSeconds: 0
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "ManualReset"
+      bootReason: "RemoteReset"
       capabilities:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
+        # device_management_supported === true, and NULL is "not stated" and withheld too
+        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
+        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -98,3 +121,17 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # THE ASSERTION, server-recorded. The post-reset boot must be attributed to the reset:
+  # BootNotificationHandler persists boot_reason, and Admin\StationResource:32-33 /
+  # StationManagementController:264-265 expose it. If the Reset round trip above had not
+  # completed, or the station had not re-booted, this reads the earlier PowerOn instead.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bootReason: "RemoteReset"

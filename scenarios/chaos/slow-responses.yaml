@@ -1,13 +1,14 @@
 name: "Slow Responses"
 description: >
-  KNOWN GAP — does NOT currently test what its name says. `behavior.response_delay_ms`
-  is inert: its only reader is src/auto-responder/AutoResponder.ts:20,26, which has zero
-  production importers (scenario mode registers only BootNotificationHandler, autoReact=false,
-  ScenarioRunner.ts:766-769). SendStep.execute publishes immediately (SendStep.ts:368), so every
-  Response below goes out in ~0ms and the server never sees a slow station. What this file
-  actually exercises is an ordinary round-trip. To make it real the delays must be explicit
-  `action: delay` steps BEFORE each Response send. Not done here because it needs a wire run
-  to confirm the server-side timeout it is supposed to probe.
+  A station that takes ~3.5s to answer StartService is still served: the server holds the
+  pending command, accepts the late Response, and the session reaches `active`.
+  The slowness is produced by explicit `action: delay` steps before each Response — NOT by
+  `behavior.response_delay_ms`, which is inert. That field's only reader is
+  src/auto-responder/AutoResponder.ts, which has zero production importers, and scenario mode
+  registers no auto-responder at all (ScenarioRunner.ts:766-769, BootNotificationHandler with
+  autoReact=false); SendStep publishes immediately (SendStep.ts:368). Until 2026-08-10 this
+  file rested on that field and therefore measured an ordinary round-trip while claiming to
+  test a slow station. It is left declared below only because every scenario declares it.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -89,12 +90,30 @@ steps:
       bayId: "payload.bayId"
       serviceId: "payload.serviceId"
 
-  # --- Accept StartService. NOT delayed (response_delay_ms is inert — see description). ---
+  # --- THE SLOW RESPONSE. 3.5s sits inside the [3000,5000] band this file always claimed
+  #     to apply, and is produced by a step rather than by inert config. ---
+  - action: delay
+    ms: 3500
+
   - action: send
     message: StartService
     messageType: Response
     payload:
       status: "Accepted"
+
+  # --- THE ASSERTION, server-produced. If the server had timed out the pending StartService
+  #     or refused the late Response, the session would not be `active`. Reading it back off
+  #     GET /sessions/{id} is what makes the delay above load-bearing: remove the delay and
+  #     this still passes, but remove the SERVER's tolerance and it does not. ---
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
 
   # --- Pool-hygiene teardown: end the session this scenario started so the reused
   #     pooled station is returned clean. Appended after all assertions — does not
