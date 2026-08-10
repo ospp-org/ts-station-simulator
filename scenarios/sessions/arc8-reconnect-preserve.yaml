@@ -163,3 +163,39 @@ steps:
   - { action: delay, ms: 28000 }
   - { action: send, message: Heartbeat, messageType: Request }
   - { action: delay, ms: 28000 }
+
+  - action: delay
+    ms: 1000
+
+  # THE ASSERTION — its own description, finally checked: "Session must stay
+  # ACTIVE, no refund."
+  #
+  # This file was previously recorded as being at its limit. That was WRONG, and
+  # the mistake is worth naming: it is the slowest and most elaborate file in the
+  # corpus (347.8s, its own 600s budget, three preserve layers), and the effort
+  # visible in its header read as thoroughness. It held a connection past the
+  # server's 300s offline-recovery deadline and then asserted nothing about what
+  # the server did with the session — which is the entire point of holding it.
+  #
+  #   data.status active — the session survived BOTH layers. Layer 1 is the
+  #       reconnect Boot's uptime-continuity preserve; Layer 3 is the
+  #       offline-recovery timer declining to fail a station that is back online
+  #       when it fires. Between them sits the injected ConnectionLost that arms
+  #       that timer. A failure at either layer lands here as `failed`.
+  #   data.credits_charged 0 / refund_amount 1000 — "no refund" is the claim, and
+  #       it means the customer has not yet been billed OR refunded: the session
+  #       is still running, so nothing is settled. 1000 authorized on a 600s
+  #       booking — ten minutes at 100 cr/min — none of it charged. (Measured:
+  #       written as 600 first, from reading the duration as if it were credits.) A force-fail would have
+  #       settled it, so these two are what distinguish "still active" from
+  #       "failed and refunded" — which is exactly the harm ARC 8 exists to
+  #       prevent, and the shape a bare status assertion would miss if the server
+  #       ever settled a session it left nominally active.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+      data.credits_charged: 0
+      data.refund_amount: 1000
