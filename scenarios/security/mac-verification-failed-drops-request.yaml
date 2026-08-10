@@ -46,6 +46,22 @@
 #   gate is off, not that the server is broken.
 name: "MAC Verification Failed Drops Request"
 description: "Publish a Heartbeat whose mac has one flipped bit. The server must refuse it silently; a clean Heartbeat on the same connection must still be answered."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — MAC FAILURES ARE WIRE-SILENT BY DESIGN.
+# VerifyIncomingMiddleware ends in rejected() -> MessageDispatcher:169 `return
+# null`: no error Response is published, the connection is not dropped, and the
+# worker records the message as handled. A REQUEST or RESPONSE simply vanishes;
+# an EVENT goes to the DLQ, also silently. There is nothing on the wire to
+# wait_for and nothing in a table to read — the SILENCE is the behaviour, which
+# is why this file asserts the absence of a reply rather than the presence of one.
+#
+# The one place the branch IS observable is Prometheus:
+# csms_mqtt_mac_verification_failures_total, labelled by action and reason, which
+# incremented first-ever on 2026-08-10 for exactly these two files. No api_call
+# can assert on it — /metrics is Prometheus text and expect_body calls
+# response.json(). security_events stays 0 here and correctly so: spec 5.7 needs
+# 3 failures per 60s per station, and one probe is under threshold.
+#
+# Closing this needs a metrics-scrape step in the runner, not a scenario edit.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

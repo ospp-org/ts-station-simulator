@@ -43,6 +43,18 @@ tls:
   max_version: "TLSv1.2"
 expect_connect_failure: true
 expect_refusal_reason: broker-certificate-revoked
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
+# This file's subject is whether the BROKER completes or refuses a TLS
+# connection, and that is decided before any OSPP message exists. A refused
+# handshake never reaches the application: no row is written, no counter moves,
+# no REST surface records it. An ACCEPTED one is proven by the negotiated
+# protocol version, which is visible only on the client socket.
+#
+# The runner already carries the right instruments and they are the assertions
+# here: expect_connect_failure for the refusal arm, and expect_refusal_reason to
+# pin WHY it was refused (ADR-0005 §7 invariant 6) — which is what stops a
+# client-side TLS-version error or a bounded timeout from satisfying a
+# broker-side mTLS or CRL proof. expect_body has nothing to attach to.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

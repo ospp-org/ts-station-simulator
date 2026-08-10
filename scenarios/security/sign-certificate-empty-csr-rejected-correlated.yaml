@@ -1,5 +1,15 @@
 name: "SignCertificate Rejected (empty CSR) — correlation regression guard"
 description: "Boot, then send SignCertificate Request with an empty CSR. Server's SignCertificateHandler must reject AND echo the inbound messageId on the Response. Regression guard for fix at csms-server@406925b (SignCertificate Response correlation — 3 call sites)."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — A REJECTED CSR WRITES NOTHING.
+# The subject is that a malformed/empty CSR is refused AND that the refusal is
+# CORRELATED to the request that caused it. Both are wire properties, and both
+# are already asserted: the server-produced errorCode 1005 / errorText
+# INVALID_MESSAGE_FORMAT on the Response, plus the messageId match the runner
+# performs when pairing a Response to its Request.
+#
+# No certificate row exists for a CSR that was never signed — and no route reads
+# the certificates table in any case; see trigger-cert-renewal.yaml for that
+# survey. The wire assertion is the complete observable, not a partial one.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

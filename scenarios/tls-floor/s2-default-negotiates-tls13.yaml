@@ -16,6 +16,18 @@
 # the deploy step.
 name: "TLS floor S2 — default negotiates TLS 1.3"
 description: "Client applies no TLS version pin (default posture). Connect, then ASSERT the negotiated protocol is TLSv1.3 — proves the broker floor change (1.3-only -> 1.2+) does not downgrade a client that can speak 1.3."
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
+# This file's subject is whether the BROKER completes or refuses a TLS
+# connection, and that is decided before any OSPP message exists. A refused
+# handshake never reaches the application: no row is written, no counter moves,
+# no REST surface records it. An ACCEPTED one is proven by the negotiated
+# protocol version, which is visible only on the client socket.
+#
+# The runner already carries the right instruments and they are the assertions
+# here: expect_connect_failure for the refusal arm, and expect_refusal_reason to
+# pin WHY it was refused (ADR-0005 §7 invariant 6) — which is what stops a
+# client-side TLS-version error or a bounded timeout from satisfying a
+# broker-side mTLS or CRL proof. expect_body has nothing to attach to.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
