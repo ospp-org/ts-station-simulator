@@ -75,3 +75,7 @@ steps:
     expect_body:
       data.bootReason: "FirmwareUpdate"
       data.firmwareVersion: "2.0.0"
+      # Bounded, not equated — see happy-boot.yaml for what a recency bound proves
+      # and what it does not.
+      data.lastBootAt:
+        is_recent: 300

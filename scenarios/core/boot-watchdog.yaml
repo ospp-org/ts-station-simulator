@@ -81,3 +81,10 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "Watchdog"
+      # Bounded, not equated — see happy-boot.yaml for the full statement of what
+      # a recency bound proves here and what it does not. In short: the column was
+      # written and is current, which a null or a frozen clock is not; it does not
+      # prove the write came from THIS boot, and a single-boot file has no server
+      # instant to anchor a not_before on.
+      data.lastBootAt:
+        is_recent: 300

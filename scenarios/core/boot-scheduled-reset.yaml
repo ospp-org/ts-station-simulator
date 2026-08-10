@@ -68,3 +68,10 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "ScheduledReset"
+      # Bounded, not equated — see happy-boot.yaml. Worth one extra note here: the
+      # boot reports uptimeSeconds 86400, and last_boot_at is `now()` regardless
+      # (BootNotificationHandler.php:217). The server does not derive the column
+      # from the station's self-reported uptime, so a 24h uptime does NOT make
+      # this timestamp a day old — if it ever does, this bound is what says so.
+      data.lastBootAt:
+        is_recent: 300

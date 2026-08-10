@@ -88,10 +88,27 @@ steps:
   #                      proves nothing behavioural: nothing in the server
   #                      branches on the persisted column.
   #
-  # NOT asserted: data.lastBootAt and data.lastSeenAt, both of which this boot
-  # does move. They are timestamps the scenario cannot predict, and expect_body
-  # compares by equality with no is-recent form — the same ceiling recorded in
-  # trigger-message-heartbeat.yaml.
+  #   data.lastBootAt  — BOUNDED, not equated, and weaker than the two above; the
+  #   data.lastSeenAt    runner's `is_recent` closes half of what this file used
+  #                      to record as out of reach. Both columns are written by
+  #                      this boot (BootNotificationHandler.php:216-217, two
+  #                      `now()` calls in one update), and both are compared
+  #                      against the response's own Date header rather than the
+  #                      runner's clock.
+  #
+  # WHAT THE BOUND HERE PROVES, AND WHAT IT DOES NOT. It proves the timestamp
+  # columns were written and carry a current value — a null, a never-written
+  # column or a frozen clock is red. It does NOT prove the write came from THIS
+  # boot rather than from a run of the pool a minute earlier, and it is not
+  # dressed up as if it did. Closing that needs a `not_before` anchor, and this
+  # file has nowhere to get one: the only server instant it sees is its own boot
+  # Response, which is issued AFTER the write it would have to bound, so it
+  # cannot reject the value it is meant to reject. heartbeat-cycle.yaml has the
+  # anchor because it has two `delay: 1000` steps and three Heartbeat Responses;
+  # a single-boot file has neither. The window is 300s rather than something
+  # tight because a 429 retry can legitimately hold this step for minutes
+  # (Retry-After honoured, cap 3), and a bound that goes red on the server
+  # throttling us is measuring the wrong thing.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
@@ -99,3 +116,7 @@ steps:
     expect_body:
       data.isOnline: true
       data.bootReason: "PowerOn"
+      data.lastBootAt:
+        is_recent: 300
+      data.lastSeenAt:
+        is_recent: 300

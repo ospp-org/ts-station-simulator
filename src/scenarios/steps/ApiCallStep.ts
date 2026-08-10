@@ -286,6 +286,211 @@ function getNestedValue(obj: unknown, path: string): unknown {
   return current;
 }
 
+// ---------------------------------------------------------------------------
+// is_recent — the comparator for a timestamp the scenario cannot predict
+// ---------------------------------------------------------------------------
+
+/**
+ * WHICH CLOCK. This is the whole question, and getting it wrong is not a bug you
+ * find later — it is a file that goes red on a correct server whenever the two
+ * machines disagree, which they will.
+ *
+ * The anchor is the response's OWN `Date` header, never `Date.now()`. The runner
+ * may be a laptop, a CI box or a container with its own drift; the server is the
+ * thing that both WROTE the timestamp and SERVED it. Measured on UAT 2026-08-10:
+ * `date: Mon, 10 Aug 2026 21:09:20 GMT` alongside a body `timestamp` of
+ * `2026-08-10T21:09:20.783Z` — same second, because nginx and php-fpm share a
+ * host. `last_seen_at` and `last_boot_at` are both written with Laravel `now()`
+ * (StationRepository.php:30, BootNotificationHandler.php:216-217), so the field
+ * and the anchor come off one clock and the comparison has no skew term at all.
+ * If the header is missing the assertion FAILS — it does not quietly fall back to
+ * local time, because a silent fallback is exactly the wrong answer arriving green.
+ *
+ * WHY ONE SECOND OF SLACK, EVERYWHERE. Both sides of the comparison are floored
+ * to the second: `toIso8601String()` drops sub-second precision on the value, and
+ * an HTTP `Date` is IMF-fixdate, which has none. So each observed number
+ * UNDER-REPORTS its true instant by up to 1000ms. Every bound gives that second
+ * back, in the direction that can only ever make the assertion more forgiving —
+ * a bound must never go red on rounding.
+ *
+ * WHAT `within_seconds` ALONE CANNOT DO. `BootNotificationHandler.php:216` sets
+ * `last_seen_at` too, so in any file that boots before it heartbeats, "is it
+ * recent?" is already satisfied by the boot — an assertion that cannot fail,
+ * which is worse than none. `not_before` is the fix: it pins the value at or
+ * after a server instant captured EARLIER in the same scenario (a `serverTime`
+ * off a Heartbeat or BootNotification Response — same clock again). The anchor
+ * must sit at least one full second after the stale write it has to reject;
+ * below that, the flooring slack swallows the gap and a stale row passes. In
+ * heartbeat-cycle.yaml the two `delay: 1000` steps guarantee it, which is why
+ * that file anchors on `serverTime2` rather than on `serverTime3` — the third
+ * Heartbeat's own response is LATER than the write it would be bounding, and a
+ * bound you can straddle is a flake with a schedule.
+ */
+const SECOND_GRANULARITY_SLACK_MS = 1000;
+
+interface RecentBound {
+  withinSeconds: number;
+  notBefore?: string;
+}
+
+/**
+ * A comparator, not a literal: `{ is_recent: ... }` in the value position of
+ * `expect_body`. Nothing the admin API returns is an object carrying an
+ * `is_recent` key, so there is no literal this steals.
+ */
+function isRecentComparator(want: unknown): want is Record<string, unknown> {
+  return (
+    want !== null &&
+    typeof want === 'object' &&
+    !Array.isArray(want) &&
+    Object.prototype.hasOwnProperty.call(want, 'is_recent')
+  );
+}
+
+function parseRecentBound(want: Record<string, unknown>, path: string): RecentBound {
+  const siblings = Object.keys(want).filter((k) => k !== 'is_recent');
+  if (siblings.length > 0) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — "is_recent" must be the only key in its ` +
+        `comparator, got extra ${JSON.stringify(siblings)}. A sibling key here would be ` +
+        `silently ignored, which is how a bound stops bounding.`,
+    );
+  }
+
+  const spec = want.is_recent;
+
+  if (typeof spec === 'number') {
+    if (!Number.isFinite(spec) || spec <= 0) {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" — "is_recent" seconds must be a positive ` +
+          `finite number, got ${JSON.stringify(spec)}`,
+      );
+    }
+    return { withinSeconds: spec };
+  }
+
+  if (spec !== null && typeof spec === 'object' && !Array.isArray(spec)) {
+    const obj = spec as Record<string, unknown>;
+    const unknown = Object.keys(obj).filter(
+      (k) => k !== 'within_seconds' && k !== 'not_before',
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" — unknown "is_recent" key(s) ` +
+          `${JSON.stringify(unknown)}. Supported: within_seconds, not_before. ` +
+          `A typo must not widen the bound silently.`,
+      );
+    }
+    const within = obj.within_seconds;
+    if (typeof within !== 'number' || !Number.isFinite(within) || within <= 0) {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" — "is_recent.within_seconds" must be a ` +
+          `positive finite number, got ${JSON.stringify(within)}`,
+      );
+    }
+    const notBefore = obj.not_before;
+    if (notBefore !== undefined && typeof notBefore !== 'string') {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" — "is_recent.not_before" must be an ISO-8601 ` +
+          `string (normally "{{captured.serverTime}}"), got ${typeof notBefore}`,
+      );
+    }
+    return { withinSeconds: within, notBefore: notBefore as string | undefined };
+  }
+
+  throw new Error(
+    `ApiCallStep: expect_body "${path}" — "is_recent" must be a number of seconds or an ` +
+      `object { within_seconds, not_before }, got ${JSON.stringify(spec)}`,
+  );
+}
+
+/**
+ * Throws with the measured numbers on any violation. Every bound is evaluated
+ * CONSERVATIVELY — it fires only when the true instant is violated for EVERY
+ * value the flooring could have hidden, so rounding can never produce a red.
+ */
+function assertIsRecent(
+  path: string,
+  got: unknown,
+  bound: RecentBound,
+  dateHeader: string | null,
+  responseBody: unknown,
+): void {
+  const tail = ` (full body: ${JSON.stringify(responseBody)})`;
+
+  if (dateHeader === null || dateHeader.trim() === '') {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" uses "is_recent", but the response carried no ` +
+        `Date header — there is no server clock to compare against. Refusing to fall back ` +
+        `to the runner's clock: a comparison against local time is wrong the moment the ` +
+        `two disagree, and it would be wrong GREEN.`,
+    );
+  }
+  const anchorMs = Date.parse(dateHeader);
+  if (Number.isNaN(anchorMs)) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — could not parse the response Date header ` +
+        `${JSON.stringify(dateHeader)} as a timestamp.`,
+    );
+  }
+
+  if (typeof got !== 'string') {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — "is_recent" needs an ISO-8601 string, but the ` +
+        `path resolved to ${JSON.stringify(got)}. A null or absent timestamp is a real ` +
+        `finding, not a pass.${tail}`,
+    );
+  }
+  const valueMs = Date.parse(got);
+  if (Number.isNaN(valueMs)) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — could not parse ${JSON.stringify(got)} as a ` +
+        `timestamp.${tail}`,
+    );
+  }
+
+  const ageMs = anchorMs - valueMs;
+  const seen = `value=${got} anchor(Date header)=${dateHeader} age=${(ageMs / 1000).toFixed(1)}s`;
+
+  // AHEAD OF THE SERVER. The value can only be floored DOWN, and the anchor only
+  // floored down, so a value more than one second past the anchor is a genuine
+  // disagreement between the layer that wrote the field and the layer that dated
+  // the response — or a fabricated future timestamp. Both are findings.
+  if (valueMs - anchorMs >= SECOND_GRANULARITY_SLACK_MS) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" is AHEAD of the server's own clock by ` +
+        `${((valueMs - anchorMs) / 1000).toFixed(1)}s — ${seen}. The field and the Date ` +
+        `header come off the same server, so this is a clock disagreement or a bogus ` +
+        `timestamp, not a timing race.${tail}`,
+    );
+  }
+
+  if (valueMs + SECOND_GRANULARITY_SLACK_MS < anchorMs - bound.withinSeconds * 1000) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" is not recent — ${seen}, which is older than the ` +
+        `${bound.withinSeconds}s window. The server did not move this timestamp.${tail}`,
+    );
+  }
+
+  if (bound.notBefore !== undefined) {
+    const notBeforeMs = Date.parse(bound.notBefore);
+    if (Number.isNaN(notBeforeMs)) {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" — "is_recent.not_before" ` +
+          `${JSON.stringify(bound.notBefore)} is not a parseable timestamp. When this came ` +
+          `from a capture, the captured value was not a server time.`,
+      );
+    }
+    if (valueMs + SECOND_GRANULARITY_SLACK_MS <= notBeforeMs) {
+      throw new Error(
+        `ApiCallStep: expect_body "${path}" is BEFORE its not_before anchor — ${seen}, ` +
+          `not_before=${bound.notBefore}. The timestamp still holds a value from earlier in ` +
+          `this scenario, so the write under test did not land.${tail}`,
+      );
+    }
+  }
+}
+
 const tokenCache = new Map<string, string>();
 const orgIdCache = new Map<string, string>();
 
@@ -678,6 +883,22 @@ export class ApiCallStep implements Step {
           definition.expect_body as Record<string, unknown>,
         )) {
           const got = getNestedValue(responseBody, path);
+
+          // `is_recent` is the one value form that is a COMPARATOR rather than a
+          // literal — for timestamps the scenario cannot predict but can bound.
+          // Intercepted before the equality path below, which would otherwise
+          // deep-compare the comparator object itself and always fail.
+          if (isRecentComparator(want)) {
+            assertIsRecent(
+              path,
+              got,
+              parseRecentBound(want, path),
+              response.headers.get('date'),
+              responseBody,
+            );
+            continue;
+          }
+
           const same =
             got === want ||
             (typeof got === 'object' && got !== null &&

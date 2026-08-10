@@ -33,9 +33,20 @@ description: >
 # boot landed, or landed as something else, or never happened at all. It is an
 # assertion that cannot fail, which is worse than none.
 #
-# The one column that DOES move is stations.last_boot_at. It is not assertable:
-# its value is a timestamp the scenario cannot predict, and expect_body compares
-# by equality with no changed-since or is-recent form.
+# The one column that DOES move is stations.last_boot_at. CORRECTED 2026-08-11:
+# the stated reason it was unassertable — "expect_body compares by equality with
+# no changed-since or is-recent form" — has expired. The runner now has
+# `is_recent`. The column is still not assertable HERE, for two reasons that
+# outlive it:
+#   - Recency alone cannot fail. This file boots at the top, so last_boot_at is
+#     already current before the triggered boot is ever sent.
+#   - The `not_before` form that WOULD discriminate needs a server instant issued
+#     at least a second after the first boot and before the triggered one. This
+#     file has no such instant: its only server times are the two boot Responses,
+#     and each is issued AFTER the write it would have to bound. Manufacturing
+#     one (a Heartbeat inserted purely as a clock source) would buy an INGESTION
+#     proof, which is the thing the header above already declines — an
+#     unsolicited boot moves the identical column.
 #
 # Changing the triggered boot to a different bootReason WOULD make it
 # distinguishable, and is refused on purpose: it would manufacture a difference

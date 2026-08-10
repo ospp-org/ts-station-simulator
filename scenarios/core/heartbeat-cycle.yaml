@@ -1,14 +1,30 @@
 name: "Heartbeat Cycle"
 description: "Boot and send 3 distinct heartbeats with delay between each, capturing serverTime from every response."
-# NO SERVER-STATE ASSERTION — same ceiling as trigger-message-heartbeat.yaml.
+# SERVER-STATE ASSERTED — the ceiling this file recorded is closed. 2026-08-11
+#
 # HeartbeatHandler:29-33 does exactly two things: updateLastSeen(), which moves
-# stations.last_seen_at, and a Redis recordHeartbeat(). last_seen_at is exposed as
-# data.lastSeenAt but is a timestamp no scenario can predict, and expect_body has
-# only equality — no changed-since or is-recent form. The tracker state is Redis
-# and no route reads it. data.isOnline is already true from the boot above, so a
-# Heartbeat cannot move it either, and asserting it would be an assertion that
-# cannot fail. The three Heartbeat Responses this file already asserts are the
-# ceiling until the runner grows an is-recent comparison.
+# stations.last_seen_at, and a Redis recordHeartbeat(). This file used to state
+# that neither was reachable, because expect_body had only equality and
+# last_seen_at is a timestamp no scenario can predict. The runner now has
+# `is_recent`, and the first of the two is reachable.
+#
+# WHAT MAKES IT A REAL ASSERTION RATHER THAN A DECORATIVE ONE. Recency alone
+# would NOT be one: BootNotificationHandler.php:216 sets last_seen_at as well, so
+# the boot at the top of this file already makes the column recent, and a bare
+# "is it fresh?" would pass on a server whose Heartbeat handler wrote nothing.
+# That is why the assertion below carries `not_before` anchored on serverTime2 —
+# the SECOND Heartbeat's own Response, which is one full `delay: 1000` after the
+# boot. A last_seen_at still holding the boot's value floors at least a second
+# below that anchor and is rejected; the third Heartbeat's write is a second
+# above it and is accepted. Both directions are guaranteed by the delays rather
+# than by luck, which is the reason the anchor is serverTime2 and not
+# serverTime3: the third response is issued AFTER the write it would bound, and
+# a bound you can straddle is a flake with a schedule.
+#
+# STILL NOT ASSERTED, and unchanged: the heartbeat tracker state lives in Redis
+# and no REST route reads it back. data.isOnline is already true from the boot,
+# so a Heartbeat cannot move it and asserting it would be an assertion that
+# cannot fail.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -95,3 +111,22 @@ steps:
     timeout_ms: 10000
     capture:
       serverTime3: "payload.serverTime"
+
+  # THE ASSERTION. The Heartbeat Responses above prove the server ANSWERED; this
+  # proves it WROTE. updateLastSeen() is a synchronous UPDATE inside the handler,
+  # committed before the Response is built, so by the time the capture above
+  # lands the row is already durable — no settle delay is needed.
+  #
+  # The window is deliberately loose and the anchor deliberately tight: recency
+  # is bounded against the response's own Date header (the server's clock, never
+  # the runner's), while not_before is what actually discriminates. See the
+  # header for why serverTime2 is the anchor.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.lastSeenAt:
+        is_recent:
+          within_seconds: 300
+          not_before: "{{captured.serverTime2}}"

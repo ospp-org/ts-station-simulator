@@ -8,10 +8,17 @@ description: "Boot, send heartbeat, and wait with a very short timeout to test t
 # already carries skip: true for the same reason.
 #
 # The server-side effect of a Heartbeat is exactly two writes
-# (HeartbeatHandler:29-33): updateLastSeen(), which moves a timestamp no
-# scenario can predict, and a Redis recordHeartbeat() no route reads.
-# data.isOnline is already true from the boot above, so it cannot move either,
-# and asserting it would be an assertion that cannot fail.
+# (HeartbeatHandler:29-33): updateLastSeen(), and a Redis recordHeartbeat() no
+# route reads. data.isOnline is already true from the boot above, so it cannot
+# move either, and asserting it would be an assertion that cannot fail.
+#
+# CORRECTED 2026-08-11: this used to add "a timestamp no scenario can predict" as
+# a reason. The runner now has `is_recent` and heartbeat-cycle.yaml bounds that
+# exact column, so the reason is gone — and it changes nothing here, because the
+# reason below is the real one. This file's subject is the client's own wait
+# budget; the server's write is not what it is testing, and a scenario that
+# asserted it would be a duplicate of heartbeat-cycle.yaml wearing this file's
+# name.
 #
 # Note this is a DIFFERENT ceiling from trigger-message-heartbeat.yaml, which
 # also cannot assert its effect: there the message is real and the effect is

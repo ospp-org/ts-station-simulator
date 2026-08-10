@@ -62,3 +62,7 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "ManualReset"
+      # Bounded, not equated — see happy-boot.yaml for what a recency bound proves
+      # and what it does not.
+      data.lastBootAt:
+        is_recent: 300

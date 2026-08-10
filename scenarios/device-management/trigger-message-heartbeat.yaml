@@ -25,20 +25,26 @@ description: "Server triggers a Heartbeat message from the station"
 # moves stations.last_seen_at, and heartbeatTracker->recordHeartbeat(), which
 # writes Redis.
 #
-# Neither is assertable from a scenario:
-#   - last_seen_at is exposed as data.lastSeenAt, but its value is a timestamp
-#     the scenario cannot predict. expect_body compares by equality and has no
-#     changed-since or is-recent form, so there is nothing to write.
+# CORRECTED 2026-08-11 — one of the two reasons recorded here has expired, and
+# the ceiling stands anyway. The runner now HAS an is-recent form (`is_recent`,
+# used in heartbeat-cycle.yaml), so "the timestamp cannot be bounded" is no
+# longer true. It was never the load-bearing reason:
+#   - last_seen_at is exposed as data.lastSeenAt and is now bound-able. Asserting
+#     it here would prove the Heartbeat was INGESTED, which is not what this file
+#     is about — an UNSOLICITED Heartbeat moves the identical column, so a green
+#     bound would say nothing about the trigger. That is the objection recorded
+#     above, and closing the is-recent gap does not touch it.
 #   - the heartbeat tracker state lives in Redis and no REST route reads it back.
+#     Unchanged.
 #
 # There is also no derived flag to lean on: data.isOnline is already true from
 # the boot at the top of this file, so a Heartbeat cannot move it, and asserting
 # it would be an assertion that cannot fail.
 #
 # What IS asserted, on the wire and already present: TriggerMessage carries
-# requestedMessage Heartbeat and is Accepted. Closing the gap needs either an
-# is-recent form in expect_body or a server surface exposing heartbeat state —
-# not a scenario edit.
+# requestedMessage Heartbeat and is Accepted. Closing the REMAINING gap needs the
+# server to correlate a reply to the pending TriggerMessage — a server change,
+# not a runner capability and not a scenario edit. `is_recent` does not give it.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
