@@ -772,7 +772,7 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   bays         ← reservations, sessions, offline_transactions (+ bay_services CASCADE)
   //   stations     ← bays, service_catalogs, offline_transactions, station_configurations,
   //                  firmware_updates, diagnostics_uploads (+ station_services CASCADE,
-  //                  security_events SET NULL)
+  //                  security_events SET NULL — swept explicitly below, see the note there)
   //   locations    ← stations
   // certificates/provisioning_tokens carry a *varchar* station_id with NO FK —
   // removed by business id so re-provisioning can't collide on their unique rows.
@@ -798,6 +798,21 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     `DELETE FROM diagnostics_uploads WHERE station_id IN (${sids});`,
     `DELETE FROM provisioning_tokens WHERE station_id = ANY(${stationArray});`,
     `DELETE FROM certificates WHERE station_id = ANY(${stationArray});`,
+    // security_events + its dedup key. NOT covered by the FK discipline above: the FK is
+    // ON DELETE SET NULL (the only one in the schema besides
+    // provisioning_tokens.issued_certificate_id), so deleting the station does not block and
+    // does not cascade — it silently NULLs station_id and the audit rows survive with no
+    // owner. `teardownFkCoverage.test.ts` cannot catch this either: it walks NO-ACTION FKs,
+    // i.e. the ones that would FAIL loudly, and SET NULL is precisely the case that does not.
+    // Measured 2026-08-10: 38 of 38 rows in security_events were orphaned this way.
+    // Harmless while the eleven security-event scenarios wrote nothing (their hardcoded
+    // eventIds were deduped away since 2026-06-15); now that they write a row per run, this
+    // would leak 11 orphans per full-suite run.
+    // dedup FIRST — it is keyed on event_id with no FK at all, so it must be resolved
+    // THROUGH security_events before those rows go. Leaving it would re-arm the exact trap
+    // that made sec_00000001..b unusable: a global unique key holding ids nothing owns.
+    `DELETE FROM security_event_dedup WHERE event_id IN (SELECT event_id FROM security_events WHERE station_id IN (${sids}));`,
+    `DELETE FROM security_events WHERE station_id IN (${sids});`,
     `DELETE FROM bays WHERE station_id IN (${sids});`,
     `DELETE FROM stations WHERE station_id = ANY(${stationArray});`,
     `DELETE FROM locations WHERE id = ANY(${locationArray});`,

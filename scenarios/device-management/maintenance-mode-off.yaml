@@ -1,3 +1,23 @@
+# WHAT DISTINGUISHES THIS FILE FROM ITS SIBLINGS — verified on the wire 2026-08-10
+#   The three maintenance-mode files used to assert the SAME two things: the boot was
+#   Accepted, and the POST returned 202. Swapping any two of their bodies left both passing,
+#   so the variant was decoration. Each now reads the server's own bay state back.
+#   Where that state comes from matters: SetMaintenanceModeAction does NOT write bays.status
+#   — it only validates (it refuses a bay that is Occupied/Finishing) and publishes
+#   SetMaintenanceMode. The status is written by the STATION's StatusNotification. So this
+#   assertion proves the full round trip landed and persisted, not merely that the REST call
+#   was accepted.
+#   Measured directly after this scenario on a fresh pool: bay 1 `unavailable`, bays 2-4
+#   `unknown` (never reported), which is what makes the per-bay assertion discriminating.
+#   NOTE `{{bayId_N}}` is the REAL persisted bay id in a pooled run (ScenarioRunner hydrates
+#   it from <stationId>-bays.json — the "hydrated provisioning" log line). The older comment
+#   about a random bayId applies only to non-pooled runs.
+#   ORDERING: data.bays comes back UNORDERED — three consecutive runs on 2026-08-10 gave
+#   [2,3,4,1], [2,3,4,1] and [3,4,1,2]. The assertion selects by bayNumber, never by index;
+#   an index form would pin whichever row the database happened to return first. The same
+#   fact is why the maintenance POST below targets {{bayId_1}} rather than data.bays.0.bayId:
+#   capturing index 0 requested maintenance on an arbitrary bay while the StatusNotification
+#   reported bay 1, so the two halves of the file addressed different bays.
 name: "Maintenance Mode Off"
 description: "Disable maintenance mode on a bay and restore Available status"
 station:
@@ -30,6 +50,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: this file drives a capability-gated Device Management action, which
+        # refuses COMMAND_NOT_SUPPORTED (2007) unless device_management_supported === true.
+        # NULL is "not stated" and withheld too (OSPP §5.1 rule 3). Measured 2026-08-10:
+        # without this the file fails 2007 on a FRESH pool station — it only ever passed by
+        # inheriting the flag from a sibling scenario on a reused station.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
@@ -64,7 +90,7 @@ steps:
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
     body:
-      bayId: "{{captured.real_bay_id_1}}"
+      bayId: "{{bayId_1}}"
       enabled: false
       reason: "Scheduled cleaning"
     expect_status: 202
@@ -91,3 +117,14 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # THE ASSERTION — the server's own bay state, not the message this scenario authored.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"

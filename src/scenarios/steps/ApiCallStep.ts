@@ -212,6 +212,21 @@ function substituteTemplates(
   return value;
 }
 
+/**
+ * `name[field=value]` — select an array element by one of its fields instead of by index.
+ *
+ * Exists because several server collections come back UNORDERED. Measured 2026-08-10 on
+ * GET /admin/stations/{stn_*}: three consecutive runs returned `data.bays` as
+ * [2,3,4,1], [2,3,4,1] and [3,4,1,2] — there is no ORDER BY behind it. An assertion written
+ * as `data.bays.0.status` therefore pins whichever bay the database happened to hand back,
+ * which is the same class of mistake as asserting on "the most recent" row.
+ *
+ * Comparison is on String(el[field]) so `[bayNumber=1]` matches the JSON number 1 — a path
+ * segment is always text, and requiring YAML authors to know the wire type of every field
+ * would be a trap of its own.
+ */
+const ARRAY_SELECTOR_RE = /^([^[\]]+)\[([^=[\]]+)=([^[\]]*)\]$/;
+
 function getNestedValue(obj: unknown, path: string): unknown {
   const parts = path.split('.');
   let current: unknown = obj;
@@ -222,6 +237,23 @@ function getNestedValue(obj: unknown, path: string): unknown {
     if (typeof current !== 'object') {
       return undefined;
     }
+
+    const selector = ARRAY_SELECTOR_RE.exec(part);
+    if (selector) {
+      const [, name, field, want] = selector;
+      const arr = (current as Record<string, unknown>)[name];
+      if (!Array.isArray(arr)) {
+        return undefined;
+      }
+      current = arr.find(
+        (el) =>
+          el !== null &&
+          typeof el === 'object' &&
+          String((el as Record<string, unknown>)[field]) === want,
+      );
+      continue;
+    }
+
     current = (current as Record<string, unknown>)[part];
   }
   return current;
@@ -536,3 +568,6 @@ export class ApiCallStep implements Step {
     }
   }
 }
+
+/** Test-only surface for the path resolver; see ApiCallStep.arraySelector.test.ts. */
+export const _getNestedValueForTesting = getNestedValue;

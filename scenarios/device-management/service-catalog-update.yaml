@@ -30,6 +30,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        # Required: this file drives a capability-gated Device Management action, which
+        # refuses COMMAND_NOT_SUPPORTED (2007) unless device_management_supported === true.
+        # NULL is "not stated" and withheld too (OSPP §5.1 rule 3). Measured 2026-08-10:
+        # without this the file fails 2007 on a FRESH pool station — it only ever passed by
+        # inheriting the flag from a sibling scenario on a reused station.
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
