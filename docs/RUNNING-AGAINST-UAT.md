@@ -12,7 +12,7 @@ of things that have to be true, so the next run's failures mean something.
 | variable | needed by | notes |
 |---|---|---|
 | `OSPP_PROTOCOL_VERSION` | **every scenario** | Must be a member of the server's `supported_versions` set. Negotiation is **exact match** (`VERSIONING.md:25`) — a shared MAJOR implies nothing, and the SDK's MAJOR gate was deleted in 0.12.0. The SDK default is `0.2.1`; spec v0.11.1 mandates **`0.3.0`** on the wire (176 value sites). **Set it explicitly** until the SDK default is corrected, which needs an SDK release. Get it wrong and every boot is refused `1007`. |
-| `UAT_EMAIL` / `UAT_PASSWORD` | any scenario with an `api_call` | Resolves `${UAT_EMAIL}` in `config/targets.yaml`. The values in the repo `.env` were stale as of this run — they 401. A live pool identity from `tests/artifacts/pool-handle.json` works. |
+| `UAT_EMAIL` / `UAT_PASSWORD` | **`--station` mode only** | Resolves `${UAT_EMAIL}` in `config/targets.yaml`. The values in the repo `.env` are stale — they 401. A live pool identity from `tests/artifacts/pool-handle.json` works. **In `--bootstrap-pool` this pair is not read at all** and setting it changes nothing: a scenario with no `auth:` block resolves to `undefined` and the caller falls through to the per-scenario pool worker, so the `target.credentials` fallback is *structurally unreachable* whenever the allocator is active (`ScenarioRunner.ts:502-510`); the pool builder authenticates as the platform admin and mints its own ephemeral `tenant_owner` (`PoolBootstrap.ts:304-324`). This row used to say "any scenario with an `api_call`", which sent more than one run hunting a 401 that the mode could not produce. |
 | `UAT_E2E_PLATFORM_ADMIN_EMAIL` / `_PASSWORD` | the whole `security` suite | Any scenario declaring an `auth` override startup-**fails** the entire run without these, before a single scenario executes. They live in `~/.config/osp-e2e-secrets.env`, and the values there are **single-quoted** — strip the quotes or the login 422s with "The email field must be a valid email address". |
 
 `.env` cannot simply be `source`d: at least one value contains a shell metacharacter and
@@ -65,9 +65,17 @@ the variable; before that it printed a bare red scenario name and nothing else.
 | `multiunit-e2e/single-session-drive` | `--var reason=<SessionEndReason>` e.g. `TimerExpired`. Its header says so. Passes 12/12 with it. |
 | `sessions/session-rejected-invalid-service-cross-station` | `--var stationA_bayId=… --var stationB_serviceId=…`, plus **two** manually provisioned stations in one org with disjoint catalogs. `skip_when_pooled` carries the reason. |
 | `security/offline-auth-transaction-reconcile{,-hostile}` | `--var offlineTxId=… --var authId=… --var sessionId=…` — the header says so. These describe a grant issued out of band; there is no API that mints one on UAT. |
-| most `sessions/*`, `reservations/*` | `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
+| most `sessions/*`, `reservations/*` | **`--station` mode only:** `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
 
-`{{bayId_N}}` is hydrated automatically from `<stationId>-bays.json`; serviceIds are not.
+`{{bayId_N}}` is hydrated automatically from `<stationId>-bays.json`.
+
+**`{{serviceId_1..4}}` are hydrated too, in `--bootstrap-pool`** — the row above is a
+`--station` constraint, not a general one. The pool bootstrap seeds `DEFAULT_SEED_SERVICES`
+(`uatPrivileged.ts:158-170`) deliberately matching the runner's `defaultServices`
+(`ScenarioRunner.ts:574`), so each of the four resolves to a real `station_services` row on
+every bootstrapped station. Passing `--var serviceId_1=…` in pooled mode is unnecessary and
+overrides a valid id with one the catalog may not carry. Outside bootstrap the ids are still
+merely *generated* — same text, no row behind it — which is what the `3004` above is.
 
 ---
 
