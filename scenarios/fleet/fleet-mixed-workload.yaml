@@ -174,20 +174,10 @@ steps:
         liquidMl: 1800
         energyWh: 400
 
-  # --- SessionEnded ---
-  - action: send
-    message: SessionEnded
-    messageType: Event
-    payload:
-      sessionId: "{{captured.sessionId}}"
-      bayId: "{{captured.bayId}}"
-      reason: "TimerExpired"
-      actualDurationSeconds: 60
-      creditsCharged: 100
-      meterValues:
-        liquidMl: 1800
-        energyWh: 400
-
+  # NO SessionEnded. session-ended.md:57 — "MUST NOT emit it for one that
+  # terminates with [a StopService command]". The Accepted Response above is the
+  # settlement carrier; see the paragraph below for what the removed one was doing.
+  #
   # --- StatusNotification Available ---
   - action: send
     message: StatusNotification
@@ -212,17 +202,26 @@ steps:
   # same held for both its siblings, so the fleet suite was never a ceiling.
   #
   # SECOND, and measured rather than assumed: it settles PRO-RATA, not full.
-  # This was written expecting 500 — it books duration_seconds 300, and its
-  # trailing SessionEnded says TimerExpired, which is the fullCharge arm. The
+  # This was written expecting 500 — it books duration_seconds 300, and it used to
+  # append a SessionEnded saying TimerExpired, which is the fullCharge arm. The
   # server charged 100 and refunded 400.
   #
   # The cause is the same one stop-service.yaml records, and this is the second
   # independent file to show it: settlement happens on the STOP, not on the
   # SessionEnded. This scenario calls POST /sessions/{id}/stop (:156) and answers
   # with actualDurationSeconds 60, so the operator-stop path bills delivered time
-  # — ceil(60/60 * 100) = 100 against 500 authorized, refund 400. By the time the
-  # SessionEnded arrives the session is already terminal and its reason never
-  # chooses an arm. The wire says TimerExpired; the money says voluntary stop.
+  # — ceil(60/60 * 100) = 100 against 500 authorized, refund 400. The SessionEnded
+  # arrived to find the session already terminal and never chose an arm. The wire
+  # said TimerExpired; the money said voluntary stop.
+  #
+  # THIRD, which is why the SessionEnded is now gone: a 400-credit gap between two
+  # messages the station sent about one stop is not a harmless redundancy. It is
+  # two disagreeing settlement instructions, resolved by whichever the server
+  # happens to handle first — and this file, of all of them, is the one meant to be
+  # run with MANY WORKERS, which is exactly the condition under which the loser of
+  # that race stops being predictable. Station-side the fix is to send one message
+  # (session-ended.md:57 already required it); the server's dependence on arrival
+  # order is a separate report.
   #
   # So a file that looked like a duplicate of the fullCharge arm is actually a
   # second witness for the operator-stop arm — which is worth more, because that

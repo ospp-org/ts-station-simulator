@@ -6,7 +6,7 @@
 #     --var bayId_1=bay_realbay001 --var bayId_2=bay_realbay002 \
 #     --var serviceId_1=svc_wash_basic
 name: "Full Session Lifecycle"
-description: "Complete session lifecycle: boot, trigger StartService via API, accept, StatusNotification Occupied, MeterValues, trigger StopService via API, accept with duration/credits, SessionEnded event, StatusNotification Available."
+description: "Complete session lifecycle: boot, trigger StartService via API, accept, StatusNotification Occupied, MeterValues, trigger StopService via API, accept with duration/credits, StatusNotification Available. No SessionEnded — the stop was server-initiated."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -176,20 +176,10 @@ steps:
         liquidMl: 1800
         energyWh: 400
 
-  # --- SessionEnded event ---
-  - action: send
-    message: SessionEnded
-    messageType: Event
-    payload:
-      sessionId: "{{captured.sessionId}}"
-      bayId: "{{captured.bayId}}"
-      reason: "TimerExpired"
-      actualDurationSeconds: 60
-      creditsCharged: 100
-      meterValues:
-        liquidMl: 1800
-        energyWh: 400
-
+  # NO SessionEnded. session-ended.md:57 — "MUST NOT emit it for one that
+  # terminates with [a StopService command]". The Accepted Response above already
+  # carries the settlement.
+  #
   # --- StatusNotification Available ---
   - action: send
     message: StatusNotification
@@ -206,22 +196,32 @@ steps:
   - action: delay
     ms: 1000
 
-  # THE ASSERTION — the fullCharge arm, and the value is deliberately NOT 500.
+  # THE ASSERTION — 100, and this comment used to attribute it to the wrong arm.
   #
-  # This file books duration_seconds 60, not the 300 every other settlement
-  # scenario books. At 100 cr/min that authorizes 100 credits, and TimerExpired
-  # routes to SettlementResult::fullCharge($authorized)
-  # (UserDurationStrategy:38-40), so the charge is 100.
+  # It claimed the fullCharge arm: "TimerExpired routes to fullCharge($authorized),
+  # so the charge is 100", TimerExpired being the reason on the SessionEnded this
+  # file used to append. That was never what settled it. stop-service.yaml and
+  # fleet-mixed-workload.yaml both MEASURED the mechanism on UAT and wrote it down
+  # — settlement happens on the STOP, and a SessionEnded arriving afterwards finds
+  # the session already terminal and never chooses an arm — but neither propagated
+  # the correction back here, because here the two arms happen to agree.
   #
-  # That is the point of asserting it here rather than treating this as a copy of
-  # session-timeout-timer-expired: the two files run the SAME rule over DIFFERENT
-  # booked windows and get different money. A constant 500 would satisfy the other
-  # file and fail this one, so the pair together prove the charge tracks the
-  # window rather than being a fixed number.
+  # They agree by arithmetic, not by design. duration_seconds 60 at 100 cr/min
+  # authorizes 100; the Response reports actualDurationSeconds 60; delivery is
+  # therefore 60/60 = 100%, and RefundCalculator:70-77 returns the full authorized
+  # amount for durationActual >= durationRequested. So VoluntaryStop pro-rata pays
+  # exactly what TimerExpired fullCharge would have. 100 either way — which is
+  # precisely why a wrong attribution could sit here unfalsified.
+  #
+  # What this file actually proves, and it is worth keeping: the operator-stop arm
+  # at 100% delivery. Its siblings cover the same arm at partial delivery (45/300
+  # -> 75; 60/300 -> 100), so the three together pin the pro-rata curve at both
+  # ends. session-timeout-timer-expired remains the sole fullCharge proof — legally,
+  # because a timer expiry terminates WITHOUT a StopService and so is the one shape
+  # entitled to send SessionEnded at all.
   #
   # refund_amount 0 is derived (SessionResource:53-56) and appears in no message
-  # this scenario sends: charged in full, nothing returned, which is what
-  # TimerExpired means.
+  # this scenario sends: everything booked was delivered, so nothing is returned.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"

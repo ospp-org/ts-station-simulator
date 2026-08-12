@@ -5,11 +5,9 @@ import {
   MessageType,
   MessageSource,
   BayStatus,
-  SessionEndReason,
   OSPP_PROTOCOL_VERSION,
   type OsppEnvelope,
   type StopServiceResponse,
-  type SessionEndedPayload,
 } from '@ospp/protocol';
 import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
@@ -100,20 +98,43 @@ describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
     expect((payload as { finalSeqNo?: number }).finalSeqNo).toBe(7);
   });
 
-  it('SessionEnded event carries seqNo + finalSeqNo from session.seqNo', async () => {
+});
+
+// spec v0.13.0 profiles/transaction/session-ended.md:57, the one RFC-2119 rule on
+// this: the station "MUST emit SessionEnded for every session that terminates
+// without a StopService command, and MUST NOT emit it for one that terminates with
+// one." The Accepted RESPONSE already carries the settlement (its schema REQUIRES
+// actualDurationSeconds + creditsCharged when status=Accepted), and 03-messages.md:1195
+// records why the enum has no `Remote` value: "emitting both StopService RESPONSE and
+// SessionEnded for the same stop would force double-emission ambiguity."
+//
+// That ambiguity is not theoretical on the csms server. The RESPONSE settles as
+// TerminalReason::VoluntaryStop (UserDurationStrategy:53 → pro-rata on delivered
+// time); a SessionEnded with reason TimerExpired settles as TerminalReason::TimerExpired
+// (UserDurationStrategy:38-40 → fullCharge of the whole pre-authorization). Whichever
+// arrives first wins, because the loser hits a terminal-session guard. The station does
+// not get to send both and let the server sort it out.
+describe('StopServiceHandler — SessionEnded MUST NOT follow an Accepted StopService', () => {
+  it('emits the RESPONSE and nothing else', async () => {
     const { station, captured } = makeMockStation(12);
     const handler = new StopServiceHandler();
 
     await handler.handle(makeStopServiceRequest(), station);
 
-    const event = captured.find(
-      (c) => c.action === OsppAction.SESSION_ENDED && c.messageType === MessageType.EVENT,
-    );
-    expect(event).toBeDefined();
-    const payload = event!.payload as SessionEndedPayload;
-    expect(payload.reason).toBe(SessionEndReason.TIMER_EXPIRED);
-    expect((payload as { seqNo?: number }).seqNo).toBe(12);
-    expect((payload as { finalSeqNo?: number }).finalSeqNo).toBe(12);
+    expect(captured.map((c) => `${c.action}:${c.messageType}`)).toEqual([
+      `${OsppAction.STOP_SERVICE}:${MessageType.RESPONSE}`,
+    ]);
+  });
+
+  it('emits no SessionEnded even though the session is gone and the bay is Available', async () => {
+    const { station, captured } = makeMockStation(12);
+    const handler = new StopServiceHandler();
+
+    await handler.handle(makeStopServiceRequest(), station);
+
+    expect(captured.some((c) => c.action === OsppAction.SESSION_ENDED)).toBe(false);
+    expect(station.sessions.has('sess_test')).toBe(false);
+    expect(station.getBayState('bay_test')).toBe(BayStatus.AVAILABLE);
   });
 });
 
@@ -150,29 +171,6 @@ describe('StopServiceHandler — Bug F: creditsCharged spec formula', () => {
     const payload = response!.payload as StopServiceResponse;
     expect(payload.actualDurationSeconds).toBe(75);
     expect((payload as { creditsCharged?: number }).creditsCharged).toBe(125);
-  });
-
-  it('SessionEnded event creditsCharged matches StopService Response creditsCharged', async () => {
-    const { station, captured } = makeMockStation(1, {
-      startedAtOffsetMs: 60_000,
-      priceCreditsPerMinute: 100,
-    });
-    const handler = new StopServiceHandler();
-
-    await handler.handle(makeStopServiceRequest(), station);
-
-    const response = captured.find(
-      (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
-    );
-    const event = captured.find(
-      (c) => c.action === OsppAction.SESSION_ENDED && c.messageType === MessageType.EVENT,
-    );
-    const responsePayload = response!.payload as StopServiceResponse;
-    const eventPayload = event!.payload as SessionEndedPayload;
-    expect((eventPayload as { creditsCharged?: number }).creditsCharged).toBe(
-      (responsePayload as { creditsCharged?: number }).creditsCharged,
-    );
-    expect((eventPayload as { creditsCharged?: number }).creditsCharged).toBe(100);
   });
 
   it('60s @ 10 cr/min → creditsCharged = 10 (different rate)', async () => {

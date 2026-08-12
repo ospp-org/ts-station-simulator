@@ -2,12 +2,10 @@ import {
   OsppAction,
   MessageType,
   OsppErrorCode,
-  SessionEndReason,
   BayStatus,
   type OsppEnvelope,
   type StopServiceRequest,
   type StopServiceResponse,
-  type SessionEndedPayload,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 
@@ -67,32 +65,23 @@ export class StopServiceHandler implements Handler {
       creditsCharged,
     );
 
-    // Remove session and transition bay to Available
+    // Remove session and transition bay to Available.
+    //
+    // And STOP. No SessionEnded follows: session-ended.md:57 is a MUST NOT for a
+    // session "that terminates with" a StopService command, and the RESPONSE just
+    // sent is the settlement carrier — its schema REQUIRES actualDurationSeconds and
+    // creditsCharged for status=Accepted, precisely so a second message is not needed.
+    // 03-messages.md:1195 records the consequence the rule exists to prevent: there is
+    // deliberately no `Remote` reason value, because "emitting both StopService RESPONSE
+    // and SessionEnded for the same stop would force double-emission ambiguity."
+    //
+    // On the csms server that ambiguity is money. The RESPONSE settles as
+    // TerminalReason::VoluntaryStop → pro-rata on delivered time; a SessionEnded settles
+    // as its own reason — TimerExpired → fullCharge of the entire pre-authorization
+    // (UserDurationStrategy:38-53). The two disagree, whichever lands first wins, and the
+    // one that lands second is silently swallowed by a terminal-session guard. There is no
+    // reason value that makes sending both correct, which is why the fix is to send one.
     station.sessions.delete(request.sessionId);
     station.setBayState(session.bayId, BayStatus.AVAILABLE);
-
-    // Send SessionEnded event
-    const sessionEndedPayload: SessionEndedPayload = {
-      sessionId: session.sessionId,
-      bayId: session.bayId,
-      reason: SessionEndReason.TIMER_EXPIRED,
-      actualDurationSeconds,
-      creditsCharged,
-      // peek, not next: SessionEnded reports the FINAL position, it does not
-        // issue a new one — seqNo and finalSeqNo are the same number here.
-        seqNo: session.seq.peek(),
-      finalSeqNo: session.seq.peek(),
-    };
-
-    await station.sender.send<SessionEndedPayload>(
-      OsppAction.SESSION_ENDED,
-      MessageType.EVENT,
-      sessionEndedPayload,
-    );
-
-    console.log(
-      '[StopService] SessionEnded event sent for session %s',
-      request.sessionId,
-    );
   }
 }
