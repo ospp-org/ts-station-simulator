@@ -454,7 +454,22 @@ function substituteTemplates(value: unknown, scope: TemplateScope): unknown {
   if (value !== null && typeof value === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value)) {
-      result[key] = substituteTemplates(val, scope);
+      // KEYS are substituted too, not only values. `expect_body` names an array element
+      // by CONTENT rather than by index — `data[eventId={{runSecurityEventId}}].type` —
+      // and that selector lives in the KEY position. While keys were copied verbatim the
+      // one index-free way to address a row could not carry a run-generated id at all:
+      // the selector compared against the literal text `{{runSecurityEventId}}`, matched
+      // nothing, and the assertion resolved to undefined. Note this is the string path
+      // (`substituteTemplateValue`), never the typed whole-token path — a key must stay a
+      // string, and a captured object in key position would stringify to `[object Object]`.
+      //
+      // Blast radius, measured across the whole corpus before the change: NO YAML mapping
+      // key contained `{{` (the single grep hit was prose inside a `description` block), so
+      // this is a no-op everywhere except where a selector deliberately asks for it. It is
+      // not free of consequence though — `substituteTemplateValue` THROWS on an unknown
+      // variable, so a future key with a stray `{{` now fails loudly rather than silently
+      // addressing a field that does not exist. That is the direction the failure belongs in.
+      result[substituteTemplateValue(key, scope)] = substituteTemplates(val, scope);
     }
     return result;
   }
