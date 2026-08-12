@@ -206,14 +206,36 @@ core 12/16 · chaos 6/7 · device-management 19/21 · sessions 18/20 · security
 reservations 6/6 · tls-floor 5/6 · fleet 3/3 · multiunit-e2e 0/3 · e2e 0/3
 ```
 
-**CURRENT baseline — 2026-08-10, `--bootstrap-pool --pool-size 5`, 116 scenarios,
-`OSPP_PROTOCOL_VERSION=0.3.0`, csms-server `de8d2fc`: 98 passed / 11 failed / 7 skipped
-in 12m21s, and ZERO of the 11 was a server defect.**
+**SUPERSEDED — 2026-08-10, `--bootstrap-pool --pool-size 5`, 116 scenarios, csms-server
+`de8d2fc`: 98 passed / 11 failed / 7 skipped.** Denominators differ from the line below
+(116 vs 113), so compare SETS, not counts.
 
 ```
 chaos 6/7 · core 17/18 · device-management 19/23 · e2e 0/3 (all skipped) · fleet 3/3
 multiunit-e2e 1/3 · reservations 6/6 · security 19/24 · sessions 22/23 · tls-floor 5/6
 ```
+
+**CURRENT baseline — 2026-08-12, `--all --bootstrap-pool --pool-size 5 --parallel
+--workers 5`, 113 scenarios, `OSPP_PROTOCOL_VERSION=0.3.0`, simulator
+`fix/security-event-assertions-pooled`: 98 passed / 4 failed / 11 skipped in 20m26s, and
+ZERO of the 4 was a server defect.** (The csms-server commit on UAT was not re-verified for
+this run — do not cite one here that nobody measured.)
+
+```
+chaos 6/7 · core 17/18 · device-management 21/22 · e2e 0/3 (all skipped) · fleet 3/3
+multiunit-e2e 0/3 · reservations 6/6 · security 21/24 · sessions 19/21 · tls-floor 5/6
+```
+
+The 4, all attributed: `device-management/firmware-update-install-failure` — `429` on the
+auth call, §4; `multiunit-e2e/single-session-drive` — the documented missing `--var reason`,
+§3, so an `--all` run always fails it; `sessions/session-with-reservation` — `Timeout waiting
+for StartService Request after 15000ms`; `tls-floor/s5-rejects-revoked-cert` — the pool mints
+a fresh VALID cert, so the connection the file needs refused is accepted, §2.
+
+`security` moved 19/24 → 21/24 because the eleven `security-event-*` files stopped asserting
+`data.length: 1`. Measured back-to-back on the security suite alone, same pool size, same
+session: **old files 15/6/3, new files 21/0/3**, every one of the six failing on
+`data.length` (`got 2` ×3, `got 3` ×3). See the header of any `security-event-*.yaml`.
 
 Read a pooled run against THIS line, never against the `--station` one. Pooled mode is the
 more honest instrument and legitimately fails MORE: pool stations are provisioned fresh, so
@@ -221,7 +243,12 @@ more honest instrument and legitimately fails MORE: pool stations are provisione
 `true` as residue from a sibling scenario and masked three scenarios that never declared the
 capability they need. Comparing the two counts directly manufactures phantom regressions.
 
-Also note zero 429s: 116 scenarios drew 116 single-use identities, which is what §4 is for.
+Note the one 429 above, and note WHERE it landed: the message is `API auth failed: 429 {"message":
+"Too Many Attempts."}` — the **login** call, not `/sessions/start`. So it is not the
+`session-mutate` limit §4 is about, and reading it as one sends you to the wrong control. What
+throttle guards auth on UAT was not measured here; what IS measured is that 113 single-use
+identities means 113 logins, and one of them was refused. §4 buys per-scenario session buckets,
+not immunity at the authentication step.
 
 Read against `docs/audits/adjudication/SCENARIO-AUDIT-0.13.0.md` in csms-server, which
 classifies every failure. A run that reproduces those numbers is telling you the same
