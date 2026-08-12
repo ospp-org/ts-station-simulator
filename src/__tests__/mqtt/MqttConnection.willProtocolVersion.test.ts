@@ -20,8 +20,23 @@ vi.mock('mqtt', () => ({
 }));
 
 const { MqttConnection } = await import('../../mqtt/MqttConnection.js');
-const { OSPP_PROTOCOL_VERSION } = await import('@ospp/protocol');
-const { WIRE_PROTOCOL_VERSION } = await import('../../mqtt/protocolVersion.js');
+
+/**
+ * The version this file asserts, transcribed from spec Chapter 08 — deliberately a
+ * LITERAL rather than an import of `OSPP_PROTOCOL_VERSION`.
+ *
+ * This file exists because a will went out carrying whatever the SDK happened to say,
+ * and the SDK happened to say something the server refused. Asserting against the SDK
+ * constant would restore precisely that coupling: the test would pass for any value the
+ * SDK ever ships, including the next wrong one, and would have passed throughout the
+ * incident it was written to prevent.
+ *
+ * Until @ospp/protocol 0.15.0 this repo carried a local `WIRE_PROTOCOL_VERSION` for the
+ * same reason, plus a `.not.toBe(OSPP_PROTOCOL_VERSION)` tripwire that fired the moment
+ * the SDK was corrected. The SDK is now right, so the local constant is deleted; the
+ * independence it provided is kept here, in one line, where it costs nothing.
+ */
+const SPEC_WIRE_VERSION = '0.3.0';
 
 /**
  * The Last Will is the ONE envelope the station never publishes itself — it is
@@ -94,8 +109,7 @@ describe('MqttConnection — the Last Will carries the CONFIGURED wire protocolV
    */
   it('emits the spec wire version when the env is unset — the path that actually runs', () => {
     new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_abc' }).connect();
-    expect(willEnvelope().protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
-    expect(willEnvelope().protocolVersion).not.toBe(OSPP_PROTOCOL_VERSION);
+    expect(willEnvelope().protocolVersion).toBe(SPEC_WIRE_VERSION);
   });
 
   it('leaves no silent non-conformant path — both publishers agree with the env unset', async () => {
@@ -114,8 +128,8 @@ describe('MqttConnection — the Last Will carries the CONFIGURED wire protocolV
     await sender.send(OsppAction.HEARTBEAT, MessageType.REQUEST, {});
 
     const sent = JSON.parse(published as unknown as string) as Record<string, unknown>;
-    expect(sent.protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
-    expect(willEnvelope().protocolVersion).toBe(WIRE_PROTOCOL_VERSION);
+    expect(sent.protocolVersion).toBe(SPEC_WIRE_VERSION);
+    expect(willEnvelope().protocolVersion).toBe(SPEC_WIRE_VERSION);
   });
 
   it('still builds a conforming will otherwise — source, action and the lwt- id prefix', () => {

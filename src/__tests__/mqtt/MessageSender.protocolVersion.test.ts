@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { MessageType, OSPP_PROTOCOL_VERSION, OsppAction } from '@ospp/protocol';
 import { MessageSender } from '../../mqtt/MessageSender.js';
-import type { MqttConnection } from '../../mqtt/MqttConnection.js';
-import { WIRE_PROTOCOL_VERSION } from '../../mqtt/protocolVersion.js';
 
 /*
  * The wire protocolVersion must be OVERRIDABLE, and its DEFAULT must be conformant.
@@ -19,6 +17,21 @@ import { WIRE_PROTOCOL_VERSION } from '../../mqtt/protocolVersion.js';
  * unset path is the only path that runs, and it put 0.2.1 on the wire. Proven against UAT
  * on 2026-08-10. These pin all three: default → spec wire version, explicit override → wire,
  * env → wire.
+ *
+ * WHAT CHANGED AT @ospp/protocol 0.15.0. The default assertion used to read
+ * `.toBe(WIRE_PROTOCOL_VERSION)` and `.not.toBe(OSPP_PROTOCOL_VERSION)` — this repo carried
+ * a local constant precisely BECAUSE the SDK's was non-conformant, and that second assertion
+ * was the tripwire: "if this ever coincides, the SDK default was corrected and
+ * WIRE_PROTOCOL_VERSION can go." It coincided (`expected '0.3.0' not to be '0.3.0'`), the
+ * constant is gone, and the assertion is now against the literal the spec mandates.
+ *
+ * It is deliberately a LITERAL and not `OSPP_PROTOCOL_VERSION`. Asserting the wire value
+ * against the same constant the code puts on the wire is a tautology that passes for any
+ * value the SDK ever ships — including the next wrong one. This file exists because a wrong
+ * SDK default reached UAT, so the one thing it must not do is re-derive its expectation from
+ * the SDK. `0.3.0` is transcribed from spec Chapter 08. When the spec moves, this fails, and
+ * failing is the correct behaviour: the spec moving is exactly the event a station operator
+ * needs to be told about.
  */
 
 function makeSender(protocolVersion?: string): { sender: MessageSender; published: () => string | null } {
@@ -44,13 +57,18 @@ describe('MessageSender protocolVersion (overridable, not hardcoded)', () => {
     else process.env.OSPP_PROTOCOL_VERSION = previous;
   });
 
-  it('defaults to the SPEC wire version when nothing overrides it — not the SDK constant', async () => {
+  it('defaults to the SPEC wire version when nothing overrides it', async () => {
     delete process.env.OSPP_PROTOCOL_VERSION;
     const { sender, published } = makeSender(undefined);
-    expect(await versionOnWire(sender, published)).toBe(WIRE_PROTOCOL_VERSION);
-    // The SDK constant is still 0.2.1 and is NOT conformant on the wire; if this
-    // ever coincides, the SDK default was corrected and WIRE_PROTOCOL_VERSION can go.
-    expect(await versionOnWire(sender, published)).not.toBe(OSPP_PROTOCOL_VERSION);
+    // Literal, transcribed from spec Chapter 08 — NOT OSPP_PROTOCOL_VERSION. See header.
+    expect(await versionOnWire(sender, published)).toBe('0.3.0');
+  });
+
+  it('and the SDK constant now agrees with the spec, which is why the local override is gone', () => {
+    // The former WIRE_PROTOCOL_VERSION existed only to paper over a non-conformant SDK
+    // default. This asserts the condition that retired it, so a regression in the SDK is
+    // reported HERE — as "the SDK drifted" — rather than as a mysterious 1007 on UAT.
+    expect(OSPP_PROTOCOL_VERSION).toBe('0.3.0');
   });
 
   it('emits an explicit override on the wire (target a server pinned to a different MAJOR, e.g. UAT 1.x)', async () => {
