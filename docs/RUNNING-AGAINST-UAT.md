@@ -57,12 +57,31 @@ them apart from a real failure.
 
 ## 3. Scenarios with REQUIRED `--var`s
 
-Substitution throws when one is missing. Since 2026-08-07 the failure names the step and
-the variable; before that it printed a bare red scenario name and nothing else.
+**Since 2026-08-12 this is enforced at startup, not discovered mid-run.** The runner derives
+each scenario's required variables from the file and checks them before any bootstrap:
+
+- **`--scenario <file>` → refused immediately**, naming the variables and the flags to pass.
+  You asked for that file by name; a silent skip would answer a question you did not ask.
+- **`--suite` / `--all` → skipped transparently**, listed up front before the pool is
+  provisioned, and still counted in the total so `passed + failed + skipped` holds.
+
+Until then an `--all` run reached step 9 of `single-session-drive` after eight minutes and
+threw `Template variable not found: reason` — a documented, known, *permanent* red line in
+every full run. That is the cost this closes: a standing failure teaches you to skim the
+failure list, and the run where it means something looks like the twenty where it did not.
+
+The requirement is computed by asking `generateVariables` what it provides, so the check
+cannot drift from the generator. It reads `steps` and `station` and never `description` —
+a scenario that documents its own `--var` in its header mentions the token in prose, and a
+text-level scan cannot tell documentation from dependency. (The first survey written for this
+did scan raw text, and reported `single-session-drive` — the one file known to fail this way
+— as clean.) `ScenarioRunner.variablePreflight.test.ts` pins the corpus list below, so a new
+scenario referencing an ungenerated variable has to be a deliberate decision.
 
 | scenario | required |
 |---|---|
-| `multiunit-e2e/single-session-drive` | `--var reason=<SessionEndReason>` e.g. `TimerExpired`. Its header says so. Passes 12/12 with it. |
+| `multiunit-e2e/single-session-drive` | `--var reason=<SessionEndReason>` e.g. `TimerExpired`. A parameterized sweep — run it once per reason. **No default on purpose:** a default would pin one arm and report the sweep as done. Passes 12/12 with it. |
+| `multiunit-e2e/multiunit-batch-drive` | same `--var reason=…`. Carries `skip_when_pooled`, so in a pooled run it keeps that reason; in a non-pooled bulk run the preflight is what catches it. |
 | `sessions/session-rejected-invalid-service-cross-station` | `--var stationA_bayId=… --var stationB_serviceId=…`, plus **two** manually provisioned stations in one org with disjoint catalogs. `skip_when_pooled` carries the reason. |
 | `security/offline-auth-transaction-reconcile{,-hostile}` | `--var offlineTxId=… --var authId=… --var sessionId=…` — the header says so. These describe a grant issued out of band; there is no API that mints one on UAT. |
 | most `sessions/*`, `reservations/*` | **`--station` mode only:** `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
@@ -215,27 +234,52 @@ chaos 6/7 · core 17/18 · device-management 19/23 · e2e 0/3 (all skipped) · f
 multiunit-e2e 1/3 · reservations 6/6 · security 19/24 · sessions 22/23 · tls-floor 5/6
 ```
 
-**CURRENT baseline — 2026-08-12, `--all --bootstrap-pool --pool-size 5 --parallel
---workers 5`, 113 scenarios, `OSPP_PROTOCOL_VERSION=0.3.0`, simulator
-`fix/security-event-assertions-pooled`: 98 passed / 4 failed / 11 skipped in 20m26s, and
-ZERO of the 4 was a server defect.** (The csms-server commit on UAT was not re-verified for
-this run — do not cite one here that nobody measured.)
+### CURRENT baseline — and why it is a SET, not a number
+
+**Do not compare a run to a pass count. Compare it to the failure SET below.** Two full
+pooled runs on identical code, 40 minutes apart on 2026-08-12, produced:
+
+| | passed | failed | skipped | `429`s seen |
+|---|---|---|---|---|
+| 10:37 | 98 | 4 | 11 | 18 (1 fatal) |
+| 11:18 | 95 | 6 | 12 | 23 (4 fatal) |
+
+**Exactly ONE failure appears in both**: `tls-floor/s5-rejects-revoked-cert`. Every other
+failure in either run is churn. An earlier version of this very block published `98/4/11` as
+*the* baseline; the next run falsified it in under an hour. That is the third time this file
+has stated a number that stopped being true, and the reason is that the number was never the
+stable thing.
+
+`--all --bootstrap-pool --pool-size 5 --parallel --workers 5`, 113 scenarios,
+`OSPP_PROTOCOL_VERSION=0.3.0`. Second run, per suite:
 
 ```
-chaos 6/7 · core 17/18 · device-management 21/22 · e2e 0/3 (all skipped) · fleet 3/3
-multiunit-e2e 0/3 · reservations 6/6 · security 21/24 · sessions 19/21 · tls-floor 5/6
+chaos 6/7 · core 16/18 · device-management 19/22 · e2e 0/3 · fleet 3/3
+multiunit-e2e 0/3 · reservations 5/6 · security 21/24 · sessions 20/21 · tls-floor 5/6
 ```
 
-The 4, all attributed: `device-management/firmware-update-install-failure` — `429` on the
-auth call, §4; `multiunit-e2e/single-session-drive` — the documented missing `--var reason`,
-§3, so an `--all` run always fails it; `sessions/session-with-reservation` — `Timeout waiting
-for StartService Request after 15000ms`; `tls-floor/s5-rejects-revoked-cert` — the pool mints
-a fresh VALID cert, so the connection the file needs refused is accepted, §2.
+**What to actually expect:**
 
-`security` moved 19/24 → 21/24 because the eleven `security-event-*` files stopped asserting
-`data.length: 1`. Measured back-to-back on the security suite alone, same pool size, same
-session: **old files 15/6/3, new files 21/0/3**, every one of the six failing on
-`data.length` (`got 2` ×3, `got 3` ×3). See the header of any `security-event-*.yaml`.
+1. **One structural failure, every pooled run** — `tls-floor/s5-rejects-revoked-cert`. The
+   pool mints a fresh VALID certificate; the file needs a revoked one, so the connection it
+   requires be refused is accepted. Deterministic and explained. Not a defect.
+2. **`API auth failed: 429` — environmental, load-dependent, never a defect.** This is the
+   dominant source of variance: 4 of the 6 failures in the second run were nothing else.
+   **Do not run two full suites back to back** — the second inherits the first's throttle
+   state, which is exactly what produced the table above. Wait, or accept the noise.
+3. **`reservations/reserve-rejected-already-reserved` — FLAGGED, not attributed.** Expected
+   `409`, got `201`: a second reservation on the same `bay_id` was accepted while the first
+   was live (both POSTs use `{{bayId_1}}`, same bay, same identity, same scenario). It passed
+   in the 10:37 run, so it is not deterministic. Either a race between the station's
+   `ReserveBay` Response being processed and the second POST, or a real gap in the conflict
+   check — **not investigated, and not to be written off as flake without looking.**
+4. **The eleven `security-event-*` scenarios pass — in both runs.** `security` moved
+   19/24 → 21/24 when they stopped asserting `data.length: 1`. Measured back-to-back on the
+   security suite alone, same pool size, same session: **old files 15/6/3, new files 21/0/3**,
+   every one of the six failing on `data.length` (`got 2` ×3, `got 3` ×3).
+
+(The csms-server commit on UAT was not re-verified for either run — no commit is cited here,
+because a baseline naming one nobody measured is the same defect as the number it replaced.)
 
 Read a pooled run against THIS line, never against the `--station` one. Pooled mode is the
 more honest instrument and legitimately fails MORE: pool stations are provisioned fresh, so
@@ -243,12 +287,18 @@ more honest instrument and legitimately fails MORE: pool stations are provisione
 `true` as residue from a sibling scenario and masked three scenarios that never declared the
 capability they need. Comparing the two counts directly manufactures phantom regressions.
 
-Note the one 429 above, and note WHERE it landed: the message is `API auth failed: 429 {"message":
-"Too Many Attempts."}` — the **login** call, not `/sessions/start`. So it is not the
-`session-mutate` limit §4 is about, and reading it as one sends you to the wrong control. What
-throttle guards auth on UAT was not measured here; what IS measured is that 113 single-use
-identities means 113 logins, and one of them was refused. §4 buys per-scenario session buckets,
-not immunity at the authentication step.
+Note WHERE the 429s land: the message is `API auth failed: 429 {"message": "Too Many
+Attempts."}` — the **login** call, not `/sessions/start`. So it is not the `session-mutate`
+limit §4 is about, and reading it as one sends you to the wrong control. What throttle guards
+auth on UAT was not measured; what IS measured is that 113 single-use identities means 113
+logins, and the endpoint pushes back. §4 buys per-scenario *session* buckets, not immunity at
+the authentication step.
+
+And note the volume, which is easy to miss because retry absorbs most of it: the 10:37 run saw
+**18** `429`s and only 1 became a failure; the 11:18 run saw **23** and 4 became failures. So
+a run reporting one 429-caused failure is not a run that hit the limit once. When failures
+cluster in `device-management` or `core` with a `429` in the step error, that is this — count
+the occurrences before reading anything structural into it.
 
 Read against `docs/audits/adjudication/SCENARIO-AUDIT-0.13.0.md` in csms-server, which
 classifies every failure. A run that reproduces those numbers is telling you the same
