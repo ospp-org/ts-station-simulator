@@ -600,6 +600,74 @@ export function generateVariables(
 }
 
 // ---------------------------------------------------------------------------
+// Variable preflight — answer "can this scenario run at all?" BEFORE the run
+// ---------------------------------------------------------------------------
+
+/**
+ * Every `{{token}}` the scenario actually EXECUTES — `steps` and `station`, never
+ * `description`.
+ *
+ * The distinction is the whole correctness of this function. A scenario that documents its
+ * own required `--var` in its header (single-session-drive spends nine comment lines on
+ * `{{reason}}`) mentions the token in prose too, and a text-level scan cannot tell the
+ * documentation from the dependency. The first version of this survey scanned raw text and
+ * reported the one known-failing scenario as CLEAN, because its header explained the very
+ * variable that breaks it.
+ *
+ * Mapping KEYS are collected as well as values: a key can carry a selector
+ * (`data[eventId={{runSecurityEventId}}]`) and is substituted like any other string.
+ */
+function collectTemplateTokens(node: unknown, out: Set<string>): void {
+  if (typeof node === 'string') {
+    for (const m of node.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) out.add(m[1].trim());
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const v of node) collectTemplateTokens(v, out);
+    return;
+  }
+  if (node !== null && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      collectTemplateTokens(k, out);
+      collectTemplateTokens(v, out);
+    }
+  }
+}
+
+/**
+ * The variables a scenario references that NOTHING will provide — so substitution is
+ * guaranteed to throw the moment the step is reached.
+ *
+ * Derived by asking `generateVariables` itself what it provides, rather than restating the
+ * list. A hand-copied list is a second source of truth that drifts the first time someone
+ * adds a generated variable, and drift here means a preflight that either blocks a runnable
+ * scenario or waves through the one it exists to catch.
+ *
+ * `captured.*` / `pool.*` / `provisioning.*` are resolved at step time from run state that
+ * does not exist yet, so they are out of scope here by construction — this answers only
+ * "was a plain variable never supplied?".
+ */
+export function unsatisfiedVariables(
+  scenario: ScenarioDefinition,
+  target: TargetConfig,
+  userVars?: Map<string, string>,
+): string[] {
+  const provided = generateVariables(scenario, target, null, userVars);
+  const tokens = new Set<string>();
+  collectTemplateTokens(scenario.steps, tokens);
+  collectTemplateTokens(scenario.station, tokens);
+
+  const missing: string[] = [];
+  for (const t of tokens) {
+    if (t.startsWith('captured.') || t.startsWith('pool.') || t.startsWith('provisioning.')) {
+      continue;
+    }
+    if (!provided.has(t)) missing.push(t);
+  }
+  return missing.sort();
+}
+
+// ---------------------------------------------------------------------------
 // Disk hydration — read persisted bays.json into context.provisioning
 // ---------------------------------------------------------------------------
 
