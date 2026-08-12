@@ -165,18 +165,39 @@ describe('the eleven security-event scenarios', () => {
     }
   });
 
+  // The assertion lines only. Every one of these files now quotes both retired forms in its
+  // header, deliberately, so a whole-file `toContain` would read the explanation as the code.
+  const assertionLines = (f: string) =>
+    fs.readFileSync(f, 'utf8')
+      .split('\n')
+      .filter(ln => !ln.trimStart().startsWith('#'))
+      .join('\n');
+
   it('each reads its event back and asserts the id it sent — not a count, not the most recent', () => {
     for (const f of files) {
-      const src = fs.readFileSync(f, 'utf8');
-      expect(src).toContain('/api/v1/admin/security/events?station_id={{captured.stationUuid}}');
-      expect(src).toContain('data.0.eventId: "{{runSecurityEventId}}"');
-      expect(src).toContain('data.length: 1');
+      const code = assertionLines(f);
+      expect(code).toContain('/api/v1/admin/security/events?station_id={{captured.stationUuid}}');
+      expect(code).toContain('data[eventId={{runSecurityEventId}}].type:');
+      expect(code).toContain('data[eventId={{runSecurityEventId}}].stationId: "{{stationId}}"');
+    }
+  });
+
+  // The regression this pins. `data.length: 1` claims the station has had exactly one
+  // security event ever — false for every scenario after the first to land on a pooled
+  // station, because StationPoolAllocator does not reset state on release. `data.0` claims
+  // the row it wants is the newest, which held only by the endpoint's default sort. Both are
+  // position/count arguments about rows this scenario does not own; identity is the eventId.
+  it('none addresses the row by COUNT or by POSITION', () => {
+    for (const f of files) {
+      const code = assertionLines(f);
+      expect(code).not.toMatch(/data\.length/);
+      expect(code).not.toMatch(/data\.\d+\./);
     }
   });
 
   it('asserts severity in the LOWERCASE the column stores, not the wire enum case', () => {
     for (const f of files) {
-      const m = fs.readFileSync(f, 'utf8').match(/data\.0\.severity: "([^"]+)"/);
+      const m = assertionLines(f).match(/\]\.severity: "([^"]+)"/);
       expect(m).not.toBeNull();
       expect(m![1]).toBe(m![1].toLowerCase());
     }

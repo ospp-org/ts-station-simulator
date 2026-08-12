@@ -12,7 +12,7 @@ of things that have to be true, so the next run's failures mean something.
 | variable | needed by | notes |
 |---|---|---|
 | `OSPP_PROTOCOL_VERSION` | **every scenario** | Must be a member of the server's `supported_versions` set. Negotiation is **exact match** (`VERSIONING.md:25`) — a shared MAJOR implies nothing, and the SDK's MAJOR gate was deleted in 0.12.0. The SDK default is `0.2.1`; spec v0.11.1 mandates **`0.3.0`** on the wire (176 value sites). **Set it explicitly** until the SDK default is corrected, which needs an SDK release. Get it wrong and every boot is refused `1007`. |
-| `UAT_EMAIL` / `UAT_PASSWORD` | any scenario with an `api_call` | Resolves `${UAT_EMAIL}` in `config/targets.yaml`. The values in the repo `.env` were stale as of this run — they 401. A live pool identity from `tests/artifacts/pool-handle.json` works. |
+| `UAT_EMAIL` / `UAT_PASSWORD` | **must be SET in every mode; the VALUE matters only in `--station`** | Two different things, and conflating them costs a run either way. **Set:** `resolveEnvVarsDeep` walks all of `config/targets.yaml` at load and throws `Environment variable UAT_EMAIL is not set` on any unresolved `${…}` (`cli/config.ts:54-62`), before a single scenario runs — including under `--bootstrap-pool`, which does not use the identity at all. An empty string satisfies it (the check is `=== undefined`). **Value:** in `--bootstrap-pool` it is never authenticated with — a scenario with no `auth:` block resolves to `undefined` and the caller falls through to the per-scenario pool worker, so the `target.credentials` fallback is *structurally unreachable* while the allocator is active (`ScenarioRunner.ts:502-510`), and the builder authenticates as the platform admin and mints its own ephemeral `tenant_owner` (`PoolBootstrap.ts:304-324`). So a stale value that 401s is harmless in pooled mode, and an *unset* one is fatal in every mode. The repo `.env` values are stale; exporting the platform-admin pair into both is the simplest thing that is correct everywhere. This row used to read "needed by any scenario with an `api_call`", which explains neither half. |
 | `UAT_E2E_PLATFORM_ADMIN_EMAIL` / `_PASSWORD` | the whole `security` suite | Any scenario declaring an `auth` override startup-**fails** the entire run without these, before a single scenario executes. They live in `~/.config/osp-e2e-secrets.env`, and the values there are **single-quoted** — strip the quotes or the login 422s with "The email field must be a valid email address". |
 
 `.env` cannot simply be `source`d: at least one value contains a shell metacharacter and
@@ -65,9 +65,17 @@ the variable; before that it printed a bare red scenario name and nothing else.
 | `multiunit-e2e/single-session-drive` | `--var reason=<SessionEndReason>` e.g. `TimerExpired`. Its header says so. Passes 12/12 with it. |
 | `sessions/session-rejected-invalid-service-cross-station` | `--var stationA_bayId=… --var stationB_serviceId=…`, plus **two** manually provisioned stations in one org with disjoint catalogs. `skip_when_pooled` carries the reason. |
 | `security/offline-auth-transaction-reconcile{,-hostile}` | `--var offlineTxId=… --var authId=… --var sessionId=…` — the header says so. These describe a grant issued out of band; there is no API that mints one on UAT. |
-| most `sessions/*`, `reservations/*` | `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
+| most `sessions/*`, `reservations/*` | **`--station` mode only:** `--var serviceId_1=<real svc_*>` — otherwise a random serviceId is generated and `/sessions/start` 404s `3004 INVALID_SERVICE` |
 
-`{{bayId_N}}` is hydrated automatically from `<stationId>-bays.json`; serviceIds are not.
+`{{bayId_N}}` is hydrated automatically from `<stationId>-bays.json`.
+
+**`{{serviceId_1..4}}` are hydrated too, in `--bootstrap-pool`** — the row above is a
+`--station` constraint, not a general one. The pool bootstrap seeds `DEFAULT_SEED_SERVICES`
+(`uatPrivileged.ts:158-170`) deliberately matching the runner's `defaultServices`
+(`ScenarioRunner.ts:574`), so each of the four resolves to a real `station_services` row on
+every bootstrapped station. Passing `--var serviceId_1=…` in pooled mode is unnecessary and
+overrides a valid id with one the catalog may not carry. Outside bootstrap the ids are still
+merely *generated* — same text, no row behind it — which is what the `3004` above is.
 
 ---
 
@@ -198,14 +206,36 @@ core 12/16 · chaos 6/7 · device-management 19/21 · sessions 18/20 · security
 reservations 6/6 · tls-floor 5/6 · fleet 3/3 · multiunit-e2e 0/3 · e2e 0/3
 ```
 
-**CURRENT baseline — 2026-08-10, `--bootstrap-pool --pool-size 5`, 116 scenarios,
-`OSPP_PROTOCOL_VERSION=0.3.0`, csms-server `de8d2fc`: 98 passed / 11 failed / 7 skipped
-in 12m21s, and ZERO of the 11 was a server defect.**
+**SUPERSEDED — 2026-08-10, `--bootstrap-pool --pool-size 5`, 116 scenarios, csms-server
+`de8d2fc`: 98 passed / 11 failed / 7 skipped.** Denominators differ from the line below
+(116 vs 113), so compare SETS, not counts.
 
 ```
 chaos 6/7 · core 17/18 · device-management 19/23 · e2e 0/3 (all skipped) · fleet 3/3
 multiunit-e2e 1/3 · reservations 6/6 · security 19/24 · sessions 22/23 · tls-floor 5/6
 ```
+
+**CURRENT baseline — 2026-08-12, `--all --bootstrap-pool --pool-size 5 --parallel
+--workers 5`, 113 scenarios, `OSPP_PROTOCOL_VERSION=0.3.0`, simulator
+`fix/security-event-assertions-pooled`: 98 passed / 4 failed / 11 skipped in 20m26s, and
+ZERO of the 4 was a server defect.** (The csms-server commit on UAT was not re-verified for
+this run — do not cite one here that nobody measured.)
+
+```
+chaos 6/7 · core 17/18 · device-management 21/22 · e2e 0/3 (all skipped) · fleet 3/3
+multiunit-e2e 0/3 · reservations 6/6 · security 21/24 · sessions 19/21 · tls-floor 5/6
+```
+
+The 4, all attributed: `device-management/firmware-update-install-failure` — `429` on the
+auth call, §4; `multiunit-e2e/single-session-drive` — the documented missing `--var reason`,
+§3, so an `--all` run always fails it; `sessions/session-with-reservation` — `Timeout waiting
+for StartService Request after 15000ms`; `tls-floor/s5-rejects-revoked-cert` — the pool mints
+a fresh VALID cert, so the connection the file needs refused is accepted, §2.
+
+`security` moved 19/24 → 21/24 because the eleven `security-event-*` files stopped asserting
+`data.length: 1`. Measured back-to-back on the security suite alone, same pool size, same
+session: **old files 15/6/3, new files 21/0/3**, every one of the six failing on
+`data.length` (`got 2` ×3, `got 3` ×3). See the header of any `security-event-*.yaml`.
 
 Read a pooled run against THIS line, never against the `--station` one. Pooled mode is the
 more honest instrument and legitimately fails MORE: pool stations are provisioned fresh, so
@@ -213,7 +243,12 @@ more honest instrument and legitimately fails MORE: pool stations are provisione
 `true` as residue from a sibling scenario and masked three scenarios that never declared the
 capability they need. Comparing the two counts directly manufactures phantom regressions.
 
-Also note zero 429s: 116 scenarios drew 116 single-use identities, which is what §4 is for.
+Note the one 429 above, and note WHERE it landed: the message is `API auth failed: 429 {"message":
+"Too Many Attempts."}` — the **login** call, not `/sessions/start`. So it is not the
+`session-mutate` limit §4 is about, and reading it as one sends you to the wrong control. What
+throttle guards auth on UAT was not measured here; what IS measured is that 113 single-use
+identities means 113 logins, and one of them was refused. §4 buys per-scenario session buckets,
+not immunity at the authentication step.
 
 Read against `docs/audits/adjudication/SCENARIO-AUDIT-0.13.0.md` in csms-server, which
 classifies every failure. A run that reproduces those numbers is telling you the same

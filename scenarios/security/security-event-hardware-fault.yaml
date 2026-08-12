@@ -7,8 +7,32 @@
 #              persistence, not server judgement. Stated so it is not read as stronger.
 #   case     — the wire enum is Critical|Error|Warning|Info; the column stores LOWERCASE and
 #              the endpoint returns it verbatim (DashboardSecurityController:94).
-#   scoping  — a fresh single-station pool owns exactly ONE event, so data.0 is deterministic:
-#              not a count, not "most recent", nothing to race.
+#   scoping  — ?station_id= narrows the read to this station. It does NOT make the station's
+#              event set a singleton, and the assertion must not assume that it does.
+#
+# WHY NOT data.length / data.0 — THE DEFECT THESE ELEVEN FILES CARRIED UNTIL 2026-08-12.
+#   They asserted `data.length: 1` plus positional `data.0.*`, which says "this station has
+#   had exactly one security event, ever". That is true only of a station no other scenario
+#   has touched. StationPoolAllocator is pure mutual exclusion and does NOT reset station
+#   state on release (RUNNING-AGAINST-UAT.md §5), so in a pooled run every scenario after the
+#   first to land on a station inherits its neighbours' events, and the length line goes red
+#   against a CORRECT server. Five stations, eleven scenarios: five find a fresh station, six
+#   do not — which is exactly the six that failed.
+#   `data.0` was the quieter half and did NOT fail: the endpoint sorts created_at DESC by
+#   default (DashboardSecurityController:80-87), so this run's row — the newest — happened to
+#   land at index 0. An assertion that holds by ordering luck is not a milder version of the
+#   right one; it is the mistake the array selector was built to retire (ApiCallStep.ts:215-227,
+#   which names asserting on "the most recent" row as the same class as asserting on index 0).
+#   The read is now addressed by CONTENT — data[eventId=<the id this run sent>] — which needs
+#   no exclusivity, no ordering and no count. It required teaching the runner to substitute
+#   templates in mapping KEYS, not just values (ScenarioRunner.ts); until then a selector
+#   could not carry a per-run id at all.
+#
+# WHAT DROPPING data.length COST, HONESTLY: nothing in addition. The length pinned the whole
+#   station's event set — not this scenario's subject, and not something any scenario can own
+#   in a shared pool. Its only working job was making `data.0` deterministic, and naming the
+#   row by id removes that need. Ingestion is still proven: an unmatched selector resolves to
+#   undefined, so every assertion below fails if the event never landed.
 #
 # Until 2026-08-10 this file asserted only that its BootNotification was Accepted, and its
 # eventId was a hardcoded literal already present in security_events since 2026-06-15 —
@@ -91,8 +115,7 @@ steps:
     url: "{{target_url}}/api/v1/admin/security/events?station_id={{captured.stationUuid}}"
     expect_status: 200
     expect_body:
-      data.length: 1
-      data.0.eventId: "{{runSecurityEventId}}"
-      data.0.type: "HardwareFault"
-      data.0.severity: "critical"
-      data.0.stationId: "{{stationId}}"
+      # Addressed by the id THIS RUN sent — not by position, not by row count.
+      data[eventId={{runSecurityEventId}}].type: "HardwareFault"
+      data[eventId={{runSecurityEventId}}].severity: "critical"
+      data[eventId={{runSecurityEventId}}].stationId: "{{stationId}}"
