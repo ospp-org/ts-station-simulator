@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import {
   ScenarioRunner,
+  unsatisfiedVariables,
   type TargetConfig as RunnerTargetConfig,
   type ScenarioResult,
   type ScenarioDefinition,
@@ -173,6 +174,75 @@ program
         throw new Error('specify --scenario, --suite, or --all');
       }
 
+      // 2b. Variable preflight — the answer to "can this scenario run at all?", asked
+      //     BEFORE any bootstrap and therefore before any of the run's wall clock.
+      //
+      //     `multiunit-e2e/single-session-drive` requires `--var reason=<SessionEndReason>`;
+      //     it is a parameterized harness meant to be swept once per reason, and its header
+      //     says so at length. Nothing generates the variable, so an `--all` run spent eight
+      //     minutes reaching step 9 and then threw `Template variable not found: reason`.
+      //     Documented, known, and still a red line in every full run — which is the actual
+      //     cost: a standing failure trains you to skim the failure list, and the one run
+      //     where it means something looks exactly like the twenty where it did not.
+      //
+      //     WHY NOT a default value: the file exists to sweep the SessionEnded reasons, so a
+      //     default would quietly pin one arm and report the sweep as done. The corpus already
+      //     made this argument once — `generateVariables` deliberately names its generated id
+      //     `runOfflineTxId` rather than `offlineTxId`, precisely so the offline-auth files
+      //     keep throwing instead of running against a grant the server never issued.
+      //
+      //     WHY NOT only a per-file `skip_when_pooled`: that mechanism already exists and 8
+      //     files use it — this one simply did not, which is how the hole opened. It is
+      //     hand-maintained, and it fires only in pooled mode, so `--all --station X` would
+      //     still fail at minute eight. Deriving the requirement from the file itself needs no
+      //     declaration and cannot drift.
+      //
+      //     Explicit `--scenario` REFUSES rather than skips: naming a file and silently
+      //     getting a skip answers a question the caller did not ask.
+      const loadedScenarios: ScenarioDefinition[] = singleScenario
+        ? [singleScenario]
+        : await Promise.all(scenarioPaths.map(p => runner.loadScenario(p)));
+
+      const unsatisfied = loadedScenarios
+        .map(scenario => ({
+          scenario,
+          missing: unsatisfiedVariables(scenario, runnerTarget, userVarsArg),
+        }))
+        .filter(x => x.missing.length > 0);
+
+      if (unsatisfied.length > 0 && singleScenario) {
+        const { missing } = unsatisfied[0];
+        const plural = missing.length > 1;
+        throw new Error(
+          `"${singleScenario.name}" needs ${plural ? 'variables' : 'a variable'} nothing ` +
+          `generates: ${missing.join(', ')}. Substitution would throw at the step that uses ` +
+          `${plural ? 'them' : 'it'}, so this is refused now rather than mid-run. Pass ` +
+          `${missing.map(v => `--var ${v}=<value>`).join(' ')} — the scenario header states ` +
+          `the accepted values.`,
+        );
+      }
+
+      // Bulk selection: skip transparently, listed up front, still counted in the total.
+      // A file already carrying a declaration that WILL fire keeps its own reason — it is
+      // usually the richer one, and overwriting it would lose why the pool cannot host it.
+      const preflightSkipped = unsatisfied.filter(({ scenario }) =>
+        !scenario.skip && !(scenario.skip_when_pooled && opts.bootstrapPool));
+      if (preflightSkipped.length > 0) {
+        console.log(chalk.yellow(
+          `Preflight: ${preflightSkipped.length} scenario(s) SKIPPED — required --var not supplied ` +
+          `(they cannot run in this invocation; this is not a failure):`,
+        ));
+        for (const { scenario, missing } of preflightSkipped) {
+          scenario.skip = true;
+          scenario.skip_reason =
+            `required --var not supplied: ${missing.join(', ')}. Nothing generates ` +
+            `${missing.length > 1 ? 'these' : 'this'}; run the file directly with --scenario ` +
+            `and --var to exercise it.`;
+          console.log(chalk.yellow(`  - ${scenario.name} → ${missing.join(', ')}`));
+        }
+        console.log();
+      }
+
       // 3. Per-run pool bootstrap (F-PROC-1). Runs after discovery and before
       //    the scenarios so a fresh pool + org/location + offline-enable exist,
       //    and is torn down in `finally` regardless of outcome.
@@ -230,7 +300,9 @@ program
       if (singleScenario) {
         results = [await runner.runScenario(singleScenario, runnerTarget, userVarsArg)];
       } else {
-        results = await runScenarioPaths(runner, scenarioPaths, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
+        // The preflight-annotated objects, NOT a fresh load — reloading would discard the
+        // skip marks it just set and put the mid-run failures straight back.
+        results = await runLoadedScenarios(runner, loadedScenarios, runnerTarget, opts.parallel ?? false, maxWorkers, userVarsArg);
       }
 
       // 5. Output results
@@ -311,18 +383,14 @@ async function discoverYamlFiles(dir: string): Promise<string[]> {
   return results.sort();
 }
 
-async function runScenarioPaths(
+async function runLoadedScenarios(
   runner: ScenarioRunner,
-  scenarioPaths: string[],
+  scenarios: ScenarioDefinition[],
   target: RunnerTargetConfig,
   parallel: boolean,
   maxWorkers: number,
   userVars?: Map<string, string>,
 ): Promise<ScenarioResult[]> {
-  const scenarios = await Promise.all(
-    scenarioPaths.map(p => runner.loadScenario(p)),
-  );
-
   if (parallel && maxWorkers > 1) {
     return runner.runParallel(scenarios, target, maxWorkers, userVars);
   }
