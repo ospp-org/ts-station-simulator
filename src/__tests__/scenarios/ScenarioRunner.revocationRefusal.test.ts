@@ -86,9 +86,41 @@ describe('classifyRefusalReason (ADR-0005 §7, invariant 6)', () => {
     }
   });
 
+  it('attributes a broker expiry alert (certificate_expired / alert 45) to broker-certificate-expired', () => {
+    for (const msg of [
+      'error:0A000415:SSL routines:ssl3_read_bytes:ssl/tls alert certificate expired',
+      'write EPROTO ... SSL alert number 45',
+      'tlsv1 alert_certificate_expired',
+    ]) {
+      const c = classifyRefusalReason(msg);
+      expect(c.reason).toBe('broker-certificate-expired');
+      expect(c.layer).toBe('broker');
+    }
+  });
+
   it('attributes other broker cert refusals (handshake failure, unknown ca) to broker-bad-certificate', () => {
     expect(classifyRefusalReason('sslv3 alert handshake failure').reason).toBe('broker-bad-certificate');
     expect(classifyRefusalReason('tlsv1 alert unknown ca').reason).toBe('broker-bad-certificate');
+  });
+
+  /**
+   * The reason expiry was given its own name. S6's fixture is signed by the LOCAL
+   * dev Station CA, so aiming it at any other broker yields an untrusted-chain
+   * refusal. While `certificate expired` lived inside the `broker-bad-certificate`
+   * bucket, that misfire produced the SAME classification as a real expiry — the
+   * expiry proof would have been satisfied by the one outcome it most needs to
+   * exclude. These two must never collapse onto one reason again.
+   */
+  it('does NOT let an untrusted chain satisfy an expiry attribution (the two are distinct reasons)', () => {
+    const expired = classifyRefusalReason('sslv3 alert certificate expired').reason;
+    const unknownCa = classifyRefusalReason('tlsv1 alert unknown ca').reason;
+    expect(expired).toBe('broker-certificate-expired');
+    expect(unknownCa).not.toBe(expired);
+  });
+
+  it('keeps revocation and expiry distinct — alert 44 and alert 45 never collapse', () => {
+    expect(classifyRefusalReason('sslv3 alert certificate revoked').reason).toBe('broker-certificate-revoked');
+    expect(classifyRefusalReason('sslv3 alert certificate expired').reason).toBe('broker-certificate-expired');
   });
 
   it('classifies the runner bounded-hang message as a timeout, not a broker refusal', () => {

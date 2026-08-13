@@ -1,5 +1,6 @@
 import { parse as parseYaml } from 'yaml';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { SecureVersion } from 'node:tls';
 import type { StepDefinition } from './steps/Step.js';
@@ -64,6 +65,30 @@ export interface ScenarioDefinition {
    * Transparent: counted as skipped so passed + failed + skipped = total.
    */
   skip_when_pooled?: string;
+  /**
+   * On-disk fixtures this scenario cannot run without. If any path is absent the
+   * scenario is SKIPPED (status 'skipped', reason names the missing file), never
+   * failed and never silently passed.
+   *
+   * This exists for exactly one class of scenario: the ones whose subject is a
+   * DELIBERATELY BROKEN certificate — revoked, expired — which by construction
+   * cannot be obtained from the provisioning path (that path only ever mints
+   * good certificates) and which `certs/` being gitignored keeps out of the
+   * repo. Without this the scenario fails on every machine that lacks the
+   * fixture, and a permanently-red line teaches everyone to ignore it — which
+   * costs more than the proof was worth.
+   *
+   * The distinction that keeps this honest: a MISSING FIXTURE is a skip, but a
+   * fixture that is present and no longer refused is a FAILURE. Nothing here
+   * softens the proof itself; it only stops the absence of an instrument from
+   * being reported as the failure of a property.
+   *
+   * Paths are resolved relative to the process CWD (the repo root), matching
+   * `tls.cert`/`tls.key`/`tls.chain`.
+   */
+  requires_files?: string[];
+  /** Actionable one-liner appended to the skip reason: how to produce the fixture. */
+  requires_files_hint?: string;
   /**
    * When true, the runner skips the automatic `station.connect()` call so
    * that scenarios can run pre-provisioning API steps (signup, org, station
@@ -913,8 +938,16 @@ export const _createStationFromScenarioForTesting = createStationFromScenario;
  *
  *  - `broker-certificate-revoked` — the broker rejected the leaf via its CRL
  *    check (TLS alert 44 `certificate_revoked`). THE revocation signal.
+ *  - `broker-certificate-expired` — the broker rejected the leaf because it is
+ *    past `notAfter` (TLS alert 45 `certificate_expired`). THE expiry signal,
+ *    and it must NOT live in the bucket below: `broker-bad-certificate` also
+ *    covers `unknown ca`, so an expiry scenario asserting it would pass just
+ *    as happily against a leaf from the WRONG hierarchy — the untrusted-chain
+ *    refusal masquerading as an expiry proof. Expiry is checked by ordinary
+ *    path validation, so this alert arrives with `enable_crl_check` off too;
+ *    that independence is exactly why it needs its own name.
  *  - `broker-bad-certificate`     — other broker-side cert refusal (missing
- *    client cert, unknown CA, bad/expired cert, handshake failure).
+ *    client cert, unknown CA, bad certificate, handshake failure).
  *  - `client-tls-version`         — the client's own TLS stack refused before
  *    a byte reached the broker (e.g. a below-floor version pin, S3).
  *  - `timeout`                    — a bounded hang with no clean alert.
@@ -922,6 +955,7 @@ export const _createStationFromScenarioForTesting = createStationFromScenario;
  */
 export type RefusalReason =
   | 'broker-certificate-revoked'
+  | 'broker-certificate-expired'
   | 'broker-bad-certificate'
   | 'client-tls-version'
   | 'timeout'
@@ -930,6 +964,23 @@ export type RefusalReason =
 export interface RefusalClassification {
   reason: RefusalReason;
   layer: 'broker' | 'client' | 'unknown';
+}
+
+/**
+ * First entry of {@link ScenarioDefinition.requires_files} that is not on disk,
+ * or null when every required fixture is present (including the empty/undefined
+ * case — a scenario that requires nothing is never skipped by this).
+ *
+ * Returns the FIRST missing path rather than all of them: the skip reason names
+ * one concrete file the reader can go and look at, and a fixture set is
+ * produced as a unit anyway (leaf + key + chain), so listing three absences
+ * says nothing the first does not.
+ */
+export function findMissingRequiredFile(required?: string[]): string | null {
+  for (const p of required ?? []) {
+    if (!existsSync(p)) return p;
+  }
+  return null;
 }
 
 /**
@@ -946,6 +997,17 @@ export function classifyRefusalReason(detail: string): RefusalClassification {
   // "...alert certificate revoked"; some stacks only carry the alert number.
   if (/certificate revoked/.test(d) || /\balert number 44\b/.test(d) || /alert_certificate_revoked/.test(d)) {
     return { reason: 'broker-certificate-revoked', layer: 'broker' };
+  }
+
+  // Broker path validation: TLS alert 45 = certificate_expired. Checked here,
+  // beside its sibling alert and ABOVE the generic bucket, for the reason given
+  // on RefusalReason: folded into `broker-bad-certificate` it would be
+  // indistinguishable from `unknown ca`, and the fixture that proves expiry is
+  // signed by a DIFFERENT CA than the one a UAT broker trusts — so the
+  // misattribution is not hypothetical, it is the first thing that happens if
+  // the scenario is pointed at the wrong target.
+  if (/certificate expired/.test(d) || /\balert number 45\b/.test(d) || /alert_certificate_expired/.test(d)) {
+    return { reason: 'broker-certificate-expired', layer: 'broker' };
   }
 
   // Client-side TLS-version refusal — the client never emits a ClientHello the
@@ -967,7 +1029,6 @@ export function classifyRefusalReason(detail: string): RefusalClassification {
     /unknown ca/.test(d) ||
     /certificate required/.test(d) ||
     /peer did not return a certificate/.test(d) ||
-    /certificate expired/.test(d) ||
     /unknown_ca/.test(d) ||
     /bad_certificate/.test(d)
   ) {
@@ -1293,6 +1354,17 @@ export class ScenarioRunner {
     // Transparent — reported 'skipped', never silently dropped or counted as passed.
     if (scenario.skip_when_pooled && this.runPool !== null) {
       return this.skippedResult(scenario.name, scenario.skip_when_pooled);
+    }
+    // Conditional skip: a required on-disk fixture is absent (see requires_files).
+    const missingFixture = findMissingRequiredFile(scenario.requires_files);
+    if (missingFixture !== null) {
+      return this.skippedResult(
+        scenario.name,
+        `requires_files: "${missingFixture}" is not on disk. This scenario needs a ` +
+          `deliberately-broken certificate that cannot be provisioned on demand, and ` +
+          `certs/ is gitignored, so the fixture does not travel with the repo. ` +
+          `${scenario.requires_files_hint ?? 'See the scenario header for how to obtain it.'}`,
+      );
     }
 
     const context = createContext();
