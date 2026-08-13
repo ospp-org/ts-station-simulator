@@ -1,17 +1,19 @@
-name: "Firmware Update — Capability Not Supported (2007, pre-flight REST rejection)"
+name: "Firmware Update — Device Management Not Declared (6008 pre-empt, wouldBe 2007)"
 description: >
   OBSERVATION INSTRUMENT (not RED-first). A station boots advertising
   deviceManagementSupported:false. When the operator triggers UpdateFirmware via the
-  admin REST API, csms pre-flight check 3 (InitiateFirmwareUpdateAction.php:72) rejects
-  the request SERVER-SIDE before any MQTT command is dispatched, returning HTTP 422 to the
-  OPERATOR (server->operator). Nothing reaches the station on the wire. CORRECTED
-  2026-08-10: this file previously documented ospp_code 6008 CAPABILITY_NOT_SUPPORTED in
-  its name, here, and in the sample body below. The server answers 2007
-  COMMAND_NOT_SUPPORTED, measured on UAT. The claim survived because it lived in prose
-  beside an unasserted capture; it is now pinned by expect_body. Note the file already
-  observed that 6008 is absent from spec + sdk-ts and that 2007 is the canonical code for
-  "command not supported" (07-errors.md:399) — it drew the right conclusion about the
-  spec and the wrong one about this server.
+  admin REST API, csms pre-flight check 3 (InitiateFirmwareUpdateAction.php:86-95) rejects
+  the request SERVER-SIDE before any MQTT command is dispatched, returning HTTP 409 to the
+  OPERATOR (server->operator). Nothing reaches the station on the wire.
+  CORRECTED 2026-08-13 — the file's SECOND correction, and the first is what makes this one
+  legible. It once claimed 6008 in prose beside an unasserted capture; measured on UAT
+  2026-08-10 the server answered 2007 COMMAND_NOT_SUPPORTED, and that was pinned by
+  expect_body. Measured again 2026-08-13 the server answers 6008 — which does NOT vindicate
+  the original comment. That comment read 6008 as CAPABILITY_NOT_SUPPORTED, a name the spec
+  does not carry. Today's 6008 is COMMAND_PRE_EMPTED, the code for a command the SERVER
+  stopped locally: 07-errors.md:456 makes it a MUST here and forbids the server to answer
+  with the station's own code instead. The 2007 was not withdrawn — it moved into
+  details.wouldBe, which is where this file now asserts it.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -66,10 +68,17 @@ steps:
 
   # 2. Operator triggers UpdateFirmware via admin REST API.
   #    Pre-flight checks: 1 exists (pass), 2 online (pass — just booted), 3 capability
-  #    (FAIL: device_management_supported === false) -> throw CAPABILITY_NOT_SUPPORTED.
-  #    Global OsppException render handler (bootstrap/app.php:96) -> HTTP 422 JSON:
-  #      { "error": { "code": "COMMAND_NOT_SUPPORTED", "ospp_code": 2007, "message": "Station does not support device management" } }
-  #    The MQTT sendCommand (InitiateFirmwareUpdateAction.php:158) is NEVER reached.
+  #    (FAIL: device_management_supported is not `true`) -> throw COMMAND_PRE_EMPTED.
+  #    Global OsppException render handler -> HTTP 409 JSON. Measured verbatim on UAT
+  #    2026-08-13, csms-server 32b7c6a:
+  #      {"error":{"code":"COMMAND_PRE_EMPTED","ospp_code":6008,
+  #                "message":"Station does not support device management",
+  #                "details":{"wouldBe":2007,"reason":"device_management_not_declared"}},
+  #       "meta":{"timestamp":"2026-08-13T04:29:44.335995Z"}}
+  #    The MQTT sendCommand (InitiateFirmwareUpdateAction.php:186) is NEVER reached.
+  #
+  #    NOT `=== false`: the column is nullable and NULL is "not stated", which the gate
+  #    also withholds on (:86). This boot declares false explicitly anyway — see step 1.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
@@ -78,30 +87,43 @@ steps:
       firmwareVersion: "2.0.0"
       checksum: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       signature: "MEUCIQDexample"
-    expect_status: 422                     # <-- the operator-facing pre-flight rejection (NOT 202)
-    # The file already said "expect 6008" — in a comment, next to a CAPTURE. A
-    # capture stores a value; it never compares it, so the expectation was written
-    # down and never checked, and any 422 satisfied this step.
+    expect_status: 409                     # <-- the operator-facing pre-flight rejection (NOT 202)
+    # WHY THREE ASSERTED KEYS AND NOT ONE.
     #
-    # It was also WRONG, which is the part that makes the point. Measured on UAT
-    # 2026-08-10 the server answers 2007 COMMAND_NOT_SUPPORTED, "Station does not
-    # support device management" — not 6008. The comment had been sitting beside
-    # an unasserted capture long enough that nobody found out.
+    # 409 alone proves nothing. It is the status for every pre-empt on this API,
+    # and it is not even the status this step used to expect — the route answered
+    # 422 until the pre-empt landed, so a file pinning only the status would have
+    # gone red for a reason that says nothing about the gate.
     #
-    # 2007 is the CORRECT answer, not a defect: this station declares
-    # deviceManagementSupported false on purpose (see the boot above), so the
-    # firmware request is refused at the device-management gate before any
-    # firmware-specific capability check runs. That is what this file exercises,
-    # and the name reads slightly wider than the behaviour.
+    # 6008 alone is barely better. COMMAND_PRE_EMPTED is the code for ANY command
+    # the server stopped locally, so it names the CLASS of refusal and never the
+    # gate that produced it — see the sibling reset-graceful-refused file, where
+    # ONE action emits 6008 from two different pre-flights.
     #
-    # Pinning it matters because 422 is the generic validation status here — a
-    # malformed firmwareUrl, a bad checksum or a missing signature all produce one
-    # too, and each would let this file pass while the capability gate never ran.
+    # `details.wouldBe` is the discriminator. It carries the code the STATION would
+    # have answered had the command been dispatched: 2007, the blanket-implicit
+    # Server->Station code for an action this firmware does not implement. It is
+    # also the field with operational meaning the class code cannot carry — 2007 is
+    # a refusal no operator can force past, because nothing about the request is
+    # what the server objects to.
+    #
+    # `details.reason` pins which gate. Seven of the eight 6008 sites across the
+    # DeviceManagement actions share this token, so it does not identify the route;
+    # what it separates is the capability gate from the OTHER pre-flights on the
+    # same action, which is what a reordering would silently change.
+    #
+    # And asserting inside `details` at all is not decorative bookkeeping: an
+    # earlier measurement recorded `details` as DROPPED by this REST error shape.
+    # These two scenarios are what proved it now reaches the client — they failed
+    # in the proving, which is how the carrier got observed at all.
     expect_body:
-      error.ospp_code: 2007
+      error.ospp_code: 6008
+      error.details.wouldBe: 2007
+      error.details.reason: "device_management_not_declared"
     capture:
       ospp_code: "error.ospp_code"
-      error_code: "error.code"             # COMMAND_NOT_SUPPORTED (measured)
+      error_code: "error.code"             # COMMAND_PRE_EMPTED (measured)
+      would_be: "error.details.wouldBe"    # 2007 (measured)
       error_message: "error.message"       # expect "Station does not support device management"
 
   # 3. NO wait_for UpdateFirmware on the wire: csms dispatched nothing for a

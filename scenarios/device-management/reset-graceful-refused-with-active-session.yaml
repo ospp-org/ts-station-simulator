@@ -5,22 +5,39 @@
 #   app/Http/Middleware/TestingEnabledMiddleware.php, config/testing.php:12).
 #
 # SERVER BRANCH REACHED
-#   csms-server app/Modules/DeviceManagement/Actions/ResetStationAction.php:91-97
+#   csms-server app/Modules/DeviceManagement/Actions/ResetStationAction.php:125-134
 #     $bayUuids = $this->stationQuery->resolveBayUuidsForStation($stationId);
 #     if (! $dto->force && count($bayUuids) > 0
 #         && $this->sessionQuery->hasActiveSessionsForBays($bayUuids)) {
 #         throw new OsppException(OsppError::from(
-#             OsppErrorCode::SESSION_ALREADY_ACTIVE,
+#             OsppErrorCode::COMMAND_PRE_EMPTED,
 #             "Cannot reset station {$stationId}: active sessions in progress",
+#             ['wouldBe' => OsppErrorCode::ACTIVE_SESSIONS_PRESENT->value,
+#              'reason'  => 'active_sessions_present'],
 #         ));
 #     }
 #
 #   This is a SERVER-side pre-flight, and the thing worth pinning about it is
 #   what it does NOT do: no Reset REQUEST is published, and no pending command is
-#   registered. The station is never asked. The spec gives the STATION the
+#   registered. The station is never asked.
+#
+# CORRECTED 2026-08-13 — the header used to end: "The spec gives the STATION the
 #   refusal here (3016 ACTIVE_SESSIONS_PRESENT) and the server pre-empts it with
-#   6005 instead — a documented fidelity gap (the comment at :87-90 records it),
-#   which is precisely why it deserves a wire proof rather than a code reading.
+#   6005 instead — a documented fidelity gap." One half of that was a misreading
+#   at the wrong altitude. 07-errors.md:332 does not OFFER 3016 to a pre-empting
+#   server, it FORBIDS it: a server that stops the command locally "MUST NOT
+#   answer with this code — it answers 6008 COMMAND_PRE_EMPTED carrying
+#   details.wouldBe: 3016". So the gap was real and 6005 was wrong, but the fix
+#   was never "let the station answer" — the pre-empt itself is expressly allowed
+#   (:456 calls it "an OPTIMISATION … never required"). What was never allowed is
+#   the code it answered with.
+#
+#   Why 6005 was the worse of the two available wrongs, and worth recording: it is
+#   defined as "The user already has an active session" and addresses its recovery
+#   to that user — "must stop or wait for the current session". Here the
+#   precondition belongs to the STATION, the session on the bay may be a
+#   stranger's, and the reader is an operator who cannot act on that instruction
+#   at all. It named the wrong subject and shipped an inapplicable remedy with it.
 #
 # THE FILE THIS REPLACED — resolved 2026-08-10
 #   device-management/reset-rejected-active-sessions.yaml drove the SAME endpoint
@@ -30,7 +47,8 @@
 #   (TriggerCommandController.php:135-139 accepts only `force`) and Laravel's
 #   validate() returns only validated keys, so it was dropped and `force`
 #   defaulted to false. That is the graceful path, which this pre-flight refuses,
-#   so it failed 409/6005 on every run.
+#   so it failed 409/6005 on every run — 6005 being what the route answered then;
+#   it is 6008 now, see the correction above.
 #   It was DELETED, on the precedent of 32714b3 (which deleted boot-rejected.yaml
 #   when it wrote the replacement rather than leaving two files disagreeing).
 #   Nothing it covered is now uncovered: its intent — proving the STATION's 3016 —
@@ -38,15 +56,30 @@
 #   path it walked is covered by soft-reset.yaml, hard-reset.yaml and
 #   reset-forced-settles-session-as-operator-stop.yaml.
 #
-# WHAT IS ASSERTED — both server-produced
-#   1. HTTP 409 + error.ospp_code 6005 from the trigger endpoint. The status is
-#      the SDK's own mapping for SESSION_ALREADY_ACTIVE
-#      (OsppErrorCode.php:490), and 6005 discriminates: a bay-state refusal would
-#      be 3002, an unknown station 404, a disabled testing route 403.
-#   2. SILENCE on the wire. A pre-flight that threw but had already published
-#      would satisfy (1) and fail (2) — which is the whole point of checking both.
+# WHAT IS ASSERTED — all server-produced
+#   1. HTTP 409 + error.ospp_code 6008 COMMAND_PRE_EMPTED from the trigger
+#      endpoint. This is the CLASS of refusal: a command the server stopped
+#      locally. It is not yet the gate.
+#   2. error.details.wouldBe 3016 — THE discriminator, and on this route it is not
+#      optional decoration. ResetStationAction emits 6008 from TWO pre-flights:
+#      :74-75, the device-management capability gate, with wouldBe 2007; and
+#      :130-131, this one, with wouldBe 3016. Same code, same status, same
+#      endpoint, adjacent in the same method. A file asserting only 6008 passes on
+#      either — including on the run where this scenario's boot stops landing its
+#      deviceManagementSupported:true and the capability gate answers first. That
+#      is not hypothetical: the comment at the boot step below records it happening
+#      (measured 2026-08-10), and it is the failure this file was hardened against.
+#      Asserting the class code alone would quietly give that hardening back.
+#      The two also differ for the operator, which is the point of carrying the
+#      station's code at all: 3016 is a refusal that CAN be forced past — :456
+#      requires a Reset with force:true to be dispatched however many sessions run
+#      — while 2007 is one no override reaches.
+#   3. error.details.reason "active_sessions_present" — the same discrimination by
+#      name rather than by number.
+#   4. SILENCE on the wire. A pre-flight that threw but had already published
+#      would satisfy 1-3 and fail this — which is the whole point of checking both.
 name: "Reset Graceful Refused With Active Session"
-description: "Trigger an unforced Reset while a session is active. The server must refuse it with 6005 before publishing anything, so no Reset ever reaches the station."
+description: "Trigger an unforced Reset while a session is active. The server must pre-empt it with 6008 (details.wouldBe 3016) before publishing anything, so no Reset ever reaches the station."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -78,11 +111,14 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: this file drives a capability-gated Device Management action, which
-        # refuses COMMAND_NOT_SUPPORTED (2007) unless device_management_supported === true.
-        # NULL is "not stated" and withheld too (OSPP §5.1 rule 3). Measured 2026-08-10:
-        # without this the file fails 2007 on a FRESH pool station — it only ever passed by
-        # inheriting the flag from a sibling scenario on a reused station.
+        # Required: this file drives a capability-gated Device Management action, whose
+        # FIRST pre-flight (ResetStationAction.php:86) refuses unless
+        # device_management_supported is `true` — NULL is "not stated" and withheld too
+        # (OSPP §5.1 rule 3). Measured 2026-08-10: without this the file fails on a FRESH
+        # pool station; it only ever passed by inheriting the flag from a sibling scenario
+        # on a reused station. That refusal used to be a plainly different code (2007) and
+        # is now the SAME 6008 this file expects, separated only by details.wouldBe 2007 vs
+        # 3016 — so the assertion below is what still tells the two apart.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -159,7 +195,18 @@ steps:
 
   # ASSERTION 1 — the refusal. `force` is omitted, which IS the graceful path:
   # the validator has it as `sometimes`, and ResetRequestDto is built with
-  # `(bool) ($data['force'] ?? false)`.
+  # `(bool) ($data['force'] ?? false)`. Omitting it is also what keeps this branch
+  # reachable at all: :456 forbids pre-empting a command carrying an override the
+  # station would honour, so `force: true` must be dispatched and never lands here.
+  #
+  # Measured verbatim on UAT 2026-08-13, csms-server 32b7c6a:
+  #   {"error":{"code":"COMMAND_PRE_EMPTED","ospp_code":6008,
+  #             "message":"Cannot reset station stn_30b659d6: active sessions in progress",
+  #             "details":{"wouldBe":3016,"reason":"active_sessions_present"}},
+  #    "meta":{"timestamp":"2026-08-13T04:30:07.700593Z"}}
+  #
+  # `message` is deliberately NOT asserted: it interpolates the stationId, which
+  # the pool allocates per run.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
@@ -168,7 +215,9 @@ steps:
       payload: {}
     expect_status: 409
     expect_body:
-      error.ospp_code: 6005
+      error.ospp_code: 6008
+      error.details.wouldBe: 3016
+      error.details.reason: "active_sessions_present"
 
   # ASSERTION 2 — nothing was published. The station is never asked, so a Reset
   # REQUEST arriving here would mean the pre-flight ran too late to prevent the
