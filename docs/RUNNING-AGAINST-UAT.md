@@ -212,6 +212,41 @@ re-checking `is_active` first.
   `OCCUPIED→3001`, `UNAVAILABLE→3011`, `FAULTED`/`FINISHING`/`UNKNOWN`→**`3002`**. Assert the
   `ospp_code`, not the status.
 
+### A background `api_call` reports its failure three steps away from the cause
+
+**Grep every run log for `[ApiCallStep:background]` before attributing a `wait_for` timeout.**
+
+`background: true` fires the request without awaiting it, which is required for the synchronous
+REST endpoints that block on the station's MQTT Response. The cost is that the step is green the
+instant the fetch is *fired*: a status mismatch is downgraded to a `console.warn`, and `capture`
+/ `expect_body` are refused outright (`ApiCallStep.ts` throws — an assertion nobody awaits is
+not one). So a refused background request leaves the run to fail later, at whatever step notices
+the **consequence** — normally a `wait_for` that times out because the request that would have
+made the server publish never succeeded.
+
+The reported error names the message that never arrived. It does not name the refusal.
+
+Measured 2026-08-13 on `core/boot-disabled-station-boots-and-stays-gated`: reported as
+`Timeout waiting for StartService Request after 15000ms` at step 16; the cause was step 15,
+`[ApiCallStep:background] POST /sessions/start: expected 201, got 409 — BAY_NOT_READY/3002`.
+Nothing was published, so the `wait_for` had nothing to wait for. This is a property of the
+instrument — background mode trades assertion for concurrency, deliberately — not of the
+scenario, and it applies to every file using a background call.
+
+### `core/boot-disabled-station-boots-and-stays-gated` — CONTENTION, marked 2026-08-13
+
+Failed in the pooled run of 2026-08-13 with the `BAY_NOT_READY` above. Re-run **three times
+standalone** (`--scenario … --bootstrap-pool --pool-size 1`): **passed 3/3**, all 20 steps, with
+the backgrounded `POST /sessions/start` returning 201 and `StartService` arriving in 251/289/481 ms
+against a 15 s budget — and **zero** `[ApiCallStep:background]` lines in any of the three.
+
+So it is pool-dependent, not a defect in the file. **The precise contention mechanism is NOT
+established** and is not claimed here; what is measured is that the refusal does not reproduce
+with the station to itself. Consistent with §5 — the allocator is pure mutual exclusion and does
+not reset station state on release, and `bays.status` resets to `unknown` on every boot while
+this file forces a re-boot by design (disabling severs the connection). Treat a repeat as churn;
+treat a standalone failure as new.
+
 ---
 
 ## A known-good baseline

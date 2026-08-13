@@ -724,6 +724,24 @@ export class ApiCallStep implements Step {
             '(response not awaited — use a foreground call to assert on the body)',
         );
       }
+      // HOW A BACKGROUND FAILURE PRESENTS ITSELF — read this before attributing one.
+      //
+      // This warn is the ONLY trace a refused background request leaves. The step
+      // itself is already green (it returned the moment the fetch was fired), so the
+      // run reports the failure at whatever step notices the CONSEQUENCE — normally a
+      // `wait_for` that times out several steps later, because the request that would
+      // have made the server publish never succeeded. The reported error names the
+      // message that never arrived; it does not name the refusal that explains why.
+      //
+      // Measured 2026-08-13, core/boot-disabled-station-boots-and-stays-gated: the run
+      // failed as `Timeout waiting for StartService Request after 15000ms` at step 16,
+      // and the cause was this line at step 15 — `409 BAY_NOT_READY/3002` on the
+      // backgrounded POST /sessions/start. Three steps and one subsystem apart.
+      //
+      // So: when a `wait_for` times out in a scenario that has a background call
+      // upstream, grep the run log for `[ApiCallStep:background]` BEFORE reading
+      // anything into the timeout. This is a property of the instrument — background
+      // mode trades assertion for concurrency, deliberately — not of any scenario.
       fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
         .then(async (response) => {
           if (definition.expect_status !== undefined) {
