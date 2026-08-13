@@ -111,6 +111,15 @@ export interface PoolBootstrapHandle {
    * Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
    */
   identityCredentials: Array<{ email: string; password: string }>;
+  /**
+   * Users created by a SCENARIO rather than by the pool bootstrap — the e2e files
+   * that self-provision an entire tenant sign their customer up through
+   * `POST /v1/auth/register` and hold no password we minted. Swept through the same
+   * {@link buildTeardownTestUsersSql} (and therefore the same C-018 protected-email
+   * guard) as `identityCredentials`; kept separate because those two are recorded by
+   * different owners and only one of them has credentials to speak of.
+   */
+  createdUserEmails?: string[];
   /** Live registry — also exposes the pool via the `{{pool.*}}` namespace. */
   pool: StationPool;
 }
@@ -840,6 +849,15 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   if (handle.identityCredentials && handle.identityCredentials.length > 0) {
     const seededEmails = handle.identityCredentials.map((c) => c.email);
     lines.push(...buildTeardownTestUsersSql(seededEmails));
+  }
+
+  // Scenario-created users (ScenarioResourceLedger). Same sweep, same C-018 guard —
+  // a self-provisioning e2e signs its customer up through the public register endpoint,
+  // so the run holds an email and no credentials. Placed with the other user sweeps and
+  // BEFORE the organizations delete below: organization_members is a NO-ACTION child of
+  // both, and this is the half that removes it.
+  if (handle.createdUserEmails && handle.createdUserEmails.length > 0) {
+    lines.push(...buildTeardownTestUsersSql(handle.createdUserEmails));
   }
 
   if (handle.offlineEnabledEmail) {

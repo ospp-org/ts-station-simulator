@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
+import {
+  CREATED_RESOURCE_KINDS,
+  type CreatedResourceKind,
+} from '../bootstrap/ScenarioResources.js';
 
 // ---------------------------------------------------------------------------
 // Bounded 429 retry — Retry-After + jitter, cap 3 (opt-out via retry_on_429:false)
@@ -695,6 +699,16 @@ export class ApiCallStep implements Step {
       // wait_for + send Response steps must run while the fetch is in flight.
       // Errors and status mismatches log but do not fail the step; capture
       // is not supported in background mode.
+      // Same reason as `capture`, and the consequence is heavier: a backgrounded
+      // create whose id is never recorded is a row nothing can delete. Refuse the
+      // combination rather than let a scenario believe it declared ownership.
+      if (definition.creates !== undefined) {
+        throw new Error(
+          'ApiCallStep: "creates" is not supported with "background: true" — the response is ' +
+            'not awaited, so the id teardown would delete by is never read. A row created ' +
+            'this way could not be cleaned up.',
+        );
+      }
       if (definition.capture !== undefined) {
         throw new Error(
           'ApiCallStep: "capture" is not supported with "background: true" (response not awaited)',
@@ -798,11 +812,12 @@ export class ApiCallStep implements Step {
     if (definition.expect_body_text !== undefined) {
       if (definition.expect_body !== undefined || definition.capture !== undefined ||
           definition.expect_body_absent !== undefined ||
+          definition.creates !== undefined ||
           typeof definition.set_auth_token === 'string') {
         throw new Error(
           'ApiCallStep: "expect_body_text" cannot be combined with expect_body, ' +
-            'expect_body_absent, capture or set_auth_token — the body is consumed once, ' +
-            'and those four require it parsed as JSON',
+            'expect_body_absent, capture, creates or set_auth_token — the body is consumed ' +
+            'once, and those five require it parsed as JSON',
         );
       }
 
@@ -849,6 +864,7 @@ export class ApiCallStep implements Step {
 
     const needsBody =
       (definition.capture && typeof definition.capture === 'object') ||
+      (definition.creates && typeof definition.creates === 'object') ||
       (definition.expect_body && typeof definition.expect_body === 'object') ||
       Array.isArray(definition.expect_body_absent) ||
       typeof definition.set_auth_token === 'string';
@@ -948,6 +964,52 @@ export class ApiCallStep implements Step {
         )) {
           const value = getNestedValue(responseBody, path);
           context.captured.set(varName, value);
+        }
+      }
+
+      // ----------------------------------------------------------------
+      // creates — the step SAYS what row it just brought into existence, so the
+      // scenario's teardown deletes an id the server itself answered with rather
+      // than one a naming convention suggested. See ScenarioResourceLedger.
+      //
+      //   creates:
+      //     organization: "data.organization.id"
+      //
+      // Only a path into THIS response is accepted. A literal (or a `{{stationId}}`
+      // that substitution already resolved) would let a scenario claim ownership of a
+      // row it did not create — and the delete for an organization cascades. Reached
+      // only after expect_status and expect_body have passed, so a call that did not
+      // create what it meant to records nothing.
+      // ----------------------------------------------------------------
+      if (definition.creates && typeof definition.creates === 'object') {
+        for (const [kind, path] of Object.entries(
+          definition.creates as Record<string, string>,
+        )) {
+          if (!(CREATED_RESOURCE_KINDS as readonly string[]).includes(kind)) {
+            throw new Error(
+              `ApiCallStep: "creates" key "${kind}" is not a resource teardown can delete. ` +
+                `Known kinds: ${CREATED_RESOURCE_KINDS.join(', ')}.`,
+            );
+          }
+          if (typeof path !== 'string' || path.length === 0) {
+            throw new Error(
+              `ApiCallStep: "creates.${kind}" must be a dotted path into this response body, ` +
+                `got ${JSON.stringify(path)}.`,
+            );
+          }
+          const value = getNestedValue(responseBody, path);
+          if (typeof value !== 'string' || value.length === 0) {
+            throw new Error(
+              `ApiCallStep: "creates.${kind}" path "${path}" did not resolve to a non-empty ` +
+                `string in the response — teardown would have nothing to delete by, and the ` +
+                `row would be left behind silently. (full body: ${JSON.stringify(responseBody)})`,
+            );
+          }
+          context.created.record(
+            kind as CreatedResourceKind,
+            value,
+            `${method} ${new URL(url).pathname} → ${path}`,
+          );
         }
       }
     }

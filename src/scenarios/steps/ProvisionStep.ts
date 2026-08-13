@@ -82,6 +82,12 @@ export class ProvisionStep implements Step {
       (definition.artifacts_dir as string | undefined) ?? 'tests/artifacts/uat';
     const stationDir = path.resolve(artifactsBase, stationId);
 
+    // The key material lands on disk BEFORE the POST (see below), so the directory is
+    // recorded before it can exist half-written. A crash between the commit and the
+    // response still leaves keys behind; recording here is what lets the scenario's
+    // teardown remove them either way.
+    context.created.recordArtifactDir(stationDir);
+
     // 1-2. TLS + receipt keypairs, COMMITTED DURABLY BEFORE THE POST.
     // spec/04-flows.md:253 step 6b — "Before step 7 leaves the device, the SSP
     // MUST commit every private key generated in steps 5-6a to non-volatile

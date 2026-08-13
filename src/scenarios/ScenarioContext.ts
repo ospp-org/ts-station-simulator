@@ -1,5 +1,6 @@
 import type { OsppEnvelope } from '@ospp/protocol';
 import { StationPool } from './stations/StationPool.js';
+import { ScenarioResourceLedger } from './bootstrap/ScenarioResources.js';
 
 /**
  * Provisioning artifact for the primary station. Populated either by
@@ -93,6 +94,13 @@ export interface ScenarioContext {
    * Auto-discovery is lazy on first admin api_call.
    */
   orgId?: string;
+  /**
+   * Server-side rows this scenario CREATED, recorded at creation from the response the
+   * server answered with — never inferred from a variable name. Populated by `creates:`
+   * on an `api_call` step and by the `provision` step's local artifacts; consumed by the
+   * runner's per-scenario teardown. See {@link ScenarioResourceLedger}.
+   */
+  created: ScenarioResourceLedger;
 }
 
 export interface StepResult {
@@ -114,5 +122,6 @@ export function createContext(): ScenarioContext {
     receivedMessages: [],
     stepResults: [],
     startTime: Date.now(),
+    created: new ScenarioResourceLedger(),
   };
 }

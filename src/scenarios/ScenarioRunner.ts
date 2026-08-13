@@ -29,6 +29,7 @@ import { ProvisionStep } from './steps/ProvisionStep.js';
 import { ProvisionStationPoolStep } from './steps/ProvisionStationPoolStep.js';
 import { ConnectMqttStep } from './steps/ConnectMqttStep.js';
 import type { Step } from './steps/Step.js';
+import { teardownScenarioResources } from './bootstrap/ScenarioResources.js';
 import type { StationPool, PoolEntry } from './stations/StationPool.js';
 
 // ---------------------------------------------------------------------------
@@ -1154,10 +1155,21 @@ export class ScenarioRunner {
    * all scenarios share `target.credentials` → one bucket → bursts → 429s.
    */
   private identityPoolAllocator: IdentityPoolAllocator | null = null;
+  /**
+   * When true, per-scenario teardown is skipped and the recorded resources are printed
+   * instead — the `--keep-created` debug path, mirroring `--keep-pool`. The ids are
+   * always printed in that case, so "kept" never means "lost track of".
+   */
+  private keepCreated = false;
 
   /** Install a run-level pool (see {@link runPool}). */
   setRunPool(pool: StationPool): void {
     this.runPool = pool;
+  }
+
+  /** Keep (and report) whatever the scenarios create instead of tearing it down. */
+  setKeepCreated(keep: boolean): void {
+    this.keepCreated = keep;
   }
 
   /** Install a run-level identity pool (see {@link identityPoolAllocator}). */
@@ -1530,6 +1542,49 @@ export class ScenarioRunner {
       // Identity is single-use — no release. Once a scenario completes, its identity
       // stays consumed for the rest of the run, guaranteeing no other scenario reuses
       // the same session-mutate bucket.
+
+      // Per-scenario teardown. Runs on FAILURE too — the leftovers measured on UAT came
+      // from runs that died at the step after the one that created the org, so cleaning
+      // up only the green path would have caught none of them. `--keep-created` is the
+      // way out for a debugging run.
+      await this.teardownCreated(scenario.name, context);
+    }
+  }
+
+  /**
+   * Remove what the scenario declared it created, or say — precisely, with ids — what
+   * is still on the server.
+   *
+   * The failure branch is the point of this method. A teardown that logs "complete"
+   * after a failed DELETE is worse than no teardown at all: the row survives, and the
+   * one place its id was ever written scrolls past claiming success. So the catch
+   * prints every recorded id under a LEFTOVERS banner, and the console line is only
+   * ever emitted after the SQL has actually returned.
+   */
+  private async teardownCreated(scenarioName: string, context: ScenarioContext): Promise<void> {
+    if (context.created.isEmpty()) return;
+
+    if (this.keepCreated) {
+      console.log(
+        `[teardown] "${scenarioName}" — KEPT (--keep-created); these still exist:\n` +
+        context.created.describe(),
+      );
+      return;
+    }
+
+    try {
+      await teardownScenarioResources(context.created);
+      console.log(
+        `[teardown] "${scenarioName}" — removed ${context.created.list().length} created ` +
+        `resource(s) + local artifacts`,
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[teardown] LEFTOVERS — "${scenarioName}" created the following and could NOT remove ` +
+        `them. They are still on the server:\n${context.created.describe()}\n` +
+        `  cause: ${detail}`,
+      );
     }
   }
 

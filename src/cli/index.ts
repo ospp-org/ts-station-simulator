@@ -88,6 +88,7 @@ interface RunCommandOptions {
   identityPoolSize?: string;
   offlineEnable?: boolean;
   keepPool?: boolean;
+  keepCreated?: boolean;
 }
 
 program
@@ -109,6 +110,7 @@ program
   .option('--pool-bays <n>', 'Bays per provisioned pool station', '4')
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
   .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
+  .option('--keep-created', 'Do not tear down the org/location/station/user a self-provisioning scenario creates (`creates:` in its YAML); print the ids instead (debug/inspection)')
   .option('--output <format>', 'Output format: console, junit, json', 'console')
   .option('--output-file <path>', 'File path for junit/json output')
   .option(
@@ -138,6 +140,7 @@ program
       const userVarsArg = userVars.size > 0 ? userVars : undefined;
 
       const runner = new ScenarioRunner();
+      runner.setKeepCreated(opts.keepCreated === true);
       const maxWorkers = parseInt(opts.workers, 10);
 
       // 2. Resolve the scenario set (discovery only — no mutation yet, so a
