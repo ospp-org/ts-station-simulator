@@ -44,6 +44,7 @@ import {
   platformAdminCredsFromEnv,
   type PoolBootstrapHandle,
 } from '../src/scenarios/bootstrap/PoolBootstrap.js';
+import { sshIdentityArgs } from '../src/scenarios/bootstrap/uatPrivileged.js';
 import type { TargetConfig } from '../src/scenarios/ScenarioRunner.js';
 import { Station, type Handler } from '../src/station/Station.js';
 import { BootNotificationHandler } from '../src/handlers/BootNotificationHandler.js';
@@ -106,8 +107,9 @@ function shQuote(s: string): string {
 async function uatExec(container: string, snippet: string): Promise<string> {
   const { stdout } = await execFileAsync(
     'ssh',
-    ['-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH, `docker exec ${container} sh -c ${shQuote(snippet)} < /dev/null`],
-    { env: { ...process.env, SSH_AUTH_SOCK: '' }, maxBuffer: 8 * 1024 * 1024 },
+    [...sshIdentityArgs(), '-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH,
+      `docker exec ${container} sh -c ${shQuote(snippet)} < /dev/null`],
+    { maxBuffer: 8 * 1024 * 1024 },
   );
   return stdout.trim();
 }

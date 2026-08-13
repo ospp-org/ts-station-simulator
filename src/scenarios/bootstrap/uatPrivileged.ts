@@ -40,6 +40,27 @@ export function uatDbConfigFromEnv(): UatDbConfig {
   };
 }
 
+/**
+ * The identity arguments EVERY ssh spawn in this repo must carry.
+ *
+ * `-i` alone only APPENDS a key: ssh still offers every identity the agent
+ * holds, in agent order, before it reaches ours. On a box whose agent carries a
+ * dozen deploy keys that is a dozen failed publickey attempts per connection,
+ * and the UAT host's fail2ban counts them — one bootstrap fan-out has already
+ * earned this machine an hour-long ban. `IdentitiesOnly=yes` is what makes `-i`
+ * mean "this key and no other".
+ *
+ * An earlier pass worked around the fan-out by blanking `SSH_AUTH_SOCK` in the
+ * LAUNCHER's environment. That is a property of whoever remembers to export it,
+ * not of the call: any caller that spawns us with an inherited env (`npx
+ * simulator run`, a CI step, another script) gets the fan-out back with nothing
+ * to show it went missing. A spawn argument travels with the command, so the
+ * flag lives here — in one function every ssh call site uses.
+ */
+export function sshIdentityArgs(cfg: UatDbConfig = uatDbConfigFromEnv()): string[] {
+  return ['-i', cfg.sshKey, '-o', 'IdentitiesOnly=yes'];
+}
+
 /** Single-quote-escape a SQL string literal (doubles embedded quotes). */
 export function sqlLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -79,7 +100,7 @@ export function runUatSql(sql: string, cfg: UatDbConfig = uatDbConfigFromEnv()):
     `docker exec -i ${cfg.container} psql -U ${cfg.dbUser} -d ${cfg.dbName} ` +
     `-v ON_ERROR_STOP=1 --no-psqlrc -q`;
   const args = [
-    '-i', cfg.sshKey,
+    ...sshIdentityArgs(cfg),
     '-o', 'ConnectTimeout=15',
     '-o', 'BatchMode=yes',
     cfg.sshHost,

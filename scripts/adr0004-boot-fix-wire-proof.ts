@@ -39,6 +39,7 @@ import {
   platformAdminCredsFromEnv,
   type PoolBootstrapHandle,
 } from '../src/scenarios/bootstrap/PoolBootstrap.js';
+import { sshIdentityArgs } from '../src/scenarios/bootstrap/uatPrivileged.js';
 import type { TargetConfig } from '../src/scenarios/ScenarioRunner.js';
 import { Station, type Handler } from '../src/station/Station.js';
 import { BootNotificationHandler } from '../src/handlers/BootNotificationHandler.js';
@@ -79,9 +80,9 @@ const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 async function uatExec(container: string, snippet: string): Promise<string> {
   const { stdout } = await execFileAsync(
     'ssh',
-    ['-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH,
+    [...sshIdentityArgs(), '-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH,
       `docker exec ${container} sh -c ${shQuote(snippet)} < /dev/null`],
-    { env: { ...process.env, SSH_AUTH_SOCK: '' }, maxBuffer: 8 * 1024 * 1024 },
+    { maxBuffer: 8 * 1024 * 1024 },
   );
   return stdout.trim();
 }
@@ -108,12 +109,11 @@ async function sessionKeyExists(stationId: string): Promise<boolean> {
   const prefix = 'onestoppay_database_';
   const out = (await execFileAsync(
     'ssh',
-    ['-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH,
+    [...sshIdentityArgs(), '-o', 'ConnectTimeout=20', '-o', 'BatchMode=yes', UAT_SSH,
       `PW=$(docker exec csms-app-uat printenv REDIS_PASSWORD < /dev/null); ` +
       `docker exec -e RPW="$PW" csms-redis-uat sh -c ${shQuote(
         `redis-cli -a "$RPW" --no-auth-warning -n 0 EXISTS ${prefix}ospp:session_key:${stationId}`,
       )}`],
-    { env: { ...process.env, SSH_AUTH_SOCK: '' } },
   )).stdout.trim();
 
   if (out !== '0' && out !== '1') {
