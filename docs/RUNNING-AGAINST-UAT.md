@@ -197,6 +197,38 @@ re-checking `is_active` first.
 
 ---
 
+## 5b. If a machine reads the result, pass `--require-conclusive`
+
+**A skip does not move the exit code. Only a failure does.** That is correct for most skips and
+badly wrong for one kind, and the difference is invisible to anything that is not a person
+reading the terminal:
+
+| skipped because | kind | exit code |
+|---|---|---|
+| the server feature is unimplemented (`skip: true`) | not-applicable | 0 |
+| the file cannot run pooled (`skip_when_pooled`) | not-applicable | 0 |
+| a required `--var` was not supplied | not-applicable | 0 |
+| **the certificate it exists to present is not on disk** (`requires_files`) | **inconclusive** | 0 by default, **1** with `--require-conclusive` |
+| a fixed path in the TARGET's cert block is not on disk | **inconclusive** | same |
+
+The first three will never stop being legitimate. The last two mean a property that should have
+been proven was not — and since `certs/` is gitignored in full (zero cert files are tracked), **a
+fresh clone is exactly the case that triggers them.** Without the flag such a run prints an honest
+skip and reports success; CI and release scripts see green.
+
+```
+node dist/cli/index.js run --all --bootstrap-pool --target uat --require-conclusive
+```
+
+Use it anywhere the result is consumed by a machine. Do not reach for "make every skip fail" —
+that turns the three legitimate rows red, and the first person to hit one will add a suppress flag
+that takes the real signal with it.
+
+The console summary always breaks the count out (`of which INCONCLUSIVE: n`) whether or not the
+flag is set, so the condition is visible before someone decides to enforce it.
+
+---
+
 ## 6. Reading a run
 
 - `mqtt:incoming-dlq` on **`csms-redis-queue`** — not `csms-redis-uat`. There are four Redis

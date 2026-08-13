@@ -10,9 +10,22 @@ skip_reason: "Pending boot status not implemented in csms-server BootNotificatio
 # against any other target, the resolved path is simply absent. Un-skipping this
 # for the server-side reason alone would turn it from an honest skip into a
 # machine-dependent failure.
-# Fix when the feature lands: either switch to `stationId: "{{stationId}}"` and
-# take the pool identity like every other core scenario, or declare the
-# dependency with `requires_files` naming the leaf/key actually used.
+# It is DECLARED below rather than only described, so the order of removal cannot
+# matter: `skip: true` wins while the feature is missing (not-applicable — nothing
+# about the system is in question), and the moment someone deletes it the
+# requires_files gate takes over and reports INCONCLUSIVE instead of failing on a
+# machine that never had the fixture. Under --require-conclusive that is a
+# non-zero exit, which is the honest answer to "did this run prove anything".
+# Better fix when the feature lands: switch to `stationId: "{{stationId}}"` and
+# take the pool identity like every other core scenario, and drop both.
+requires_files:
+  - "certs/sandbox/stn_0000001e.pem"
+  - "certs/sandbox/stn_0000001e-key.pem"
+requires_files_hint: >-
+  This file hardcodes stationId stn_0000001e, so it needs that identity's cert
+  material to already exist; it is a sandbox identity and certs/ is gitignored.
+  Run against --target sandbox on a box that has them, or convert the file to
+  `{{stationId}}` and let the pool provide the identity.
 station:
   stationId: "stn_0000001e"
   bayCount: 2

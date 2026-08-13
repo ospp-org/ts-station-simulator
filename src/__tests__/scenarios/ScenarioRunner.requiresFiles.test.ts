@@ -40,7 +40,8 @@ vi.mock('mqtt', () => ({
   }),
 }));
 
-const { ScenarioRunner, findMissingRequiredFile } = await import('../../scenarios/ScenarioRunner.js');
+const { ScenarioRunner, findMissingRequiredFile, findMissingTargetCert } =
+  await import('../../scenarios/ScenarioRunner.js');
 
 const target: TargetConfig = {
   mqttUrl: 'mqtts://localhost:8883',
@@ -80,6 +81,55 @@ describe('findMissingRequiredFile', () => {
     const absentA = path.join(dir, 'gone-a.pem');
     const absentB = path.join(dir, 'gone-b.pem');
     expect(findMissingRequiredFile([present, absentA, absentB])).toBe(absentA);
+  });
+});
+
+/**
+ * The target-level gap `requires_files` structurally cannot cover: a fixed path
+ * in a target's cert block (live example: local-mtls's `ca:`) is inherited by
+ * every scenario aimed at that target and declarable by none of them.
+ */
+describe('findMissingTargetCert — the dependency no scenario can declare', () => {
+  let dir: string;
+  let present: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'sim-targetcert-'));
+    present = path.join(dir, 'broker-ca.pem');
+    writeFileSync(present, 'PEM');
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('flags a fixed target cert path that is absent', () => {
+    expect(findMissingTargetCert({ tls: { serverCa: path.join(dir, 'gone.pem') } }))
+      .toBe(path.join(dir, 'gone.pem'));
+  });
+
+  it('passes when the fixed paths are present, and when a target declares none', () => {
+    expect(findMissingTargetCert({ tls: { serverCa: present } })).toBeNull();
+    expect(findMissingTargetCert({})).toBeNull();
+  });
+
+  /**
+   * The load-bearing exclusion. `certs/uat/{{stationId}}.pem` is written per run
+   * by provisioning and is correctly absent beforehand — flagging it would make
+   * every defer_mqtt_connect scenario inconclusive on a clean box, which is the
+   * false alarm that teaches people to ignore the signal.
+   */
+  it('IGNORES templated paths — provisioning writes those, so absence proves nothing', () => {
+    expect(findMissingTargetCert({
+      tls: {
+        key: path.join(dir, '{{stationId}}-key.pem'),
+        cert: path.join(dir, '{{stationId}}.pem'),
+        chain: path.join(dir, '{{stationId}}-chain.pem'),
+      },
+    })).toBeNull();
+  });
+
+  it('still catches a fixed path sitting alongside templated ones', () => {
+    expect(findMissingTargetCert({
+      tls: { cert: path.join(dir, '{{stationId}}.pem'), serverCa: path.join(dir, 'gone.pem') },
+    })).toBe(path.join(dir, 'gone.pem'));
   });
 });
 
@@ -126,6 +176,47 @@ describe('requires_files — transparent skip when the fixture is absent', () =>
     );
 
     expect(result.status).toBe('passed');
+  });
+
+  /**
+   * The exit-code half. A skip is honest in the summary but does not move the
+   * exit code — only a failure does — so without a KIND on the result, a run
+   * whose revocation proof skipped for a missing fixture reports success to CI.
+   * `not-applicable` must stay silent (an unimplemented feature will never stop
+   * being a legitimate skip); `inconclusive` is what a conclusive run must catch.
+   */
+  it('tags a missing-fixture skip INCONCLUSIVE — the machine-readable half of the distinction', async () => {
+    const runner = new ScenarioRunner();
+    const result = await runner.runScenario(
+      scenario({ requires_files: [path.join(dir, 'nope.pem')] }),
+      target,
+    );
+    expect(result.status).toBe('skipped');
+    expect(result.skipKind).toBe('inconclusive');
+  });
+
+  it('tags "does not apply" skips NOT-APPLICABLE, so they never turn a conclusive run red', async () => {
+    const runner = new ScenarioRunner();
+
+    const featureGap = await runner.runScenario(
+      scenario({ skip: true, skip_reason: 'server feature not implemented' }),
+      target,
+    );
+    expect(featureGap.status).toBe('skipped');
+    expect(featureGap.skipKind).toBe('not-applicable');
+
+    // `skip: true` wins over a requires_files on the same file — the ordering
+    // boot-pending-retry relies on: while the feature is missing nothing about
+    // the system is in question, and the fixture question is moot.
+    const both = await runner.runScenario(
+      scenario({
+        skip: true,
+        skip_reason: 'server feature not implemented',
+        requires_files: [path.join(dir, 'nope.pem')],
+      }),
+      target,
+    );
+    expect(both.skipKind).toBe('not-applicable');
   });
 
   it('a PRESENT fixture that is no longer refused FAILS — absence is a skip, regression is a red', async () => {

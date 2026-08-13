@@ -264,12 +264,39 @@ export interface RunOptions {
   userVars?: Map<string, string>;
 }
 
+/**
+ * WHY a scenario was skipped, in the only distinction a machine needs.
+ *
+ * A skip is honest in the summary and in scrollback, but the EXIT CODE does not
+ * move for it — only a failure does. So a run whose revocation proof skipped for
+ * a missing fixture reports success, and anything that is not a human reading a
+ * terminal (CI, a release script) sees green. Since the fixture directory is
+ * gitignored, a fresh clone is precisely the case that triggers it.
+ *
+ * Making every skip exit non-zero would be wrong: some skips are genuinely
+ * "this does not apply here" and always will be. The distinction that matters:
+ *
+ *  - `not-applicable` — the scenario cannot run in THIS invocation and nothing
+ *    about the system under test is in question: an unimplemented server
+ *    feature, a pool-incompatible file in a pooled run, a required `--var` the
+ *    caller did not supply. Nothing was measured, and nothing was owed.
+ *  - `inconclusive`   — the scenario was READY to measure and the INSTRUMENT was
+ *    missing: the deliberately-broken certificate it exists to present is not on
+ *    disk. A property that should have been proven was not, and the run has no
+ *    business claiming success when someone asked for a conclusive one.
+ *
+ * Only `inconclusive` moves the exit code, and only under `--require-conclusive`.
+ */
+export type SkipKind = 'not-applicable' | 'inconclusive';
+
 export interface ScenarioResult {
   name: string;
   status: 'passed' | 'failed' | 'skipped';
   durationMs: number;
   steps: StepResult[];
   error?: string;
+  /** Set only when `status === 'skipped'`. See {@link SkipKind}. */
+  skipKind?: SkipKind;
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1011,35 @@ export function findMissingRequiredFile(required?: string[]): string | null {
 }
 
 /**
+ * The target-level counterpart of {@link findMissingRequiredFile}: the first
+ * FIXED path in `target.tls` that is not on disk, or null.
+ *
+ * `requires_files` is a scenario key and a target has no equivalent, so a fixed
+ * path in a target's cert block — `local-mtls`'s `ca: certs/local/broker-ca.pem`
+ * is the live example — is a fixture dependency no scenario can declare, silently
+ * inherited by every scenario aimed at that target. Rather than widen the YAML
+ * with a target-level key nobody would remember to fill in, the runner derives
+ * it: a target's own config already says which files it needs.
+ *
+ * ONLY non-templated entries are checked, and that exclusion is load-bearing.
+ * `certs/uat/{{stationId}}.pem` is written per run by provisioning and is
+ * correctly absent before it — treating it as a missing fixture would make every
+ * `defer_mqtt_connect` scenario inconclusive on a clean box, which is the exact
+ * false alarm that teaches people to pass the override. A path with no `{{` is
+ * never produced by provisioning, so its absence is unambiguous.
+ *
+ * `keyPattern`/`certPattern` are excluded by construction: they are patterns.
+ */
+export function findMissingTargetCert(target: Pick<TargetConfig, 'tls'>): string | null {
+  const fixed = [target.tls?.key, target.tls?.cert, target.tls?.chain, target.tls?.serverCa]
+    .filter((p): p is string => typeof p === 'string' && p.length > 0 && !p.includes('{{'));
+  for (const p of fixed) {
+    if (!existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
  * Classify a connect-failure detail string (the TLS-alert / OpenSSL error text
  * mqtt.js surfaces, or the runner's own timeout message) into a REASON + the
  * layer it came from. Order matters: the revocation alert is checked before
@@ -1263,12 +1319,20 @@ export class ScenarioRunner {
     return parsed;
   }
 
-  /** Build a transparent 'skipped' result (status 'skipped', reason on a marker step). */
-  private skippedResult(name: string, reason: string): ScenarioResult {
-    console.log('[ScenarioRunner] SKIPPED "%s": %s', name, reason);
+  /**
+   * Build a transparent 'skipped' result (status 'skipped', reason on a marker
+   * step) tagged with WHY — see {@link SkipKind}. `kind` is explicit at every
+   * call site rather than defaulted, because the difference between "does not
+   * apply" and "could not be proven" is the whole point and a default would let
+   * a future skip acquire the harmless one by omission.
+   */
+  private skippedResult(name: string, reason: string, kind: SkipKind): ScenarioResult {
+    const label = kind === 'inconclusive' ? 'SKIPPED (INCONCLUSIVE)' : 'SKIPPED';
+    console.log('[ScenarioRunner] %s "%s": %s', label, name, reason);
     return {
       name,
       status: 'skipped',
+      skipKind: kind,
       durationMs: 0,
       steps: [{ stepIndex: -1, action: 'skip', status: 'skipped', durationMs: 0, error: reason }],
     };
@@ -1348,14 +1412,19 @@ export class ScenarioRunner {
     userVars?: Map<string, string>,
   ): Promise<ScenarioResult> {
     if (scenario.skip) {
-      return this.skippedResult(scenario.name, scenario.skip_reason ?? 'marked as skip');
+      return this.skippedResult(
+        scenario.name,
+        scenario.skip_reason ?? 'marked as skip',
+        'not-applicable',
+      );
     }
     // Conditional skip: a pool-incompatible scenario in a --bootstrap-pool run (this.runPool set).
     // Transparent — reported 'skipped', never silently dropped or counted as passed.
     if (scenario.skip_when_pooled && this.runPool !== null) {
-      return this.skippedResult(scenario.name, scenario.skip_when_pooled);
+      return this.skippedResult(scenario.name, scenario.skip_when_pooled, 'not-applicable');
     }
     // Conditional skip: a required on-disk fixture is absent (see requires_files).
+    // INCONCLUSIVE — the scenario was ready and the instrument was missing.
     const missingFixture = findMissingRequiredFile(scenario.requires_files);
     if (missingFixture !== null) {
       return this.skippedResult(
@@ -1364,6 +1433,23 @@ export class ScenarioRunner {
           `deliberately-broken certificate that cannot be provisioned on demand, and ` +
           `certs/ is gitignored, so the fixture does not travel with the repo. ` +
           `${scenario.requires_files_hint ?? 'See the scenario header for how to obtain it.'}`,
+        'inconclusive',
+      );
+    }
+    // Same class, one level up: a FIXED path in the target's cert block. These
+    // are not declarable per scenario — `requires_files` is a scenario key and a
+    // target has no equivalent — so the runner checks them here on the
+    // scenario's behalf. Only non-templated paths: anything carrying `{{` is
+    // produced per run by provisioning and is legitimately absent beforehand.
+    const missingTargetCert = findMissingTargetCert(target);
+    if (missingTargetCert !== null) {
+      return this.skippedResult(
+        scenario.name,
+        `target fixture "${missingTargetCert}" is not on disk. It is a fixed path in the ` +
+          `target's cert block (not templated, so provisioning never creates it) and certs/ ` +
+          `is gitignored, so it does not travel with the repo. Every scenario aimed at this ` +
+          `target inherits the dependency.`,
+        'inconclusive',
       );
     }
 

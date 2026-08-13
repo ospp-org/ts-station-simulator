@@ -89,6 +89,8 @@ interface RunCommandOptions {
   offlineEnable?: boolean;
   keepPool?: boolean;
   keepCreated?: boolean;
+  /** Exit non-zero when a scenario skipped for a MISSING INSTRUMENT (see SkipKind). */
+  requireConclusive?: boolean;
 }
 
 program
@@ -111,6 +113,13 @@ program
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
   .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
   .option('--keep-created', 'Do not tear down the org/location/station/user a self-provisioning scenario creates (`creates:` in its YAML); print the ids instead (debug/inspection)')
+  .option(
+    '--require-conclusive',
+    'Exit non-zero if any scenario skipped because the instrument it needs was missing ' +
+    '(e.g. a revoked/expired certificate fixture). Skips that merely do not apply — an ' +
+    'unimplemented server feature, a pool-incompatible file, a missing --var — still exit 0. ' +
+    'Use this anywhere a green is read by a machine rather than by a person.',
+  )
   .option('--output <format>', 'Output format: console, junit, json', 'console')
   .option('--output-file <path>', 'File path for junit/json output')
   .option(
@@ -313,6 +322,36 @@ program
 
       if (results.some(r => r.status === 'failed')) {
         exitCode = 1;
+      }
+
+      // --require-conclusive: the caller is asking for a run whose green MEANS
+      // something. A skip never moves the exit code — only a failure does — so
+      // without this a run whose revocation proof skipped for a missing fixture
+      // reports success, and anything that is not a human reading the terminal
+      // sees green. The fixture directory is gitignored, so a fresh clone is
+      // exactly the case that triggers it.
+      //
+      // Deliberately NOT the default, and deliberately not "any skip fails":
+      // an unimplemented server feature or a pool-incompatible file is a skip
+      // that will never stop being correct, and making those red would train
+      // people to pass a suppress flag — which would take the real ones with it.
+      if (opts.requireConclusive) {
+        const inconclusive = results.filter(
+          r => r.status === 'skipped' && r.skipKind === 'inconclusive',
+        );
+        if (inconclusive.length > 0) {
+          console.error(chalk.red(
+            `\n--require-conclusive: ${inconclusive.length} scenario(s) could not prove what ` +
+            `they exist to prove (instrument missing, not "does not apply"). ` +
+            `This run is NOT conclusive:`,
+          ));
+          for (const r of inconclusive) {
+            console.error(chalk.red(`  - ${r.name}`));
+            const why = r.steps[0]?.error;
+            if (why) console.error(chalk.gray(`      ${why}`));
+          }
+          exitCode = 1;
+        }
       }
     } catch (err) {
       if (err instanceof PoolBootstrapError && !bootstrapHandle) {
@@ -570,8 +609,25 @@ function printConsoleReport(results: ScenarioResult[]): void {
   }
   if (skipped > 0) {
     console.log(`  ${chalk.gray(`Skipped:  ${skipped}`)} (passed + failed + skipped = ${total})`);
+    // Break the skips out by KIND. A bare "Skipped: 3" reads as harmless, and
+    // three scenarios that could not prove what they exist to prove are not.
+    const inconclusive = countInconclusive(results);
+    if (inconclusive > 0) {
+      console.log(
+        `  ${chalk.yellow(`  of which INCONCLUSIVE: ${inconclusive}`)} — ready to measure, ` +
+        `instrument missing. ${chalk.yellow('Use --require-conclusive to make this exit non-zero.')}`,
+      );
+    }
   }
   console.log(`  Duration: ${totalDuration}ms`);
+}
+
+/**
+ * Scenarios that skipped because the thing they exist to prove was unavailable
+ * (not because they did not apply). See SkipKind in ScenarioRunner.
+ */
+export function countInconclusive(results: ScenarioResult[]): number {
+  return results.filter(r => r.status === 'skipped' && r.skipKind === 'inconclusive').length;
 }
 
 // ---------------------------------------------------------------------------
