@@ -52,9 +52,12 @@
 #   It was DELETED, on the precedent of 32714b3 (which deleted boot-rejected.yaml
 #   when it wrote the replacement rather than leaving two files disagreeing).
 #   Nothing it covered is now uncovered: its intent — proving the STATION's 3016 —
-#   has no reachable path while the server pre-empts at :91, and the Reset DISPATCH
+#   has no reachable path while the server pre-empts at :125, and the Reset DISPATCH
 #   path it walked is covered by soft-reset.yaml, hard-reset.yaml and
-#   reset-forced-settles-session-as-operator-stop.yaml.
+#   reset-forced-settles-session-as-operator-stop.yaml. Note what changed and what
+#   did not: the STATION's 3016 is still unreachable here, but it is no longer
+#   invisible — the pre-empt now names it in details.wouldBe, which is the closest
+#   thing to that deleted file's intent that a conforming server can offer.
 #
 # WHAT IS ASSERTED — all server-produced
 #   1. HTTP 409 + error.ospp_code 6008 COMMAND_PRE_EMPTED from the trigger
