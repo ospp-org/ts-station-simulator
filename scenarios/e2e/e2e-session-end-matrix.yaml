@@ -28,7 +28,32 @@ description: |
   Pre-conditions: clean UAT (no user with e2e-matrix-{{stationId}}@onestoppay.dev)
   AND the permanent platform admin user seeded (E2EBootstrapSeeder, see
   scenario A doc). Each run uses a fresh stn_<random> station — re-running
-  is safe; the platform admin is never touched.
+  is safe; the platform admin is never touched. Everything it creates is
+  torn down per-run (see `creates:` below).
+
+  ---------------------------------------------------------------------
+  WHERE THIS FILE STOPS TODAY, AND WHY IT IS NOT THIS FILE'S FAULT
+  ---------------------------------------------------------------------
+  Measured on UAT 2026-08-13 against csms-server 00d7286. Identical to
+  scenario A — see e2e-new-customer-onboarding.yaml for the full note.
+
+  PASSES through step 15 (register -> org -> location -> station ->
+  provision -> mTLS connect -> Boot Accepted -> 4 StatusNotifications).
+  The station now declares deviceManagementSupported, so the Device
+  Management pre-empt (409 / 6008, details.wouldBe 2007) no longer fires.
+
+  STOPS at step 16, `PUT …/catalog`, on the older gate added in server
+  11aa480 (2026-08-06): 400 / 6004 "Service 'svc_wash_basic' has no
+  (bay, program) binding on this station"
+  (UpdateServiceCatalogAction::resolveBindings, :149). No public REST
+  sequence can satisfy it on a fresh station — measured request by
+  request in
+  docs/MEASURED-catalog-unreachable-on-new-station-20260813T110000Z.md.
+  Do not seed the binding with privileged SQL to force a green: that 202
+  is one the production API cannot produce.
+
+  None of the four SessionEnded arms this file exists to verify is
+  reached today; the blocker is upstream of every one of them.
 
 # C-018: platform admin (ambient, permanent) creates the org. The
 # customer (registered fresh per run) becomes tenant_owner on org-create
@@ -64,6 +89,12 @@ steps:
     expect_status: 201
     capture:
       user_email: "user.email"
+    # `creates:` is what makes this run cleanable. Cleanup used to live only inside
+    # `--bootstrap-pool`, which this file is `skip_when_pooled`-excluded from by design —
+    # so every standalone run left its customer, org, location and station on UAT. The
+    # value comes from the response: teardown deletes the id the SERVER answered with.
+    creates:
+      user: "user.email"
 
   # Platform admin (auto-auth from `auth:`) creates the org with the
   # customer as owner_email — CreateOrganizationAction inserts the
@@ -77,6 +108,12 @@ steps:
     expect_status: 201
     capture:
       organization_id: "data.organization.id"
+    # The org this run CREATED, and the only one teardown may delete. That delete
+    # CASCADEs (cloned Spatie roles, members, service definitions, any remaining
+    # station), which is why it is declared here from the 201 rather than matched by
+    # name later.
+    creates:
+      organization: "data.organization.id"
 
   # Identity switch — log in as the customer (now tenant_owner). All
   # subsequent api_calls use the customer's JWT, not the platform
@@ -106,6 +143,8 @@ steps:
     expect_status: 201
     capture:
       location_id: "data.id"
+    creates:
+      location: "data.id"
 
   - action: api_call
     method: POST
@@ -135,6 +174,10 @@ steps:
             - serviceId: "{{serviceId_4}}"
               serviceName: "Vacuum"
     expect_status: 201
+    # Recorded here, at registration, rather than at `provision` — the row exists from
+    # this 201 onward, so a run that dies before provisioning still has it cleaned up.
+    creates:
+      station: "data.station_id"
 
   - action: api_call
     method: POST
@@ -175,10 +218,16 @@ steps:
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "PowerOn"
+      # deviceManagementSupported — see e2e-new-customer-onboarding.yaml for the full
+      # note. Short form: the `PUT …/catalog` below is a Device Management action, and a
+      # station that never declared the profile is pre-empted with 409 / 6008
+      # COMMAND_PRE_EMPTED (details.wouldBe 2007, reason device_management_not_declared)
+      # before anything is published. Measured on UAT 2026-08-13.
       capabilities:
         bleSupported: false
         offlineModeSupported: true
         meterValuesSupported: true
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 

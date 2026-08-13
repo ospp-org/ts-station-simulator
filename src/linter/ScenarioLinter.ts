@@ -7,6 +7,7 @@ import { MessageDirectionCheck } from './checks/MessageDirectionCheck.js';
 import { EnumValuesCheck } from './checks/EnumValuesCheck.js';
 import { WaitForCompletenessCheck } from './checks/WaitForCompletenessCheck.js';
 import { PayloadSchemaCheck } from './checks/PayloadSchemaCheck.js';
+import { PreEmptDiscriminatorCheck } from './checks/PreEmptDiscriminatorCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -18,6 +19,7 @@ export class ScenarioLinter {
       new EnumValuesCheck(),
       new WaitForCompletenessCheck(),
       new PayloadSchemaCheck(),
+      new PreEmptDiscriminatorCheck(),
     ];
   }
 

@@ -25,8 +25,48 @@ description: |
   Pre-conditions: clean UAT (no user with the generated
   e2e-{{stationId}}@onestoppay.dev email) and the permanent platform
   admin user seeded. Each run uses a fresh stn_<random> station; the
-  customer user, org, location, station, and cert are created and
-  optionally torn down per-run. The platform admin is never touched.
+  customer user, org, location, station, and cert are created and torn
+  down per-run (see `creates:` below). The platform admin is never touched.
+
+  ---------------------------------------------------------------------
+  WHERE THIS FILE STOPS TODAY, AND WHY IT IS NOT THIS FILE'S FAULT
+  ---------------------------------------------------------------------
+  Measured on UAT 2026-08-13 against csms-server 00d7286.
+
+  PASSES now, through step 15: register -> org -> identity switch ->
+  location -> station registration -> provisioning token -> provision
+  (CSR + cert) -> mTLS connect -> BootNotification Accepted -> the four
+  StatusNotifications. The station declares deviceManagementSupported,
+  so the Device Management pre-empt that used to refuse the catalog push
+  (409 / 6008 COMMAND_PRE_EMPTED, details.wouldBe 2007) no longer fires —
+  see the note on the `capabilities` block.
+
+  STOPS at step 16, `PUT /api/v1/admin/stations/{id}/catalog`, on a
+  SECOND and older gate:
+
+    400 VALIDATION_ERROR / 6004 — "Service 'svc_wash_basic' has no
+    (bay, program) binding on this station."
+
+  That gate is UpdateServiceCatalogAction::resolveBindings()
+  (UpdateServiceCatalogAction.php:149, called at :92), added in server
+  11aa480 on 2026-08-06 for spec v0.11.0's REQUIRED `bindings`. This
+  file was last proven green on 2026-07-31 — six days before it landed —
+  and the 6008 pre-empt then masked it, which is why fixing the
+  capability is what made it visible rather than what caused it.
+
+  It cannot be fixed in this file. No public REST sequence can create a
+  binding a legacy catalog push will accept: the only route that writes
+  `station_services` mints its OWN serviceId and stamps `service_kind`
+  (StationServiceCatalogController.php:132,143), and a kind-tagged
+  definition is then refused by assertNoKindAwareServices (:249). The
+  full request-by-request measurement, both refusals, and what would
+  close the loop are in
+  docs/MEASURED-catalog-unreachable-on-new-station-20260813T110000Z.md.
+
+  Do NOT make this file green by seeding the binding with privileged SQL
+  (the way PoolBootstrap does for the pooled suite) — the 202 it would
+  then assert is one the production API cannot produce, and the file
+  would stop describing a journey a real operator can take.
 
 # C-018 sim-side: resolve `context.apiCredentials` from these env vars
 # (source `~/.config/osp-e2e-secrets.env` before running). target.credentials
@@ -64,6 +104,13 @@ steps:
     capture:
       user_id: "user.id"
       user_email: "user.email"
+    # `creates:` is what makes this run cleanable. Cleanup used to live only inside
+    # `--bootstrap-pool`, which this file is `skip_when_pooled`-excluded from by design —
+    # so every standalone run left its customer, org, location and station on UAT (eight
+    # `E2E Org …` orgs were still there on 2026-08-13). The value comes from the response,
+    # not from the request body: teardown deletes the id the SERVER answered with.
+    creates:
+      user: "user.email"
 
   # ---------- Identity #1 (platform admin, auto-auth from `auth:` block)
   # creates the organization on behalf of the customer. Server-side:
@@ -81,6 +128,12 @@ steps:
     expect_status: 201
     capture:
       organization_id: "data.organization.id"
+    # The org this run CREATED, and the only one teardown may delete. That delete
+    # CASCADEs (cloned Spatie roles, members, service definitions, any remaining
+    # station), which is exactly why it is declared here from the 201 rather than
+    # matched by name later.
+    creates:
+      organization: "data.organization.id"
 
   # ---------- Identity switch: log in as the customer (now a
   # tenant_owner of the org just created) and replace the context JWT.
@@ -116,6 +169,8 @@ steps:
     expect_status: 201
     capture:
       location_id: "data.id"
+    creates:
+      location: "data.id"
 
   # ---------- Operator: register station with 4 bays, each with a distinct service ----------
   - action: api_call
@@ -146,6 +201,10 @@ steps:
             - serviceId: "{{serviceId_4}}"
               serviceName: "Vacuum"
     expect_status: 201
+    # Recorded here, at registration, rather than at `provision` — the row exists from
+    # this 201 onward, so a run that dies before provisioning still has it cleaned up.
+    creates:
+      station: "data.station_id"
 
   # ---------- Operator: issue provisioning token ----------
   - action: api_call
@@ -192,10 +251,26 @@ steps:
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "PowerOn"
+      # deviceManagementSupported is what makes the `PUT …/catalog` below reachable.
+      # UpdateServiceCatalog is one of the atomic Device Management actions, and the
+      # server MUST NOT dispatch one to a station that never declared the profile
+      # (spec profiles/device-management §1; OSPP §5.1 rule 3 makes NOT-STATED count as
+      # not-declared). Omitting the member left the column SQL NULL, and the route was
+      # changed to answer that with a pre-empt instead of borrowing the station's code.
+      # Measured on UAT 2026-08-13 with the member absent, stn_d26ebb76:
+      #
+      #   HTTP 409  {"error":{"code":"COMMAND_PRE_EMPTED","ospp_code":6008,
+      #              "message":"Station does not support device management",
+      #              "details":{"wouldBe":2007,"reason":"device_management_not_declared"}}}
+      #
+      # Not a regression — a gate that moved while this file kept declaring three of the
+      # four capabilities. A station that drives a catalog push has the profile, so it
+      # says so, and the 202 below is again what comes back.
       capabilities:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
+        deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
 
