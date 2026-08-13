@@ -1,0 +1,79 @@
+# TLS-1.2-floor conformance — S6b (positive control for S6)
+#
+# The control the expiry proof requires: a leaf identical to S6's in every field
+# the broker inspects EXCEPT notAfter MUST still connect. Without it, S6 proves
+# only that the broker refused something — a broker refusing every client cert
+# (a bad trust store, a mangled chain file, a CA mismatch after a dev-CA
+# regeneration) would satisfy S6 perfectly while enforcing nothing about expiry.
+#
+# WHAT IS HELD CONSTANT, precisely. Both leaves come out of one
+# ./scripts/mint-expired-leaf.sh invocation: same CA, same P-256 key type, same
+# extension profile (CA:FALSE / nonRepudiation,digitalSignature,keyEncipherment /
+# clientAuth / SAN / CRLDP), same notBefore (2024-01-01 — the control is
+# backdated too, on purpose, so issuance date is not a second variable), same
+# pinned TLS 1.2. The difference under test is notAfter: 2025-01-01 for S6,
+# 2034-01-01 here.
+#
+# The one other field that differs is the subject (CN/SAN): two certificates
+# must name two identities, so this is not eliminable. It is also not a
+# confound, because it is not what the check under test consults — path
+# validation rejects on the validity dates, and it does so before the broker has
+# formed any opinion about who the subject is. The subject matters only to the
+# ACL evaluated AFTER a successful handshake, which is why `station.stationId`
+# below is pinned to the fixture's CN rather than left as `{{stationId}}`: EMQX
+# derives the username from the peer certificate, and a station publishing to a
+# topic that does not match its own CN gets its SUBSCRIBE denied and its
+# connection closed. That failure is an ACL result, not a certificate result,
+# and it would have made this control red while proving nothing about expiry.
+#
+# The far-future notAfter is deliberate. A control that expires is a control that
+# turns S6 green by accident on some later morning, and reads as "expiry is
+# enforced" when what actually happened is that the control rotted. Re-mint the
+# pair rather than let this date approach.
+#
+# Minimal by design, like s5b: connect and assert the negotiated protocol. No
+# boot or session round-trip, so the control cannot go red for an
+# application-layer reason that has nothing to do with certificate validity.
+#
+# Produce the fixture, then run (needs the local stack up):
+#   ./scripts/mint-expired-leaf.sh
+#   simulator run --scenario scenarios/tls-floor/s6b-accepts-unexpired-cert.yaml \
+#     --target local-mtls
+name: "TLS floor S6b — accepts an unexpired leaf from the same CA and profile"
+description: "Positive control for S6: a leaf minted in the same run, from the same CA, with the same profile and notBefore, differing ONLY in notAfter, connects over the same pinned TLS 1.2. Proves the broker does not blanket-refuse client certificates — so S6's refusal is attributable to expiry alone."
+requires_files:
+  - "certs/local/stn_e0000002.pem"
+  - "certs/local/stn_e0000002-key.pem"
+  - "certs/local/stn_e0000002-chain.pem"
+requires_files_hint: >-
+  Run ./scripts/mint-expired-leaf.sh — it mints this control together with S6's
+  expired leaf, which is what makes the pair a one-variable experiment. Minting
+  them separately would reintroduce issuance date as a difference.
+skip_when_pooled: "S6b is the local-mtls control for S6; a pooled run targets UAT, where this locally-signed leaf has no standing."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+  cert: "certs/local/stn_e0000002.pem"
+  key: "certs/local/stn_e0000002-key.pem"
+  chain: "certs/local/stn_e0000002-chain.pem"
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
+# An ACCEPTED handshake is proven by the negotiated protocol version, which is
+# visible only on the client socket; nothing server-side records that a TLS
+# connection succeeded before the first OSPP message.
+station:
+  # Pinned to the fixture's CN — see the header. EMQX takes the username from
+  # the peer certificate, and the ACL keys station topics on it.
+  stationId: "stn_e0000002"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # The core assertion: a leaf differing from S6's only in notAfter NEGOTIATED a
+  # TLS-1.2 connection — i.e. the handshake completed and the leaf was accepted.
+  # If the broker blanket-refused, connect() would have thrown before here.
+  - action: assert
+    field: "connection.tlsProtocol"
+    equals: "TLSv1.2"

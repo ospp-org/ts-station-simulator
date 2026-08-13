@@ -65,6 +65,28 @@ import type { TargetConfig } from '../../scenarios/ScenarioRunner.js';
 const scenarioPath = (name: string) =>
   path.resolve(process.cwd(), 'scenarios', 'tls-floor', name);
 
+/**
+ * Drop the on-disk fixture dependency from a loaded definition so the BEHAVIOUR
+ * assertions below run identically on a developer box and in CI.
+ *
+ * S5 names a specific revoked leaf (`certs/uat/stn_985c8a8b.*`). That is the
+ * point of the file and it is asserted as contract at the call sites. But
+ * `certs/` is gitignored in full, so those bytes exist only where they were
+ * provisioned: keeping them would make this test assert "the machine happens to
+ * have a July-2026 UAT artifact", and it would fail in CI for a reason that has
+ * nothing to do with the scenario's shape. Both dropped fields are covered by
+ * dedicated tests — the cert/key/chain wiring in ScenarioRunner.revocationRefusal
+ * .test.ts (against temp files), the skip gate in ScenarioRunner.requiresFiles
+ * .test.ts — so nothing here goes unproven, it only stops being proven twice in
+ * the one place that cannot do it portably.
+ */
+function stripFixtureDependency<T extends { tls?: Record<string, unknown>; requires_files?: string[] }>(
+  def: T,
+): T {
+  const { cert: _cert, key: _key, chain: _chain, ...tlsRest } = def.tls ?? {};
+  return { ...def, tls: tlsRest, requires_files: undefined };
+}
+
 describe('TLS floor S1-S4 — the actual committed scenario files (integration)', () => {
   beforeEach(() => {
     behavior = 'success';
@@ -224,11 +246,24 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     const def = await runner.loadScenario(scenarioPath('s5-rejects-revoked-cert.yaml'));
     expect(def.expect_connect_failure).toBe(true);
     expect(def.expect_refusal_reason).toBe('broker-certificate-revoked');
-    expect(def.tls).toEqual({ min_version: 'TLSv1.2', max_version: 'TLSv1.2' });
     expect(def.steps).toHaveLength(0);
+    // The file NAMES the revoked leaf rather than inheriting the target's cert
+    // pattern — that is the whole repair, so it is asserted as contract.
+    expect(def.tls).toEqual({
+      min_version: 'TLSv1.2',
+      max_version: 'TLSv1.2',
+      cert: 'certs/uat/stn_985c8a8b.pem',
+      key: 'certs/uat/stn_985c8a8b-key.pem',
+      chain: 'certs/uat/stn_985c8a8b-chain.pem',
+    });
+    expect(def.requires_files).toEqual([
+      'certs/uat/stn_985c8a8b.pem',
+      'certs/uat/stn_985c8a8b-key.pem',
+      'certs/uat/stn_985c8a8b-chain.pem',
+    ]);
 
     const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
-    const result = await runner.runScenario(def, target);
+    const result = await runner.runScenario(stripFixtureDependency(def), target);
 
     expect(result.status).toBe('passed');
   });
@@ -240,9 +275,57 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     const def = await runner.loadScenario(scenarioPath('s5-rejects-revoked-cert.yaml'));
 
     const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;
-    const result = await runner.runScenario(def, target);
+    const result = await runner.runScenario(stripFixtureDependency(def), target);
 
     expect(result.status).toBe('failed');
     expect(result.error).toMatch(/expected 'broker-certificate-revoked'/);
+  });
+
+  /**
+   * S6/S6b are asserted at the SHAPE level only. Their behaviour needs the local
+   * dev Station CA to have signed a fixture pair, which no CI checkout has (and
+   * `certs/` is gitignored, so none ever will) — running them here would prove
+   * the machine lacked a file, not that the YAML is right. The refusal-reason
+   * gate they rely on is proven directly in ScenarioRunner.revocationRefusal
+   * .test.ts, and the fixture gate in ScenarioRunner.requiresFiles.test.ts; what
+   * is left, and what this guards, is that the committed files keep declaring
+   * the right instruments.
+   */
+  it('S6 declares the expiry proof: pinned TLS 1.2, the expired leaf, and the EXPIRED refusal reason (not the generic bucket)', async () => {
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(scenarioPath('s6-rejects-expired-cert.yaml'));
+
+    expect(def.expect_connect_failure).toBe(true);
+    expect(def.expect_refusal_reason).toBe('broker-certificate-expired');
+    expect(def.steps).toHaveLength(0);
+    expect(def.tls).toMatchObject({
+      min_version: 'TLSv1.2',
+      max_version: 'TLSv1.2',
+      cert: 'certs/local/stn_e0000001.pem',
+    });
+    // Local-CA fixture: a pooled (UAT) run would refuse it for an untrusted
+    // chain, i.e. for a reason that is not this file's subject.
+    expect(def.skip_when_pooled).toBeTruthy();
+    expect(def.requires_files).toContain('certs/local/stn_e0000001.pem');
+  });
+
+  it('S6b is the one-variable control: SAME pinned version, DIFFERENT leaf, and it asserts a completed handshake', async () => {
+    const runner = new ScenarioRunner();
+    const s6 = await runner.loadScenario(scenarioPath('s6-rejects-expired-cert.yaml'));
+    const s6b = await runner.loadScenario(scenarioPath('s6b-accepts-unexpired-cert.yaml'));
+
+    // TLS version held constant between proof and control — otherwise the
+    // version, not the validity, could explain the difference in outcome.
+    expect(s6b.tls?.min_version).toBe(s6.tls?.min_version);
+    expect(s6b.tls?.max_version).toBe(s6.tls?.max_version);
+    // ...and the leaf is the thing that differs.
+    expect(s6b.tls?.cert).not.toBe(s6.tls?.cert);
+
+    expect(s6b.expect_connect_failure).toBeFalsy();
+    expect(s6b.steps[0]).toMatchObject({
+      action: 'assert',
+      field: 'connection.tlsProtocol',
+      equals: 'TLSv1.2',
+    });
   });
 });

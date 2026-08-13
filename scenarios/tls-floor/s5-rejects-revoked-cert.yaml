@@ -10,13 +10,54 @@
 #
 # ONE-VARIABLE DISCIPLINE (S4 pattern): valid TLS version, well-formed cert,
 # correct CA chain — so a refusal can ONLY be the broker's CRL check. The
-# station's leaf is supplied by `--target uat --station stn_<revoked>` (the
-# target's certs pattern), i.e. the SAME cert that connected fine before the
-# revoke. The positive control (s5b-accepts-valid-cert-crl-on.yaml) presents a
-# DIFFERENT, non-revoked CRLDP leaf in the SAME broker state to prove the check
-# does not blanket-refuse — a revocation proof without a positive control is
-# not acceptable (a blanket-refusal misconfiguration would masquerade as a
+# positive control (s5b-accepts-valid-cert-crl-on.yaml) presents a DIFFERENT,
+# non-revoked CRLDP leaf in the SAME broker state to prove the check does not
+# blanket-refuse — a revocation proof without a positive control is not
+# acceptable (a blanket-refusal misconfiguration would masquerade as a
 # successful revocation).
+#
+# WHY THIS FILE NAMES ITS OWN LEAF (tls.cert/key/chain below).
+# It used to take the leaf from the TARGET'S cert pattern
+# (`certs/uat/{{stationId}}.pem`), which made the revoked identity an argument
+# the OPERATOR had to remember: `--station stn_<revoked>`. Nobody passes that in
+# a `--bootstrap-pool` run, and the pool provisions fresh stations through
+# POST /stations/provision — which by construction returns a freshly signed,
+# VALID leaf. So the file asked for a revoked certificate and the environment
+# handed it a good one: `station.connect() succeeded`, deterministically, in
+# every pooled run since the file was written. That was never a bad scenario —
+# it was a correct scenario the environment could not satisfy.
+#
+# Naming the leaf here removes the argument. `stn_985c8a8b` (serial 012C) was
+# revoked on UAT on 2026-07-23 and has been carried by the served station-CA CRL
+# ever since; the CRL fetched 2026-08-13 still lists 012C (alongside 012D).
+# Revocation is PERMANENT by construction — RevokeStationCertificateAction's
+# docblock (invariant 3) and two PostgreSQL triggers that refuse an un-revoke —
+# so the SERVER half of this fixture is standing state, not a snapshot that
+# decays. Its own notAfter is 2027-07-23, so expiry cannot quietly become the
+# reason it is refused before then.
+#
+# The CLIENT half does not travel with the repo: `certs/` is gitignored in full
+# (zero cert files are tracked), so the leaf + key + chain exist only on a box
+# that provisioned them. Hence `requires_files` below — on a machine without the
+# fixture this scenario SKIPS, naming the missing file, instead of failing. The
+# line that matters: a missing INSTRUMENT is a skip; an instrument that is
+# present and no longer refused is a FAILURE.
+#
+# Minting a FRESH revoked identity per run was considered and MEASURED shut. The
+# revoke route (POST /admin/stations/{id}/revoke-certificate) is gated on
+# `certificates.revoke`, held ONLY by platform_super_admin. The simulator's UAT
+# identity — e2e-platform-admin@onestoppay.ro, seeded by E2EBootstrapSeeder
+# whose E2E_PLATFORM_ROLE defaults to `platform_admin` — does not hold it, so
+# the call 403s. Re-seeding the UAT bootstrap user as platform_super_admin would
+# open that path (the seeder's own docblock anticipates exactly this), at the
+# cost of a revoked row plus an EMQX ban entry left on UAT every single run.
+#
+# WHAT GOES RED, AND WHY THAT IS THE POINT. If UAT is wiped, or the CRL stops
+# being served, or `enable_crl_check` is turned off, 012C stops being refused —
+# the leaf is well-formed, correctly chained and unexpired, so the broker
+# ACCEPTS it and this file fails with `station.connect() succeeded`. The proof
+# fails in the direction that means "revocation is no longer enforced", which is
+# the only direction worth having.
 #
 # WHY PIN TLS 1.2 (min == max): under TLS 1.3 the broker validates the CLIENT
 # cert AFTER the handshake summary and sends `certificate_revoked` (alert 44)
@@ -31,16 +72,38 @@
 # time via the EMQX server-alert log + a mosquitto exit code — ground truth,
 # never an s_client verify summary.)
 #
-# Run against a live broker (needs a revoked-then-CRL-published identity):
+# Run against a live broker — no --station argument, the leaf is named below:
 #   simulator run --scenario scenarios/tls-floor/s5-rejects-revoked-cert.yaml \
-#     --target uat --station stn_<revoked>
+#     --target uat
 #
 # NEEDS A LIVE BROKER with enable_crl_check on + a reachable, up-to-date CRL.
+# Target-specific by construction: the named leaf is signed by the UAT Station
+# CA, so pointing this file at another broker refuses it for `unknown ca` —
+# which classifies as broker-bad-certificate, NOT broker-certificate-revoked,
+# and the file fails rather than passing for the wrong reason.
 name: "TLS floor S5 — rejects a revoked client certificate (broker CRL check)"
 description: "Client presents a REVOKED but otherwise-valid leaf (correct chain, in-floor TLS version). The broker's enable_crl_check MUST reject it at the TLS handshake, and the refusal MUST classify as broker-certificate-revoked (invariant 6) — not a client-side or unattributed failure."
+requires_files:
+  - "certs/uat/stn_985c8a8b.pem"
+  - "certs/uat/stn_985c8a8b-key.pem"
+  - "certs/uat/stn_985c8a8b-chain.pem"
+requires_files_hint: >-
+  Obtain it by provisioning a UAT station, then revoking its certificate with an
+  identity holding `certificates.revoke` (platform_super_admin) — POST
+  /api/v1/admin/stations/{stationId}/revoke-certificate — and keeping the leaf,
+  key and chain that station was issued. Confirm the serial is listed by
+  `curl -s https://api-uat.onestoppay.ro/pki/station-ca.crl | openssl crl -inform DER -noout -text`
+  before relying on this scenario.
 tls:
   min_version: "TLSv1.2"
   max_version: "TLSv1.2"
+  # The revoked leaf, named rather than inherited from the target pattern.
+  # MqttConnection presents leaf-first then the chain (buildPresentedCertChain),
+  # so this is a complete, correctly-ordered mTLS identity whose ONLY defect is
+  # that serial 012C is on the CRL.
+  cert: "certs/uat/stn_985c8a8b.pem"
+  key: "certs/uat/stn_985c8a8b-key.pem"
+  chain: "certs/uat/stn_985c8a8b-chain.pem"
 expect_connect_failure: true
 expect_refusal_reason: broker-certificate-revoked
 # NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.

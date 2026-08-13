@@ -1,0 +1,98 @@
+# TLS-1.2-floor conformance — S6 (the expiry half of the certificate-consumption
+# proof; sibling of S5, which covers revocation)
+#
+# The expiry wire-proof. Client presents a WELL-FORMED, correctly-chained leaf
+# from the CA the broker actually trusts, whose ONLY defect is that its notAfter
+# is in the past. Ordinary X.509 path validation MUST reject it AT THE TLS
+# HANDSHAKE — expect_connect_failure: true — and the refusal MUST be attributed
+# to expiry specifically (expect_refusal_reason: broker-certificate-expired),
+# NOT merely "it failed" and NOT the generic bad-certificate bucket.
+#
+# WHY EXPIRY NEEDED ITS OWN REFUSAL REASON. Before this file, classifyRefusalReason
+# folded "certificate expired" into `broker-bad-certificate` — the same bucket as
+# `unknown ca` and `handshake failure`. That bucket cannot carry an expiry proof:
+# the fixture below is signed by the LOCAL dev Station CA, so aiming this file at
+# any other broker refuses it for an untrusted chain, which would have landed in
+# the identical bucket and passed. The proof would have been satisfied by the one
+# thing it most needed to exclude. TLS alert 45 (certificate_expired) now maps to
+# its own reason, exactly as alert 44 does for revocation.
+#
+# WHY THIS RUNS AGAINST local-mtls AND NOT UAT. Expiry is the one broken
+# credential that cannot be requested. Revocation is an action a privileged
+# identity performs on a live server; expiry is elapsed time. The server signs
+# 365-day leaves with no backdated or short-dated issuance route, and the
+# earliest notAfter in the whole fixture corpus is 2027-03-24 — nothing to wait
+# for, nothing to ask for. What makes the proof possible at all is that the dev
+# Station CA private key sits on a developer's own disk, and it is the same CA
+# the local broker trusts. No such key exists for UAT, and it should not.
+#
+# ONE-VARIABLE DISCIPLINE (S4/S5 pattern): the positive control
+# (s6b-accepts-unexpired-cert.yaml) presents a leaf minted by the SAME script, in
+# the SAME run, from the SAME CA, with the SAME extension profile and the SAME
+# notBefore — differing only in notAfter. So "refused here, connected there"
+# cannot be attributed to the issuer, the key type, the profile or the issuance
+# date. Run them as a pair; neither alone means much.
+#
+# WHY PIN TLS 1.2 (min == max): the same artifact S5 documents. Under TLS 1.3 the
+# broker validates the client cert after the handshake summary and the alert
+# arrives post-handshake, which some client stacks surface without the alert
+# text — leaving the classifier nothing to attribute. Pinning 1.2 delivers alert
+# 45 in-handshake, so OpenSSL renders a clean "... alert certificate expired"
+# string. Held CONSTANT with the control, so validity stays the only variable.
+#
+# Produce the fixture, then run (needs the local stack up — csms-emqx on 8883
+# with verify_peer, which is the running default):
+#   ./scripts/mint-expired-leaf.sh
+#   simulator run --scenario scenarios/tls-floor/s6-rejects-expired-cert.yaml \
+#     --target local-mtls
+name: "TLS floor S6 — rejects an expired client certificate (path validation)"
+description: "Client presents an EXPIRED but otherwise-valid leaf (trusted CA, correct chain, in-floor TLS version, only notAfter in the past). The broker MUST reject it at the TLS handshake and the refusal MUST classify as broker-certificate-expired — not the generic bad-certificate bucket, which an untrusted chain would also satisfy."
+# certs/ is gitignored in full, and an expired leaf cannot be provisioned on
+# demand, so the fixture does not travel with the repo. Absent it, this scenario
+# SKIPS naming the missing file. Present and no longer refused, it FAILS.
+requires_files:
+  - "certs/local/stn_e0000001.pem"
+  - "certs/local/stn_e0000001-key.pem"
+  - "certs/local/stn_e0000001-chain.pem"
+requires_files_hint: >-
+  Run ./scripts/mint-expired-leaf.sh — it signs the pair with the local dev
+  Station CA (csms-server/storage/keys/station-ca-key.pem), which is the CA the
+  local broker trusts. Set OSPP_SERVER_KEYS_DIR if the server checkout is not at
+  ~/dev/projects/osp/csms-server.
+# Pooled runs are UAT runs; this fixture is signed by the LOCAL dev CA and would
+# be refused there for `unknown ca` — a different reason, so the file would fail
+# for a reason that is not its subject. Skipped transparently instead.
+skip_when_pooled: "S6 needs the local dev Station CA (target local-mtls); a pooled run targets UAT, where this leaf is refused for an untrusted chain rather than for expiry."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+  # The expired leaf, named rather than inherited from the target pattern.
+  # MqttConnection presents leaf-first then the chain (buildPresentedCertChain).
+  cert: "certs/local/stn_e0000001.pem"
+  key: "certs/local/stn_e0000001-key.pem"
+  chain: "certs/local/stn_e0000001-chain.pem"
+expect_connect_failure: true
+expect_refusal_reason: broker-certificate-expired
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
+# Identical in kind to S5's: whether the BROKER completes or refuses a TLS
+# connection is decided before any OSPP message exists. A refused handshake never
+# reaches the application — no row is written, no counter moves, no REST surface
+# records it — so expect_body has nothing to attach to. The runner's own
+# instruments ARE the assertions: expect_connect_failure for the refusal, and
+# expect_refusal_reason to pin WHY, which is what stops an untrusted chain or a
+# bounded timeout from satisfying an expiry proof.
+station:
+  # Pinned to the fixture's CN, symmetrically with the control. Nothing here
+  # reaches the broker — the handshake is refused first — but leaving
+  # `{{stationId}}` would make the two files differ in a second place for no
+  # reason, and the next reader would have to work out that it did not matter.
+  stationId: "stn_e0000001"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+# No steps: the connection never completes — the expired leaf is refused at the
+# TLS handshake, exactly like S3/S4/S5's negative-path shape.
+steps: []

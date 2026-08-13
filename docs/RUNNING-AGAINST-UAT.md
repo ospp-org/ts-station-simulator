@@ -46,7 +46,7 @@ Fine for a single scenario or a suite that does not need the above. Costs you, m
 | 4 × TransactionEvent (`security/offline-*reconcile*`) | no persisted receipt key |
 | 2 × offline pass | wallet balance 0 or negative; `offline_enabled` alone is not enough |
 | `device-management/service-catalog-update` | `bay_services` empty → `400 VALIDATION_ERROR (6004)` "has no (bay, program) binding", ungated by any flag |
-| `tls-floor/s5-rejects-revoked-cert` | needs a genuinely revoked certificate |
+| ~~`tls-floor/s5-rejects-revoked-cert`~~ | **FIXED 2026-08-13.** It no longer needs an argument: the file NAMES the revoked leaf (`certs/uat/stn_985c8a8b.*`, serial 012C, on the served CRL since 2026-07-23) via `tls.cert/key/chain`. Wire-proven against UAT — alert 44, `broker-certificate-revoked`. On a machine without the fixture it now SKIPS (`requires_files`) instead of failing, because `certs/` is gitignored and those bytes do not travel with the repo. |
 | 2 × offline pass, **in pooled mode too** | `uatPrivileged.ts` seeds wallets at `balance 0` and `AuthorizeOfflineSessionAction` pre-debits with `allowNegative:false`. Bootstrapping does NOT fix this; fund the fixture. Do not flip `allowNegative`. |
 | whole-suite runs | rate limiting — see §4 |
 
@@ -295,9 +295,15 @@ multiunit-e2e 0/3 · reservations 5/6 · security 21/24 · sessions 20/21 · tls
 
 **What to actually expect:**
 
-1. **One structural failure, every pooled run** — `tls-floor/s5-rejects-revoked-cert`. The
-   pool mints a fresh VALID certificate; the file needs a revoked one, so the connection it
-   requires be refused is accepted. Deterministic and explained. Not a defect.
+1. ~~**One structural failure, every pooled run** — `tls-floor/s5-rejects-revoked-cert`.~~
+   **RESOLVED 2026-08-13.** For the record, because the shape recurs: the file was correct
+   and the environment could not satisfy it. It took its leaf from the target's cert pattern,
+   which made the revoked identity an argument (`--station stn_<revoked>`) nobody passes in a
+   pooled run — and the pool provisions fresh stations, which by construction get VALID
+   certificates. So a scenario asking to be refused was handed a good cert and passed nothing.
+   The runner had carried `tls.cert/key/chain` since the commit that introduced S5, documented
+   literally as "e.g. a revoked leaf", with zero users. **Naming the leaf is the whole fix.**
+   Expect this line to be a skip, not a failure, on any machine lacking `certs/uat/stn_985c8a8b.*`.
 2. **`API auth failed: 429` — environmental, load-dependent, never a defect.** This is the
    dominant source of variance: 4 of the 6 failures in the second run were nothing else.
    **Do not run two full suites back to back** — the second inherits the first's throttle
