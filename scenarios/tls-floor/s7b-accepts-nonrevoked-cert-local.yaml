@@ -1,0 +1,68 @@
+# TLS-floor conformance — S7b (positive control for S7)
+#
+# The control the portable revocation proof requires: a leaf from the SAME CA and
+# the SAME mint run, differing from S7's only in that its serial was never passed
+# to `openssl ca -revoke`, MUST still connect while the verifier is checking the
+# CRL.
+#
+# It rules out the failure mode that would otherwise make S7 worthless. Under a
+# fail-closed posture a verifier that cannot FETCH the CRL refuses every
+# certificate — so S7 would go green while enforcing nothing, and the greener it
+# looked the more wrong it would be. This file is what distinguishes "the revoked
+# serial was refused" from "everything is refused". The `up` script independently
+# asserts the CRL is fetchable (http=200) before reporting success, so that
+# failure is caught twice; this catches it from the client side, in the same
+# broker state, over the same pinned TLS version.
+#
+# WHAT IS HELD CONSTANT, precisely: same throwaway CA, same P-256 key type, same
+# extension profile (CA:FALSE / clientAuth / CRLDP), same ten-year validity, same
+# TLS 1.2 pin, same broker, same CRL. The subject differs because two
+# certificates must name two identities — and unlike the validity dates, the
+# subject is not what the check under test consults. `station.stationId` is
+# pinned to this fixture's CN because the broker derives the client's identity
+# from the peer certificate.
+#
+# Minimal by design, like s5b/s6b: connect and assert the negotiated protocol. No
+# boot or session round-trip, so the control cannot go red for an
+# application-layer reason unrelated to certificate validity.
+#
+#   ./scripts/local-crl-verifier.sh up
+#   simulator run --scenario scenarios/tls-floor/s7b-accepts-nonrevoked-cert-local.yaml \
+#     --target local-crl
+#   ./scripts/local-crl-verifier.sh down
+name: "TLS floor S7b — accepts a non-revoked leaf from the same CA under a live CRL check"
+description: "Positive control for S7: a leaf from the same throwaway CA and mint run, differing only in that its serial was never revoked, connects over the same pinned TLS 1.2 while enable_crl_check is on. Proves the verifier does not blanket-refuse and can fetch the CRL — so S7's refusal is attributable to the revoked serial alone."
+requires_files:
+  - "certs/local-crl/stn_r0000002.pem"
+  - "certs/local-crl/stn_r0000002-key.pem"
+  - "certs/local-crl/stn_r0000002-chain.pem"
+requires_files_hint: >-
+  Run ./scripts/local-crl-verifier.sh up — it mints this control together with
+  S7's revoked leaf, which is what makes the pair a one-variable experiment.
+  Minting them separately would reintroduce the CA and the mint run as differences.
+skip_when_pooled: "S7b is the local-crl control for S7; a pooled run targets UAT, where this throwaway CA has no standing."
+tls:
+  min_version: "TLSv1.2"
+  max_version: "TLSv1.2"
+  cert: "certs/local-crl/stn_r0000002.pem"
+  key: "certs/local-crl/stn_r0000002-key.pem"
+  chain: "certs/local-crl/stn_r0000002-chain.pem"
+# NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
+# An ACCEPTED handshake is proven by the negotiated protocol version, visible
+# only on the client socket; nothing records that a TLS connection succeeded
+# before the first OSPP message.
+station:
+  stationId: "stn_r0000002"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # The core assertion: a leaf differing from S7's only in CRL membership
+  # NEGOTIATED a TLS-1.2 connection — the handshake, including the verifier's CRL
+  # lookup, completed and the leaf was accepted.
+  - action: assert
+    field: "connection.tlsProtocol"
+    equals: "TLSv1.2"

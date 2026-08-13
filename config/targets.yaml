@@ -25,8 +25,36 @@ targets:
       # the Root CA gets "unable to verify the first certificate". This bundle is
       # MQTT CA + Root CA. Named so a missing file is a missing FILE, not a silent
       # fallback to system roots.
+      # NOTE: `certs/` is gitignored in full, so this path — like every other
+      # under it — exists only on a machine that produced it. `requires_files` is
+      # a SCENARIO key and cannot cover a target-level path, so any scenario aimed
+      # at this target inherits an undeclarable fixture dependency. A missing file
+      # here surfaces as a connect error rather than an honest skip. Kept in mind
+      # rather than fixed: only s6/s6b use this target, and both declare their own
+      # leaves and skip when pooled.
       ca: "certs/local/broker-ca.pem"
       station_ca_chain: "certs/local/{{stationId}}-chain.pem"
+
+  # The portable revocation proof (S7/S7b). NOT the dev stack: a throwaway broker
+  # with `enable_crl_check` on, its own CA, and its own CRL, all brought up by
+  # ./scripts/local-crl-verifier.sh. It exists because the dev broker's CRL check
+  # cannot be turned on — every dev leaf carries a CRLDP that resolves to the
+  # broker container itself, so the flag would fail closed on the whole stack —
+  # and because the shared listener is shared. Nothing here touches csms-emqx.
+  local-crl:
+    mqtt_url: "mqtts://localhost:8885"
+    mqtt_tls: true
+    csms_url: "http://localhost:8080"
+    credentials:
+      email: "admin@csms.local"
+      password: "password"
+    certs:
+      key: "certs/local-crl/{{stationId}}-key.pem"
+      cert: "certs/local-crl/{{stationId}}.pem"
+      # The verifier's SERVER cert is signed by the same throwaway CA, so this is
+      # what makes the broker-trust direction verifiable rather than skipped.
+      ca: "certs/local-crl/ca.pem"
+      station_ca_chain: "certs/local-crl/{{stationId}}-chain.pem"
 
   uat:
     mqtt_url: "mqtts://mqtt-uat.onestoppay.ro:8883"

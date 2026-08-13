@@ -309,6 +309,50 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     expect(def.requires_files).toContain('certs/local/stn_e0000001.pem');
   });
 
+  /**
+   * S7/S7b are the PORTABLE revocation proof — same claim as S5, no UAT, no
+   * privileged account, no committed key material. Shape-level only, for the
+   * same reason as S6: the fixtures are minted by a script into a gitignored
+   * directory and the verifier is a container pair, so running them here would
+   * measure whether this machine had done `up`.
+   */
+  it('S7 declares the portable revocation proof, and does NOT replace S5', async () => {
+    const runner = new ScenarioRunner();
+    const s5 = await runner.loadScenario(scenarioPath('s5-rejects-revoked-cert.yaml'));
+    const s7 = await runner.loadScenario(scenarioPath('s7-rejects-revoked-cert-local.yaml'));
+
+    // Same claim, same instrument...
+    expect(s7.expect_connect_failure).toBe(true);
+    expect(s7.expect_refusal_reason).toBe('broker-certificate-revoked');
+    expect(s7.expect_refusal_reason).toBe(s5.expect_refusal_reason);
+    expect(s7.steps).toHaveLength(0);
+    // ...different authority, so the two are complementary rather than one
+    // superseding the other. S5 still exists and still names the UAT leaf.
+    expect(s7.tls?.cert).toContain('certs/local-crl/');
+    expect(s5.tls?.cert).toContain('certs/uat/');
+    expect(s7.requires_files).toContain('certs/local-crl/stn_r0000001.pem');
+    expect(s7.skip_when_pooled).toBeTruthy();
+  });
+
+  it('S7b is the one-variable control: same pinned version, and the leaf is what differs', async () => {
+    const runner = new ScenarioRunner();
+    const s7 = await runner.loadScenario(scenarioPath('s7-rejects-revoked-cert-local.yaml'));
+    const s7b = await runner.loadScenario(scenarioPath('s7b-accepts-nonrevoked-cert-local.yaml'));
+
+    expect(s7b.tls?.min_version).toBe(s7.tls?.min_version);
+    expect(s7b.tls?.max_version).toBe(s7.tls?.max_version);
+    expect(s7b.tls?.cert).not.toBe(s7.tls?.cert);
+
+    // The control must ACCEPT — without it, a fail-closed verifier that cannot
+    // fetch the CRL refuses everything and satisfies S7 while enforcing nothing.
+    expect(s7b.expect_connect_failure).toBeFalsy();
+    expect(s7b.steps[0]).toMatchObject({
+      action: 'assert',
+      field: 'connection.tlsProtocol',
+      equals: 'TLSv1.2',
+    });
+  });
+
   it('S6b is the one-variable control: SAME pinned version, DIFFERENT leaf, and it asserts a completed handshake', async () => {
     const runner = new ScenarioRunner();
     const s6 = await runner.loadScenario(scenarioPath('s6-rejects-expired-cert.yaml'));
