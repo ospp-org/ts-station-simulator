@@ -1,15 +1,102 @@
 name: "Connection Lost LWT"
-description: >
-  KNOWN GAP — asserts nothing, and the automatic behaviour it names is contested.
-  The will IS configured (MqttConnection.ts:342-358) but with willDelayInterval:10, while
-  the sim auto-reconnects on a fixed 5s period — sessions/arc8-reconnect-preserve.yaml:7-10
-  records from a live UAT run that "the 5s auto-reconnect cancels the real 10s-delayed will",
-  which is exactly why THAT file injects ConnectionLost as an explicit send step instead.
-  Here `fault: disconnect` is also the LAST step, so ScenarioRunner.ts:1333 immediately
-  issues a clean station.disconnect(); and there is no wait_for, api_call or assert after it.
-  So whether or not the broker publishes the will, this file cannot observe it and passes
-  either way. To make it real: inject ConnectionLost explicitly (arc8 pattern) or assert
-  server-side state after the fault.
+description: "Boot, arm the state the will must destroy, sever the link uncleanly, and read back a server marked offline by the BROKER's Last Will — inside a window the heartbeat sweep cannot reach."
+# THIS FILE USED TO ASSERT NOTHING, AND ITS STATED REASON WAS WRONG.
+#
+# It previously ended on `fault: disconnect` with no step after it, documenting
+# itself as a known gap whose cause was arithmetic: `willDelayInterval: 10` against
+# `LIVE_RECONNECT_PERIOD_MS = 5000`, so the simulator returned at t+5s inside a
+# t+10s delay and MQTT 5 §3.1.3.2.2 required the broker to discard the will. The
+# 2026-08-10 measurement (isOnline still TRUE after a 3000ms settle) was read as
+# confirmation.
+#
+# MEASURED 2026-08-14, AND THE DIAGNOSIS DOES NOT SURVIVE IT. §3.1.3.2.2 suppresses
+# the will only for "a new Network Connection to THIS Session". Scenarios default to
+# `clean_session: true` (ScenarioRunner.ts:820) and no file in the corpus overrides
+# it — so the auto-reconnect arrives with Clean Start = 1, which does not resume the
+# old session, it DISCARDS it. The rule that applies is the other half of the same
+# clause: the will is published when the delay elapses OR THE SESSION ENDS,
+# whichever is first. Ending the session is what the reconnect does, so under the
+# corpus default `fault: disconnect` PUBLISHES the will at ~5s rather than
+# cancelling it. Measured on UAT: clean_session true + disconnect marks the station
+# offline well inside 20s. The 3000ms settle that produced the old conclusion was
+# simply shorter than the 5000ms reconnect — the file gave up about two seconds
+# early, and then explained the silence with a mechanism that was not acting.
+#
+# WHAT ACTUALLY DISCRIMINATES, AND WHY THIS FILE PINS clean_session: false.
+# With the session PERSISTENT the reconnect really is "to this Session", the
+# suppression clause really does apply, and the two faults separate cleanly. Both
+# arms measured on UAT the same afternoon, one word apart:
+#
+#   clean_session: false + fault: sever       -> PASS. Consumer log: cause=broker_will
+#   clean_session: false + fault: disconnect  -> FAIL. isOnline still true at t+20s,
+#                                                and ZERO ConnectionLost lines for
+#                                                that station — never published.
+#
+# So the falsification is a single word in this file and the verdict inverts. Under
+# the default `true` it would not: `disconnect` would pass too, and the file would
+# be green for a teardown it is not about. That is the reason for the override, and
+# it is the only reason — this scenario does not otherwise care about session
+# persistence.
+#
+# WHY `sever` EXISTS AT ALL, given `disconnect` can also produce a will. Because it
+# does so only by accident of configuration. `sever` is a forced end: no DISCONNECT
+# packet (so the will stays armed — §3.14.4 discards it on clean ones) and the
+# client latched closed (so the delay elapses instead of a reconnect pre-empting
+# it). It fires the will under BOTH clean_session settings, models the physical
+# event — a station losing power — and leaves no zombie connection claiming
+# reachability while the database says offline. `disconnect` has none of those
+# properties. See MqttConnection.severConnection() and the tripwire in
+# MqttConnection.severWill.test.ts.
+#
+# WHY THE 20s DELAY IS THE ASSERTION AND NOT A SETTLE. The old header's objection to
+# waiting was right and is kept as the design. TWO detectors converge on
+# StationOfflineService::markOffline, and a green that cannot tell them apart proves
+# nothing:
+#
+#   ConnectionLost (LWT)       broker-driven, ~10s after the socket dies
+#   station:check-heartbeats   every minute, at 3.5 x heartbeatIntervalSec of
+#                              silence — measured 30 on UAT, so 105s
+#
+# 20s sits above the first and 5x below the second. The sweep CANNOT have produced
+# this transition: the Boot above set last_seen_at less than 20s earlier, so
+# getTimedOutStations() cannot be returning this station. Waiting ~170s would turn
+# the file green while proving the wrong mechanism — the green this window refuses.
+#
+# THE CAUSE IS NOT READABLE OVER REST, SO TIME CARRIES IT IN-SCENARIO. markOffline
+# takes a StationOfflineCause but StationRepository::markOffline does not persist it;
+# it reaches the log line and the StationWentOffline event only. The definitive
+# attribution therefore lives in a log, and NOT in the one you would reach for
+# first: ConnectionLostHandler runs in the MQTT consumer, so it writes to
+# csms-mqtt-consumer-uat, while the heartbeat sweep runs under the scheduler in
+# csms-app-uat. Grepping the app container for `broker_will` returns 0 and reads
+# exactly like a will that never fired. The line to look for is
+# `message_id: lwt-<stationId>` with `cause: broker_will` — the `lwt-` prefix is the
+# messageId MqttConnection stamps at connect time, so its presence is proof the
+# BROKER published the envelope and not the station.
+#
+# WHAT IT PROVES END-TO-END. Three parties, none of them this simulator: the broker
+# published a will it was holding, the server accepted it through version
+# negotiation (a non-REQUEST that fails negotiation is hard-failed to the DLQ
+# silently — the failure that dead-lettered 11 wills as `Unsupported version: 0.2.1`
+# before protocolVersion.ts), and ConnectionLostHandler ran the full markOffline
+# transition. The bay assertions are that last part: markOffline is bays + station in
+# ONE transaction (StationOfflineService:46-49), so isOnline false while a bay stayed
+# `available` would be a partial transition, not a green.
+#
+# WHY THE ARM IS THERE. A fresh pool station is provisioned offline with bays
+# `unknown`, so all three proof values would be satisfiable by the initial state.
+# The Boot moves isOnline false -> true and the two StatusNotifications move both
+# bays unknown -> available, each asserted before the sever.
+#
+# CONTENTION — THIS FILE MUST HOLD ITS STATION UNTIL THE WILL LANDS. The allocator
+# (ScenarioRunner.ts:1159) already gives one scenario exclusive use of a station via
+# `inUse`, so nothing else can heartbeat it awake. The hazard runs the other way: a
+# will still in flight when the station is RELEASED would mark someone else's
+# scenario offline mid-run. The 20s wait plus the assertion after it contains that —
+# the will is published and consumed before this file returns its station. No
+# exclusive-station mechanism is needed; what is needed is that this file never ends
+# between the sever and the proof, and it does not.
+clean_session: false
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -46,49 +133,78 @@ steps:
   - action: wait_for
     message: BootNotification
     messageType: Response
-    # Aligned with global default bump (5s → 15s, commit 9e57ce2). Sprint B2
-    # timeout sweep — sister scenario from Sprint B P5.1/P5.11 fix (commit
-    # 3fdc7a6). UAT first-round-trip can exceed 5s.
     timeout_ms: 15000
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
 
+  # --- ARM: drive all three proof values away from what the proof will read. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # StatusNotification is fire-and-forget with no Response to synchronise on, so the
+  # read races the consumer. 1000ms is the value status-all-bay-states.yaml measured
+  # on UAT after 300ms read back the PREVIOUS state.
   - action: delay
     ms: 1000
 
-  - action: fault
-    type: disconnect
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
 
-# NO SERVER-STATE ASSERTION — THE LWT EFFECT IS NOT OBSERVABLE IN THIS WINDOW.
-# Attempted, measured, and reverted rather than reshaped into a green.
-#
-# The intended assertion was data.isOnline false after the disconnect:
-# ConnectionLostHandler:69 calls StationOfflineService::markOffline on the Last
-# Will, broker-driven, and an api_call still works after the MQTT link is gone
-# because it is plain HTTP. Measured on UAT 2026-08-10 with a 3000ms settle:
-# isOnline was still TRUE. The station-side close is ungraceful — FaultStep
-# disconnect calls destroyConnection() — so the will should not be suppressed by
-# a clean MQTT DISCONNECT, and two candidate causes remain, neither diagnosable
-# from a scenario:
-#   - the broker had not yet declared the client gone (EMQX publishes the will on
-#     ITS detection, which may wait for keepalive expiry rather than the TCP
-#     reset), or
-#   - the will was published and REJECTED server-side. A ConnectionLost is an
-#     EVENT, and a non-REQUEST that fails version negotiation goes to the DLQ
-#     silently, so a will carrying the wrong protocolVersion would vanish exactly
-#     like this. That failure mode has bitten this message before.
-#
-# WHY NOT JUST WAIT LONGER. isOnline WOULD eventually flip: a second detector,
-# CheckStationHeartbeatsCommand, sweeps every minute for 3.5 x heartbeatIntervalSec
-# of silence (config/ospp.php:163-166, ~105s at 30s) and converges on the same
-# markOffline (StationOfflineService:18). A ~170s delay would therefore turn this
-# file green — while proving the SLOW SWEEP, which is not what a file named
-# connection-lost-lwt is for. It would be a green that asserts the wrong
-# mechanism, and it would hide the very regression it looks like it covers.
-#
-# So: no assertion, and the gap is stated. Closing it needs the LWT path
-# diagnosed server-side (is the will published, and does it survive negotiation),
-# not a scenario edit. If that is fixed, the assertion to add is
-# data.isOnline false after a short settle — and it should stay short on purpose.
+  # --- SEVER: the power cut. Unclean (will stays armed) and final (no reconnect).
+  # Swap this one word to `disconnect` and the run goes red at step [10]: with the
+  # session persistent above, the 5s reconnect resumes it and the broker discards
+  # the will. That is this file's falsification, and it is measured.
+  - action: fault
+    type: sever
+
+  # Client-side attribution, asserted BEFORE the wait so a failure here reads as
+  # "the simulator did the wrong teardown" rather than "the server did not react".
+  # `network` would mean destroyConnection() ran; `self` would mean a clean
+  # DISCONNECT went out and the broker discarded the will outright.
+  - action: assert
+    field: "connection.lastCloseCause"
+    equals: "severed"
+
+  # willDelayInterval is 10s. 20s clears it with margin and stays 5x below the 105s
+  # heartbeat sweep, which is what makes the transition attributable.
+  - action: delay
+    ms: 20000
+
+  # --- PROOF: the broker published the will and the server ran markOffline. -----
+  # Plain HTTP, so it still works with the MQTT link gone. All three values are the
+  # inverse of what the ARM asserted 20s earlier.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: false
+      data.bays[bayNumber=1].status: "unknown"
+      data.bays[bayNumber=2].status: "unknown"

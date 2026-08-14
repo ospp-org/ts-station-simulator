@@ -107,8 +107,20 @@ export const CONNACK_REASON_NOT_AUTHORIZED = 0x87;
  * drop (`network`) — before ADR-0004 all three surfaced as a bare 'close'.
  * `unknown` = the socket closed with no attributable cause (e.g. the broker
  * dropped TCP without a DISCONNECT packet).
+ *
+ * `severed` is `network`'s opposite number and the distinction is the whole
+ * reason it exists: both destroy the socket, but `network` leaves the client
+ * alive to auto-reconnect on LIVE_RECONNECT_PERIOD_MS while `severed` latches
+ * it closed for good. Against a broker that honours `willDelayInterval` those
+ * are opposite outcomes, not shades of one — see severConnection().
  */
-export type SeveranceCause = 'none' | 'self' | 'network' | 'broker-kick' | 'unknown';
+export type SeveranceCause =
+  | 'none'
+  | 'self'
+  | 'network'
+  | 'severed'
+  | 'broker-kick'
+  | 'unknown';
 
 /** Observable severance state — what a scenario asserts on for TIER 1. */
 export interface SeveranceState {
@@ -190,8 +202,15 @@ const lastDisconnectAt = new Map<string, number>();
 /**
  * Auto-retry cadence of the LIVE connection. probeReconnect() deliberately
  * passes 0 instead: a ban probe must return a verdict, not retry forever.
+ *
+ * EXPORTED because it is one half of a relationship, not a private detail: it
+ * must stay strictly BELOW the will's `willDelayInterval` for `fault: disconnect`
+ * to reliably cancel the Last Will and `fault: sever` to be the only teardown
+ * that does not. MqttConnection.severWill.test.ts pins that inequality, because
+ * the two numbers are otherwise changeable independently and the consequence of
+ * crossing them is silent.
  */
-const LIVE_RECONNECT_PERIOD_MS = 5000;
+export const LIVE_RECONNECT_PERIOD_MS = 5000;
 
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
@@ -555,6 +574,57 @@ export class MqttConnection extends EventEmitter {
       this.isDestroyingConnection = true;
       this.closeCause = 'network';
       (this.client as unknown as { stream?: { destroy(): void } }).stream?.destroy();
+    }
+  }
+
+  /**
+   * Sever the link the way a station losing power does: destroy the socket
+   * WITHOUT a DISCONNECT packet, and never come back.
+   *
+   * WHY THIS IS NOT destroyConnection(). Both destroy the stream, and for the
+   * Last Will that difference is decisive. buildConnectOptions() arms the will
+   * with `willDelayInterval: 10`, and MQTT 5 §3.1.3.2.2 says the broker must
+   * NOT publish it if a new Network Connection to the same Session arrives
+   * inside that delay. destroyConnection() leaves the client alive, so
+   * LIVE_RECONNECT_PERIOD_MS (5000) brings it back at t+5s — half the delay —
+   * and the will is discarded every single time. `clean: false` +
+   * `sessionExpiryInterval: 3600` guarantee the reconnect resumes the SAME
+   * session rather than starting a new one, which is exactly the condition the
+   * spec suppresses on. So the simulator had no way to make a broker publish
+   * the will: `fault: disconnect` cancelled it, and the runner's end-of-scenario
+   * disconnect() sends a clean DISCONNECT, which suppresses it outright (§3.14.4:
+   * a normal disconnection discards the Will Message).
+   *
+   * WHY end(true) AND NOT stream.destroy(). Two effects, both needed. mqtt.js
+   * `_cleanUp(forced)` calls `stream.destroy()` on the forced path and sends a
+   * DISCONNECT packet on the unforced one — so `force` is what keeps the close
+   * UNCLEAN and the will armed. And `end()` latches `disconnecting`, which is
+   * what stops reconnectPeriod from firing. Destroying the stream alone gives
+   * the first without the second, which is destroyConnection() and is precisely
+   * the case that cancels the will.
+   *
+   * The wrapper is torn down here rather than in a callback: after this the
+   * connection is not coming back, so a later disconnect() must be a no-op
+   * instead of trying to close an ended client. lastDisconnectAt is recorded so
+   * the next connect() on this stationId still honours RECONNECT_GUARD_MS.
+   */
+  severConnection(): void {
+    const client = this.client;
+    if (!client) return;
+
+    // Attributed BEFORE the teardown so the 'close' handler's `=== 'none'`
+    // guard leaves it alone rather than recording this as `unknown`.
+    this.closeCause = 'severed';
+    this.kickReasonCode = null;
+    lastDisconnectAt.set(this.stationId, Date.now());
+    this.client = null;
+    this.currentClientId = null;
+
+    try {
+      client.end(true);
+    } catch {
+      // Already down. The cause is attributed either way, which is what a
+      // scenario asserts on.
     }
   }
 

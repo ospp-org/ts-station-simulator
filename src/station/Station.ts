@@ -201,6 +201,16 @@ export class Station extends EventEmitter {
   }
 
   /**
+   * Simulate a station losing power — TCP destroyed with no DISCONNECT packet,
+   * and no reconnect. The one teardown that leaves the broker's Last Will armed
+   * and lets its `willDelayInterval` actually elapse; see
+   * MqttConnection.severConnection().
+   */
+  severConnection(): void {
+    this.connection.severConnection();
+  }
+
+  /**
    * Resolve when the MQTT client next emits `connect` (a connack) — i.e. the
    * auto-reconnect that follows `destroyConnection()`. Used by the
    * `wait_for_connect` step so a scenario re-sends on a live connection
