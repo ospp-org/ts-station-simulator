@@ -29,6 +29,30 @@ description: "Drive both bays to `available`, then Boot and read them back as `u
 # anything, so leave the bays alone" — and PROOF 2 goes red on its own while PROOF 1
 # still passes, which is the discrimination this file is for.
 #
+# THE SERVER BIT IS NAMED HERE, NOT MOVED — SAY SO RATHER THAN LET THE FILE IMPLY
+# OTHERWISE. Neither mutation above has been executed against a running server. What
+# WAS measured on UAT (2026-08-14) is the scenario-side mutation: PROOF 2's expected
+# value changed from `unknown` to `available` gives rc=1 at step [18] alone,
+# "expected available, got unknown", with steps 0-17 untouched. That proves the read
+# returns `unknown`. It does not, by itself, prove the server's write is what put it
+# there.
+#
+# WHAT CARRIES THAT SECOND HALF IS THE SCHEMA, AND IT CARRIES IT BY CONSTRUCTION.
+# bay-status.schema.json enumerates six values and states in its own description that
+# `Unknown` is "deliberately absent here, because no party transmits it", with the
+# added rule that a generated type "MUST NOT gain `Unknown` back". The simulator
+# therefore cannot put a bay into `unknown` — there is no message it can send that
+# would. The ARM read two seconds earlier proves the value was `available`. Between
+# those two reads something wrote, and the only party that can write that value is
+# the server. So the discrimination is real without the code mutation; executing it
+# would confirm the argument, not create it.
+#
+# WHAT IS STILL ONLY READ, NOT MEASURED: that the reset is UNCONDITIONAL. PROOF 2
+# distinguishes "fires on a reboot" from "fires on every Boot" only if :396 really
+# does sit outside the branch at :387-395 — which is read off the source, not
+# demonstrated by a run. Moving the line is the only thing that would demonstrate it,
+# and that has not been done.
+#
 # WHY PROOF 2 PINS `Reconnect` AND IS NOT OVERREACH. The unconditional placement is
 # a real decision and it agrees with the spec's own words: the server enters
 # `unknown` ON CONNECTION LOSS, and a `Reconnect` Boot follows a connection loss by

@@ -38,6 +38,28 @@ description: "Boot, arm the state the will must destroy, sever the link uncleanl
 # it is the only reason — this scenario does not otherwise care about session
 # persistence.
 #
+# THAT FALSIFICATION SITS ON THE INPUT SIDE, NOT ON THE SERVER — AND THE DIFFERENCE
+# IS WORTH WRITING DOWN. Swapping `sever` for `disconnect` changes whether the BROKER
+# ever publishes the will, i.e. whether the server is given the message at all. It
+# proves "no will, no offline". It does not move anything inside the server. The
+# server-side bit that would invert this file is ConnectionLostHandler — the class
+# that turns the will into StationOfflineService::markOffline — and it has NOT been
+# touched. Note that the obvious cheap way to touch it does not work: stopping the
+# MQTT consumer container disables ALL station->server traffic, so the run would die
+# at the first Boot rather than at step [10], which discriminates nothing. Moving the
+# bit means a code change and, on an image-baked UAT, a deploy.
+#
+# WHAT CARRIES THE ATTRIBUTION IN ITS PLACE IS THE STAMPED PREFIX, AND IT IS A DIRECT
+# OBSERVATION RATHER THAN AN INFERENCE. The consumer log line for this transition
+# reads `message_id: lwt-<stationId>` with `cause: broker_will`. That messageId is
+# written once, into the will payload of the CONNECT packet (MqttConnection.ts:366),
+# and it exists nowhere else — the station has no code path that sends a
+# ConnectionLost with that id. Its presence in the server's own log is therefore the
+# server recording that it consumed an envelope only the broker could have published.
+# Combined with the 20s window, which excludes the 105s sweep, the mechanism is
+# identified, not assumed. Executing the handler mutation would add the inversion; it
+# would not add the origin proof, which is already here.
+#
 # WHY `sever` EXISTS AT ALL, given `disconnect` can also produce a will. Because it
 # does so only by accident of configuration. `sever` is a forced end: no DISCONNECT
 # packet (so the will stays armed — §3.14.4 discards it on clean ones) and the
