@@ -190,6 +190,66 @@ export const DEFAULT_SEED_SERVICES: ReadonlyArray<SeededService> = [
   { serviceId: 'svc_vacuum',       serviceName: 'Vacuum',       pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
 ];
 
+// ---------------------------------------------------------------------------
+// Identity funding — how much is "enough"
+// ---------------------------------------------------------------------------
+
+/**
+ * The server's ceiling on a REST-started session, in seconds. `config/ospp.php:230`
+ * (`OSPP_MAX_SESSION_DURATION_SECONDS`, default 600) and re-enforced at the request layer,
+ * `StartSessionRequest.php:56` `'max:'.(int) config('ospp.max_session_duration_seconds', 600)`.
+ * A per-station `station_configurations` row can LOWER it; nothing can raise it past the
+ * request rule, so no `POST /sessions/start` can ever authorize more than this many seconds.
+ */
+export const MAX_SESSION_DURATION_SECONDS = 600;
+
+/**
+ * Credits a single `POST /sessions/start` would authorize for {@link service} at the server's
+ * maximum accepted duration. Mirrors `StartSessionAction.php:205-209` exactly:
+ *
+ *   creditsAuthorized = pricingType === 'Fixed'
+ *       ? priceCreditsFixed
+ *       : ceil(effectiveDuration / 60 * priceCreditsPerMinute)
+ */
+function maxCreditsAuthorizedFor(service: SeededService): number {
+  if (service.pricingType === 'Fixed') return service.priceCreditsFixed ?? 0;
+  return Math.ceil(MAX_SESSION_DURATION_SECONDS / 60 * (service.priceCreditsPerMinute ?? 0));
+}
+
+/**
+ * The wallet balance every bootstrapped identity is seeded with — 1000 credits, DERIVED
+ * rather than chosen: the largest single authorization the server can accept against the
+ * seeded catalog (`ceil(600/60) × 100`). Recomputes itself if either input moves.
+ *
+ * WHY THIS IS THE FIX. `StartSessionAction.php:241-250` refuses a card-free start when
+ * `walletQuery->getBalance() < $creditsAuthorized` — 402 `INSUFFICIENT_BALANCE` / ospp_code
+ * 4001. `SessionController::start` builds the DTO with `userId` set and `paymentIntentId`
+ * null, so EVERY REST start enters that gate. Seeding at balance 0 (which this file did
+ * until now) meant the corpus had coherently built a world where sessions start without
+ * money, because the server used to permit it. The gate is correct; the fixture was wrong.
+ *
+ * WHY THE MAXIMUM OF ONE START AND NOT THE SUM OF A SCENARIO'S STARTS. The online session
+ * path never debits the wallet: `CompleteSessionAction.php:133-139` writes the
+ * `sessions.credits_charged` COLUMN and nothing else, and the only two `WalletDebitInterface`
+ * consumers in the whole server are in the Offline module (`AuthorizeOfflineSessionAction`,
+ * `Reconciler`). A funded balance is therefore never drawn down by an online session, so the
+ * second and sixth start in a scenario are checked against the same undiminished number as
+ * the first. The requirement is a MAXIMUM, not a running total.
+ *
+ * WHY NOT A LARGE ROUND NUMBER. A comfortable 1_000_000 would pass everything including a
+ * scenario whose subject IS the refusal — it would fund the very thing under test and report
+ * a green. The tightest sufficient value keeps that scenario honest, and a scenario that
+ * genuinely wants a different balance now has to say so: `wallet_balance:` in its YAML
+ * (see `ScenarioDefinition.wallet_balance`), never inherited from this default.
+ *
+ * Offline pass ISSUANCE is not a consumer of this number: `IssueOfflinePassAction.php:92-101`
+ * refuses only `balance < 0`, so 0 already satisfied it. The claim at
+ * `docs/RUNNING-AGAINST-UAT.md` that the 2 offline-pass scenarios fail on wallet balance is
+ * stale on both halves — see that file's own correction.
+ */
+export const DEFAULT_IDENTITY_WALLET_CREDITS: number =
+  Math.max(...DEFAULT_SEED_SERVICES.map(maxCreditsAuthorizedFor));
+
 /**
  * Build the JSON payload byte-identical to csms-server's `ServiceItemDto::toPayload()` →
  * stored in `service_catalogs.services_data` so the audit row matches what a real
@@ -363,6 +423,33 @@ export async function seedServiceCatalog(
 const USER_MODEL_TYPE = 'App\\Modules\\Auth\\Models\\User';
 
 /**
+ * One identity to seed. `walletBalance` is OPTIONAL and omission means
+ * {@link DEFAULT_IDENTITY_WALLET_CREDITS} — the asymmetry is the point. Funding is what a
+ * caller gets for free; an unfunded identity (balance 0) can only be produced by naming the
+ * 0, which is what makes a refusal scenario's fixture legible instead of accidental.
+ */
+export interface SeededIdentity {
+  email: string;
+  walletBalance?: number;
+}
+
+/**
+ * Group identities by their effective wallet balance, resolving the default. Returns
+ * `Map<balance, email[]>`; insertion order follows first appearance, so the emitted SQL is
+ * deterministic for a given input (the tests assert on the exact string).
+ */
+function groupByBalance(identities: ReadonlyArray<SeededIdentity>): Map<number, string[]> {
+  const groups = new Map<number, string[]>();
+  for (const identity of identities) {
+    const balance = identity.walletBalance ?? DEFAULT_IDENTITY_WALLET_CREDITS;
+    const group = groups.get(balance);
+    if (group) group.push(identity.email);
+    else groups.set(balance, [identity.email]);
+  }
+  return groups;
+}
+
+/**
  * Build the per-run identity-seed SQL. One transaction. For each email in {@link emails}
  * (whose owners must NOT exist yet — UNIQUE on `users.email`), inserts:
  *
@@ -371,7 +458,19 @@ const USER_MODEL_TYPE = 'App\\Modules\\Auth\\Models\\User';
  *      admin identity). `is_active = true`, `email_verified = true`.
  *   2. `wallets` — RegisterAction creates this when a user self-registers; AcceptInvite
  *      does NOT. We add it for safety: settlement code downstream (session stop / receipt
- *      issuance) may read or debit the wallet, and a missing row would 500 there.
+ *      issuance) may read or debit the wallet, and a missing row would 500 there. The
+ *      balance is per-identity ({@link identities}), defaulting to
+ *      {@link DEFAULT_IDENTITY_WALLET_CREDITS} — see 2b.
+ *   2b. `wallet_entries` — one `credit` row per FUNDED identity, mirroring
+ *      `WalletSeeder.php:36-46` (type `credit`, `balance_after` = the seeded balance,
+ *      `reference_type` 'bonus'). Nothing in the server reconciles `wallets.balance`
+ *      against `SUM(wallet_entries)` — `verifyBalanceChain()` has one caller and it is a
+ *      test — so this row is not needed to make the balance READ. It is written because
+ *      the next real `WalletLedger` operation computes its own `balance_after` from the
+ *      column: without a matching entry the ledger chain silently forks from the history,
+ *      and the last session that had to undo a fixture leak here could only restore the
+ *      true balances BECAUSE the ledger still carried them. Skipped when the balance is 0
+ *      (`CHECK (amount > 0)` on the table, and there is nothing to record).
  *   3. `organization_members` — links the user to {@link orgId} with role `tenant_operator`.
  *      The Spatie tenant_operator role doesn't carry `sessions.start` (per RolesAndPermissions
  *      Seeder.php:349-368), but the session-mutate routes are gated only on `auth.jwt +
@@ -383,15 +482,24 @@ const USER_MODEL_TYPE = 'App\\Modules\\Auth\\Models\\User';
  *      (`MemberObserver.php:175-201` resolves it scoped to the org).
  *
  * All four are scoped by the email set, so re-running on a previously-seeded set is a no-op.
+ *
+ * SCOPING. Every statement here is an INSERT against rows this run is creating, keyed by
+ * emails that carry the run's own `runStamp`. That is deliberate and it is the fix for a
+ * real incident: a previous session funded wallets with a follow-up
+ * `UPDATE … WHERE email LIKE 'sim-worker-%'`, which also matched the PRE-EXISTING July
+ * fixtures and overwrote ten wallets, three of them legitimately non-zero. Funding at INSERT
+ * time cannot reach a row this run did not create — the hazard is removed by construction,
+ * not by being careful with a WHERE clause.
  */
 export function buildSeedTestUsersSql(
   orgId: string,
   copyPasswordFromEmail: string,
-  emails: string[],
+  identities: ReadonlyArray<SeededIdentity>,
   offlineEnabled: boolean = false,
 ): string {
-  if (emails.length === 0) return 'BEGIN;\nCOMMIT;';
+  if (identities.length === 0) return 'BEGIN;\nCOMMIT;';
 
+  const emails = identities.map((i) => i.email);
   const orgLit = sqlLiteral(orgId);
   const copyLit = sqlLiteral(copyPasswordFromEmail);
   const emailArr = `ARRAY[${emails.map(sqlLiteral).join(', ')}]::text[]`;
@@ -413,11 +521,30 @@ export function buildSeedTestUsersSql(
     );
   }
 
-  // 2. wallets: one row per seeded user; balance 0, version 1 (mirrors RegisterAction).
-  lines.push(
-    `INSERT INTO wallets (user_id, balance, version, created_at, updated_at) ` +
-    `SELECT id, 0, 1, NOW(), NOW() FROM users WHERE email = ANY(${emailArr});`,
-  );
+  // 2. wallets: one row per seeded user; version 1 (mirrors RegisterAction). The balance is
+  //    per-identity and defaults to DEFAULT_IDENTITY_WALLET_CREDITS — a zero balance is only
+  //    ever seeded because an identity asked for one. Grouped by balance so the common case
+  //    (every identity on the default) stays a single statement.
+  for (const [balance, group] of groupByBalance(identities)) {
+    const groupArr = `ARRAY[${group.map(sqlLiteral).join(', ')}]::text[]`;
+    lines.push(
+      `INSERT INTO wallets (user_id, balance, version, created_at, updated_at) ` +
+      `SELECT id, ${balance}, 1, NOW(), NOW() FROM users WHERE email = ANY(${groupArr});`,
+    );
+
+    // 2b. wallet_entries: the ledger half of a funded wallet (see the doc block above).
+    //     `amount` carries a CHECK (amount > 0), so an unfunded identity gets no entry —
+    //     and has nothing to record anyway.
+    if (balance > 0) {
+      lines.push(
+        `INSERT INTO wallet_entries ` +
+        `(wallet_id, type, amount, balance_after, reference_type, reference_id, description, idempotency_key, created_at) ` +
+        `SELECT w.id, 'credit'::wallet_entry_type, ${balance}, ${balance}, 'bonus', 'sim_bootstrap_seed', ` +
+        `'Simulator bootstrap identity funding', 'sim-seed:' || u.email, NOW() ` +
+        `FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.email = ANY(${groupArr});`,
+      );
+    }
+  }
 
   // 3. organization_members: link each user as tenant_operator to the org.
   lines.push(
@@ -547,10 +674,10 @@ export function buildTeardownTestUsersSql(
 export async function seedTestUsers(
   orgId: string,
   copyPasswordFromEmail: string,
-  emails: string[],
+  identities: ReadonlyArray<SeededIdentity>,
   offlineEnabled: boolean = false,
   cfg: UatDbConfig = uatDbConfigFromEnv(),
 ): Promise<void> {
-  if (emails.length === 0) return;
-  await runUatSql(buildSeedTestUsersSql(orgId, copyPasswordFromEmail, emails, offlineEnabled), cfg);
+  if (identities.length === 0) return;
+  await runUatSql(buildSeedTestUsersSql(orgId, copyPasswordFromEmail, identities, offlineEnabled), cfg);
 }

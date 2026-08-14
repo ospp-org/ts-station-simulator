@@ -21,10 +21,12 @@ import {
   seedServiceCatalog,
   seedTestUsers,
   buildTeardownTestUsersSql,
+  DEFAULT_IDENTITY_WALLET_CREDITS,
   DEFAULT_SEED_SERVICES,
   runUatSql,
   sqlLiteral,
   uatDbConfigFromEnv,
+  type SeededIdentity,
   type UatDbConfig,
 } from './uatPrivileged.js';
 import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
@@ -69,6 +71,16 @@ export interface PoolBootstrapOptions {
    * for one-shot debugging runs).
    */
   identityPoolSize: number;
+  /**
+   * One entry per SELECTED SCENARIO that declares `wallet_balance:` in its YAML — the value
+   * it declared, repeated as many times as scenarios declared it. Each becomes an extra
+   * seeded identity funded at exactly that balance and RESERVED (invisible to a scenario
+   * that declared nothing, see IdentityPoolAllocator).
+   *
+   * Supply is per-declaration rather than per-distinct-value because identities are
+   * single-use: two scenarios both wanting a balance of 0 need two of them.
+   */
+  declaredWalletBalances?: number[];
   /** Explicit org UUID; when absent, discovered from the caller's memberships. */
   orgId?: string;
   /** UAT DB access config for privileged steps; defaults from env. */
@@ -143,8 +155,18 @@ export interface SerializedPoolHandle {
   certFiles: string[];
   /** Optional for backwards-compat with handles persisted before the seed landed. */
   seededServiceIds?: string[];
-  /** Optional for backwards-compat with handles persisted before per-worker identity landed. */
-  identityCredentials?: Array<{ email: string; password: string }>;
+  /**
+   * Optional for backwards-compat with handles persisted before per-worker identity landed.
+   * `walletBalance`/`declared` are likewise optional: a handle written before wallet funding
+   * existed carries neither, and teardown only ever reads `email`, so an old file still
+   * cleans up correctly.
+   */
+  identityCredentials?: Array<{
+    email: string;
+    password: string;
+    walletBalance?: number;
+    declared?: boolean;
+  }>;
 }
 
 export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPoolHandle {
@@ -540,16 +562,45 @@ export async function bootstrapPool(
     if (options.identityPoolSize > 0) {
       const sourceEmail = identity.ownerEmail;
       const sourcePassword = identity.ownerPassword;
-      const emails: string[] = [];
+      // Default-funded workers. `walletBalance` is left off the SeededIdentity on purpose:
+      // omission IS the default (DEFAULT_IDENTITY_WALLET_CREDITS), so the funded case cannot
+      // drift out of step with the constant the runner and the docs both name.
+      const identities: SeededIdentity[] = [];
       for (let i = 0; i < options.identityPoolSize; i++) {
-        emails.push(`sim-worker-${runStamp}-${i}@test.local`);
+        identities.push({ email: `sim-worker-${runStamp}-${i}@test.local` });
       }
-      await seedTestUsers(handle.orgId, sourceEmail, emails, options.enableOffline, dbConfig);
-      handle.identityCredentials = emails.map((email) => ({ email, password: sourcePassword }));
+      // Declared-balance workers — one per scenario that asked. Stamped `nofund` only in the
+      // sense that they are not on the default; the balance itself is whatever was declared.
+      const declaredBalances = options.declaredWalletBalances ?? [];
+      const declaredIdentities: SeededIdentity[] = declaredBalances.map((walletBalance, i) => ({
+        email: `sim-declared-${runStamp}-${i}@test.local`,
+        walletBalance,
+      }));
+
+      const all = [...identities, ...declaredIdentities];
+      await seedTestUsers(handle.orgId, sourceEmail, all, options.enableOffline, dbConfig);
+      handle.identityCredentials = [
+        ...identities.map(({ email }) => ({
+          email,
+          password: sourcePassword,
+          walletBalance: DEFAULT_IDENTITY_WALLET_CREDITS,
+        })),
+        ...declaredIdentities.map(({ email, walletBalance }) => ({
+          email,
+          password: sourcePassword,
+          walletBalance,
+          declared: true,
+        })),
+      ];
       console.log(
-        `[bootstrap] seeded ${emails.length} tenant_operator identity(ies) ` +
+        `[bootstrap] seeded ${all.length} tenant_operator identity(ies) ` +
         `(runStamp=${runStamp}, copied password_hash from ${sourceEmail}, ` +
-        `offline_enabled=${options.enableOffline})`,
+        `offline_enabled=${options.enableOffline}, ` +
+        `wallet=${DEFAULT_IDENTITY_WALLET_CREDITS} credits × ${identities.length}` +
+        (declaredIdentities.length > 0
+          ? ` + declared [${declaredBalances.join(', ')}]`
+          : '') +
+        `)`,
       );
     }
 

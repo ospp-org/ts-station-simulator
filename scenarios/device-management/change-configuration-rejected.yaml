@@ -28,6 +28,11 @@
 #     reboot-required -> same value, mutability "static"
 #     rejected        -> the key absent (no row is ever written on a rejection)
 #
+#   THE `rejected` LINE ABOVE IS NO LONGER TRUE — csms-server `13bee28` made a refused change
+#   record itself, so the row EXISTS and carries `desired_status: "rejected"`. Kept in place
+#   rather than edited because it dates the change: this file asserted the absence for as long
+#   as the absence was the behaviour. The live assertion is at the foot of the file.
+#
 # WHAT IS ASSERTED BELOW, and it is real: the server pushed the key and value the REST call
 #   asked for. That is server-resolved and on the wire — it fails if the request/push
 #   translation breaks — but it is identical in all three files and does NOT separate them.
@@ -115,16 +120,27 @@ steps:
           errorCode: 5108
           errorText: "CONFIGURATION_KEY_READONLY"
 
-  # THE DISCRIMINATOR — nothing is persisted on a refusal, so the collection stays empty.
-  # Live since csms-server fixed ChangeConfigurationHandler to read results[] (2026-08-10).
+  # THE DISCRIMINATOR — CORRECTED 2026-08-14.
   #
-  # PRECONDITION: a station with no prior station_configurations rows — i.e. run this with
-  # `--bootstrap-pool`, or on a station that has not run the accepted/reboot-required variants.
-  # Asserted as the empty collection rather than "key absent" deliberately: ApiCallStep's
-  # expect_body is strict per-key equality (ApiCallStep.ts:557-573), so an absent path yields
-  # `undefined` and cannot be pinned directly. On a fresh station only ChangeConfiguration and
-  # GetConfiguration ever write this table, and this scenario calls neither successfully, so
-  # `data: []` is exactly the "no row is ever written on a rejection" claim.
+  # This block used to assert `data: []` on the reasoning that "no row is ever written on a
+  # rejection". That was true when it was written and csms-server `13bee28` ended it: a
+  # refused change now RECORDS itself. The row exists, and what makes it a refusal rather
+  # than an applied change is `desired_status: "rejected"` with `desired_resolved_at`
+  # populated, against an `value` (applied) side the station never confirmed.
+  #
+  # The stale assertion had been failing since that deploy and was masked in one earlier run
+  # by an unrelated 429, which is the more expensive half of the story: a standing red line
+  # teaches everyone to skim the failure list.
+  #
+  # WHY THE NEW ASSERTION IS STRONGER THAN THE OLD ONE. `data: []` could only ever say
+  # "nothing happened", which a station that never answered would also satisfy. These fields
+  # say the server heard the Rejected result and recorded WHICH key was refused, WHAT was
+  # asked for, and that the request is closed rather than still in flight — the distinction
+  # `desired_status` exists to make (StationConfigurationResource.php:37-43).
+  #
+  # PRECONDITION unchanged: a station with no prior station_configurations rows — i.e. run
+  # this with `--bootstrap-pool`, or on a station that has not run the accepted /
+  # reboot-required variants. `data.0.*` is the only row on such a station.
   - action: delay
     ms: 1500
 
@@ -133,4 +149,21 @@ steps:
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
     expect_body:
-      data: []
+      data.0.key: "HeartbeatIntervalSeconds"
+      # What was ASKED. Echoes the PUT above, so on its own it proves only that the request
+      # was recorded.
+      data.0.desired_value: "30"
+      # THE REFUSAL. Reachable only from ChangeConfigurationHandler reading a `Rejected`
+      # result out of the station's Response — the half this scenario sends nothing to
+      # produce, and the one field that separates a refused change from one still pending.
+      data.0.desired_status: "rejected"
+      # APPLIED state, and it must stay empty: the station rejected the key, so nothing was
+      # ever adopted. `''` rather than null is the resource's compatibility coalesce
+      # (StationConfigurationResource.php:23-30), not a value.
+      data.0.value: ""
+      data.0.changed_by: null
+      data.0.last_changed_at: null
+      # Bounded rather than pinned — the timestamp is server-generated. Its PRESENCE is the
+      # claim ("the request left pending"); 300s is slack for a loaded UAT, not a measurement.
+      data.0.desired_resolved_at:
+        is_recent: 300

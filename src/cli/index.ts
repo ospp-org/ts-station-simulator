@@ -282,9 +282,24 @@ program
           );
         }
         const identityPoolSize = explicitIdentityPoolSize ?? Math.max(scenarioCount, maxWorkers);
+        // Scenarios whose subject is the money gate declare the balance their identity must
+        // hold. Collected here — the ONLY point that sees both the loaded scenarios and the
+        // pool builder — and seeded as extra RESERVED identities, one per declaration
+        // (identities are single-use, so two scenarios wanting 0 need two of them).
+        //
+        // Deliberately counts scenarios already marked skip: over-provisioning costs one
+        // unused row that teardown sweeps anyway, while under-provisioning throws mid-run at
+        // the allocator. The asymmetry is not close.
+        const declaredWalletBalances = loadedScenarios
+          .map((s) => s.wallet_balance)
+          .filter((b): b is number => b !== undefined);
         console.log(chalk.blue(
           `Bootstrapping per-run pool: ${poolSize} station(s), ${bayCount} bay(s) each, ` +
           `${identityPoolSize} identity(ies) (per-scenario, single-use), ` +
+          (declaredWalletBalances.length > 0
+            ? `${declaredWalletBalances.length} declared-balance identity(ies) ` +
+              `[${declaredWalletBalances.join(', ')}], `
+            : '') +
           `offline-enable=${opts.offlineEnable !== false}`,
         ));
         try {
@@ -293,6 +308,7 @@ program
             bayCount,
             enableOffline: opts.offlineEnable !== false,
             identityPoolSize,
+            declaredWalletBalances,
             orgId: runnerTarget.orgId,
           });
         } catch (err) {

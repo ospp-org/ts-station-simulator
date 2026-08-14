@@ -1,0 +1,135 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+# Example — bind to real CSMS state:
+#   simulator run --scenario scenarios/sessions/session-rejected-insufficient-balance.yaml \
+#     --target uat --station stn_realstation \
+#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
+#
+# THE ONLY FILE IN THE CORPUS THAT PROVES THE MONEY GATE.
+#
+# `StartSessionAction.php:241-250` refuses a card-free start when the caller cannot pay:
+#
+#     if ($dto->paymentIntentId === null && $dto->userId !== null) {
+#         $balance = $this->walletQuery->getBalance($dto->userId);
+#         if ($balance < $creditsAuthorized) { … INSUFFICIENT_BALANCE … }
+#     }
+#
+# `SessionController::start` sets `userId` and never sets `paymentIntentId`, so EVERY REST
+# start enters that gate. Before it existed the server delivered service for free; it is the
+# correct behaviour and this file is its proof.
+#
+# WHY THIS FILE HAD TO BE WRITTEN RATHER THAN FOUND. When the gate landed, 28 of the pooled
+# corpus's scenarios failed at once — every one of them because the bootstrap seeded each
+# identity's wallet at balance 0 while the seeded catalog prices every service at 100
+# credits/minute. The fix was the fixture, not the gate: identities are now funded by default
+# (`DEFAULT_IDENTITY_WALLET_CREDITS`). That fix, taken alone, would have left the new gate
+# with ZERO coverage — the refusal would have gone from firing everywhere for the wrong
+# reason to firing nowhere at all. Hence `wallet_balance: 0` below.
+#
+# `wallet_balance: 0` IS THE SUBJECT, NOT A SETTING. The pool builder seeds this scenario a
+# dedicated identity funded at exactly 0 and reserves it — no other scenario can receive it,
+# and this one cannot receive a funded one (IdentityPoolAllocator throws rather than
+# substitute). Deleting the line does not make this file fail loudly; it makes it pass
+# against a wallet holding 1000 credits, which is worse. If you are here because the
+# assertion below broke, check that line first.
+name: "Session Rejected - Insufficient Balance"
+description: "A card-free session start by a user whose wallet cannot cover creditsAuthorized must be refused 402 INSUFFICIENT_BALANCE / 4001, pre-dispatch. The identity is seeded unfunded on purpose (wallet_balance: 0); every other scenario's identity is funded."
+wallet_balance: 0
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  # LOAD-BEARING, not boilerplate. Every other refusal this endpoint can produce is a 409
+  # sourced from the BAY's state (3001 BAY_BUSY, 3002 BAY_NOT_READY, 3011 BAY_MAINTENANCE,
+  # 3014 BAY_RESERVED). Driving the bay to Available removes all of them from contention, so
+  # the only gate left standing between this request and a published StartService is the
+  # wallet. Without this step a 402 would still be a 402, but the file would not have shown
+  # that the request got far enough for the balance to be what stopped it.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The refusal ---
+  # FOREGROUND deliberately. The gate sits at StartSessionAction:241, and the StartService
+  # command is not built until :361 and not published until :398 — so nothing ever reaches
+  # the station and there is no Response for a background call to overlap with. Background
+  # mode would also downgrade an expect_status mismatch to a console.warn, which is precisely
+  # how the 28 failures reported themselves as `wait_for` timeouts three steps downstream.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 402
+    expect_body:
+      # 4001 INSUFFICIENT_BALANCE. 402 is already unique to this code in the whole status
+      # map (`OsppErrorCode::httpStatus()` — every other arm is 400/401/403/404/409/422/
+      # 500/502/503/504), so the pair is belt and braces rather than a discriminator the
+      # status alone could not supply. Pinned anyway: the status map is the server's, and a
+      # file that asserts only what today's mapping happens to make unique goes quiet the
+      # day a second code joins 402.
+      error.ospp_code: 4001
+      # THE HALF THIS SCENARIO SENDS NOTHING TO PRODUCE. `500` is not in the request — the
+      # request carries `duration_seconds: 300`, and the server derived 500 from it by
+      # `ceil(300 / 60 * 100)` against the seeded price of `svc_wash_basic`
+      # (StartSessionAction.php:205-209). So this line proves the gate COMPUTED the
+      # requirement and compared against it, where `ospp_code: 4001` alone would only prove
+      # that something on the money path said no. `0` is the seeded balance, echoed back.
+      error.message: "Wallet balance 0 does not cover 500 credits"
+
+  # NO wait_for. The absence is the assertion the corpus can afford to make here: this file
+  # ends the moment the refusal is confirmed, because a StartService that never gets built
+  # cannot be waited for. The positive control is a separate file, not a second arm of this
+  # one — `sessions/start-service` runs the identical request (same station kind, same
+  # service, same 300s) on a DEFAULT-funded identity and expects 201 plus the published
+  # StartService. The two files differ in exactly one input, the wallet, which is what makes
+  # the pair a controlled comparison rather than two unrelated assertions.

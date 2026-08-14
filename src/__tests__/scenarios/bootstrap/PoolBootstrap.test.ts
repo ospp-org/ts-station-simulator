@@ -10,7 +10,9 @@ import {
   buildServicesPayloadJson,
   buildSeedTestUsersSql,
   buildTeardownTestUsersSql,
+  DEFAULT_IDENTITY_WALLET_CREDITS,
   DEFAULT_SEED_SERVICES,
+  MAX_SESSION_DURATION_SECONDS,
 } from '../../../scenarios/bootstrap/uatPrivileged.js';
 import { StationPool } from '../../../scenarios/stations/StationPool.js';
 import type { TargetConfig } from '../../../scenarios/ScenarioRunner.js';
@@ -274,45 +276,48 @@ describe('buildSeedCatalogSql', () => {
 });
 
 describe('buildSeedTestUsersSql — per-worker identity seed', () => {
-  it('empty emails → no-op transaction', () => {
+  it('empty identities → no-op transaction', () => {
     expect(buildSeedTestUsersSql('org-1', 'admin@x', [])).toBe('BEGIN;\nCOMMIT;');
   });
 
-  it('emits exactly 4 INSERT statements (users + wallets + organization_members + model_has_roles)', () => {
-    const sql = buildSeedTestUsersSql('org-1', 'admin@x', ['sim-worker-abc-0@test.local']);
+  it('emits 5 INSERT statements (users + wallets + wallet_entries + organization_members + model_has_roles)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'sim-worker-abc-0@test.local' }]);
     // INSERT INTO users appears once (one row per email = one INSERT)
     expect((sql.match(/INSERT INTO users /g) ?? []).length).toBe(1);
     expect((sql.match(/INSERT INTO wallets /g) ?? []).length).toBe(1);
+    // The ledger half — present because the default balance is > 0.
+    expect((sql.match(/INSERT INTO wallet_entries /g) ?? []).length).toBe(1);
     expect((sql.match(/INSERT INTO organization_members /g) ?? []).length).toBe(1);
     expect((sql.match(/INSERT INTO model_has_roles /g) ?? []).length).toBe(1);
   });
 
   it('users INSERT count scales linearly with emails (one INSERT per email)', () => {
-    const emails = ['e1@t', 'e2@t', 'e3@t', 'e4@t', 'e5@t'];
-    const sql = buildSeedTestUsersSql('org-1', 'admin@x', emails);
-    expect((sql.match(/INSERT INTO users /g) ?? []).length).toBe(emails.length);
-    // wallets/members/model_has_roles use ARRAY(...)::text[], so one statement each
+    const identities = ['e1@t', 'e2@t', 'e3@t', 'e4@t', 'e5@t'].map((email) => ({ email }));
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', identities);
+    expect((sql.match(/INSERT INTO users /g) ?? []).length).toBe(identities.length);
+    // wallets/members/model_has_roles use ARRAY(...)::text[], so one statement each —
+    // the wallets one stays single because every identity is on the same default balance.
     expect((sql.match(/INSERT INTO wallets /g) ?? []).length).toBe(1);
     expect((sql.match(/INSERT INTO organization_members /g) ?? []).length).toBe(1);
     expect((sql.match(/INSERT INTO model_has_roles /g) ?? []).length).toBe(1);
   });
 
   it('copies password_hash from the source identity (so the seeded user shares its password)', () => {
-    const sql = buildSeedTestUsersSql('org-1', 'admin@onestoppay.dev', ['sim-worker-abc-0@test.local']);
+    const sql = buildSeedTestUsersSql('org-1', 'admin@onestoppay.dev', [{ email: 'sim-worker-abc-0@test.local' }]);
     // Each user INSERT SELECTs password_hash FROM users WHERE email = sourceEmail.
     expect(sql).toContain("SELECT 'sim-worker-abc-0@test.local', password_hash, 'sim-worker-abc-0@test.local', true, true");
     expect(sql).toContain("FROM users WHERE email = 'admin@onestoppay.dev';");
   });
 
   it('offline_enabled flag flows through (default false, opt-in true)', () => {
-    const off = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t']);
+    const off = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'e@t' }]);
     expect(off).toContain('true, true, false ');
-    const on = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t'], true);
+    const on = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'e@t' }], true);
     expect(on).toContain('true, true, true ');
   });
 
   it('Spatie model_type is App\\Modules\\Auth\\Models\\User (single backslashes, MemberObserver fidelity)', () => {
-    const sql = buildSeedTestUsersSql('org-1', 'admin@x', ['e@t']);
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'e@t' }]);
     // Spatie compares model_has_roles.model_type === User::class; PHP renders that as
     // "App\Modules\Auth\Models\User" — any double-escape silently fails the lookup.
     expect(sql).toContain("'App\\Modules\\Auth\\Models\\User'");
@@ -322,12 +327,83 @@ describe('buildSeedTestUsersSql — per-worker identity seed', () => {
     const sql = buildSeedTestUsersSql(
       "org'1",
       "admin'@x",
-      ["sim-worker'; DROP TABLE users;--@test.local"],
+      [{ email: "sim-worker'; DROP TABLE users;--@test.local" }],
       true,
     );
     expect(sql).toContain("'org''1'");
     expect(sql).toContain("'admin''@x'");
     expect(sql).toContain("'sim-worker''; DROP TABLE users;--@test.local'");
+  });
+});
+
+describe('buildSeedTestUsersSql — wallet funding (the money gate fixture)', () => {
+  // StartSessionAction.php:241-250 refuses a card-free start when the wallet does not cover
+  // creditsAuthorized (402 INSUFFICIENT_BALANCE / 4001). Every identity this file seeds is a
+  // caller of POST /sessions/start, so the seeded balance IS the corpus's ability to run.
+
+  it('the default is DERIVED from the server ceiling and the seed catalog, not chosen', () => {
+    // ceil(600 / 60) * 100 — MAX_SESSION_DURATION_SECONDS against the priciest seeded
+    // service. If either input moves, this number must move with it.
+    const priciest = Math.max(
+      ...DEFAULT_SEED_SERVICES.map((s) =>
+        s.pricingType === 'Fixed'
+          ? (s.priceCreditsFixed ?? 0)
+          : Math.ceil(MAX_SESSION_DURATION_SECONDS / 60 * (s.priceCreditsPerMinute ?? 0))),
+    );
+    expect(DEFAULT_IDENTITY_WALLET_CREDITS).toBe(priciest);
+    expect(DEFAULT_IDENTITY_WALLET_CREDITS).toBe(1000);
+  });
+
+  it('an identity that declares nothing is FUNDED at the default', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'e@t' }]);
+    expect(sql).toContain(`SELECT id, ${DEFAULT_IDENTITY_WALLET_CREDITS}, 1, NOW(), NOW() FROM users`);
+    // The regression this whole change exists to prevent: a bare `0` reaching the column.
+    expect(sql).not.toContain('SELECT id, 0, 1, NOW(), NOW() FROM users');
+  });
+
+  it('a funded identity gets the matching credit entry (ledger and column agree)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'e@t' }]);
+    expect(sql).toContain(
+      `SELECT w.id, 'credit'::wallet_entry_type, ${DEFAULT_IDENTITY_WALLET_CREDITS}, ` +
+      `${DEFAULT_IDENTITY_WALLET_CREDITS}, 'bonus', 'sim_bootstrap_seed', `,
+    );
+    // idempotency_key is UNIQUE; deriving it from the (unique) email keeps it collision-free.
+    expect(sql).toContain("'sim-seed:' || u.email");
+  });
+
+  it('an identity that declares 0 gets 0 — and NO ledger entry (CHECK amount > 0)', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [{ email: 'poor@t', walletBalance: 0 }]);
+    expect(sql).toContain("SELECT id, 0, 1, NOW(), NOW() FROM users WHERE email = ANY(ARRAY['poor@t']::text[]);");
+    expect(sql).not.toContain('INSERT INTO wallet_entries ');
+  });
+
+  it('mixed balances split into one wallets INSERT per distinct balance, each correctly scoped', () => {
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [
+      { email: 'a@t' },
+      { email: 'poor@t', walletBalance: 0 },
+      { email: 'b@t' },
+      { email: 'rich@t', walletBalance: 5000 },
+    ]);
+    expect((sql.match(/INSERT INTO wallets /g) ?? []).length).toBe(3);
+    // The two defaults are grouped together; the declared ones stand alone.
+    expect(sql).toContain(`SELECT id, ${DEFAULT_IDENTITY_WALLET_CREDITS}, 1, NOW(), NOW() FROM users WHERE email = ANY(ARRAY['a@t', 'b@t']::text[]);`);
+    expect(sql).toContain("SELECT id, 0, 1, NOW(), NOW() FROM users WHERE email = ANY(ARRAY['poor@t']::text[]);");
+    expect(sql).toContain("SELECT id, 5000, 1, NOW(), NOW() FROM users WHERE email = ANY(ARRAY['rich@t']::text[]);");
+    // Two funded groups → two ledger statements; the zero group contributes none.
+    expect((sql.match(/INSERT INTO wallet_entries /g) ?? []).length).toBe(2);
+  });
+
+  it('every funding statement is an INSERT — no UPDATE can reach a row this run did not create', () => {
+    // The incident this replaces: a follow-up `UPDATE ... WHERE email LIKE 'sim-worker-%'`
+    // matched pre-existing July fixtures and overwrote ten wallets, three legitimately
+    // non-zero. Funding at INSERT time removes the hazard by construction, so the absence of
+    // UPDATE here is the property, not a stylistic preference.
+    const sql = buildSeedTestUsersSql('org-1', 'admin@x', [
+      { email: 'a@t' },
+      { email: 'poor@t', walletBalance: 0 },
+    ]);
+    expect(sql).not.toMatch(/UPDATE\s+wallets/i);
+    expect(sql).not.toMatch(/LIKE/i);
   });
 });
 

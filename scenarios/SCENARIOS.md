@@ -50,6 +50,7 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/meter-values-seqno-out-of-order-still-ingested` | `MeterValuesHandler.php:112` + the watermark rule at `:126` | four rows — the repeated ordinal is not deduplicated |
 | `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction.php:91` pre-flight | `409` + `ospp_code 6005`, and no Reset on the wire |
 | `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction.php:100`, `SessionEndedHandler.php:111`, `BootNotificationHandler.php:355` | server-sent `force: true`; `completed`, surviving the reboot |
+| `sessions/session-rejected-insufficient-balance` | `StartSessionAction.php:241-250` money gate | `402` + `ospp_code 4001`, and the `500` the server derived from a `300`s request — on an identity it declares unfunded (`wallet_balance: 0`) |
 
 ## Summary
 
@@ -108,6 +109,7 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/session-rejected-bay-busy.yaml` | Session Rejected - Bay Busy | Second session on occupied bay (3001) | new |
 | `sessions/session-rejected-maintenance.yaml` | Session Rejected - Maintenance | Unavailable bay rejects StartService (3011) | new |
 | `sessions/session-rejected-invalid-service.yaml` | Session Rejected - Invalid Service | Unknown serviceId rejected (3004) | new |
+| `sessions/session-rejected-insufficient-balance.yaml` | Session Rejected - Insufficient Balance | Unfunded wallet refused pre-dispatch (402 / 4001); declares `wallet_balance: 0` | new 2026-08-14 |
 | `sessions/session-timeout-timer-expired.yaml` | Session Timeout Timer Expired | SessionEnded reason: TimerExpired | migrated |
 | `sessions/session-fault-during-service.yaml` | Session Fault During Service | Hardware fault → SessionEnded reason: Fault | new |
 | `sessions/session-with-reservation.yaml` | Session With Reservation | ReserveBay → StartService with reservationId | new |

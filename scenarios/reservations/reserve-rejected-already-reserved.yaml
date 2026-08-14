@@ -125,4 +125,47 @@ steps:
     expect_body:
       error.ospp_code: 3014
   # Per C-011: server returns 409 (resource state conflict) pre-MQTT-dispatch;
-  # no ReserveBay Request is published. The 409 is the final assertion.
+  # no ReserveBay Request is published. The 409 above is the final ASSERTION.
+  #
+  # --- Everything below is CLEANUP, and it is not optional ---
+  #
+  # This file's subject requires leaving a bay RESERVED, and its first reservation runs for
+  # `duration_minutes: 5`. Nothing here used to release it, so for five minutes afterwards the
+  # bay stayed reserved — and in a pooled run the bays are SHARED. `sessions/session-with-
+  # reservation` drew the same bay and was refused `409 BAY_RESERVED/3014` at its own
+  # `POST /reservations`, reproducing across runs as a standing failure that belonged to this
+  # file rather than to that one. A scenario must not leave state it does not own behind, and
+  # a 5-minute TTL is not cleanup — it is a race the next scenario loses.
+  #
+  # The sequence mirrors `reservations/reserve-cancel.yaml` exactly, including answering the
+  # CancelReservation Request: the server publishes one and a cancel left unanswered is a
+  # different kind of residue from the one being removed.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}/cancel"
+    expect_status: 200
+
+  - action: wait_for
+    message: CancelReservation
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: CancelReservation
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # Returns the bay to Available for whoever draws it next. Note this is a report this
+  # scenario SENDS, not an observation — the same honesty `reserve-cancel.yaml` states about
+  # its own copy of this step.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true

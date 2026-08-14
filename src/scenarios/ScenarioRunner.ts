@@ -90,6 +90,27 @@ export interface ScenarioDefinition {
   /** Actionable one-liner appended to the skip reason: how to produce the fixture. */
   requires_files_hint?: string;
   /**
+   * The wallet balance, in credits, this scenario's identity must hold. Omit and the
+   * scenario gets the bootstrap default (`DEFAULT_IDENTITY_WALLET_CREDITS`, 1000 — the
+   * largest single authorization the server can accept against the seeded catalog), which
+   * is what every scenario that is not ABOUT money wants.
+   *
+   * This exists for one class of scenario: the ones whose subject IS the money gate.
+   * `StartSessionAction.php:241-250` refuses a card-free start when the balance does not
+   * cover `creditsAuthorized` — 402 `INSUFFICIENT_BALANCE` / ospp_code 4001. Proving that
+   * refusal needs an identity that cannot pay, and an identity that cannot pay must be
+   * ASKED for. Before the default existed, every identity was unfunded and the refusal was
+   * indistinguishable from the corpus's ambient state; a scenario claiming to prove it would
+   * have passed for the wrong reason on every other file's fixture.
+   *
+   * The declaration is read at BOOTSTRAP time, not at run time: the CLI counts the scenarios
+   * carrying a non-default value and the pool builder seeds that many extra identities at
+   * the declared balance, so the runner only has to allocate one that already matches. No
+   * scenario ever mutates a wallet mid-run — that would be shared mutable state a scenario
+   * does not own, which is the same failure the identity pool exists to prevent.
+   */
+  wallet_balance?: number;
+  /**
    * When true, the runner skips the automatic `station.connect()` call so
    * that scenarios can run pre-provisioning API steps (signup, org, station
    * register, provisioning-token) before the station has TLS material. The
@@ -1213,16 +1234,36 @@ class StationPoolAllocator {
 export interface IdentityCredentials {
   email: string;
   password: string;
+  /**
+   * Credits this identity's wallet was seeded with. Carried on the credential so the
+   * allocator can honour a scenario's `wallet_balance:` declaration without a DB read —
+   * and so a serialized pool handle still says what each identity can afford.
+   */
+  walletBalance?: number;
+  /**
+   * True when this identity exists ONLY because some scenario declared `wallet_balance:`.
+   * It is invisible to a plain `acquire()` — see the allocator's two-queue split.
+   */
+  declared?: boolean;
 }
 
 export class IdentityPoolAllocator {
+  /** Default-funded identities, handed out FIFO to scenarios that declared nothing. */
   private readonly available: IdentityCredentials[];
+  /**
+   * Identities seeded to satisfy a `wallet_balance:` declaration. Kept OUT of the FIFO
+   * queue: an unfunded identity handed to an undeclaring scenario would resurrect the exact
+   * failure this whole change removes — a session start refused 402 for a reason the
+   * scenario is not about, reported three steps later as a `wait_for` timeout.
+   */
+  private readonly reserved: IdentityCredentials[];
   private readonly initialSize: number;
 
   constructor(pool: IdentityCredentials[]) {
     // Defensive copy so the caller's source array stays untouched if it's
     // re-used elsewhere (e.g., serializePoolHandle).
-    this.available = [...pool];
+    this.available = pool.filter((c) => !c.declared);
+    this.reserved = pool.filter((c) => c.declared);
     this.initialSize = pool.length;
   }
 
@@ -1230,8 +1271,28 @@ export class IdentityPoolAllocator {
    * Pop one identity off the FIFO queue. Throws if empty — pool depletion is
    * a programming error (the CLI's pool sizing contract guarantees enough),
    * never a runtime condition to recover from.
+   *
+   * With {@link walletBalance} set, takes one of the RESERVED identities seeded at exactly
+   * that balance — the pool builder seeds one per declaring scenario, so a match exists
+   * whenever a scenario declared it. A miss is a wiring error (a declaration the builder
+   * never saw), never something to paper over by handing back a differently-funded
+   * identity: that would run a refusal proof against a wallet that can pay, and pass.
    */
-  acquire(): IdentityCredentials {
+  acquire(walletBalance?: number): IdentityCredentials {
+    if (walletBalance !== undefined) {
+      const index = this.reserved.findIndex((c) => c.walletBalance === walletBalance);
+      if (index === -1) {
+        throw new Error(
+          `IdentityPoolAllocator: no identity reserved at wallet_balance ${walletBalance} ` +
+          `(${this.reserved.length} reserved left, balances: ` +
+          `[${[...new Set(this.reserved.map((c) => c.walletBalance))].join(', ')}]). The pool ` +
+          `builder seeds one identity per scenario declaring wallet_balance, so this means ` +
+          `the declaration never reached it — check that the CLI collected the scenario's ` +
+          `wallet_balance into bootstrapPool's declaredWalletBalances.`,
+        );
+      }
+      return this.reserved.splice(index, 1)[0];
+    }
     const next = this.available.shift();
     if (!next) {
       throw new Error(
@@ -1243,9 +1304,9 @@ export class IdentityPoolAllocator {
     return next;
   }
 
-  /** Remaining identities (diagnostics only — not used for runtime decisions). */
+  /** Remaining identities, both queues (diagnostics only — not used for runtime decisions). */
   remaining(): number {
-    return this.available.length;
+    return this.available.length + this.reserved.length;
   }
 
   /** Initial pool size — useful in test assertions / error messages. */
@@ -1476,9 +1537,11 @@ export class ScenarioRunner {
     // never released back (see IdentityPoolAllocator doc). Each scenario owns its
     // identity for its lifetime — no other scenario in this run will use the same
     // user_id, so the per-user session-mutate bucket can't be contested.
+    // A `wallet_balance:` declaration is honoured here: the scenario gets one of the
+    // identities the pool builder reserved at that balance, never a default-funded one.
     let acquiredIdentity: IdentityCredentials | null = null;
     if (this.identityPoolAllocator) {
-      acquiredIdentity = this.identityPoolAllocator.acquire();
+      acquiredIdentity = this.identityPoolAllocator.acquire(scenario.wallet_balance);
     }
 
     const variables = generateVariables(scenario, target, poolStationId, userVars);

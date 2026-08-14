@@ -44,14 +44,95 @@ Fine for a single scenario or a suite that does not need the above. Costs you, m
 |---|---|
 | 3 × `e2e/*` | `409 Station already exists` — they register the station themselves |
 | 4 × TransactionEvent (`security/offline-*reconcile*`) | no persisted receipt key |
-| 2 × offline pass | wallet balance 0 or negative; `offline_enabled` alone is not enough |
+| every scenario calling `POST /sessions/start` | the identity is not funded — `402 INSUFFICIENT_BALANCE` / `4001`. See §2b |
 | `device-management/service-catalog-update` | `bay_services` empty → `400 VALIDATION_ERROR (6004)` "has no (bay, program) binding", ungated by any flag |
 | ~~`tls-floor/s5-rejects-revoked-cert`~~ | **FIXED 2026-08-13.** It no longer needs an argument: the file NAMES the revoked leaf (`certs/uat/stn_985c8a8b.*`, serial 012C, on the served CRL since 2026-07-23) via `tls.cert/key/chain`. Wire-proven against UAT — alert 44, `broker-certificate-revoked`. On a machine without the fixture it now SKIPS (`requires_files`) instead of failing, because `certs/` is gitignored and those bytes do not travel with the repo. |
-| 2 × offline pass, **in pooled mode too** | `uatPrivileged.ts` seeds wallets at `balance 0` and `AuthorizeOfflineSessionAction` pre-debits with `allowNegative:false`. Bootstrapping does NOT fix this; fund the fixture. Do not flip `allowNegative`. |
+| ~~2 × offline pass, **in pooled mode too**~~ | **CORRECTED 2026-08-14.** This row read "`uatPrivileged.ts` seeds wallets at `balance 0` and `AuthorizeOfflineSessionAction` pre-debits with `allowNegative:false`. Bootstrapping does NOT fix this; fund the fixture. Do not flip `allowNegative`." The **prescription was right and has now been applied** (§2b) — but **both of its named files were wrong**. `offline-pass-authorize.yaml:45-50` had already retracted the attribution in its own header: its blocker is an `organization_id` / `additionalProperties:false` schema conflict and the request never reaches a wallet. And `IssueOfflinePassAction.php:92-101` refuses only `balance < 0`, so a balance of **0 always satisfied issuance**. The scenarios this row should have named are every scenario that starts a session. |
 | whole-suite runs | rate limiting — see §4 |
 
 None of these are defects. They are the mode's boundary, and a summary line cannot tell
 them apart from a real failure.
+
+---
+
+## 2b. Identity funding — what "enough" means, and who is allowed to have nothing
+
+`StartSessionAction.php:241-250` refuses a card-free start the caller cannot pay for:
+
+```php
+if ($dto->paymentIntentId === null && $dto->userId !== null) {
+    $balance = $this->walletQuery->getBalance($dto->userId);
+    if ($balance < $creditsAuthorized) { … 402 INSUFFICIENT_BALANCE / 4001 … }
+}
+```
+
+`SessionController::start` sets `userId` and never sets `paymentIntentId`, so **every** REST
+start enters it. When it landed, 28 of 119 pooled scenarios failed at once — the bootstrap
+seeded every identity at `balance 0` while the seeded catalog prices all four services at 100
+credits/minute. The corpus had coherently built a world where sessions start without money,
+because the server used to allow it.
+
+**The fixture was wrong, not the gate.** Identities are now funded at seed time.
+
+### The number is derived, not chosen
+
+`DEFAULT_IDENTITY_WALLET_CREDITS` = **1000**, computed as the largest single authorization the
+server can accept against the seeded catalog:
+
+```
+max over DEFAULT_SEED_SERVICES of  (Fixed ? priceCreditsFixed
+                                          : ceil(MAX_SESSION_DURATION_SECONDS / 60 × pricePerMinute))
+  =  ceil(600 / 60) × 100  =  1000
+```
+
+600 is the server's own ceiling (`config/ospp.php:230`, re-enforced at
+`StartSessionRequest.php:56`), so no start can ever authorize more. Both inputs are read from
+code, so the number moves if either does.
+
+**Why a maximum and not the sum of a scenario's starts.** The online session path never debits
+the wallet: `CompleteSessionAction.php:133-139` writes the `sessions.credits_charged` COLUMN
+and nothing else, and the only two `WalletDebitInterface` consumers in the server are in the
+Offline module. A funded balance is never drawn down by an online session, so a scenario's
+sixth start is checked against the same undiminished number as its first.
+
+**Why not a large round number.** 1_000_000 would pass everything — *including* a scenario
+whose subject is the refusal. It would fund the thing under test and report green. The
+tightest sufficient value is the only one that leaves that scenario able to fail.
+
+### A scenario that wants nothing must say so
+
+```yaml
+wallet_balance: 0      # top-level, alongside `name:` / `station:`
+```
+
+The CLI collects every declaration across the selected scenarios and the pool builder seeds
+one extra identity per declaration at exactly that balance, **reserved**: a scenario that
+declares nothing can never be handed one, and a scenario that declares one can never be handed
+a funded identity (`IdentityPoolAllocator` throws rather than substitute — a refusal proof run
+against a payable wallet would pass, which is worse than the run failing).
+
+`sessions/session-rejected-insufficient-balance` is the corpus's only user of it and the only
+proof of the gate. `src/__tests__/scenarios/moneyGateCoverage.test.ts` holds both directions
+together: a file asserting `4001` must declare `wallet_balance: 0`, and a file declaring
+`wallet_balance: 0` must assert `4001`.
+
+### Scoping — why funding happens at INSERT and never at UPDATE
+
+Every funding statement is an `INSERT` against rows the run is creating, keyed by emails
+carrying the run's own `runStamp`. That is not a style preference. A previous session funded
+wallets with a follow-up `UPDATE … WHERE email LIKE 'sim-worker-%'`, which also matched
+**pre-existing July fixtures and overwrote ten wallets, three of them legitimately non-zero**
+(restored by deriving each balance from `wallet_entries`, not by typing 0). An INSERT cannot
+reach a row this run did not create, so the hazard is gone by construction rather than by
+being careful with a `WHERE` clause. **Scope a fixture write by the run's own stamp, never by
+the family prefix.**
+
+Each funded wallet also gets its matching `wallet_entries` credit row. Nothing in the server
+reconciles the column against the ledger (`verifyBalanceChain()` has exactly one caller and it
+is a test), so this is not needed to make the balance read — it is written because the next
+real `WalletLedger` operation computes `balance_after` from the column, and because the
+session that had to undo the leak above could only restore the true balances *because the
+ledger still carried them*.
 
 ---
 
