@@ -1,0 +1,177 @@
+name: "Heartbeat Silence Offline Sweep"
+description: "Boot, arm the liveness state, then go APPLICATION-silent for 175s on a live socket and read back a station the watchdog sweep has marked offline. The corpus's only test of the detector that needs no disconnection at all."
+# THE ONE DETECTOR NOTHING EXERCISED. `station:check-heartbeats` marks a station
+# offline after 3.5 x heartbeatIntervalSec of OSPP silence — measured 30 on UAT, so
+# 105s — and converges on the same StationOfflineService::markOffline as the Last
+# Will. No scenario in the corpus ever asserted the result. Worse, the corpus is
+# arranged so it cannot fire: five long files call `start_heartbeat` for the express
+# purpose of keeping this sweep quiet, and StartHeartbeatStep's own docblock says
+# short files omit it because that "preserves the ability to script a
+# silence/offline-detection test (impossible if the sim always heartbeated)". The
+# capability was preserved and never used. This is that file.
+#
+# WHY THE SOCKET STAYS UP, AND WHY THAT IS THE POINT. Scenario-mode stations
+# register BootNotificationHandler(autoReact=false), so nothing beats in the
+# background; the only traffic during the silence is MQTT keepalive PINGREQ, which
+# is transport, not OSPP. So this file reproduces the exact condition the cause
+# enum describes — "no heartbeat for 3.5x the interval; THE SOCKET MAY STILL BE UP"
+# — and it is the one liveness case in the corpus where nothing is ever
+# disconnected.
+#
+# WHAT ARMS THE SWEEP. getTimedOutStations() SCANs `ospp:heartbeat:*` and only
+# considers stations that HAVE a key, so a station nothing ever recorded is
+# invisible to it. BootNotificationHandler.php:277 calls recordHeartbeat() on every
+# accepted Boot, so the Boot below both arms the tracker and starts its clock. No
+# explicit Heartbeat is needed, and deliberately none is sent: sending one would
+# only re-arm the same key.
+#
+# WHY 175s. The key records lastSeen at the Boot and interval 30; the threshold is
+# 3.5 x 30 = 105s; the sweep runs every minute under `schedule:work`. So the
+# transition lands between t+105 and t+165 depending on where the Boot fell inside
+# the minute, and 175s covers the worst case with margin. It cannot be shortened
+# without making the file a coin toss, which is why it declares its own timeout —
+# the default is 90s (ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS) and this is the
+# only legitimate reason to raise it.
+#
+# WHAT THE lastCloseCause GUARD DOES AND DOES NOT PROVE. It is a guard, not the
+# discriminator, and the difference is worth stating because it is easy to overclaim.
+# `none` establishes the link was not kicked, not severed, and is not currently
+# down — so the run was not disturbed in a way that would confound the reading. It
+# does NOT prove the socket never dropped at all: MqttConnection resets the cause to
+# `none` on every successful connect (:419), so a drop followed by a reconnect reads
+# identically. A drop would matter, because under clean_session the reconnect ends
+# the old session and the broker publishes the will, which would mark the station
+# offline for the OTHER reason. What actually rules that out is the FALSIFICATION
+# below plus the server's own record: this transition logs `cause: heartbeat_timeout`
+# from the scheduler in the APP container, where a will logs `cause: broker_will`
+# from the MQTT CONSUMER container. Two containers, two causes, and neither is
+# readable over REST — StationRepository::markOffline does not persist the cause.
+#
+# WHAT MAKES IT FALSIFIABLE. Interleave Heartbeats through the silence — the arc8
+# pattern, `delay: 28000` plus `send Heartbeat`, which exists precisely to hold a
+# station alive past a server deadline. Each one re-arms the tracker key, the
+# threshold is never crossed, and the proof read fails with isOnline still true.
+# Measured, not assumed. The ARM read is what makes the proof non-vacuous in the
+# other direction: a fresh pool station is provisioned offline with bays `unknown`,
+# so all three proof values would otherwise be satisfiable by the initial state.
+#
+# CONTENTION — THIS FILE NEEDS SILENCE, AND SILENCE IS WHAT THE POOL ALREADY GIVES
+# IT. The risk the sweep invites is that some other scenario heartbeats the station
+# awake mid-wait. It cannot: StationPoolAllocator (ScenarioRunner.ts:1159) holds an
+# `inUse` set with a wait queue, so a pooled station belongs to exactly one scenario
+# for its whole lifetime even under `--parallel`. No exclusive-station mechanism is
+# needed and none is declared. What this file DOES cost the pool is a worker blocked
+# for three minutes, which is a scheduling cost, not a correctness one — and it is
+# contained the same way arc8-reconnect-preserve.yaml contains its own 347s.
+#
+# NOT RACING bays:resolve-unknown. That sweep triggers a re-report for bays stuck
+# `unknown` beyond 30s, but only for stations that are ONLINE. Through the silence
+# the bays are `available` (armed below), and the moment they become `unknown` the
+# station is offline, so the guard at ResolveUnknownBaysCommand:64 skips it. Neither
+# state is reachable by that sweep.
+scenario_timeout_ms: 300000
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  # --- Boot: brings the station online AND arms the heartbeat tracker key. -----
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- ARM: drive both bays off `unknown` so the proof read cannot be satisfied
+  # by the state a freshly provisioned station already has.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # Fire-and-forget with no Response to synchronise on; 1000ms is the value
+  # status-all-bay-states.yaml measured on UAT after 300ms read the PREVIOUS state.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
+
+  # --- THE SILENCE. Nothing is sent. Nothing is disconnected. The only thing that
+  # happens is that no Heartbeat arrives — and note that the two StatusNotifications
+  # above do NOT count: only a Heartbeat re-arms the tracker key, which is what
+  # makes application silence distinct from silence on the wire.
+  - action: delay
+    ms: 175000
+
+  # Guard, not the discriminator — see the header for exactly what it rules out.
+  - action: assert
+    field: "connection.lastCloseCause"
+    equals: "none"
+
+  # --- PROOF: the watchdog swept a station that never went anywhere. -----------
+  # markOffline writes bays and station in ONE transaction
+  # (StationOfflineService:46-49), so isOnline false beside a bay still `available`
+  # would be a partial transition rather than a green.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: false
+      data.bays[bayNumber=1].status: "unknown"
+      data.bays[bayNumber=2].status: "unknown"

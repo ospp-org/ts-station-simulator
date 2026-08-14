@@ -168,6 +168,49 @@ describe('the legitimate overrides in the corpus', () => {
     expect(Number(m![1])).toBeGreaterThan(delay);
   });
 
+  // THE ARGUMENT, as this describe block demands of every new override.
+  //
+  // heartbeat-silence-offline-sweep cannot fit the 90s default, and the reason is
+  // not that it waits wastefully — it is that the shortest possible observation of
+  // this detector is longer than the default. Two server facts set the floor and
+  // neither is under the scenario's control:
+  //
+  //   1. The threshold is `missed_heartbeats_threshold` x the station's recorded
+  //      heartbeat interval — 3.5 x 30 = 105s on the UAT config. Nothing the
+  //      scenario does can lower it: the interval stored in the tracker key is the
+  //      server's effective value, written by the Boot that arms the key.
+  //   2. Detection is a scheduled sweep, not a read-time evaluation —
+  //      Schedule::command('station:check-heartbeats')->everyMinute(). The row
+  //      flips on the first tick strictly AFTER the threshold is crossed, so the
+  //      observable transition lands in the 105-165s band after the Boot.
+  //
+  // 105s threshold + up to 60s of sweep latency already exceeds the 90s default
+  // before the Boot and the two arming reads are counted, so the default would
+  // make this file fail every time rather than merely be slow.
+  //
+  // There is no shorter honest version. A file that waited 90s would assert the
+  // station is offline before the threshold can even have been crossed — it would
+  // not be flaky, it would be wrong. That is the same trap reserve-expire fell
+  // into for months with its 5000ms delay, in the opposite direction.
+  it('heartbeat-silence-offline-sweep declares a budget covering the threshold plus the sweep interval', () => {
+    const src = fs.readFileSync(
+      path.resolve('scenarios/core/heartbeat-silence-offline-sweep.yaml'), 'utf8');
+    const m = src.match(/^scenario_timeout_ms:\s*(\d+)/m);
+    expect(m).not.toBeNull();
+
+    // 105s threshold (3.5 x 30) + 60s worst-case sweep latency = 165s before the
+    // row can flip. The budget must clear that, not merely clear the delay the
+    // file happens to declare today.
+    expect(Number(m![1])).toBeGreaterThan(165_000);
+
+    // And the silence it waits out must itself clear the same floor, and sit
+    // inside the budget it declares. A file that declared a generous budget but
+    // waited 90s would read as covered while asserting before the threshold.
+    const delay = Math.max(...[...src.matchAll(/^\s+ms:\s*(\d+)/gm)].map(d => Number(d[1])));
+    expect(delay).toBeGreaterThan(165_000);
+    expect(Number(m![1])).toBeGreaterThan(delay);
+  });
+
   it('and those are the ONLY files that override — every new override should be argued for', () => {
     const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true })
       .flatMap(e => e.isDirectory() ? walk(path.join(d, e.name))
@@ -178,6 +221,10 @@ describe('the legitimate overrides in the corpus', () => {
       .map(f => path.basename(f))
       .sort();
 
-    expect(overriding).toEqual(['arc8-reconnect-preserve.yaml', 'reserve-expire.yaml']);
+    expect(overriding).toEqual([
+      'arc8-reconnect-preserve.yaml',
+      'heartbeat-silence-offline-sweep.yaml',
+      'reserve-expire.yaml',
+    ]);
   });
 });
