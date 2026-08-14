@@ -37,6 +37,53 @@ description: "Boot, arm the liveness state, drop the link, observe the server re
 # at the RETURN read is this file's own subject: the station announced itself and
 # the server did not record it as reachable again.
 #
+# THE RETURN HAS NO FALSIFICATION OF ANY KIND, AND THAT IS THE WEAKEST CLAIM IN THIS
+# FILE. The MIDDLE was falsified by pinning `clean_session: false` (step [10] fails,
+# 0-9 identical). The RETURN was not — not on the input side, not on the server. The
+# mutation was designed and priced on 2026-08-14 and then not executed; what follows
+# is the design, so the next attempt does not have to rediscover it.
+#
+# THE BIT IS BootNotificationHandler.php:224 — `'is_online' => true,` inside the
+# updateBootInfo array. Verified present in the DEPLOYED artefact, not only in the
+# working tree: `docker exec csms-app-uat sed -n 224p` returns that exact line, and
+# the running image's copy of the file is byte-identical to the host checkout at
+# 00d7286 (sha256 71ac4277...). It is the only place in the whole server that writes
+# `true`; the writers of `false` are StationRepository.php:37 and
+# RegisterStationAction.php:35.
+#
+# THE MUTATION IS CONDITIONAL, NOT A DELETION, and the difference matters:
+#
+#   -  'is_online' => true,
+#   +  'is_online' => ! in_array($dto->bootReason,
+#   +      [BootReason::RECONNECT->value, BootReason::ERROR_RECOVERY->value], true),
+#
+# Deleting the line reddens step [8] — the ARM read after the FIRST Boot, which is
+# `PowerOn` — and proves nothing about the RETURN. Reusing the predicate the handler
+# already computes at :381-385 leaves steps 0-15 byte-identical and inverts exactly
+# one assertion: `data.isOnline: true` at the RETURN fails while
+# `data.bootReason: ErrorRecovery` beside it still passes, because boot_reason is
+# written separately at :212. That green half is the point — it proves the Boot was
+# accepted and committed and that only the reachability write is missing.
+#
+# WHY IT WAS NOT RUN. `scripts/deploy-uat.sh:121` is `git pull origin master
+# --ff-only`, hardwired to trunk with no ref override, so the probe would have to be
+# PUSHED TO MASTER to reach UAT. And UAT sits 21 commits behind origin/master
+# (00d7286 vs b722cc8), so `--ff-only` cannot carry one line — it carries all 21,
+# after which a red at the RETURN is ambiguous across twenty-two changes instead of
+# turning on one. A probe that cannot be isolated is not a probe.
+#
+# WHAT HOLDS IN ITS PLACE, STATED AT ITS REAL STRENGTH. The MIDDLE read establishes
+# `isOnline: false` ten seconds before the RETURN, and it is taken with the socket
+# ALREADY BACK UP — so the MQTT reconnect by itself did not set the flag. Between
+# that read and the RETURN the only thing that happened is an accepted Boot, and
+# :224 is the only writer of `true`. That is a genuine internal differential and it
+# is not nothing. It is also strictly weaker than the other three proofs in the
+# liveness set: `unknown` is unforgeable by the station (bay-status.schema.json), the
+# will carries a server-stamped `lwt-` messageId, the sweep inverts on a Redis key
+# whose freshness is the detector's only input — each of those is an argument the
+# scenario cannot fake. Here the argument is "no other code path exists", read off a
+# grep. Until the bit is moved, that is what this assertion rests on.
+#
 # clean_session IS DECLARED BELOW, AND IT IS LOAD-BEARING. `true` is also the
 # runner's default (ScenarioRunner.ts:820), so this line changes no behaviour — it
 # stops the MIDDLE read from depending on a value no line in this file stated. The
