@@ -1,23 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 
 /**
  * The teardown that leaves the broker's Last Will armed — and the arithmetic
- * that makes it necessary.
+ * that makes it necessary ON A PERSISTENT SESSION.
  *
- * Every liveness scenario in the corpus that wanted to observe a ConnectionLost
- * used `fault: disconnect`, and none of them could. The reason is not a race and
- * not broker flakiness, it is subtraction: the will carries
- * `willDelayInterval: 10` and the live client carries
- * `LIVE_RECONNECT_PERIOD_MS = 5000`, so destroyConnection() brings the same
- * session back at t+5s — inside the delay — and MQTT 5 §3.1.3.2.2 requires the
- * broker to discard the will. The other exit, disconnect(), sends a clean
- * DISCONNECT, and §3.14.4 discards the will on those too. Both doors were shut.
+ * THIS HEADER USED TO SAY "BOTH DOORS WERE SHUT", AND THAT WAS MEASURED FALSE.
+ * The old text: every liveness scenario that wanted a ConnectionLost used
+ * `fault: disconnect` and none of them could, because `willDelayInterval: 10`
+ * against `LIVE_RECONNECT_PERIOD_MS = 5000` brings the session back inside the
+ * delay and MQTT 5 §3.1.3.2.2 requires the broker to discard the will. The
+ * subtraction is right; the conclusion was not. §3.1.3.2.2 suppresses the will
+ * only for a new Network Connection to THIS Session. Scenarios default to
+ * `clean_session: true` (ScenarioRunner.ts:820), where Clean Start 1 DISCARDS the
+ * old session instead of resuming it — and the same clause publishes the will
+ * when the session ends OR the delay elapses, whichever is first. Ending it is
+ * what the reconnect does. So under the corpus default `fault: disconnect`
+ * PUBLISHES the will at ~5s. Measured on UAT 2026-08-14;
+ * core/reconnect-recovery.yaml's middle read now depends on it.
+ *
+ * The claim survives with its qualifier restored: on `clean_session: false` the
+ * reconnect really is "to this Session", the suppression really does apply, and
+ * `sever` really is the only teardown that fires the will. That is one file —
+ * core/connection-lost-lwt.yaml — and the last test below pins it there, because
+ * the inequality alone does not.
+ *
+ * The other exit, disconnect(), sends a clean DISCONNECT, and §3.14.4 discards
+ * the will on those unconditionally. That door genuinely is shut.
  *
  * These tests pin the DISCRIMINATION between the two faults (forced end vs bare
- * stream destroy) and the numeric relationship that is the reason there are two.
- * They are the sim-side prerequisite for a scenario that asserts a broker-driven
- * offline transition.
+ * stream destroy), the numeric relationship that is the reason there are two, and
+ * the scenario-side session setting without which the relationship is inert.
  */
 
 interface EndCall {
@@ -167,11 +181,12 @@ describe('MqttConnection — the will delay must outlast the reconnect period', 
    * measured on UAT 2026-08-14, and core/reconnect-recovery.yaml's middle read
    * now depends on it.
    *
-   * WHICH MEANS THIS TRIPWIRE DOES NOT GUARD THE THING IT PROTECTS. What keeps
+   * IT IS ONLY HALF THE TRIPWIRE, WHICH IS WHY THE NEXT TEST EXISTS. This
+   * inequality is inert unless the session persists. What keeps
    * connection-lost-lwt.yaml's falsification arm discriminating is the
-   * `clean_session: false` line in that file, not this inequality. Delete that
-   * line and this test still passes while the arm goes dead. No assertion pins
-   * it yet.
+   * `clean_session: false` line in that file — delete it and `disconnect` starts
+   * publishing the will, the arm stops inverting, and this assertion goes on
+   * passing throughout. The two operands are pinned together below.
    */
   it('willDelayInterval is strictly greater than LIVE_RECONNECT_PERIOD_MS', () => {
     const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: nextStationId() });
@@ -183,6 +198,34 @@ describe('MqttConnection — the will delay must outlast the reconnect period', 
     const willDelayMs = will.properties.willDelayInterval * 1000;
 
     expect(willDelayMs).toBeGreaterThan(LIVE_RECONNECT_PERIOD_MS);
+  });
+
+  /**
+   * THE SECOND OPERAND, READ OFF THE COMMITTED FILE.
+   *
+   * The inequality above only suppresses a will for a reconnect to THIS session,
+   * so `clean_session: false` is what makes `sever` and `disconnect` separate
+   * outcomes at all. Under the runner default (`true`, ScenarioRunner.ts:820)
+   * both faults publish the will and the swap-one-word falsification stops
+   * inverting — silently, because the scenario would still pass.
+   *
+   * Read from the real file rather than restated, for the same reason the TLS
+   * floor tests load theirs: a constant copied into a test proves the copy.
+   *
+   * The `sever` step is pinned beside it because the arm needs both halves — a
+   * file that kept `clean_session: false` but had been edited to
+   * `fault: disconnect` has no falsification left either. Existence, not
+   * position: the step's index is not this test's business.
+   */
+  it('connection-lost-lwt.yaml pins clean_session false and fault sever — the arm rests on these, not on the delay', async () => {
+    const { ScenarioRunner } = await import('../../scenarios/ScenarioRunner.js');
+    const runner = new ScenarioRunner();
+    const def = await runner.loadScenario(
+      path.resolve(process.cwd(), 'scenarios', 'core', 'connection-lost-lwt.yaml'),
+    );
+
+    expect(def.clean_session).toBe(false);
+    expect(def.steps).toContainEqual(expect.objectContaining({ action: 'fault', type: 'sever' }));
   });
 
   it('the armed will is still a ConnectionLost after a sever — severing does not rewrite it', () => {
