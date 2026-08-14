@@ -36,6 +36,21 @@ export interface ThrottleRetryOptions {
  * HTTP-date. When the header is absent or unparseable, fall back to exponential backoff
  * (`base × 2^attempt`) with multiplicative jitter so concurrent retriers don't synchronize.
  * `attempt` is 0-indexed: first retry is `attempt = 0`.
+ *
+ * THE HEADER IS A FLOOR, NOT A SUBSTITUTE — measured 2026-08-14. This used to `return`
+ * the parsed header outright, so a well-formed `Retry-After: 0` meant "retry immediately".
+ * Laravel's `ThrottleRequests` writes `availableIn($key)`, which reaches 0 in the final
+ * second of a window it is still refusing inside, so a 429 carrying `Retry-After: 0` is
+ * ordinary rather than exotic. The pooled UAT run showed exactly what that costs:
+ *
+ *     [ApiCallStep:auth] 429 retry 1/3 … in 27000ms     <- honoured, correct
+ *     [ApiCallStep:auth] 429 retry 2/3 … in 0ms         <- both remaining attempts
+ *     [ApiCallStep:auth] 429 retry 3/3 … in 0ms         <- burned in microseconds
+ *
+ * Eight identities failed that way, and the retry that existed to absorb the throttle
+ * spent its whole budget inside one tick. Taking the MAX of the two keeps the server
+ * authoritative whenever it asks for longer — the 27s above is unchanged — while making a
+ * zero (or a past HTTP-date) fall back to our own curve instead of to no wait at all.
  */
 export function computeRetryDelayMs(
   retryAfterHeader: string | null,
@@ -47,22 +62,24 @@ export function computeRetryDelayMs(
   const rng = options?.rng ?? Math.random;
   const nowMs = options?.nowMs ?? Date.now();
 
+  const exp = base * Math.pow(2, attempt);
+  const jitter = 1 + (rng() * 2 - 1) * jitterPct;
+  const backoffMs = Math.max(0, Math.round(exp * jitter));
+
   if (retryAfterHeader !== null && retryAfterHeader !== '') {
     const trimmed = retryAfterHeader.trim();
     if (/^\d+$/.test(trimmed)) {
       const asSec = Number.parseInt(trimmed, 10);
-      return Math.max(0, asSec * 1000);
+      return Math.max(asSec * 1000, backoffMs);
     }
     const asDate = Date.parse(trimmed);
     if (!Number.isNaN(asDate)) {
-      return Math.max(0, asDate - nowMs);
+      return Math.max(asDate - nowMs, backoffMs);
     }
     // Unparseable → fall through to exponential.
   }
 
-  const exp = base * Math.pow(2, attempt);
-  const jitter = 1 + (rng() * 2 - 1) * jitterPct;
-  return Math.max(0, Math.round(exp * jitter));
+  return backoffMs;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -498,6 +515,83 @@ function assertIsRecent(
 const tokenCache = new Map<string, string>();
 const orgIdCache = new Map<string, string>();
 
+/**
+ * Process-wide pacer for `POST /auth/login`.
+ *
+ * The server's limiter is `RateLimiter::for('auth', … Limit::perMinute(30)->by($request->ip()))`
+ * (`AppServiceProvider.php:92-94`) — thirty logins a minute, keyed by IP and NOT by user, as
+ * brute-force protection. A pooled run mints one identity per scenario and every one of them
+ * logs in from the same machine, so the suite's login rate is a property of how fast the
+ * corpus runs, and the cap is shared by all workers no matter how they are spread.
+ *
+ * WHY THIS EXISTS RATHER THAN A BIGGER RETRY. The retry below is honest defence against a
+ * surprise, but it cannot win a race it starts by losing: a blocked login waits inside the
+ * scenario's 90s budget (`DEFAULT_SCENARIO_TIMEOUT_MS`), and a backoff long enough to outlast
+ * a 60s window does not fit in that budget alongside the scenario's own work. Retrying harder
+ * just queues in the worst possible place. Pacing queues BEFORE the bucket is spent, where
+ * waiting is free, and in steady state the 429 never happens at all.
+ *
+ * MEASURED. Until 2026-08-14 the corpus was slow enough to hide this: 28 scenarios spent 15s
+ * apiece timing out on a `wait_for` whose cause was the unfunded-wallet 402, and that dead
+ * time spaced the logins out. Funding the wallets removed the delay, the same 121 logins
+ * bunched up, and 8 of them exhausted the retry. The throttle did not change; the corpus
+ * stopped being slow enough to respect it by accident.
+ *
+ * The default leaves headroom under 30 because the run is not the only client of that IP, and
+ * because the window is the server's, measured from when IT saw the request, not from when we
+ * sent it. Override with `OSPP_SIM_LOGIN_RATE_PER_MIN` when running against something else.
+ */
+export class LoginPacer {
+  private readonly stamps: number[] = [];
+  /** Serializes admission — concurrent workers must not all read a stale window. */
+  private chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly maxPerWindow: number,
+    private readonly windowMs: number = 60_000,
+    private readonly nowFn: () => number = () => Date.now(),
+    private readonly sleepFn: (ms: number) => Promise<void> = defaultSleep,
+  ) {}
+
+  /** Blocks until sending one login keeps us inside the window. Returns ms waited. */
+  async acquire(): Promise<number> {
+    let release!: () => void;
+    const previous = this.chain;
+    this.chain = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+
+    let waited = 0;
+    try {
+      for (;;) {
+        const now = this.nowFn();
+        while (this.stamps.length > 0 && now - this.stamps[0] >= this.windowMs) {
+          this.stamps.shift();
+        }
+        if (this.stamps.length < this.maxPerWindow) {
+          this.stamps.push(now);
+          return waited;
+        }
+        // Wait until the oldest stamp leaves the window, plus a tick so the boundary
+        // is not raced. `stamps[0]` exists here — the length check above guarantees it.
+        const wait = this.windowMs - (now - this.stamps[0]) + 50;
+        await this.sleepFn(wait);
+        waited += wait;
+      }
+    } finally {
+      release();
+    }
+  }
+}
+
+function loginRateFromEnv(): number {
+  const raw = process.env.OSPP_SIM_LOGIN_RATE_PER_MIN;
+  if (raw === undefined || raw === '') return 25;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 25;
+}
+
+const loginPacer = new LoginPacer(loginRateFromEnv());
+
 async function ensureAuth(context: ScenarioContext): Promise<string | undefined> {
   if (context.authToken) return context.authToken;
   if (!context.apiBaseUrl || !context.apiCredentials) return undefined;
@@ -510,9 +604,20 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
   }
 
   const loginUrl = `${context.apiBaseUrl}/api/v1/auth/login`;
+  // Pace first, retry second. The pacer keeps the suite inside the server's
+  // `perMinute(30)->by(IP)` auth limiter so the 429 does not happen; the retry below stays
+  // as defence for the case where it does anyway (a co-tenant on the same IP, a window we
+  // mis-estimated). See LoginPacer for why a bigger retry could not substitute for this.
+  const pacedMs = await loginPacer.acquire();
+  if (pacedMs > 0) {
+    console.warn(
+      `[ApiCallStep:auth] paced login for ${context.apiCredentials.email} by ${pacedMs}ms ` +
+      `to stay under the server's auth limiter (30/min per IP)`,
+    );
+  }
   // Wrap login in the same 429-aware retry as ApiCallStep itself (commit f2b527b).
   // The server's `auth` limiter is `perMinute(30)->by(IP)` (brute-force protection,
-  // not per-user) so per-scenario identity (93 distinct logins from one dev IP)
+  // not per-user) so per-scenario identity (121 distinct logins from one dev IP)
   // saturates it after the first ~30. The retry honors the server's Retry-After
   // header and lets the IP bucket replenish — single-shared-identity runs (1 login
   // total) never hit this path; per-scenario runs spread their logins across the

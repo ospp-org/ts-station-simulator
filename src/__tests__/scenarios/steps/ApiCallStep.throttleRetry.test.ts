@@ -7,8 +7,27 @@ import {
 describe('computeRetryDelayMs', () => {
   it('honors Retry-After in seconds (Laravel ThrottleRequests format)', () => {
     expect(computeRetryDelayMs('5', 0)).toBe(5000);
-    expect(computeRetryDelayMs('0', 0)).toBe(0);
     expect(computeRetryDelayMs('60', 2)).toBe(60_000);
+  });
+
+  it('a Retry-After of 0 falls back to the backoff — it does NOT mean "retry now"', () => {
+    // CORRECTED 2026-08-14. This line used to read `expect(computeRetryDelayMs('0', 0)).toBe(0)`
+    // and it pinned a real defect: Laravel writes `Retry-After: availableIn($key)`, which hits
+    // 0 in the last second of a window it is still refusing inside, so a 429 carrying 0 is
+    // routine. Returning it literally made retries 2 and 3 fire in the same tick as retry 1 —
+    // measured on the pooled UAT run as `429 retry 2/3 … in 0ms` / `3/3 … in 0ms`, eight
+    // identities failing with the retry budget spent inside a microsecond.
+    expect(computeRetryDelayMs('0', 0, { rng: () => 0.5, jitterPct: 0 })).toBe(500);
+    expect(computeRetryDelayMs('0', 1, { rng: () => 0.5, jitterPct: 0 })).toBe(1000);
+    expect(computeRetryDelayMs('0', 2, { rng: () => 0.5, jitterPct: 0 })).toBe(2000);
+  });
+
+  it('the header is a FLOOR: the server wins whenever it asks for longer than the backoff', () => {
+    // The whole point of honouring Retry-After survives — a server asking for 60s still gets
+    // 60s even at an attempt whose own curve is far shorter.
+    expect(computeRetryDelayMs('60', 0, { rng: () => 0.5, jitterPct: 0 })).toBe(60_000);
+    // …and the backoff wins only when it is the larger of the two.
+    expect(computeRetryDelayMs('1', 5, { rng: () => 0.5, jitterPct: 0 })).toBe(16_000);
   });
 
   it('honors Retry-After as an HTTP-date in the future (delta from nowMs)', () => {
@@ -17,10 +36,14 @@ describe('computeRetryDelayMs', () => {
     expect(computeRetryDelayMs(future, 0, { nowMs: now })).toBe(30_000);
   });
 
-  it('clamps a past HTTP-date to 0 (never sleep negative)', () => {
+  it('a past HTTP-date never sleeps negative, and never sleeps zero either', () => {
+    // Same correction as the `Retry-After: 0` case: an elapsed deadline says "the wait you
+    // were told about is over", not "there is no reason to wait". The backoff is the floor.
     const now = Date.parse('2026-05-31T12:00:00Z');
     const past = 'Sun, 31 May 2026 11:59:30 GMT';
-    expect(computeRetryDelayMs(past, 0, { nowMs: now })).toBe(0);
+    const delay = computeRetryDelayMs(past, 0, { nowMs: now, rng: () => 0.5, jitterPct: 0 });
+    expect(delay).toBe(500);
+    expect(delay).toBeGreaterThan(0);
   });
 
   it('falls through to exponential backoff when header is unparseable', () => {

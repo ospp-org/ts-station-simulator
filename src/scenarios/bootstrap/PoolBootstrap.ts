@@ -2,7 +2,7 @@ import { assertBays } from '../../provisioning/assertBays.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { TargetConfig } from '../ScenarioRunner.js';
+import type { IdentityCredentials, TargetConfig } from '../ScenarioRunner.js';
 import { StationPool } from '../stations/StationPool.js';
 import {
   generateEcdsaP256KeyPair,
@@ -121,8 +121,13 @@ export interface PoolBootstrapHandle {
    * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
    * sessions, reservations, payment_intents, vehicles, organization_members, invitations,
    * Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
+   *
+   * Carries the seeded `walletBalance` and, for the ones a scenario's `wallet_balance:`
+   * declaration asked for, `declared: true`. Both are load-bearing at the allocator, so the
+   * type states them: a narrower `{email, password}` still compiled and still worked at
+   * runtime, which is exactly the shape of a field someone deletes as unused.
    */
-  identityCredentials: Array<{ email: string; password: string }>;
+  identityCredentials: IdentityCredentials[];
   /**
    * Users created by a SCENARIO rather than by the pool bootstrap — the e2e files
    * that self-provision an entire tenant sign their customer up through
