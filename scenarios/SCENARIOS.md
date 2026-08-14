@@ -65,7 +65,15 @@ branch that `core/happy-boot.yaml` does not.
 
 ---
 
-## Core (16 scenarios)
+## Core (20 scenarios)
+
+<!-- COUNT IS THE FILE COUNT, and the table below does not yet match it. Pre-existing
+     drift, recorded rather than silently patched: `boot-rejected.yaml` has a row but no
+     file, and `boot-disabled-station-boots-and-stays-gated.yaml`,
+     `boot-poweron-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
+     have files but no row (the last two are described in the table at the top of this
+     file instead). Nothing gates this document, which is why it drifted. -->
+
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -78,11 +86,13 @@ branch that `core/happy-boot.yaml` does not.
 | `core/boot-scheduled-reset.yaml` | Boot Scheduled Reset | bootReason: ScheduledReset, 24h uptime | new |
 | `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot PRESERVES a live session — pins the second member of the preserve set that the Reconnect proof does not cover | new |
 | `core/heartbeat-cycle.yaml` | Heartbeat Cycle | 3 heartbeat request/response cycles | migrated |
-| `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout | new |
+| `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout — the CLIENT's wait budget, not a server behaviour | new |
+| `core/heartbeat-silence-offline-sweep.yaml` | Heartbeat Silence Offline Sweep | 175s of APPLICATION silence on a live socket → `station:check-heartbeats` marks the station offline (`cause: heartbeat_timeout`). Nothing is disconnected; declares its own timeout | new |
 | `core/status-notification.yaml` | Status Notification | StatusNotification Available with services | migrated |
 | `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for the 6 REPORTABLE bay statuses; 4 persist, Occupied/Finishing are session-gated and discarded | new |
-| `core/connection-lost-lwt.yaml` | Connection Lost LWT | Disconnect triggers MQTT LWT | new |
-| `core/reconnect-recovery.yaml` | Reconnect Recovery | Disconnect → reconnect → ErrorRecovery boot | migrated |
+| `core/connection-lost-lwt.yaml` | Connection Lost LWT | `fault: sever` under `clean_session: false` → the BROKER publishes the will and the server marks the station offline (`cause: broker_will`). Swap to `disconnect` and it goes red | new |
+| `core/reconnect-recovery.yaml` | Reconnect Recovery | Disconnect → reconnect → ErrorRecovery boot, with `isOnline` asserted at all THREE points (true → false → true) rather than only at the end | migrated |
+| `core/boot-resets-bays-to-unknown.yaml` | Boot Resets Bays To Unknown | Arm both bays to `available`, then Boot and read `unknown` back — twice, PowerOn and Reconnect, so the reset is proven to FIRE and to be unconditional | new |
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |
 | `core/data-transfer-response.yaml` | Data Transfer Response | Wait for DataTransfer from server | new |
 
