@@ -1,5 +1,41 @@
 name: "Reconnect Recovery"
-description: "Boot, disconnect abruptly, wait, then reconnect with ErrorRecovery boot reason and assert Accepted."
+description: "Boot, arm the liveness state, drop the link, observe the server record the station OFFLINE, then reconnect with ErrorRecovery and observe it come back. The transition is asserted at all three points, not only at the end."
+# WHY THE MIDDLE ASSERTION WAS ADDED. This file already booted, dropped the link,
+# re-booted and read the row back — but everything it asserted was the state the
+# arc ENDED in (`data.bootReason: ErrorRecovery`). Nothing observed the station
+# leaving. A server that never moved `is_online` at all — that treated the drop as
+# a no-op and simply accepted the second Boot — passed this file identically, and
+# so did a server whose offline transition was broken in every way that still let a
+# Boot through. The same hole was corpus-wide: three `data.isOnline` assertions
+# existed and all three said `true`.
+#
+# An edge needs both sides. The three reads below are the same field at three
+# points, and each one is the inverse of its neighbour:
+#
+#   after the first Boot   isOnline true,  bays available   <- ARM
+#   after the drop         isOnline false, bays unknown     <- THE TRANSITION
+#   after the ErrorRecovery Boot  isOnline true             <- THE RETURN
+#
+# WHAT DRIVES THE MIDDLE, AND WHY IT IS NOT A SLEEP. `fault: disconnect` destroys
+# the socket and the client returns on LIVE_RECONNECT_PERIOD_MS. Scenarios default
+# to `clean_session: true`, so that reconnect arrives with Clean Start = 1 and
+# DISCARDS the previous session rather than resuming it — and MQTT 5 §3.1.3.2.2
+# publishes the Will when the delay elapses OR THE SESSION ENDS, whichever is
+# first. Ending it is what the reconnect does, so the broker publishes the
+# ConnectionLost at the reconnect rather than waiting out `willDelayInterval`.
+# `wait_for_connect` synchronises on the real connack instead of guessing, and the
+# delay after it covers only the server's consumption of the will.
+#
+# NOT THE SWEEP. station:check-heartbeats needs 3.5 x heartbeatIntervalSec of
+# silence — 105s at the UAT default of 30 — and the first Boot set last_seen_at
+# well under 20s before the middle read. The whole arc finishes inside that window,
+# so the offline transition here can only be broker-driven.
+#
+# WHERE A RED POINTS. A failure at the MIDDLE read is the ConnectionLost path and
+# belongs to connection-lost-lwt.yaml, which owns that mechanism and pins it with
+# `fault: sever` under a persistent session so the two teardowns separate. A failure
+# at the RETURN read is this file's own subject: the station announced itself and
+# the server did not record it as reachable again.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -45,11 +81,70 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # --- ARM: drive both bays off `unknown` so the middle read cannot be satisfied
+  # by the state a freshly provisioned station already has. The Boot above has
+  # already moved isOnline false -> true for the same reason.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # Fire-and-forget with no Response to synchronise on; 1000ms is the value
+  # status-all-bay-states.yaml measured on UAT after 300ms read the PREVIOUS state.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
+
   - action: fault
     type: disconnect
 
+  # Synchronise on the real connack rather than assuming the 5000ms reconnect
+  # period elapsed — the reason WaitForConnectStep exists.
+  - action: wait_for_connect
+    timeout_ms: 20000
+
+  # Covers only the server consuming the will the reconnect caused the broker to
+  # publish. Well inside the 105s sweep window, so the transition stays attributable.
   - action: delay
-    ms: 5000
+    ms: 10000
+
+  # --- THE TRANSITION. Both values are the inverse of the ARM read above, and
+  # markOffline writes them in ONE transaction (StationOfflineService:46-49) — so
+  # isOnline false beside a bay still `available` would be a partial transition
+  # rather than a green. This is the read the file never had.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: false
+      data.bays[bayNumber=1].status: "unknown"
+      data.bays[bayNumber=2].status: "unknown"
 
   - action: send
     message: BootNotification
@@ -109,3 +204,9 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "ErrorRecovery"
+      # THE RETURN. Read false ten seconds ago; only the ErrorRecovery Boot above
+      # can have moved it back, because is_online = true is written in exactly one
+      # place — the accepted-Boot path (BootNotificationHandler.php:165-176). The
+      # station reconnecting at MQTT level did NOT set it: the middle read proves
+      # that, taken while the socket was already up again.
+      data.isOnline: true
