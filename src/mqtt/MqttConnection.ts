@@ -204,11 +204,23 @@ const lastDisconnectAt = new Map<string, number>();
  * passes 0 instead: a ban probe must return a verdict, not retry forever.
  *
  * EXPORTED because it is one half of a relationship, not a private detail: it
- * must stay strictly BELOW the will's `willDelayInterval` for `fault: disconnect`
- * to reliably cancel the Last Will and `fault: sever` to be the only teardown
- * that does not. MqttConnection.severWill.test.ts pins that inequality, because
- * the two numbers are otherwise changeable independently and the consequence of
- * crossing them is silent.
+ * must stay strictly BELOW the will's `willDelayInterval`, so that on a
+ * PERSISTENT session (`clean_session: false`) the reconnect lands inside the
+ * delay window and MQTT 5 3.1.3.2.2 suppresses the will. That is the condition
+ * under which `fault: disconnect` cancels the Last Will and `fault: sever` is the
+ * only teardown that does not. MqttConnection.severWill.test.ts pins the
+ * inequality, because the two numbers are otherwise changeable independently and
+ * the consequence of crossing them is silent.
+ *
+ * THE QUALIFIER IS NOT DECORATION — THIS COMMENT USED TO OMIT IT AND WAS WRONG
+ * FOR THE COMMON CASE. Scenarios default to `clean_session: true`
+ * (ScenarioRunner.ts:820) and only core/connection-lost-lwt.yaml overrides it. On
+ * Clean Start 1 the reconnect DISCARDS the old session rather than resuming it,
+ * and 3.1.3.2.2 publishes the will when the session ends OR the delay elapses,
+ * whichever is first — so under the corpus default `fault: disconnect` PUBLISHES
+ * the will at the reconnect no matter how the two numbers compare. Measured on
+ * UAT 2026-08-14. core/reconnect-recovery.yaml's middle read depends on exactly
+ * that, and the old wording said it could not happen.
  */
 export const LIVE_RECONNECT_PERIOD_MS = 5000;
 

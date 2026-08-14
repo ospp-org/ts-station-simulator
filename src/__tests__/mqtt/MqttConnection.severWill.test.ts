@@ -151,14 +151,27 @@ describe('MqttConnection — the will delay must outlast the reconnect period', 
    * rather than a synonym for `disconnect`, and both operands live in this file
    * where either could be changed without anyone connecting them.
    *
-   * If willDelayInterval ever drops at or below the reconnect period, the
-   * simulator's own auto-reconnect stops being able to cancel the will —
-   * `fault: disconnect` would start intermittently producing a ConnectionLost,
-   * every scenario that relies on the drop being invisible acquires a new and
-   * silent failure mode, and the falsification arm of the LWT scenario (swap
-   * `sever` for `disconnect`, watch it go red) quietly stops discriminating.
-   * That last part is the dangerous one: the test would still pass while having
+   * If willDelayInterval ever drops at or below the reconnect period, then ON A
+   * PERSISTENT SESSION the auto-reconnect stops landing inside the delay window,
+   * 3.1.3.2.2 no longer suppresses the will, and the falsification arm of
+   * core/connection-lost-lwt.yaml (swap `sever` for `disconnect`, watch it go
+   * red) quietly stops discriminating — the test would still pass while having
    * stopped proving anything.
+   *
+   * SCOPED TO THE PERSISTENT SESSION ON PURPOSE. An earlier version of this
+   * comment claimed the inequality kept the drop "invisible" for every scenario.
+   * It does not. Scenarios default to `clean_session: true`
+   * (ScenarioRunner.ts:820); Clean Start 1 ENDS the old session at the reconnect
+   * and 3.1.3.2.2 publishes the will on session end regardless of the delay. So
+   * under the default `fault: disconnect` already produces a ConnectionLost —
+   * measured on UAT 2026-08-14, and core/reconnect-recovery.yaml's middle read
+   * now depends on it.
+   *
+   * WHICH MEANS THIS TRIPWIRE DOES NOT GUARD THE THING IT PROTECTS. What keeps
+   * connection-lost-lwt.yaml's falsification arm discriminating is the
+   * `clean_session: false` line in that file, not this inequality. Delete that
+   * line and this test still passes while the arm goes dead. No assertion pins
+   * it yet.
    */
   it('willDelayInterval is strictly greater than LIVE_RECONNECT_PERIOD_MS', () => {
     const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: nextStationId() });
