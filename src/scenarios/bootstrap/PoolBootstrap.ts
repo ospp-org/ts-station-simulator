@@ -13,7 +13,6 @@ import {
 import {
   generateStationId,
   generateSerialNumber,
-  generateServiceId,
 } from '../../station/StationConfig.js';
 import {
   assertUatDbReachable,
@@ -641,14 +640,26 @@ async function registerAndProvisionStation(
 ): Promise<void> {
   // Register (sets is_active=true, creates bay rows). Record the id immediately
   // so teardown removes it even if a later step throws.
+  // No `services:` here. Registration writes NOTHING into the services tier — the Brief L
+  // decision at `RegisterStationAction.php:16-21` — and csms-server `dbc45f7` now says so out
+  // loud: `'bays.*.services' => ['prohibited']`, 422 naming the three routes that do create a
+  // service. Until then the field was accepted and silently dropped, so this block had been
+  // declaring a catalog that was never written, on every bootstrapped station, unnoticed.
+  //
+  // Nothing is lost by removing it: the catalog these stations actually serve is seeded at
+  // step 5 below by `seedServiceCatalog(...DEFAULT_SEED_SERVICES...)`, whose own comment
+  // already called itself "Non-optional — without this, every sessions/start 404s
+  // INVALID_SERVICE". Both sides independently believed this block did something, and neither
+  // was using it.
   const bays = Array.from({ length: bayCount }, (_, b) => ({
     bayNumber: b + 1,
-    services: [{ serviceId: generateServiceId('wash_basic'), serviceName: 'Basic Wash' }],
   }));
   // The same set, in the PROVISIONING shape: bayNumber + the programs the bay
-  // physically has. Registration is the operator's declaration and carries
-  // services; provisioning is the STATION's and carries programs with labels
+  // physically has. Registration is the operator's declaration of the bays alone;
+  // provisioning is the STATION's and carries programs with labels
   // (§01-architecture.md:238). Derived from one `bays` so the two cannot drift.
+  // (This comment used to say registration "carries services". It never did — that
+  // is the whole defect above.)
   const declaredBays = bays.map(b => ({
     bayNumber: b.bayNumber,
     programs: [{ programNumber: 1, label: 'Basic Wash' }],
