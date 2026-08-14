@@ -1,0 +1,263 @@
+name: "Boot Resets Bays To Unknown"
+description: "Drive both bays to `available`, then Boot and read them back as `unknown` — twice, once on PowerOn and once on Reconnect. Proves the server's boot-time bay reset FIRES, rather than that bays happen to start unknown."
+# WHY THIS FILE EXISTS. `unknown` is the one bay state the whole corpus names and
+# nothing asserts. Sixteen bay-status assertions cover `available`, `reserved`,
+# `faulted` and `unavailable`; fourteen files mention `unknown` in a comment, and
+# every one of them mentions it as the ANTI-value — the baseline an assertion must
+# not be satisfiable by (status-notification.yaml:89, 10-station-parallel-boot:81,
+# trigger-message-status:116). That reasoning is correct and it is exactly why the
+# transition INTO `unknown` was never covered: on a fresh pool station the bays are
+# already `unknown` (RegisterStationAction.php:45, create_bays_table:18), so a file
+# that booted and read `unknown` back would assert the initial state and could not
+# fail.
+#
+# THE SUBJECT IS A WRITE, NOT A DEFAULT. BootNotificationHandler.php:396 calls
+# resetBaysToUnknown() on every accepted Boot, and it sits OUTSIDE the
+# reconnect/reboot branch above it (:387-395) — every Boot, whatever the reason.
+# `unknown` is the seventh FSM state and is not a wire value: bay-status.schema.json
+# lists six, ReportableBayStatus excludes it, and the SDK's own docblock says "a
+# server enters it on connection loss and leaves it on the next accepted
+# StatusNotification. Both parties hold it, neither transmits it." So the simulator
+# CANNOT put a bay into `unknown` — only the server can. That is what makes reading
+# it back a server-derived fact rather than an echo of what we sent.
+#
+# HOW IT IS MADE FALSIFIABLE. Each proof is preceded by an ARM step that drives the
+# bays away from `unknown` and asserts they got there. Without the arm, the proof
+# read is vacuous; with it, `unknown` can only be the server's own write. Delete
+# line 396 of BootNotificationHandler and both proofs go red at the read. Move it
+# inside the `else` at :393 — the plausible refactor, "a reconnect did not reboot
+# anything, so leave the bays alone" — and PROOF 2 goes red on its own while PROOF 1
+# still passes, which is the discrimination this file is for.
+#
+# WHY PROOF 2 PINS `Reconnect` AND IS NOT OVERREACH. The unconditional placement is
+# a real decision and it agrees with the spec's own words: the server enters
+# `unknown` ON CONNECTION LOSS, and a `Reconnect` Boot follows a connection loss by
+# definition — §5.2 defines it as "the only member that does not name a boot", sent
+# when the station re-establishes MQTT without having restarted. The server's
+# knowledge of the bays is stale across that gap even though the hardware never
+# stopped. A future decision to reset only on a genuine reboot would be a behaviour
+# change, and this file going red is the correct report of one.
+#
+# NO SETTLE DELAY AFTER A BOOT, AND ONE AFTER EVERY StatusNotification. Asymmetric
+# on purpose. resetBaysToUnknown() runs at :396, before `return $response` at :400,
+# so the UPDATE is committed before the Response this file waits on is even built —
+# the same argument heartbeat-cycle.yaml makes for last_seen_at. StatusNotification
+# is fire-and-forget with no Response to synchronise on, so the read races the
+# consumer; 1000ms is the value status-all-bay-states.yaml measured on UAT after
+# 300ms read back the PREVIOUS state.
+#
+# NOT RACING THE SWEEP. `bays:resolve-unknown` asks a station to re-report bays that
+# have been `unknown` for longer than ospp.unknown_bay_timeout_seconds — measured 30
+# on UAT. Every read here lands within ~2s of the Boot that wrote the value, so the
+# sweep cannot have moved it. This file is deliberately fast for that reason.
+#
+# POOL-SAFE. No exclusive station needed. The allocator (ScenarioRunner.ts:1159)
+# already holds one station per scenario, and this file leaves it online with both
+# bays `unknown` — the same state any Boot leaves behind, and one the next
+# scenario's own Boot re-establishes.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  # --- Boot 1: bring the station up. NOTHING is asserted about the bays here.
+  # They are `unknown` at this point, and saying so would be the vacuous assertion
+  # this file exists to avoid.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- ARM 1: drive both bays out of `unknown` and prove they left. -----------
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # Both bays pinned: the two Events are independent writes, and arming only one
+  # would leave the other's proof read exactly as unfalsifiable as before.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
+
+  # --- PROOF 1: a genuine reboot resets both bays. ---------------------------
+  # uptimeSeconds 0 with PowerOn is the unambiguous reboot: the station is telling
+  # the server it just power-cycled, so nothing it previously reported about its
+  # bays survives.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "unknown"
+      data.bays[bayNumber=2].status: "unknown"
+
+  # --- ARM 2: drive them back out, so PROOF 2 reads a value it had to move. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
+
+  # --- PROOF 2: a Reconnect Boot resets them too — the reset is unconditional.
+  # uptimeSeconds is ~25h and the reason is `Reconnect`: the station is telling the
+  # server it never restarted, only re-established MQTT. That is the branch at
+  # BootNotificationHandler.php:387 which PRESERVES in-flight sessions — and the bay
+  # reset at :396 sits outside it. This step is what distinguishes "the reset fires
+  # on a reboot" from "the reset fires on every Boot".
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 90000
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "Reconnect"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "unknown"
+      data.bays[bayNumber=2].status: "unknown"
