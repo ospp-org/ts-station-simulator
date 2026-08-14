@@ -161,9 +161,32 @@ steps:
       # ever adopted. `''` rather than null is the resource's compatibility coalesce
       # (StationConfigurationResource.php:23-30), not a value.
       data.0.value: ""
+      # The applied-side discriminator. `changed_by` has NO column default and is written in
+      # exactly one place — `ChangeConfigurationHandler.php:226`, the ACCEPTED path, together
+      # with the real value. Null here therefore means that path never ran.
       data.0.changed_by: null
-      data.0.last_changed_at: null
       # Bounded rather than pinned — the timestamp is server-generated. Its PRESENCE is the
       # claim ("the request left pending"); 300s is slack for a loaded UAT, not a measurement.
       data.0.desired_resolved_at:
         is_recent: 300
+  #
+  # TWO FIELDS DELIBERATELY NOT ASSERTED, measured 2026-08-14 rather than reasoned about.
+  #
+  # The first draft of this block also pinned `last_changed_at: null` and would have pinned
+  # `mutability: "dynamic"`. Both are wrong, for the same reason, and the isolated run caught
+  # the first one on the wire:
+  #
+  #     expected body "data.0.last_changed_at" to equal null,
+  #     but got "2026-08-14T20:27:07+00:00"
+  #
+  # `last_changed_at TIMESTAMPTZ DEFAULT NOW()` and `mutability VARCHAR(10) NOT NULL DEFAULT
+  # 'dynamic'` (create_station_configurations_table:20-21). Neither `recordDesired` nor
+  # `resolveDesired` writes either column, so on a row born from a desired-push both are
+  # filled by POSTGRES at INSERT. `last_changed_at` is populated on a row where nothing was
+  # ever changed, and `mutability` reads 'dynamic' whether or not anything decided it was.
+  #
+  # A column default is the most convincing kind of non-evidence: it is always present, it
+  # always looks plausible, and it is identical on every path — so an assertion on it passes
+  # for a reason that has nothing to do with the subject. `mutability` would have been the
+  # worse of the two, because it would have PASSED and read like a discriminator against
+  # change-configuration-reboot-required, which is precisely the arm it cannot separate.

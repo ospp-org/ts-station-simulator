@@ -201,6 +201,55 @@ The wrong component was the run: one identity replaying 20 scenarios models one 
 starting 20 washes in eight minutes, which *should* be throttled. If you must run a suite
 without a bootstrap, rotate identities per suite and expect throttling within one.
 
+### 4b. The second limiter, and why it only bit once the suite got fast
+
+There is a SECOND rate limit, and unlike `session-mutate` the per-scenario identity pool
+does nothing to spread it:
+
+```php
+RateLimiter::for('auth', fn (Request $r) => Limit::perMinute(30)->by($r->ip()));
+```
+`AppServiceProvider.php:92-94` — **30 logins a minute, keyed by IP, not by user.** It is
+brute-force protection, so being a different customer each time buys you nothing. Every
+identity the pool mints logs in once, from one machine, into one shared bucket.
+
+**The finding worth keeping: the corpus was inside that cap only because it was slow.**
+
+Nobody designed that. Until 2026-08-14 twenty-eight scenarios each spent 15 s timing out
+on a `wait_for` whose real cause was the unfunded-wallet 402 (§2b), and that dead time was
+the only thing spacing the logins out. Funding the wallets deleted the delay, the same 121
+logins bunched up, and 8 of them died on `429 Too Many Attempts`. **The limiter did not
+change and the login count did not change — only the pace did.**
+
+Treat that as a standing property, not a solved incident: *any* future speed-up breaks it
+again. Removing a `delay`, shortening a `wait_for`, fixing a slow scenario, adding workers —
+each of those spends the same budget faster. A suite whose compliance with a published limit
+is a side effect of its own latency is one optimisation away from non-compliance, and the
+failure it produces names a login, not the change that caused it.
+
+`LoginPacer` (`ApiCallStep.ts`) now holds the property on purpose: it paces logins to
+**25/min** (`OSPP_SIM_LOGIN_RATE_PER_MIN` to override) *before* the bucket is spent, where
+waiting is free. Headroom under 30 because the window is the server's, timed from when IT
+saw the request, and the run is not guaranteed to be the only client on that IP.
+
+**A bigger retry cannot substitute for pacing**, which is worth stating because it is the
+obvious first idea: a blocked login waits inside the scenario's 90 s
+`DEFAULT_SCENARIO_TIMEOUT_MS`, and a backoff long enough to outlast a 60 s window does not
+fit there alongside the scenario's own work. Retrying harder queues in the worst place.
+
+The retry that does exist had its own defect, fixed the same day: `computeRetryDelayMs`
+returned `Retry-After` verbatim, and Laravel writes `availableIn($key)`, which reaches **0**
+in the final second of a window it is still refusing inside. So the run showed
+
+```
+[ApiCallStep:auth] 429 retry 1/3 … in 27000ms   <- honoured
+[ApiCallStep:auth] 429 retry 2/3 … in 0ms       <- both remaining attempts
+[ApiCallStep:auth] 429 retry 3/3 … in 0ms       <- burned in one tick
+```
+
+The header is now a **floor**, not a substitute — the server still wins when it asks for
+longer. Two tests had asserted the defect (`expect(computeRetryDelayMs('0', 0)).toBe(0)`).
+
 ---
 
 ## 5. State the suite leaves behind, and one that bites the next scenario
