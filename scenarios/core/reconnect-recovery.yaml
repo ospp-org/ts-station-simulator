@@ -36,6 +36,16 @@ description: "Boot, arm the liveness state, drop the link, observe the server re
 # `fault: sever` under a persistent session so the two teardowns separate. A failure
 # at the RETURN read is this file's own subject: the station announced itself and
 # the server did not record it as reachable again.
+#
+# clean_session IS DECLARED BELOW, AND IT IS LOAD-BEARING. `true` is also the
+# runner's default (ScenarioRunner.ts:820), so this line changes no behaviour — it
+# stops the MIDDLE read from depending on a value no line in this file stated. The
+# middle only reaches `isOnline: false` because Clean Start 1 ENDS the old session
+# and the broker publishes the will at the reconnect; pin it `false` and the
+# reconnect RESUMES the session, §3.1.3.2.2 suppresses the will, and step [10] fails
+# with isOnline true. That is this file's measured falsification, and it is one line
+# away — which is exactly why the line should be visible rather than inherited.
+clean_session: true
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -205,8 +215,12 @@ steps:
     expect_body:
       data.bootReason: "ErrorRecovery"
       # THE RETURN. Read false ten seconds ago; only the ErrorRecovery Boot above
-      # can have moved it back, because is_online = true is written in exactly one
-      # place — the accepted-Boot path (BootNotificationHandler.php:165-176). The
-      # station reconnecting at MQTT level did NOT set it: the middle read proves
-      # that, taken while the socket was already up again.
+      # can have moved it back, because `is_online => true` is written in exactly
+      # one place in the whole server: the accepted-Boot update at
+      # BootNotificationHandler.php:224. (This comment used to cite :165-176, which
+      # is the comment block explaining the is_active/is_online split, not the
+      # write.) The two writers of `false` are StationRepository.php:37 (markOffline)
+      # and RegisterStationAction.php:35 (provisioning default). The station
+      # reconnecting at MQTT level did NOT set it: the middle read proves that,
+      # taken while the socket was already up again.
       data.isOnline: true

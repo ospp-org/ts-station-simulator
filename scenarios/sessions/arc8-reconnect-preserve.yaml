@@ -4,10 +4,32 @@
 # uptime-continuity preserve), and not when the offline-recovery timer fires past
 # the 300s deadline (Layer 3 skip-at-execution, because the station is back online).
 #
-# The broker's ConnectionLost LWT is injected as a send step: the sim's fixed
-# 5s auto-reconnect cancels the real 10s-delayed will, so we reproduce the exact
-# message the will would publish (same action/handler path) to arm the recovery
-# timer, then reconnect with a session-spanning uptime.
+# THE ConnectionLost BELOW IS FABRICATED BY THE STATION. THIS FILE IS NOT LWT
+# COVERAGE, AND ANYONE COUNTING IT AS SUCH IS COUNTING A MESSAGE THE SIMULATOR
+# WROTE. It is a `send` step (steps, ~line 106) publishing onto
+# `toServerTopic(stationId)` over the LIVE connection — the same topic the real
+# will uses — so at the topic level it is indistinguishable from a broker-published
+# will. Two things do distinguish it, and both are absent here: `messageId` has no
+# `lwt-` prefix (MqttConnection stamps that at CONNECT, MqttConnection.ts:366) and
+# `source` is the station's, not `Server`. The linter permits it because
+# ConnectionLost is whitelisted station->server (MessageDirectionCheck.ts:18-21) and
+# it is MAC-exempt (MessageSender.ts:197). Nothing about the BROKER's will path is
+# exercised. That path is owned by core/connection-lost-lwt.yaml, which drives it
+# with `fault: sever` under a persistent session and reads the `lwt-` prefix back
+# out of the consumer log.
+#
+# THE INJECTION IS STILL THE RIGHT CHOICE HERE — but not for the reason this header
+# used to give. It claimed "the sim's fixed 5s auto-reconnect cancels the real
+# 10s-delayed will". That diagnosis was measured false on 2026-08-14 (see
+# core/connection-lost-lwt.yaml): under this file's default `clean_session: true`
+# the reconnect arrives with Clean Start 1, which ENDS the old session, and MQTT 5
+# §3.1.3.2.2 publishes the will when the session ends OR the delay elapses,
+# whichever is first. A real `fault: disconnect` here would therefore PUBLISH the
+# will, not cancel it. The actual reason to inject is that this file's subject is
+# what happens AFTER the server is told the link died — Layer 1 uptime-continuity
+# preserve and the Layer 3 skip past the 300s deadline — and it needs that message
+# at a controlled instant with the connection still usable for the steps that
+# follow. A genuine sever would take the link with it.
 # Deliberately the slowest file in the corpus: it holds a connection past the server's
 # 300s offline-recovery deadline, and measured 347.8s on the 2026-08-10 run. That is
 # well over the 90s default budget (ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS), so it
@@ -97,7 +119,10 @@ steps:
   - action: delay
     ms: 3000
 
-  # --- Inject the broker LWT: ConnectionLost. Server marks offline + arms FailOfflineSessionJob(300s). ---
+  # --- FABRICATED WILL (see header). The STATION publishes this, on the live
+  # connection, onto the server topic. The broker is not involved and no will path
+  # is under test here; this only arms the server side — markOffline +
+  # FailOfflineSessionJob(300s) — which is what the steps below are about.
   - action: send
     message: ConnectionLost
     messageType: Event
