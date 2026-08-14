@@ -211,6 +211,87 @@ describe('the legitimate overrides in the corpus', () => {
     expect(Number(m![1])).toBeGreaterThan(delay);
   });
 
+  // THE ARGUMENT for the three scenarios/e2e files, as this describe block demands.
+  //
+  // It is a different KIND of argument from the three above, and the difference is
+  // worth stating rather than blurring: those three cannot fit the default because a
+  // SERVER floor (a TTL, a heartbeat threshold, a sweep interval) is longer than 90s.
+  // These three cannot fit it because of their OWN declared waiting — and that waiting
+  // is not decoration. Path B is a single-threaded consumer (MqttConsume.php:67-87) at
+  // ~5s per message, and each file drains Boot + 4 StatusNotifications + a catalog
+  // Response before it can start a session on a bay whose status has landed. A file
+  // that skipped the drain would not be faster; it would answer 3002 BAY_NOT_READY.
+  //
+  // For two of the three the arithmetic settles it with no measurement at all: the
+  // `delay:` steps ALONE sum to 91.0s and 166.6s, which is already past the 90s
+  // default before a single request is sent. Asserted below, off the committed files.
+  //
+  // e2e-new-customer-onboarding is the weak one and is named as such. Its delays sum
+  // to 55.5s and it last measured 86s end to end (UAT 2026-07-31) — inside the default
+  // by 4s. The catalog sequence it now carries is nine requests where there was one, so
+  // that margin is roughly a second. The default would make it flaky rather than slow,
+  // which is the worst of both, and a flake here reports "the RUNNER giving up" while
+  // naming nothing about the file.
+  //
+  // WHY NONE OF THE THREE HAS EVER MET THIS BOUND. The bound landed 2026-08-10
+  // (57063cc). The catalog gate that stopped all three at their `PUT …/catalog` landed
+  // 2026-08-06. So from the day the bound existed, every one of these files was already
+  // failing four steps upstream of its first long delay — the two have never been in
+  // force together, and fixing the catalog is precisely what would have made the
+  // runner's own timeout the next failure. That is the whole reason these three lines
+  // are being added in the same change as the catalog sequence and not after a red run.
+  //
+  // The budgets are sized off the delays each file declares, NOT off a measured
+  // duration — only the first two have one, and the matrix has never been timed to
+  // completion. They are ceilings meant to be replaced by measurement, and the
+  // assertion below deliberately bounds them from BOTH sides so an unexamined number
+  // cannot drift upward into "no bound at all".
+  it('the three e2e files declare budgets that cover their own declared waiting', () => {
+    const files = [
+      'scenarios/e2e/e2e-new-customer-onboarding.yaml',
+      'scenarios/e2e/e2e-returning-customer-session.yaml',
+      'scenarios/e2e/e2e-session-end-matrix.yaml',
+    ];
+
+    for (const rel of files) {
+      const src = fs.readFileSync(path.resolve(rel), 'utf8');
+      const m = src.match(/^scenario_timeout_ms:\s*(\d+)/m);
+      expect(m, `${rel} must declare a budget`).not.toBeNull();
+      const budget = Number(m![1]);
+
+      // The sum, not the max: these files wait repeatedly and the waits are serial.
+      const declaredDelayMs = [...src.matchAll(/^\s+ms:\s*(\d+)/gm)]
+        .reduce((sum, d) => sum + Number(d[1]), 0);
+
+      // Covers the waiting it declares, with room for the requests around it. A budget
+      // that merely cleared the delays would abandon the file mid-teardown.
+      expect(budget, `${rel}: budget must exceed its ${declaredDelayMs}ms of delay`)
+        .toBeGreaterThan(declaredDelayMs + 30_000);
+
+      // And is a bound, not an absence of one. 2x the declared waiting is the ceiling;
+      // past that the file is no longer being bounded by anything it can account for.
+      expect(budget, `${rel}: budget is not a bound any more`)
+        .toBeLessThanOrEqual(declaredDelayMs * 2 + 60_000);
+    }
+  });
+
+  // The load-bearing half of the argument for two of the three, checked rather than
+  // asserted in prose: their own delays already exceed the default, so the override is
+  // arithmetic on the committed file and not a judgement call. If someone later shortens
+  // those drains below 90s, THIS test goes red and the override has to be re-argued —
+  // which is the outcome wanted, since it would no longer be self-evidently necessary.
+  it('two of the three exceed the default on declared delay alone', () => {
+    const sums = [
+      'scenarios/e2e/e2e-returning-customer-session.yaml',
+      'scenarios/e2e/e2e-session-end-matrix.yaml',
+    ].map(rel => {
+      const src = fs.readFileSync(path.resolve(rel), 'utf8');
+      return [...src.matchAll(/^\s+ms:\s*(\d+)/gm)].reduce((s, d) => s + Number(d[1]), 0);
+    });
+
+    for (const sum of sums) expect(sum).toBeGreaterThan(DEFAULT_SCENARIO_TIMEOUT_MS);
+  });
+
   it('and those are the ONLY files that override — every new override should be argued for', () => {
     const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true })
       .flatMap(e => e.isDirectory() ? walk(path.join(d, e.name))
@@ -223,6 +304,9 @@ describe('the legitimate overrides in the corpus', () => {
 
     expect(overriding).toEqual([
       'arc8-reconnect-preserve.yaml',
+      'e2e-new-customer-onboarding.yaml',
+      'e2e-returning-customer-session.yaml',
+      'e2e-session-end-matrix.yaml',
       'heartbeat-silence-offline-sweep.yaml',
       'reserve-expire.yaml',
     ]);

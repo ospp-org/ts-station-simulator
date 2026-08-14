@@ -29,44 +29,54 @@ description: |
   down per-run (see `creates:` below). The platform admin is never touched.
 
   ---------------------------------------------------------------------
-  WHERE THIS FILE STOPS TODAY, AND WHY IT IS NOT THIS FILE'S FAULT
+  THE CATALOG PATH THIS FILE NOW TAKES, AND WHAT IS NOT YET PROVEN ON IT
   ---------------------------------------------------------------------
-  Measured on UAT 2026-08-13 against csms-server 00d7286.
-
-  PASSES now, through step 15: register -> org -> identity switch ->
-  location -> station registration -> provisioning token -> provision
-  (CSR + cert) -> mTLS connect -> BootNotification Accepted -> the four
-  StatusNotifications. The station declares deviceManagementSupported,
-  so the Device Management pre-empt that used to refuse the catalog push
-  (409 / 6008 COMMAND_PRE_EMPTED, details.wouldBe 2007) no longer fires —
-  see the note on the `capabilities` block.
-
-  STOPS at step 16, `PUT /api/v1/admin/stations/{id}/catalog`, on a
-  SECOND and older gate:
-
-    400 VALIDATION_ERROR / 6004 — "Service 'svc_wash_basic' has no
-    (bay, program) binding on this station."
-
-  That gate is UpdateServiceCatalogAction::resolveBindings()
-  (UpdateServiceCatalogAction.php:149, called at :92), added in server
-  11aa480 on 2026-08-06 for spec v0.11.0's REQUIRED `bindings`. This
-  file was last proven green on 2026-07-31 — six days before it landed —
-  and the 6008 pre-empt then masked it, which is why fixing the
-  capability is what made it visible rather than what caused it.
-
-  It cannot be fixed in this file. No public REST sequence can create a
-  binding a legacy catalog push will accept: the only route that writes
-  `station_services` mints its OWN serviceId and stamps `service_kind`
-  (StationServiceCatalogController.php:132,143), and a kind-tagged
-  definition is then refused by assertNoKindAwareServices (:249). The
-  full request-by-request measurement, both refusals, and what would
-  close the loop are in
+  From 2026-08-06 to 2026-08-14 this file stopped at `PUT
+  /api/v1/admin/stations/{id}/catalog` on a closed loop: the push demanded
+  a (bay, program) binding, and the only route that wrote one minted its
+  OWN serviceId and stamped a `service_kind` the push then refused. The
+  request-by-request measurement of both refusals is in
   docs/MEASURED-catalog-unreachable-on-new-station-20260813T110000Z.md.
 
+  NEITHER GATE WAS RELAXED. csms-server added a THIRD door instead —
+  `POST /api/v1/admin/stations/{id}/catalog/publish` (bb8c28f), which
+  takes no body and sends the catalog as the SERVER holds it. With no
+  caller prices in the request there is nothing for the kind guard to
+  refuse, so both guards stay in force and both are now inapplicable to
+  this sequence. Two smaller server changes make the sequence writable
+  from a scenario at all:
+
+    - `POST …/services` HONOURS a caller-supplied `serviceId`
+      (StationServiceCatalogController.php:186-192). It used to discard it
+      unread, which is precisely why the binding and the push could never
+      name the same service. A collision is a named 422, `code:
+      SERVICE_ID_TAKEN` — not a 500, and not a silent substitution.
+    - registration REFUSES `bays[].services` (dbc45f7 —
+      `'bays.*.services' => ['prohibited']`, 422). Registration never
+      wrote the services tier (RegisterStationAction.php:16-21); the field
+      was accepted and dropped, and this file sent one at every
+      registration. The block is gone from the step below — keeping it
+      would now 422 the registration itself.
+
+  So the catalog steps below are: create four services carrying the ids
+  this file names, bind each to program 1 of its own bay, then publish.
+  The publish answers 202 and reports `withheld` — the services the server
+  holds but could not put on the wire for want of a binding. All four are
+  bound here, so `withheld` must be EMPTY, and this file asserts that: a
+  run that bound only half would publish 202 just the same.
+
+  NOT PROVEN YET — the honest half. Every claim above was read at source
+  in csms-server 99cab60; none of it has been exercised from this file.
+  The route is not deployed to UAT as of 2026-08-15, where it answers 404,
+  so running this file there today would measure the deploy, not the
+  sequence. The first full run after the deploy is the measurement; until
+  then this file is a prepared claim.
+
   Do NOT make this file green by seeding the binding with privileged SQL
-  (the way PoolBootstrap does for the pooled suite) — the 202 it would
-  then assert is one the production API cannot produce, and the file
-  would stop describing a journey a real operator can take.
+  (the way PoolBootstrap does for the pooled suite) — a 202 the production
+  API cannot produce would stop this file describing a journey a real
+  operator can take. That was true of the old path and is why the new one
+  had to be a route rather than a fixture.
 
 # C-018 sim-side: resolve `context.apiCredentials` from these env vars
 # (source `~/.config/osp-e2e-secrets.env` before running). target.credentials
@@ -77,6 +87,18 @@ auth:
   password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 
 defer_mqtt_connect: true
+
+# This file declares 55.5 s of `delay:` and last measured 86 s end to end
+# (UAT 2026-07-31) — under the 90 s DEFAULT_SCENARIO_TIMEOUT_MS, but by 4 s.
+# The nine api_calls the new catalog sequence adds spend that margin, and the
+# runner's bound is not an assertion: it abandons the scenario and reports
+# "exceeded its 90000ms budget", which names the RUNNER rather than whatever
+# the file was actually doing. The bound landed 2026-08-10 (57063cc), four days
+# AFTER the catalog gate started failing this file at step 16 — so this file
+# has never once run to completion underneath it, and its passing today would
+# have been the first test of the two together. Sized ~1.6x the measured run;
+# replace with the real number once a post-deploy run produces one.
+scenario_timeout_ms: 150000
 
 station:
   bayCount: 4
@@ -172,7 +194,14 @@ steps:
     creates:
       location: "data.id"
 
-  # ---------- Operator: register station with 4 bays, each with a distinct service ----------
+  # ---------- Operator: register station with 4 bays ----------
+  # No `services:` under a bay. Registration writes NOTHING into the services tier
+  # (RegisterStationAction.php:16-21) and never did — the array this file used to send
+  # was read for `bayNumber` and dropped, so four service names travelled at every
+  # registration and reached no table. csms-server dbc45f7 stopped accepting a field it
+  # was not going to write: `'bays.*.services' => ['prohibited']`, answered 422 with
+  # `errors["bays.0.services"]` naming the three routes that DO create a service. The
+  # services are created below, after provisioning, where the bays they bind to exist.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations"
@@ -185,21 +214,9 @@ steps:
       locationId: "{{captured.location_id}}"
       bays:
         - bayNumber: 1
-          services:
-            - serviceId: "{{serviceId_1}}"
-              serviceName: "Basic Wash"
         - bayNumber: 2
-          services:
-            - serviceId: "{{serviceId_2}}"
-              serviceName: "Premium Wash"
         - bayNumber: 3
-          services:
-            - serviceId: "{{serviceId_3}}"
-              serviceName: "Dry"
         - bayNumber: 4
-          services:
-            - serviceId: "{{serviceId_4}}"
-              serviceName: "Vacuum"
     expect_status: 201
     # Recorded here, at registration, rather than at `provision` — the row exists from
     # this 201 onward, so a run that dies before provisioning still has it cleaned up.
@@ -251,21 +268,26 @@ steps:
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "PowerOn"
-      # deviceManagementSupported is what makes the `PUT …/catalog` below reachable.
-      # UpdateServiceCatalog is one of the atomic Device Management actions, and the
-      # server MUST NOT dispatch one to a station that never declared the profile
-      # (spec profiles/device-management §1; OSPP §5.1 rule 3 makes NOT-STATED count as
-      # not-declared). Omitting the member left the column SQL NULL, and the route was
-      # changed to answer that with a pre-empt instead of borrowing the station's code.
-      # Measured on UAT 2026-08-13 with the member absent, stn_d26ebb76:
+      # deviceManagementSupported is what makes `POST …/catalog/publish` below reachable.
+      # STILL REQUIRED after the catalog path changed, and worth stating because the route
+      # it guards is no longer the one this note was written about: the profile check is
+      # `requireDispatchableStation` (UpdateServiceCatalogAction.php:215-233), which BOTH
+      # entry points go through — the capability is a fact about the DEVICE, identical
+      # however the payload was built. UpdateServiceCatalog is one of the atomic Device
+      # Management actions and the server MUST NOT dispatch one to a station that never
+      # declared the profile (spec profiles/device-management §1; OSPP §5.1 rule 3 makes
+      # NOT-STATED count as not-declared). Omitting the member leaves the column SQL NULL,
+      # which `!== true` treats as not-declared.
+      #
+      # Measured on UAT 2026-08-13 with the member absent, stn_d26ebb76 — against the old
+      # route, but the refusal is emitted from the shared pre-dispatch check, so publish
+      # answers the same:
       #
       #   HTTP 409  {"error":{"code":"COMMAND_PRE_EMPTED","ospp_code":6008,
       #              "message":"Station does not support device management",
       #              "details":{"wouldBe":2007,"reason":"device_management_not_declared"}}}
       #
-      # Not a regression — a gate that moved while this file kept declaring three of the
-      # four capabilities. A station that drives a catalog push has the profile, so it
-      # says so, and the 202 below is again what comes back.
+      # A station that publishes a catalog has the profile, so it says so.
       capabilities:
         bleSupported: false
         offlineModeSupported: false
@@ -285,12 +307,12 @@ steps:
 
   # Heartbeat keep-alive. Scenario-mode stations don't auto-heartbeat
   # (BootNotificationHandler autoReact=false), but a real station running a live
-  # session would. This run (~86s) currently finishes ~19s under the csms
-  # 3.5x30=105s application-silence window, so it passes today WITHOUT this step —
-  # but that margin is incidental (only an actual Heartbeat refreshes the server's
-  # HeartbeatTracker; Status/MeterValues don't). Heartbeating like real firmware
-  # keeps it correct-by-construction and robust against future step additions,
-  # uniform with the other long e2e scenarios. Torn down on disconnect.
+  # session would. This run measured 86s on 2026-07-31, ~19s under the csms
+  # 3.5x30=105s application-silence window — a margin the nine api_calls of the
+  # new catalog sequence have since eaten into, and which was incidental to begin
+  # with (only an actual Heartbeat refreshes the server's HeartbeatTracker;
+  # Status/MeterValues don't). This step is what makes the window a non-question
+  # rather than a race the file happens to win. Torn down on disconnect.
   - action: start_heartbeat
     interval_sec: 30
 
@@ -356,38 +378,213 @@ steps:
       programs:
         - programNumber: 1
           available: true
-  # ---------- Operator: PUT service catalog with prices ----------
-  # Sets pricing for all 4 services at 10/15/20/25 credits per minute.
-  # Returns 202 fire-and-forget; server publishes UpdateServiceCatalog
-  # Request via MQTT, station ACKs, server persists prices to services table.
+  # =========================================================================
+  # Operator: configure the catalog on the server, then publish it to the
+  # device. Three routes, in this order, replacing the single `PUT …/catalog`
+  # this file carried until 2026-08-15:
+  #
+  #   1. POST …/services                          — create, one call each
+  #   2. POST …/services/{stationServiceId}/binding — where it physically runs
+  #   3. POST …/catalog/publish                    — send the server's own catalog
+  #
+  # Only step 3 touches the wire; 1 and 2 are synchronous and need no device.
+  # They sit here rather than immediately after `provision` because that is
+  # where the old push sat and the narrative order is the same one an operator
+  # follows — the station is up and reporting before its prices are set.
+  #
+  # Prices are 10/15/20/25 credits per minute, unchanged from the old push.
+  # They now reach `station_services` at CREATE time (synchronously) instead of
+  # at the end of the MQTT round-trip, so the 35 s drain below is no longer what
+  # stands between the catalog and a sellable service — the StatusNotifications
+  # still need it, so it stays.
+  # =========================================================================
+
+  # `serviceKind: UserDuration` — the customer names the duration
+  # (`/sessions/start` sends `duration_seconds`), which is what this file does
+  # below. It is REQUIRED on this route, and it is create-only: a later PUT that
+  # names a different kind is refused 422 SERVICE_KIND_IMMUTABLE, because the kind
+  # selects the settlement policy already snapshotted onto live sessions.
+  #
+  # `serviceId` is the whole reason this sequence exists. Until csms-server
+  # 99cab60 the request had no `serviceId` rule, `validated()` dropped it, and the
+  # server minted `svc_<16 hex>` of its own — so the caller bound one id and pushed
+  # another, and the two doors could never name the same service. It is honoured
+  # now, and the `expect_body` below is what would go red if that were reverted:
+  # every `service_id` this file sends afterwards depends on it.
   - action: api_call
-    method: PUT
-    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
     headers:
       X-Organization-Id: "{{captured.organization_id}}"
     body:
-      services:
-        - serviceId: "{{serviceId_1}}"
-          serviceName: "Basic Wash"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 10
-          available: true
-        - serviceId: "{{serviceId_2}}"
-          serviceName: "Premium Wash"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 15
-          available: true
-        - serviceId: "{{serviceId_3}}"
-          serviceName: "Dry"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 20
-          available: true
-        - serviceId: "{{serviceId_4}}"
-          serviceName: "Vacuum"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 25
-          available: true
+      serviceId: "{{serviceId_1}}"
+      serviceName: "Basic Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 10
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_1}}"
+    # `data.id` is the station_services UUID, and it is NOT the serviceId — the
+    # binding route is keyed by it (`{stationServiceId}`, route-constrained to 36
+    # chars of hex+dash). Capturing it is the only way to bind: nothing else in the
+    # response identifies the row.
+    capture:
+      station_service_1: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_2}}"
+      serviceName: "Premium Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 15
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_2}}"
+    capture:
+      station_service_2: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_3}}"
+      serviceName: "Dry"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 20
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_3}}"
+    capture:
+      station_service_3: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_4}}"
+      serviceName: "Vacuum"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 25
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_4}}"
+    capture:
+      station_service_4: "data.id"
+
+  # ---------- Operator: bind each service to the program it runs ----------
+  # `bayId` is the WIRE id the SERVER assigned at provisioning and ProvisionStep
+  # captured — not the locally-generated one. `programNumber: 1` is checked
+  # against `bay_programs`, which the station declared at provisioning; an
+  # ordinal it never declared is refused 422 / 3017 PROGRAM_NOT_DECLARED at
+  # binding time rather than at every wash.
+  #
+  # The response echoes bayNumber, so the assertion below pins that service N
+  # landed on bay N. Without it a binding that named the wrong bay would still
+  # answer 201, `withheld` would still be empty, and the file would still pass —
+  # while /sessions/start on bay 1 asked for a service bound to bay 3.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_1}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_1}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 1
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_2}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_2}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 2
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_3}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_3}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 3
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_4}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_4}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 4
+      binding.programNumber: 1
+
+  # ---------- Operator: publish the server's catalog to the device ----------
+  # No body. The route takes none, and anything posted is ignored — the payload
+  # is built from `station_services` joined to `service_definitions`, which is
+  # exactly why the kind guard on the legacy push has nothing to refuse here.
+  # 202, then the same UpdateServiceCatalog Request over MQTT as before.
+  #
+  # WHAT THE TWO ASSERTIONS ARE FOR. `expect_status: 202` alone would pass on a
+  # station where only one of the four services made it onto the wire: publish
+  # does NOT refuse a catalog over an unbound service (v1 has no way to retire
+  # one, so refusing would deadlock the station) — it ships what is sellable and
+  # NAMES the rest in `withheld`. So:
+  #
+  #   withheld: []     — every service this file created reached the device.
+  #                      Drop any one of the four binding steps above and this
+  #                      goes red with `[{serviceId: svc_…, reason: "no (bay,
+  #                      program) binding"}]`. Nothing else in this file would
+  #                      notice: bays 2-4 are never sold to below.
+  #   serviceCount: 4  — and there were four of them. This counts only what was
+  #                      PUBLISHED, so it catches the other direction: a create
+  #                      step deleted rather than a binding step. The count is
+  #                      the scenario's own — fresh org, fresh station, and every
+  #                      row on it was created by the four steps above — so it is
+  #                      not a claim about state this file does not own.
+  #
+  # A renamed key fails too: `withheld` resolving to undefined is not equal to
+  # `[]`, so this assertion cannot be satisfied by the field going missing.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
     expect_status: 202
+    expect_body:
+      serviceCount: 4
+      withheld: []
 
   - action: wait_for
     message: UpdateServiceCatalog
@@ -401,9 +598,15 @@ steps:
 
   # Response messageId MUST equal request messageId so the server's
   # UpdateServiceCatalogResponseHandler can resolve the pendingCommands
-  # entry (UpdateServiceCatalogResponseHandler.php:32). Without
-  # correlation, the handler skips persistence — services keep NULL
-  # pricing → BAY_NOT_READY-adjacent INVALID_SERVICE on /sessions/start.
+  # entry (UpdateServiceCatalogResponseHandler.php:32).
+  #
+  # What an uncorrelated Response costs is now SMALLER than it was, and the
+  # difference is worth stating rather than leaving the old warning to rot: the
+  # handler skips persistence, but the prices already landed in
+  # `station_services` when each service was CREATED above, so /sessions/start
+  # would still quote correctly. What is lost is the station's acknowledgement
+  # of the catalog it was sent — `current_catalog_version` and the row the
+  # station itself confirmed. Still a real failure, no longer the pricing one.
   - action: send
     message: UpdateServiceCatalog
     messageType: Response
@@ -412,15 +615,21 @@ steps:
       status: "Accepted"
 
   # Give Path B time to persist:
-  #  - the catalog (UpdateServiceCatalogResponseHandler upserts services)
   #  - the StatusNotifications (bay rows transition unknown → available)
-  # /sessions/start reads service.price_credits_per_minute synchronously;
-  # if catalog hasn't persisted, it sees NULL → creditsAuthorized=0 →
-  # 422 INVALID_SERVICE. Empirical (2026-05-12 13:33 UTC): with 20s delay
-  # the catalog persisted 23s after Response was published — Path B
-  # consumer is single-threaded (MqttConsume.php:67-87) and processes
-  # Boot + 4xStatusNotifications + catalog Response sequentially at
-  # ~3-4s each. 35s = 6 messages * 5s/msg + 5s margin.
+  #  - the catalog Response (UpdateServiceCatalogResponseHandler upserts services)
+  # Empirical (2026-05-12 13:33 UTC): with a 20s delay the catalog persisted 23s
+  # after the Response was published — the Path B consumer is single-threaded
+  # (MqttConsume.php:67-87) and processes Boot + 4xStatusNotifications + catalog
+  # Response sequentially at ~3-4s each. 35s = 6 messages * 5s/msg + 5s margin.
+  #
+  # ONE OF THE TWO REASONS FOR THIS DELAY IS GONE, and shrinking it is a change
+  # this file must not make blind. Pricing no longer waits on the round-trip:
+  # `price_credits_per_minute` was written synchronously by each `POST …/services`
+  # above, so /sessions/start can no longer read NULL and answer 422
+  # INVALID_SERVICE. What remains is the bay-status half — /sessions/start still
+  # answers 3002 BAY_NOT_READY on a bay whose StatusNotification has not drained —
+  # and that is unchanged and still needs most of this. Measure the drain on the
+  # first post-deploy run before touching the number.
   - action: delay
     ms: 35000
 

@@ -1,5 +1,31 @@
 # MEASURED — a newly-registered station cannot be given a single service through any public API path
 
+> **CLOSED 2026-08-15 — the loop below no longer exists on csms-server `99cab60`.**
+> The measurement stands as taken; what it measured has since been changed, and this
+> banner is here so the body is not read as current. Nothing below has been edited.
+>
+> The fix was not one of the three options in *What would close it* — it was the first
+> of them **plus a fourth door nobody had proposed**, which is why it cost neither gate:
+>
+> - `POST /api/v1/admin/stations/{id}/catalog/publish` (`bb8c28f`) sends the catalog **as
+>   the server already holds it**. It takes no body, so there are no caller prices for
+>   `assertNoKindAwareServices` to refuse — the kind guard is untouched and simply has
+>   nothing to act on. Services with no `(bay, program)` binding are not a refusal here:
+>   they are reported in a `withheld` list, `[{serviceId, reason}]`, and the rest ships.
+> - `POST …/services` now **honours a caller-supplied `serviceId`** (option 1 above;
+>   `StationServiceCatalogController.php:186-192`). Step 2's silent substitution is gone,
+>   so the binding and the catalog can finally name the same service. A collision is a
+>   named 422, `code: SERVICE_ID_TAKEN`.
+> - Registration now **refuses** `bays[].services` (`dbc45f7`, 422) instead of accepting
+>   and dropping it — the sub-finding at the end of *Why the two doors do not meet*.
+>
+> `resolveBindings()` and `assertNoKindAwareServices()` are both still in force on the
+> legacy `PUT …/catalog`, and both still refuse exactly what they refused on 2026-08-13.
+> The sequence that reaches a sellable service today is
+> `POST …/services` → `POST …/services/{stationServiceId}/binding` → `POST …/catalog/publish`,
+> and the three `scenarios/e2e/*` files drive it as of 2026-08-15 — written against the
+> server read at source, **not yet run**: the route is not on UAT at the time of writing.
+
 - **Date (UTC):** 2026-08-13T11:00:00Z
 - **Mode:** measurement against live UAT, then code reading to explain what was measured.
   No server change. No production. The probe station and everything it created were torn

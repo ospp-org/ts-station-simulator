@@ -32,28 +32,43 @@ description: |
   torn down per-run (see `creates:` below).
 
   ---------------------------------------------------------------------
-  WHERE THIS FILE STOPS TODAY, AND WHY IT IS NOT THIS FILE'S FAULT
+  THE CATALOG PATH THIS FILE NOW TAKES, AND WHAT IS NOT YET PROVEN ON IT
   ---------------------------------------------------------------------
-  Measured on UAT 2026-08-13 against csms-server 00d7286. Identical to
-  scenario A — see e2e-new-customer-onboarding.yaml for the full note.
+  From 2026-08-06 to 2026-08-14 this file stopped at `PUT …/catalog` on a
+  closed loop — the push demanded a (bay, program) binding, the only route
+  that wrote one minted its own serviceId and stamped a kind the push then
+  refused. None of the four SessionEnded arms this file exists to verify
+  was reached; the blocker sat upstream of every one of them. See
+  e2e-new-customer-onboarding.yaml for the full note and
+  docs/MEASURED-catalog-unreachable-on-new-station-20260813T110000Z.md for
+  the request-by-request measurement.
 
-  PASSES through step 15 (register -> org -> location -> station ->
-  provision -> mTLS connect -> Boot Accepted -> 4 StatusNotifications).
-  The station now declares deviceManagementSupported, so the Device
-  Management pre-empt (409 / 6008, details.wouldBe 2007) no longer fires.
+  Neither gate was relaxed. csms-server added a third door — `POST
+  …/catalog/publish` (bb8c28f), no body, carrying the catalog the SERVER
+  holds — and made `POST …/services` honour a caller-supplied `serviceId`
+  (99cab60). Registration now REFUSES `bays[].services` outright (dbc45f7,
+  422), which it had been accepting and dropping; that block is gone below.
 
-  STOPS at step 16, `PUT …/catalog`, on the older gate added in server
-  11aa480 (2026-08-06): 400 / 6004 "Service 'svc_wash_basic' has no
-  (bay, program) binding on this station"
-  (UpdateServiceCatalogAction::resolveBindings, :149). No public REST
-  sequence can satisfy it on a fresh station — measured request by
-  request in
-  docs/MEASURED-catalog-unreachable-on-new-station-20260813T110000Z.md.
+  This file is the one with FOUR services actually in use — one arm per bay,
+  each started by `service_id`. So it is also the file where the honoured
+  identifier does the most work: every one of the four `/sessions/start`
+  calls below names an id this scenario chose, not one the server emitted.
+
+  The publish reports `withheld` — services the server holds but could not
+  put on the wire for want of a binding — and this file asserts it is
+  EMPTY. All four bays are sold to here, so a missing binding would
+  eventually surface as a failed start; it would surface FOUR arms later,
+  as an INVALID_SERVICE naming a bay, rather than at the step that caused
+  it. The assertion moves that failure back to where it belongs.
+
+  NOT PROVEN YET. Every claim above was read at source in csms-server
+  99cab60. The route is not deployed to UAT as of 2026-08-15 (404 there),
+  and no arm of this matrix has run since 2026-08-06. The first full
+  post-deploy run is the measurement, and it is the first time these four
+  arms will have been exercised at all in over a week.
+
   Do not seed the binding with privileged SQL to force a green: that 202
   is one the production API cannot produce.
-
-  None of the four SessionEnded arms this file exists to verify is
-  reached today; the blocker is upstream of every one of them.
 
 # C-018: platform admin (ambient, permanent) creates the org. The
 # customer (registered fresh per run) becomes tenant_owner on org-create
@@ -63,6 +78,23 @@ auth:
   password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
 
 defer_mqtt_connect: true
+
+# THIS FILE COULD NOT HAVE PASSED WITHOUT THIS LINE, whatever the catalog did.
+# It declares 166.6 s of `delay:` — nearly twice the 90 s
+# DEFAULT_SCENARIO_TIMEOUT_MS, before a single request is sent. The bound landed
+# 2026-08-10 (57063cc), four days after the catalog gate started failing this file
+# at step 16, so the two have never met: the file always died upstream of the
+# delays. Fixing the catalog is what would have made the runner's own timeout the
+# next failure — reported as "exceeded its 90000ms budget", the RUNNER giving up,
+# naming none of the four arms this file exists for.
+#
+# 300 s is an ESTIMATE, and the only one of the three e2e budgets that is: this
+# file has no measured end-to-end duration (it last completed before the
+# 2026-08-06 gate, and no duration was recorded). Derived from its siblings, whose
+# non-delay overhead measured 30.5 s and 32.0 s for 30 and 42 steps — 63 steps
+# here puts it near 45 s, so ~215 s expected. Replace with the real number after
+# the first post-deploy run rather than leaving a guess in place.
+scenario_timeout_ms: 300000
 
 station:
   bayCount: 4
@@ -156,23 +188,15 @@ steps:
       stationModel: "WashPro X200"
       stationVendor: "SimCorp"
       locationId: "{{captured.location_id}}"
+      # No `services:` under a bay. Registration writes NOTHING into the services
+      # tier (RegisterStationAction.php:16-21) and never did; csms-server dbc45f7
+      # stopped accepting the field it was not going to write — `'bays.*.services'
+      # => ['prohibited']`, 422. The services are created below, after provisioning.
       bays:
         - bayNumber: 1
-          services:
-            - serviceId: "{{serviceId_1}}"
-              serviceName: "Basic Wash"
         - bayNumber: 2
-          services:
-            - serviceId: "{{serviceId_2}}"
-              serviceName: "Premium Wash"
         - bayNumber: 3
-          services:
-            - serviceId: "{{serviceId_3}}"
-              serviceName: "Dry"
         - bayNumber: 4
-          services:
-            - serviceId: "{{serviceId_4}}"
-              serviceName: "Vacuum"
     expect_status: 201
     # Recorded here, at registration, rather than at `provision` — the row exists from
     # this 201 onward, so a run that dies before provisioning still has it cleaned up.
@@ -219,10 +243,12 @@ steps:
       timezone: "Europe/Bucharest"
       bootReason: "PowerOn"
       # deviceManagementSupported — see e2e-new-customer-onboarding.yaml for the full
-      # note. Short form: the `PUT …/catalog` below is a Device Management action, and a
-      # station that never declared the profile is pre-empted with 409 / 6008
-      # COMMAND_PRE_EMPTED (details.wouldBe 2007, reason device_management_not_declared)
-      # before anything is published. Measured on UAT 2026-08-13.
+      # note. Short form: `POST …/catalog/publish` below dispatches UpdateServiceCatalog,
+      # a Device Management action, and a station that never declared the profile is
+      # pre-empted with 409 / 6008 COMMAND_PRE_EMPTED (details.wouldBe 2007, reason
+      # device_management_not_declared) before anything is published. The check is shared
+      # by both catalog entry points (UpdateServiceCatalogAction.php:215-233), so this is
+      # as required now as it was for the old push. Measured on UAT 2026-08-13.
       capabilities:
         bleSupported: false
         offlineModeSupported: true
@@ -295,34 +321,176 @@ steps:
       programs:
         - programNumber: 1
           available: true
+  # =========================================================================
+  # Operator: configure the catalog on the server, then publish it to the
+  # device — create x4, bind x4, publish. Replaces the single `PUT …/catalog`
+  # this file carried until 2026-08-15. Only the publish touches the wire; the
+  # first eight calls are synchronous and need no device. Prices are
+  # 10/15/20/25 credits/minute, unchanged from the old push.
+  #
+  # ALL FOUR MATTER HERE. Each arm below starts on its own bay with its own
+  # service_id, so unlike its two sibling files this one has no service it
+  # could leave unbound and still finish.
+  # =========================================================================
+
+  # `serviceId` is honoured as of csms-server 99cab60 — it used to be discarded
+  # unread, so the caller bound one id and pushed another. The `expect_body` is
+  # what goes red if that is reverted, and all four arms depend on it.
   - action: api_call
-    method: PUT
-    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
     headers:
       X-Organization-Id: "{{captured.organization_id}}"
     body:
-      services:
-        - serviceId: "{{serviceId_1}}"
-          serviceName: "Basic Wash"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 10
-          available: true
-        - serviceId: "{{serviceId_2}}"
-          serviceName: "Premium Wash"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 15
-          available: true
-        - serviceId: "{{serviceId_3}}"
-          serviceName: "Dry"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 20
-          available: true
-        - serviceId: "{{serviceId_4}}"
-          serviceName: "Vacuum"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 25
-          available: true
+      serviceId: "{{serviceId_1}}"
+      serviceName: "Basic Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 10
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_1}}"
+    # The station_services UUID, NOT the serviceId — the binding route is keyed
+    # by it and nothing else in the response identifies the row.
+    capture:
+      station_service_1: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_2}}"
+      serviceName: "Premium Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 15
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_2}}"
+    capture:
+      station_service_2: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_3}}"
+      serviceName: "Dry"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 20
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_3}}"
+    capture:
+      station_service_3: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      serviceId: "{{serviceId_4}}"
+      serviceName: "Vacuum"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 25
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "{{serviceId_4}}"
+    capture:
+      station_service_4: "data.id"
+
+  # ---------- Operator: bind each service to the program it runs ----------
+  # `bayId` is the SERVER-assigned wire id captured by ProvisionStep.
+  # `programNumber: 1` is checked against `bay_programs` as the station declared
+  # them at provisioning; an undeclared ordinal is refused 422 / 3017 here rather
+  # than at every wash. The echoed `bayNumber` pins service N to bay N — and in
+  # THIS file a crossed binding is not hypothetical damage: bay 3's arm asserts
+  # meter_values seq_no 0..N-1 for the session it started, so a service bound to
+  # the wrong bay would corrupt which arm is being measured, not merely fail it.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_1}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_1}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 1
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_2}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_2}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 2
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_3}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_3}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 3
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_4}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
+    body:
+      bayId: "{{captured.bayId_4}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 4
+      binding.programNumber: 1
+
+  # ---------- Operator: publish the server's catalog to the device ----------
+  # No body — the route takes none and ignores anything posted, which is exactly
+  # why the legacy push's kind guard has nothing to refuse here.
+  #
+  # `withheld: []` is the assertion `expect_status: 202` cannot make. Publish
+  # does not refuse a catalog over an unbound service — it ships what is sellable
+  # and NAMES the rest — so without this, a missing binding would travel silently
+  # through the publish, through the 35 s drain, and surface as a refused
+  # /sessions/start up to four arms later, naming a bay instead of the step that
+  # caused it. Inverting the verdict is one deleted binding step. `serviceCount:
+  # 4` catches the other direction (a create deleted, not a binding), and counts
+  # only rows this scenario created on a station and org it created.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    headers:
+      X-Organization-Id: "{{captured.organization_id}}"
     expect_status: 202
+    expect_body:
+      serviceCount: 4
+      withheld: []
 
   - action: wait_for
     message: UpdateServiceCatalog
