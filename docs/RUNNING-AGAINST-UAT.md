@@ -301,6 +301,57 @@ chaos 6/7 · core 17/18 · device-management 19/23 · e2e 0/3 (all skipped) · f
 multiunit-e2e 1/3 · reservations 6/6 · security 19/24 · sessions 22/23 · tls-floor 5/6
 ```
 
+### 2026-08-14 — 119 scenarios, and a structural failure that is NOT the environment
+
+The block below is kept: its lesson holds and its failure SET is still the right way to read a
+run. But its denominators are now wrong — the corpus went 113 → 119 with the four liveness
+files, so compare sets, never counts, exactly as it says.
+
+`--all --bootstrap-pool --pool-size 5 --parallel --workers 5`, `OSPP_PROTOCOL_VERSION` unset
+(the SDK's own default is 0.3.0 since 0.15.0, so unset is conformant and is the path that
+actually runs). **98 passed / 5 failed / 16 skipped, 20m44s.** Teardown clean:
+`stations_today=0`, `orgs_today=0`, `reservations_today=0` — the two `Sim Pool` orgs still in
+the table are the pre-existing July ones.
+
+**Four of the five are `API auth failed: 429` on the login call** — Change Configuration
+{Accepted, Reboot Required, Rejected} and Diagnostics Upload Failure, all failing at step [3],
+all after exhausting retry 3/3. The documented device-management cluster. Honest caveat on
+this run: nine single-scenario runs preceded it within the hour, each doing its own bootstrap
+login, so the throttle state was primed and this count is an upper bound rather than a cold
+reading.
+
+**The fifth is structural and is NOT in any earlier baseline.** `sessions/session-with-reservation`
+failed at its own `POST /reservations` with `409 BAY_RESERVED` (ospp_code 3014, "Bay already
+has a live reservation") where it expects 201.
+
+  Cause, and it is corpus residue rather than a server defect:
+  `reservations/reserve-rejected-already-reserved.yaml` POSTs a reservation with
+  `duration_minutes: 5` and never cancels it — leaving a live hold IS its subject, since its
+  second POST must be refused 409. It is not among the three reservation files that clean up
+  (`reserve-cancel`, `reserve-and-start`, `reserve-expire`). With `--pool-size 5` against 119
+  scenarios the allocator recycles that station round-robin well inside five minutes, and the
+  next scenario needing a free bay on `{{bayId_1}}` is refused.
+
+  So this is deterministic in mechanism and non-deterministic only in ordering, which is why
+  it has been read as flake before. Note the doc's existing item 3 records the OPPOSITE
+  symptom on `reserve-rejected-already-reserved` (expected 409, got 201); both live on the
+  same shared-bay axis, but that one is a server conflict-check question and this one is
+  residue — do not merge them without measuring.
+
+  The fix belongs to whoever owns the reservations suite, not here: cancel at the end of
+  `reserve-rejected-already-reserved`, or drop its TTL to the 1-minute floor. All six
+  `reservations/*` scenarios passed in this run, including `reserve-rejected-already-reserved`
+  itself — it is the file that survives and the neighbours that pay.
+
+**`tls-floor/s5-rejects-revoked-cert` PASSED**, confirming the 2026-08-13 resolution below; it
+is no longer the standing structural failure.
+
+**The four liveness scenarios all passed in the pooled parallel run**: Boot Resets Bays To
+Unknown 4.5s, Connection Lost LWT 22.8s, Reconnect Recovery 19.8s, Heartbeat Silence Offline
+Sweep 177.9s. The last one holds a pool station application-silent for 175s while four other
+workers run, and nothing woke it — which is the contention claim measured under load rather
+than argued from the allocator's source.
+
 ### CURRENT baseline — and why it is a SET, not a number
 
 **Do not compare a run to a pass count. Compare it to the failure SET below.** Two full
