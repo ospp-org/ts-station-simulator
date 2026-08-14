@@ -121,6 +121,10 @@ steps:
     expect_status: 201
     capture:
       user_email: "user.email"
+      # The uuid this customer's wallet is funded through, further down. Keyed on the id
+      # rather than the email because a primary key the server just handed this run cannot
+      # match a row the run did not create — see FundWalletStep.
+      user_id: "user.id"
     # `creates:` is what makes this run cleanable. Cleanup used to live only inside
     # `--bootstrap-pool`, which this file is `skip_when_pooled`-excluded from by design —
     # so every standalone run left its customer, org, location and station on UAT. The
@@ -512,6 +516,20 @@ steps:
   # 35 s drain — Path B consumer single-threaded latency (see audit §33).
   - action: delay
     ms: 35000
+
+  # ---------- Fund the customer this scenario registered ----------
+  # See e2e-new-customer-onboarding.yaml for the full note. Short form: register opens the
+  # wallet at 0, a card-free start is refused 402 / 4001, and this file is `skip_when_pooled`
+  # so the pool's `wallet_balance:` never applies to it. The amount is derived from the
+  # catalog just published, not declared here.
+  #
+  # All FOUR starts below run on this one funding. The online path never debits — only the
+  # Offline module has a `WalletDebitInterface` consumer — so each start is checked against
+  # the same undiminished balance. Note this is why the arm below can be named
+  # LocalOutOfCredit and still start: that reason is the STATION's report of its own credit
+  # state, which has nothing to do with the wallet the server checks at start.
+  - action: fund_wallet
+    user_id: "{{captured.user_id}}"
 
   # =========================================================================
   # Bay 1 — LocalOutOfCredit

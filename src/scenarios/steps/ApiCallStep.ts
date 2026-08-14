@@ -191,7 +191,7 @@ export async function fetchWithThrottleRetry(
   }
 }
 
-function substituteTemplateValue(
+export function substituteTemplateValue(
   value: string,
   context: ScenarioContext,
 ): string {

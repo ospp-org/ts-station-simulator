@@ -211,9 +211,29 @@ export const MAX_SESSION_DURATION_SECONDS = 600;
  *       ? priceCreditsFixed
  *       : ceil(effectiveDuration / 60 * priceCreditsPerMinute)
  */
-function maxCreditsAuthorizedFor(service: SeededService): number {
+export function maxCreditsAuthorizedFor(service: SeededService): number {
   if (service.pricingType === 'Fixed') return service.priceCreditsFixed ?? 0;
   return Math.ceil(MAX_SESSION_DURATION_SECONDS / 60 * (service.priceCreditsPerMinute ?? 0));
+}
+
+/**
+ * The balance that makes every `POST /sessions/start` against {@link services} pass the money
+ * gate, and no more. The MAXIMUM of one start rather than the sum of a scenario's starts —
+ * see {@link DEFAULT_IDENTITY_WALLET_CREDITS} for why the online path never draws the balance
+ * down, which is what makes a maximum sufficient.
+ *
+ * This is the single implementation of "how much is enough". The pool bootstrap derives its
+ * default from it against {@link DEFAULT_SEED_SERVICES}; a scenario that provisions its own
+ * customer derives from that customer's own catalog. Two callers, one rule — a second copy is
+ * how the two would drift, and the drift would surface as a 402 in whichever one was not
+ * updated.
+ *
+ * Returns 0 for an empty list: no catalog means no start to authorize, and a caller funding
+ * against nothing should get nothing rather than `-Infinity` from a bare `Math.max`.
+ */
+export function deriveRequiredWalletCredits(services: ReadonlyArray<SeededService>): number {
+  if (services.length === 0) return 0;
+  return Math.max(...services.map(maxCreditsAuthorizedFor));
 }
 
 /**
@@ -248,7 +268,122 @@ function maxCreditsAuthorizedFor(service: SeededService): number {
  * stale on both halves — see that file's own correction.
  */
 export const DEFAULT_IDENTITY_WALLET_CREDITS: number =
-  Math.max(...DEFAULT_SEED_SERVICES.map(maxCreditsAuthorizedFor));
+  deriveRequiredWalletCredits(DEFAULT_SEED_SERVICES);
+
+// ---------------------------------------------------------------------------
+// Funding a customer a SCENARIO provisioned (as opposed to a pool identity)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the catalog actually published on {@link stationIdString} (`stn_<hex>`), as the rows a
+ * `POST /sessions/start` would price against. Returns the shape {@link maxCreditsAuthorizedFor}
+ * consumes, so the funding amount is derived from the journey's OWN catalog rather than from a
+ * number typed into a YAML file.
+ *
+ * `COPY … TO STDOUT` rather than a plain SELECT: {@link runUatSql} runs psql without `-t -A`,
+ * so a SELECT would come back wrapped in an aligned table with a header and a row count. COPY
+ * emits the payload alone, which is why this is one JSON line and not a parser.
+ */
+export async function readStationCatalogServices(
+  stationIdString: string,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<SeededService[]> {
+  const sql =
+    `COPY (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (` +
+    `SELECT sd.service_id AS "serviceId", sd.service_name AS "serviceName", ` +
+    `sd.pricing_type::text AS "pricingType", ` +
+    `ss.price_credits_per_minute AS "priceCreditsPerMinute", ` +
+    `ss.price_credits_fixed AS "priceCreditsFixed" ` +
+    `FROM station_services ss ` +
+    `JOIN service_definitions sd ON sd.id = ss.service_definition_id ` +
+    `JOIN stations s ON s.id = ss.station_id ` +
+    `WHERE s.station_id = ${sqlLiteral(stationIdString)}` +
+    `) t) TO STDOUT;`;
+
+  const out = (await runUatSql(sql, cfg)).trim();
+  if (out === '') return [];
+  const parsed: unknown = JSON.parse(out);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`readStationCatalogServices: expected a JSON array, got ${out.slice(0, 200)}`);
+  }
+  return parsed as SeededService[];
+}
+
+/**
+ * Fund the wallet of ONE user, addressed by the `users.id` uuid.
+ *
+ * WHY THIS IS AN UPDATE, WHEN {@link buildSeedTestUsersSql} IS EXPLICITLY AN INSERT. That
+ * function's doc records the incident this rule exists for: funding once ran as a follow-up
+ * `UPDATE … WHERE email LIKE 'sim-worker-%'`, which also matched the pre-existing July fixtures
+ * and overwrote ten wallets, three of them legitimately non-zero. "Fund at INSERT" removed that
+ * hazard by construction — an INSERT cannot reach a row the run did not create.
+ *
+ * A scenario that registers its own customer cannot use that shape: `RegisterAction.php:49`
+ * already inserted the wallet, at balance 0, before the scenario gets control. The wallet row
+ * is not ours to create. So the hazard is removed by construction a different way, and it is
+ * the WHERE clause that does it:
+ *
+ *   - The key is `wallets.user_id`, a uuid PRIMARY KEY value the server returned to THIS run
+ *     in the registration response seconds earlier. A pattern can match a row you did not
+ *     create; a primary key you were just handed cannot.
+ *   - `expectedCurrentBalance` is asserted in the same statement. Funding only applies to a
+ *     wallet still sitting at the balance `RegisterAction` left, so if anything funded it
+ *     first, this matches zero rows and the caller throws instead of overwriting.
+ *
+ * Both halves are checked by the row count, so a silent no-op is not a possible outcome.
+ *
+ * The `wallet_entries` row is written for the same reason {@link buildSeedTestUsersSql} writes
+ * it: nothing reconciles `wallets.balance` against `SUM(wallet_entries)`, but the next real
+ * `WalletLedger` operation computes `balance_after` from the column, so a balance without its
+ * entry forks the ledger chain from the history.
+ */
+export function buildFundWalletByUserIdSql(
+  userId: string,
+  credits: number,
+  expectedCurrentBalance: number = 0,
+): string {
+  const userLit = sqlLiteral(userId);
+  return [
+    'BEGIN;',
+    `UPDATE wallets SET balance = ${credits}, version = version + 1, updated_at = NOW() ` +
+    `WHERE user_id = ${userLit} AND balance = ${expectedCurrentBalance};`,
+    `INSERT INTO wallet_entries ` +
+    `(wallet_id, type, amount, balance_after, reference_type, reference_id, description, idempotency_key, created_at) ` +
+    `SELECT w.id, 'credit'::wallet_entry_type, ${credits}, ${credits}, 'bonus', 'sim_scenario_fund', ` +
+    `'Simulator scenario customer funding', 'sim-fund:' || w.user_id::text, NOW() ` +
+    `FROM wallets w WHERE w.user_id = ${userLit} AND w.balance = ${credits};`,
+    'COMMIT;',
+  ].join('\n');
+}
+
+/**
+ * Apply {@link buildFundWalletByUserIdSql} and prove it landed. A zero-credit request is a
+ * no-op by design — an unfunded customer is a legitimate fixture (a scenario whose subject is
+ * the 4001 refusal), and `wallet_entries.amount` carries `CHECK (amount > 0)` besides.
+ */
+export async function fundWalletByUserId(
+  userId: string,
+  credits: number,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<void> {
+  if (credits <= 0) return;
+
+  await runUatSql(buildFundWalletByUserIdSql(userId, credits), cfg);
+
+  const check = (await runUatSql(
+    `COPY (SELECT balance FROM wallets WHERE user_id = ${sqlLiteral(userId)}) TO STDOUT;`,
+    cfg,
+  )).trim();
+
+  if (check !== String(credits)) {
+    throw new Error(
+      `fundWalletByUserId: wallet for user ${userId} reads "${check || '(no row)'}" after ` +
+      `funding ${credits} credits. The UPDATE is guarded on the wallet still being at the ` +
+      `balance RegisterAction left, so this means either no wallet exists for that user or ` +
+      `something funded it first — neither is safe to overwrite.`,
+    );
+  }
+}
 
 /**
  * Build the JSON payload byte-identical to csms-server's `ServiceItemDto::toPayload()` →

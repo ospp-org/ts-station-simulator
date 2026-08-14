@@ -24,6 +24,7 @@ import { WaitForConnectStep } from './steps/WaitForConnectStep.js';
 import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
+import { FundWalletStep } from './steps/FundWalletStep.js';
 import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
 import { FaultStep } from './steps/FaultStep.js';
 import { ProvisionStep } from './steps/ProvisionStep.js';
@@ -336,6 +337,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['provision', new ProvisionStep()],
   ['provision_station_pool', new ProvisionStationPoolStep()],
   ['connect_mqtt', new ConnectMqttStep()],
+  ['fund_wallet', new FundWalletStep()],
 ]);
 
 // ---------------------------------------------------------------------------

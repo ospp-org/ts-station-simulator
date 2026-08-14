@@ -633,6 +633,25 @@ steps:
   - action: delay
     ms: 35000
 
+  # ---------- Fund the customer this scenario registered ----------
+  # `POST /v1/auth/register` opens every wallet at 0 (`RegisterAction.php:49`) and
+  # `StartSessionAction.php:241-250` refuses a card-free start when balance <
+  # creditsAuthorized — 402 / ospp_code 4001. The start below authorizes
+  # ceil(60/60 × 10) = 10 credits, and before this step existed it got exactly that
+  # refusal: "Wallet balance 0 does not cover 10 credits".
+  #
+  # Nothing else could have funded it. The pool's `wallet_balance:` declaration seeds a
+  # POOL identity, and this file is `skip_when_pooled` — it never takes one. The funding
+  # was wired where the bootstrap creates users; the path where a scenario creates its
+  # own was missed.
+  #
+  # No amount here on purpose. The step reads the catalog this file just published and
+  # applies the same rule that sizes the pool's default — the largest single
+  # authorization the server can accept against it. Re-price a service above and the
+  # funding follows with nothing to remember.
+  - action: fund_wallet
+    user_id: "{{captured.user_id}}"
+
   # ---------- Driver (same user): start session on bay 1 ----------
   - action: api_call
     method: POST
