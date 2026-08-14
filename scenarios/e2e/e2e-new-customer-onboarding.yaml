@@ -88,16 +88,18 @@ auth:
 
 defer_mqtt_connect: true
 
-# This file declares 55.5 s of `delay:` and last measured 86 s end to end
-# (UAT 2026-07-31) — under the 90 s DEFAULT_SCENARIO_TIMEOUT_MS, but by 4 s.
-# The nine api_calls the new catalog sequence adds spend that margin, and the
-# runner's bound is not an assertion: it abandons the scenario and reports
-# "exceeded its 90000ms budget", which names the RUNNER rather than whatever
-# the file was actually doing. The bound landed 2026-08-10 (57063cc), four days
-# AFTER the catalog gate started failing this file at step 16 — so this file
-# has never once run to completion underneath it, and its passing today would
-# have been the first test of the two together. Sized ~1.6x the measured run;
-# replace with the real number once a post-deploy run produces one.
+# MEASURED 72.6 s end to end (UAT 2026-08-14, csms-server 99cab60), against 55.5 s of
+# declared `delay:` — so 17.1 s of real work. Supersedes the 86 s of UAT 2026-07-31.
+#
+# That comparison answers the worry this comment used to carry. The old note said the nine
+# api_calls the new catalog sequence adds would "spend that margin" against the 90 s
+# default. They do not: this run has MORE steps than the 86 s one and finished 13 s FASTER,
+# because the same deploy removed a 15 s bay-status delay this file no longer needs. The
+# sequence is not what threatens the budget.
+#
+# The bound still matters and is still not an assertion — exceeding it makes the runner
+# abandon the scenario and report "exceeded its 90000ms budget", naming itself rather than
+# whatever the file was doing. 150 s is ~2x the measured run.
 scenario_timeout_ms: 150000
 
 station:

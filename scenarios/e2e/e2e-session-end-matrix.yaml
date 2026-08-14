@@ -88,12 +88,17 @@ defer_mqtt_connect: true
 # next failure — reported as "exceeded its 90000ms budget", the RUNNER giving up,
 # naming none of the four arms this file exists for.
 #
-# 300 s is an ESTIMATE, and the only one of the three e2e budgets that is: this
-# file has no measured end-to-end duration (it last completed before the
-# 2026-08-06 gate, and no duration was recorded). Derived from its siblings, whose
-# non-delay overhead measured 30.5 s and 32.0 s for 30 and 42 steps — 63 steps
-# here puts it near 45 s, so ~215 s expected. Replace with the real number after
-# the first post-deploy run rather than leaving a guess in place.
+# MEASURED 184.1 s end to end (UAT 2026-08-14, csms-server 99cab60, first run in which
+# this file has ever reached its own assertions). This line was an estimate until then —
+# derived from its siblings' overhead as "~215 s expected" — and the real number came in
+# 31 s under that guess.
+#
+# 300 s stands, now for a measured reason rather than a guessed one. 166.6 s of the 184.1
+# is declared `delay:`, which is fixed; the variable part is the 17.5 s of non-delay
+# overhead (consumer drain, MQTT round-trips, REST latency). A 116 s margin over a 17.5 s
+# variable component is not a close call. Note it is the tightest ratio of the three
+# (1.6x here against ~2x for both siblings) — that is an artefact of the long fixed delays,
+# not less headroom where it counts.
 scenario_timeout_ms: 300000
 
 station:

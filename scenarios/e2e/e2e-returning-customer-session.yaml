@@ -72,15 +72,19 @@ auth:
 
 defer_mqtt_connect: true
 
-# THIS FILE COULD NOT HAVE PASSED WITHOUT THIS LINE, whatever the catalog did.
-# It declares 91.0 s of `delay:` — more than the 90 s DEFAULT_SCENARIO_TIMEOUT_MS
-# on its own, before a single request is sent — and last measured 123 s end to end
-# (UAT 2026-07-31). The bound landed 2026-08-10 (57063cc), four days after the
-# catalog gate started failing this file at step 16, so the two have never met: the
-# file always died upstream of the delays. Fixing the catalog is what would have
-# made the runner's own timeout the next failure, reported as "exceeded its
-# 90000ms budget" — the RUNNER giving up, naming nothing about this file. Sized
-# ~1.7x the measured run; replace with the real number after a post-deploy run.
+# THIS FILE COULD NOT HAVE PASSED WITHOUT THIS LINE, whatever the catalog did. It declares
+# 91.0 s of `delay:` — more than the 90 s DEFAULT_SCENARIO_TIMEOUT_MS on its own, before a
+# single request is sent.
+#
+# MEASURED 106.0 s end to end (UAT 2026-08-14, csms-server 99cab60), superseding the 123 s
+# of UAT 2026-07-31 — so 15.0 s of real work outside the declared delays. This was the first
+# run in which this file and the bound ever met: the bound landed 2026-08-10 (57063cc), four
+# days after the catalog gate started failing it at step 16, so until now the file always
+# died upstream of the delays. Had the catalog been fixed alone, this bound is what would
+# have failed next, reported as "exceeded its 90000ms budget" — the RUNNER giving up, naming
+# nothing about this file.
+#
+# 210 s is ~2x the measured run.
 scenario_timeout_ms: 210000
 
 station:
