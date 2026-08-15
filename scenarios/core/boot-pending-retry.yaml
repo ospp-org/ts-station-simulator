@@ -1,7 +1,30 @@
 name: "Boot Pending Retry"
 description: "Force next boot to return Pending via API, send BootNotification, assert Pending, wait retryInterval, retry boot, assert Accepted."
 skip: true
-skip_reason: "Pending boot status not implemented in csms-server BootNotificationHandler (only Accepted/Rejected branches at BootNotificationHandler.php:56-81). Scenario preserved in-place for discoverability; deferred to a separate feature brief post-K closure. Brief K1 Phase 0 disposition variant (b)."
+skip_reason: >-
+  RE-VERIFIED 2026-08-15 against csms-server e10dc3c — the reason this file carried until today
+  was FALSE. It said "Pending boot status not implemented (only Accepted/Rejected branches at
+  BootNotificationHandler.php:56-81)". Pending HAS been implemented since c5c6e59/bca8230, the
+  silent-dead-letter half was fixed at 0c19afe (2026-08-14), and the response is built at
+  BootNotificationHandler.php:315 / pendingResponse():735, carrying sessionKey and 3018 details.
+  The cited line range no longer exists. csms-server docs/STATUS.md:652-655 had already recorded
+  that this reason was false; nothing propagated it here, because a skipped scenario never runs
+  and so nothing ever reads its reason.
+  STILL SKIPPED, for three blockers that ARE true today, in the order they would bite.
+  (1) The setup routes do not exist. Steps 1 and 3 call POST /api/v1/conformance/reset and
+  POST /api/v1/stations/{id}/force-pending with expect_status 200; grep over csms-server routes/
+  for "conformance" and "force-pending" returns ZERO hits. This file would fail on its first step.
+  (2) Even reaching the boot, Pending is unreachable: the server writes it from exactly one place,
+  the topology comparator behind config('ospp.enforce_boot_topology'), which is false on UAT
+  (measured at runtime, not read from .env), false on master (config/ospp.php:74) and false in both
+  env templates. With it off the server answers Accepted, so `assert payload.status == Pending`
+  fails. Turning it on is not a workaround: bay_programs is written only by provisioning, so it
+  puts the whole fleet into Pending on next boot.
+  (3) The hardcoded sandbox identity and its gitignored cert material — declared as requires_files
+  below, and unchanged.
+  Fixing (1) and (2) is a server question, not a scenario edit. If you need only to prove the
+  server accepts a restricted station's SignCertificate, that is already measured without any of
+  this — see docs/MEASURED-signcertificate-while-pending-20260815T044900Z.md.
 # SECOND, INDEPENDENT BLOCKER — read this before deleting the skip above.
 # `stationId` below is HARDCODED, so this file does not take a pool-provisioned
 # identity: it needs cert files that already exist for that exact id. They exist

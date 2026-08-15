@@ -178,6 +178,23 @@ branch that `core/happy-boot.yaml` does not.
 | `security/offline-transaction-reconcile.yaml` | Offline Transaction Reconcile | TransactionEvent with receipt → Accepted | migrated |
 | `security/offline-fraud-rapid-transactions.yaml` | Offline Fraud: Rapid Transactions | 5 rapid TransactionEvents (fraud pattern) | migrated |
 
+> **Not in this table, and deliberately not in the corpus — `SignCertificate` originated from a
+> restricted (`Pending`) station.** Measured on the wire 2026-08-15 against csms-server `99cab60`:
+> the server **accepts** it. The probe lives in
+> [`docs/MEASURED-signcertificate-while-pending-20260815T044900Z.md`](../docs/MEASURED-signcertificate-while-pending-20260815T044900Z.md)
+> instead of here, because **both of its arms assert the same thing**: run without the out-of-band
+> `station_state` write it depends on, it passes while measuring nothing. Read that document's
+> *Why this is not in the corpus* section before moving it.
+
+> **Skip reasons were audited 2026-08-15 — all three in the corpus.** Two stated a system fact and
+> **both were false**: `security/offline-pass-rejected.yaml` (it needs no sandbox fixture — the
+> expired pass is a literal in the file; left skipped **and marked**, because its assertion is too
+> weak to carry its name) and `core/boot-pending-retry.yaml` (Pending has been implemented since
+> `c5c6e59`; three real blockers named in its place). The third,
+> `chaos/connection-timeout.yaml`, states a design intent rather than a system fact and is still
+> true. **A skip reason is the least-verified sentence in the corpus** — nothing runs it, so nothing
+> checks it, and it survives exactly the change that falsifies it.
+
 ## Chaos (7 scenarios)
 
 | File | Name | What it tests | Status |

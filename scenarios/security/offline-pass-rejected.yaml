@@ -1,7 +1,24 @@
 name: "Offline Pass Authorization Rejected"
 description: "Boot station and send an AuthorizeOfflinePass request with an expired offline pass, then verify the server rejects it."
 skip: true
-skip_reason: "Requires sandbox to have invalid/expired offline pass data"
+skip_reason: >-
+  RE-VERIFIED 2026-08-15 — the reason this file carried until today was FALSE, and its true status
+  is UNKNOWN. It said "Requires sandbox to have invalid/expired offline pass data". It does not:
+  the expired pass is a LITERAL in this file (expiresAt 2024-06-01, long past; issuedAt
+  2024-01-01), so the scenario constructs its own fixture and depends on no seeded data at all.
+  LEFT SKIPPED AND MARKED, deliberately, because whether it would pass cannot be settled by
+  reading it — that needs deleting the skip and running, which is a decision for whoever owns the
+  offline profile, not a side effect of a docs audit.
+  Two things to fix BEFORE un-skipping, or its green will not mean anything.
+  (1) THE ASSERTION IS TOO WEAK TO CARRY ITS OWN NAME. It asserts only `status == Rejected`. The
+  pass also carries `signature: "test_sig"`, which is not an ECDSA-P256 signature, so a refusal for
+  the bad signature produces exactly the same green as a refusal for expiry — and this file is
+  named for expiry. It needs an errorCode assertion naming the expiry refusal before a pass proves
+  the thing the file claims to test.
+  (2) ITS RUNTIME DEPENDENCIES ARE UNRESOLVED HERE. It takes {{bayId_1}} and {{serviceId_1}} from
+  pool hydration, and AuthorizeOfflinePass may additionally require the identity to have offline
+  enabled — pooled runs are commonly launched with --no-offline-enable. Neither is determinable
+  from this file; both must be confirmed against the target before the skip comes off.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
