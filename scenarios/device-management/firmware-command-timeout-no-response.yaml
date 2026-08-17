@@ -1,11 +1,25 @@
 # THE STATION NEVER ANSWERED THE COMMAND AT ALL — no Accepted, no Rejected, no
 # notification. Server cause: `command_timeout`.
 #
-# ⏱  THIS FILE RUNS FOR ~7 MINUTES and ⚠ REQUIRES A RUNNING SCHEDULER. The
-# pending-command TTL for UpdateFirmware is 300s (config/ospp.php:205) and
-# `command:check-timeouts` is scheduled `everyMinute()` (routes/console.php:27-30),
-# so the verdict lands a little over five minutes after dispatch. Nothing invokes
-# that command on its own; on the local stack it needs
+# ⏱  THIS FILE RUNS FOR ~7 MINUTES and ⚠ REQUIRES A RUNNING SCHEDULER.
+#
+# THREE NUMBERS, AND CONFLATING TWO OF THEM WAS THE DEFECT THIS FILE FOUND — so
+# they are named separately here rather than as one "the TTL":
+#
+#   LOGICAL TIMEOUT   300s   `config/ospp.php:205`, per action. When the command
+#                            counts as expired and `getExpiredCommands()` returns it.
+#   REDIS TTL         420s   `timeout + PendingCommandRegistry::GRACE_PERIOD_SECONDS`.
+#                            When the key — and with it every chance of ever seeing
+#                            the command again — VANISHES.
+#   SCAN CADENCE       60s   `command:check-timeouts`, `everyMinute()`
+#                            (`routes/console.php:27-30`).
+#
+# The span between the first two is the WINDOW the scanner has to land in: 300s to
+# 420s, i.e. 120s against a 60s cadence, so at least one scan and usually two fall
+# inside it. The verdict therefore lands between five and six minutes after dispatch,
+# and the waits below leave margin past the worst case.
+#
+# Nothing invokes that command on its own; on the local stack it needs
 # `docker exec -d csms-app php artisan schedule:work`. Without it the final read
 # finds the row still `idle`, which looks exactly like a broken scanner.
 #
@@ -36,62 +50,98 @@
 #
 # WHAT WOULD INVERT IT. `FailFirmwareUpdateAction.php:80-85` hard-codes
 # `command_timeout` on this path; change that constant and `failure_reason` fails
-# while `status: failed` beside it still passes. Raising the 300s TTL above the
-# wait below leaves the row `idle` and fails the read instead — a different red
-# in a different place, which is what makes the two causes of failure here
-# distinguishable from each other.
+# while `status: failed` beside it still passes. Raising the 300s logical timeout
+# above the wait below leaves the row `idle` and fails the read instead — a
+# different red in a different place, which is what makes the two causes of failure
+# here distinguishable from each other. NARROWING THE GRACE below 2x the cadence is
+# a THIRD, and it is the one this file was skipped for: it does not fail the read
+# reliably, it fails it about half the time, which is why csms-server carries a
+# tripwire on the constant rather than leaving the proof to this file alone.
 name: "Firmware Update — No Response To The Command (command_timeout)"
 description: >
   Station boots and is pushed 2.0.0, receives the UpdateFirmware command and never
-  answers it — while staying online via heartbeats. After the 300s pending TTL the
-  scheduled timeout scanner closes the row `failed` with failure_reason
+  answers it — while staying online via heartbeats. Past the 300s LOGICAL timeout
+  (not the 420s Redis TTL — the two are different numbers and confusing them was the
+  defect) the scheduled scanner closes the row `failed` with failure_reason
   `command_timeout`, from `idle`. REQUIRES a running scheduler; runs ~7 minutes.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SKIPPED — because of a SERVER DEFECT this file measured, not because it is
-# unfinished. Un-skip when the grace period below is widened.
+# UN-SKIPPED 2026-08-17 (csms-server `d1e5881`). This file was committed
+# `skip: true` because of a SERVER DEFECT it measured, and the skip is GONE rather
+# than reworded, because the condition it named no longer exists.
 #
-# THE DEFECT. `PendingCommandRegistry` writes each pending command with
-# `TTL = max(timeoutSeconds + GRACE_PERIOD_SECONDS, MIN_TTL_SECONDS)` (:126), i.e.
-# `max(300 + 30, 120) = 330s` for UpdateFirmware. The command is LOGICALLY expired
-# at 300s and the key VANISHES from Redis at 330s, so the scanner has a
-# **30-second window** in which to see it — while `command:check-timeouts` runs
-# `everyMinute()` (routes/console.php:27-30). A 60s cadence hits a 30s window
-# roughly half the time, and a miss is permanent: the key is gone and nothing else
-# closes the row, which sits `idle` forever.
+# WHAT IT FOUND, kept as the record. `PendingCommandRegistry` wrote each pending
+# command with `TTL = max(timeoutSeconds + GRACE_PERIOD_SECONDS, MIN_TTL_SECONDS)`
+# = `max(300 + 30, 120) = 330s` for UpdateFirmware. The command was LOGICALLY
+# expired at 300s and the key VANISHED at 330s, leaving `command:check-timeouts` a
+# **30-second window** on a **60-second cadence** — hit roughly half the time, and a
+# miss is permanent: the key is gone, `getExpiredCommands()` has nothing to return,
+# and nothing else closes the row, which sits `idle` forever.
 #
-# The registry ALREADY documents this exact failure mode at :39-51 and fixes it
-# with `MIN_TTL_SECONDS = 120` — "Retaining every key for at least 2x the 60s
-# cadence guarantees a scan lands while it is still present." That floor works for
-# SHORT timeouts. It does nothing for long ones: at 300s the floor is irrelevant
-# and the window is bounded by the 30s GRACE_PERIOD alone. The reasoning was
-# right; it was applied to the wrong term.
+# THE FLOOR WAS ON THE WRONG TERM, which is why it looked correct. `MIN_TTL_SECONDS
+# = 120` was added with the right reasoning — "retaining every key for at least 2x
+# the 60s cadence guarantees a scan lands while it is still present" — but a floor
+# on the TOTAL only binds while the timeout is SHORT. Past `MIN_TTL - GRACE = 90s`
+# it is inert, and the window collapses to the bare grace. It could not express the
+# property at any value: the counter-example is always "pick a longer timeout".
 #
-# MEASURED 2026-08-17, twice, in both directions, same file and same wait:
+# MEASURED 2026-08-17, twice, in both directions, same file and same wait, with the
+# scan cadence as the only variable:
 #   scheduler at everyMinute() (the real cadence)  ->  FAILED, row still `idle` at 403s
 #   scanner forced to an 8s cadence                ->  PASSED
-# Nothing else differed. That is the whole proof, and it is why this is filed as a
-# server defect rather than a flaky scenario.
 #
-# THE FIX IS ONE CONSTANT: `GRACE_PERIOD_SECONDS` must be at least 2x the scan
-# cadence (>= 120), or the floor must apply to the grace rather than to the total.
-# Every action with a timeout above 90s is affected, not just this one — the
-# per-action timeouts live in config/ospp.php and UpdateFirmware is merely the
-# longest.
+# AND THE FIRST GREEN RUN LANDED TWO SECONDS INSIDE THE OLD DEFECT. Measured
+# 2026-08-17 against csms-server `d1e5881` on the local stack, PASSED in 428s:
 #
-# WHY SKIPPED RATHER THAN LEFT RED. A ~50% scenario is worse than no scenario:
-# this repo's own RUNNING-AGAINST-UAT.md records that a standing failure teaches
-# readers to skim the failure list, "and the run where it means something looks
-# like the twenty where it did not". The file is kept intact so un-skipping is a
-# one-line change once the constant moves.
+#   T+0.0s      row created / command registered (15:01:39Z)
+#   T+300s      logically expired — `getExpiredCommands()` will now return it
+#   T+330s      where the OLD `max(300 + 30, 120)` TTL would have deleted the key
+#   T+332.2s    the scan that actually closed the row  (15:07:11Z, `failed` /
+#               `command_timeout`, progress 0)
+#   T+420s      where the NEW `300 + 120` TTL deletes it — 88s of headroom unused
+#
+# So this run is not merely evidence that the fix works; it is a sample of the
+# defect losing its coin flip. The scan that closed the row arrived ~2 seconds after
+# the old key would have vanished, and under the old constant this exact run would
+# have read `idle` and gone red. (T is measured from the row insert, a few hundred
+# milliseconds before `register()` starts the TTL clock — which moves the 330s mark
+# the wrong way for the old constant, not the right way.)
+#
+# Scans that find nothing log nothing (`CommandTimeoutScanner:45` guards the line
+# with `if ($count > 0)`), so the cadence cannot be read off the log — the observed
+# scans were T+89, T+93, T+209, T+332, and the quiet ones in between are invisible.
+# Do not read a gap in that list as a slow scheduler.
+#
+# THE FIX. `GRACE_PERIOD_SECONDS = 2 * SCAN_CADENCE_SECONDS` = 120, and
+# `MIN_TTL_SECONDS` is GONE rather than kept beside it — `timeout + 120` is `>= 120`
+# for every non-negative timeout, so the floor is provably subsumed, and two
+# constants would imply two guarantees when the wrong one of them was the whole
+# defect. The affected set was measured rather than assumed: under "window >= 2x
+# cadence", 9 of the 11 configured actions were short, not one.
+#
+# STILL OPEN, AND THIS FILE DOES NOT COVER IT. The other 300s action is
+# `GetDiagnostics`, and it is the arm with NO compensation — `CommandTimeoutScanner`
+# has a real arm for UpdateFirmware, while GetDiagnostics falls through to
+# `handleUncompensatedTimeout`, which logs and does nothing. Widening the window
+# makes the scan LAND there and still close nothing. "The window is fixed" reads as
+# "diagnostics timeouts work now", and they do not.
+#
+# NOTHING HERE CAN NOTICE IF THE CONSTANT GOES BACK. The fact lives in another
+# repository this one does not vendor or pin, and this repo's CI is a bare checkout
+# of itself — a test reading csms-server by absolute path would `skipIf` its way out
+# on the machine that matters, and a gate that emits no signal is not a gate. The
+# forcing mechanism therefore lives where the constant does:
+# `csms-server tests/Unit/Shared/Protocol/CommandTimeoutWindowTest.php`, whose
+# TRIPWIRE case fails naming THIS FILE BY PATH and saying to re-skip it.
+#
+# The local half is split across two tests, deliberately, and neither restates the
+# other: `src/__tests__/scenarios/firmwareTimeoutScenarioRunnable.test.ts` pins that
+# this file stays UN-SKIPPED and still asserts its own verdict, and
+# `ScenarioRunner.scenarioTimeout.test.ts` pins that the WAIT below still clears the
+# server constant it is waiting on (300s + one 60s sweep period) with a budget above
+# it. Trimming these delays to speed the suite up reintroduces the same
+# non-determinism from the other side, and that is the test which catches it.
 # ─────────────────────────────────────────────────────────────────────────────
-skip: true
-skip_reason: >
-  Server defect, measured 2026-08-17: PendingCommandRegistry gives UpdateFirmware
-  a 330s Redis TTL against a 300s logical timeout, leaving command:check-timeouts
-  a 30s window on a 60s cadence — so command_timeout fires ~50% of the time. Same
-  file passed with the scanner forced to 8s and failed at 60s. Un-skip when
-  GRACE_PERIOD_SECONDS >= 2x the scan cadence.
 
 scenario_timeout_ms: 600000
 

@@ -69,7 +69,10 @@ mean anything:**
 scheduler** (`docker exec -d csms-app php artisan schedule:work`). Both wait on
 server constants with no config behind them —
 `DetectStalledFirmwareUpdates::STALL_FAILURE_MINUTES = 10` swept
-`everyFiveMinutes()`, and a 300s command TTL scanned `everyMinute()`. Without the
+`everyFiveMinutes()`, and a 300s command TIMEOUT — plus a 120s grace before the
+Redis key expires, which is the span the sweep must land in — scanned
+`everyMinute()`. Calling that 300s "the TTL" is the conflation that made the
+timeout file non-deterministic until csms-server `d1e5881`. Without the
 scheduler both go red with the row untouched, which reads exactly like a broken
 sweep. `ScenarioRunner.scenarioTimeout.test.ts` pins their budgets against those
 constants and requires each file to state its own runtime.

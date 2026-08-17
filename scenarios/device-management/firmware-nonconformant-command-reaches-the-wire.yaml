@@ -1,77 +1,141 @@
-# OBSERVATION INSTRUMENT, AND IT ASSERTS A DEFECT — read this header before
-# treating a green here as good news. This file passes because the server does
-# something wrong, and it MUST BE INVERTED when that is fixed.
+# INVERTED 2026-08-17. This file used to assert a DEFECT and pass because of it; it
+# now asserts the refusal that replaced the defect. The header below is kept as the
+# record of why it existed, because a file that only says what it checks today cannot
+# be read as evidence about what was once true.
 #
-# WHAT IT MEASURES. The server publishes an `UpdateFirmware` command whose
-# `firmwareVersion` and `signature` both violate the wire schema a conforming
-# station validates against. A station that enforced
-# `update-firmware-request.schema.json` would DROP this message, and the update
-# would fail for a reason no operator could diagnose from the server side —
-# because the server believes it dispatched a valid command.
+# THE FILENAME IS DELIBERATELY UNCHANGED. It reads as the defect it was born to
+# measure, which is now the opposite of what it proves — and that is the smaller cost.
+# The path is cited verbatim from `csms-server docs/KNOWN-ISSUES.md:4256` and `:4312`,
+# a live document rather than a commit message, and a cited path is an identifier:
+# renaming it would silently retarget the citation at nothing.
 #
-# THREE THINGS HAVE TO BE TRUE AT ONCE FOR THAT TO HAPPEN, and all three are:
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT IT MEASURED, AND WHAT WAS MEASURED (as filed, 2026-08-17, sim `f36cb8f`
+# against csms-server `9896108` on a real broker).
 #
-#   1. THE REQUEST VALIDATOR IS LAXER THAN THE SCHEMA.
-#      app/Http/Requests/Admin/UpdateFirmwareRequest.php:28-32 takes
-#      `firmwareVersion` as any string `max:64` — the schema pins
-#      `^\d+\.\d+\.\d+$` with maxLength 32, i.e. no pattern at all and double the
-#      length. :38-42 takes `signature` as any string — the schema pins
-#      `^[A-Za-z0-9+/=]+$`, maxLength 512. The bulk endpoint
-#      (DashboardDeviceController.php:92-99) is laxer still: `firmware_url` is
-#      `url`, not https-only, and `checksum` has no sha256 pattern.
+# The server published an `UpdateFirmware` command whose `firmwareVersion` and
+# `signature` both violated the wire schema a conforming station validates against.
+# A station enforcing `update-firmware-request.schema.json` DROPS such a message, and
+# the update then fails for a reason no operator can diagnose from the server side —
+# the server believes it dispatched a valid command.
 #
-#   2. NOTHING VALIDATES THE OUTBOUND COMMAND.
-#      `SchemaRegistry.php:271` describes itself: "This registry is an INBOUND-MQTT
-#      defense." The only outbound validation in the codebase is for RESPONSES and
-#      is log-only and non-blocking (MessageDispatcher.php:375-385). Server-initiated
-#      REQUESTS never pass through it. The registry even MAPS the schema
-#      (`'update-firmware-request' => 'mqtt/update-firmware-request.schema.json'`,
-#      :73) — it is simply never invoked for this direction.
+# Three things had to be true at once, and all three were:
 #
-#   3. NO TEST WOULD SEE IT.
-#      The whole outbound coverage is one hand-written literal in
-#      tests/SchemaValidation/OutboundPayloadSchemaTest.php:315-325 which never
-#      calls InitiateFirmwareUpdateAction and omits its `scheduledAt` branch. The
-#      broker-backed MqttIntegration suite has ZERO firmware files, and it runs
-#      with `config(['ospp.schema_validation_enabled' => false])`
-#      (MqttIntegrationTestCase.php:167) anyway.
+#   1. THE REQUEST VALIDATOR WAS LAXER THAN THE SCHEMA. `UpdateFirmwareRequest` took
+#      `firmwareVersion` as any string `max:64` — the schema pins `^\d+\.\d+\.\d+$`
+#      with maxLength 32, i.e. no pattern at all and double the length — and
+#      `signature` with the right length and no pattern against the schema's
+#      `^[A-Za-z0-9+/=]+$`. `checksum` DID carry its regex, which is what made the
+#      gap easy to miss: the body looked pattern-guarded.
+#   2. NOTHING VALIDATED THE OUTBOUND COMMAND. `SchemaRegistry` describes itself as
+#      "an INBOUND-MQTT defense"; the only outbound check covered RESPONSES and was
+#      deliberately log-only. A server-initiated REQUEST never passed through it.
+#   3. NO SERVER-SIDE TEST WOULD SEE IT. The whole outbound coverage was one
+#      hand-written literal that never called `InitiateFirmwareUpdateAction`, and the
+#      broker-backed suite ran with schema validation disabled anyway.
 #
-# MEASURED 2026-08-17 BEFORE THIS FILE EXISTED, and the measurement is what
-# justified writing it. Three POSTs to a NON-EXISTENT station id: one conformant
-# (control), one with `firmwareVersion: "not-a-semver-v2"`, one with
-# `signature: "sig_fw_v2_test!!"`. All three answered identically —
-# `404 {"message":"Station not found"}`. Identical to the CONTROL is the whole
-# point: the request got past validation in all three cases and died at the
-# station lookup, so the validator accepted both malformed values. A 422 on
-# either would have meant the opposite.
+# `firmwareVersion: "not-a-semver-v2"` and `signature: "sig_fw_v2_test!!"` reached a
+# real station VERBATIM, and the malformed version was recorded as the correlation
+# target for every later `FirmwareStatusNotification`.
+# ─────────────────────────────────────────────────────────────────────────────
 #
-# WHAT A COMPLETELY BROKEN INSTRUMENT WOULD ANSWER HERE, since that is the
-# question worth asking of any control. A simulator that ignored payload content
-# entirely would also pass this file — it asserts values, not rejection. So the
-# assertion is deliberately on the EXACT malformed strings rather than on
-# "something arrived": a server that sanitised the version on the way out would
-# publish `2.0.0` or nothing, and both fail. What this file genuinely cannot do is
-# REFUSE the message the way a real station would, because the simulator validates
-# nothing it receives — the only Ajv in this repo is the linter, and it checks
-# what scenarios SEND. That gap is the real finding here, and it is bigger than
-# this file: no scenario in the corpus can currently fail because the SERVER sent
-# something malformed.
+# WHAT CHANGED — csms-server `430c85f`, both halves, because neither suffices.
+#   (a) `UpdateFirmwareRequest` (and the dashboard's bulk `firmwarePush`, which was
+#       laxer still) transcribed to the schema's own patterns. A malformed push is
+#       refused `422` at the operator boundary, where it can be reported.
+#   (b) `MqttStationGateway::sendCommand` validates the outbound REQUEST fail-closed
+#       and throws `OsppException INVALID_MESSAGE_FORMAT` rather than publishing.
 #
-# HOW TO INVERT IT WHEN THE SERVER IS FIXED. Two independent fixes, either of
-# which reddens this file, and they redden it in different places:
-#   - tighten UpdateFirmwareRequest to the schema's patterns  -> the POST answers
-#     422 and step [3] fails
-#   - validate outbound requests against the registry         -> the POST still
-#     answers 202 and no command reaches the wire; step [4] times out
-# Both are correct outcomes. When either lands, replace the asserts below with
-# the refusal that replaced them, and keep this header as the record of why the
-# file existed.
-name: "Firmware Update — Non-Conformant Command Reaches The Wire (DEFECT, observation)"
+# WHICH HALF THIS FILE SEES — and the answer is not the obvious one, so it was
+# MEASURED rather than reasoned about.
+#
+# While (a) holds, every step here is answered by (a) alone. Both admin doors now
+# bound every field the wire schema bounds, and `scheduledAt` — the one field whose
+# validator is still looser than the schema (`date` against an ISO-8601 pattern) —
+# is normalised with `->format('Y-m-d\TH:i:s.v\Z')` before it becomes payload
+# (`InitiateFirmwareUpdateAction.php:190`). So there is no body this simulator can
+# POST that passes HTTP and still violates the schema. That is what (b) being
+# unreachable MEANS here: not that it is untested from the wire, but that (a)
+# consumes every input that would reach it.
+#
+# The moment (a) regresses, (b) becomes visible from exactly these steps — and the
+# regression does NOT present as the old defect returning. Measured 2026-08-17
+# against csms-server `d1e5881` with `firmwareVersion` reverted to its pre-fix
+# `max:64` and no pattern, the only change:
+#
+#   step [2] answered  400  {"error":{"code":"INVALID_MESSAGE_FORMAT",
+#                            "ospp_code":1005,"message":"Outbound UpdateFirmware
+#                            request violates its wire schema:
+#                            /firmwareVersion: The string should match pattern:
+#                            ^\d+\.\d+\.\d+$"}}
+#
+# Not 202-and-onto-the-wire, which is what the defect used to do. So a reader
+# debugging a red here must not read "400, not 422" as "the validation is gone" —
+# it is the second gate catching what the first stopped catching, and nothing
+# reached the broker either way. This is also why the step asserts `expect_status:
+# 422` and not merely "4xx": the two halves fail in different places on purpose,
+# and collapsing them into one accepted range would hide which one is broken.
+#
+# THE CONTROL IS THE POINT, AND IT IS WHY THIS FILE IS LONGER THAN THE REFUSAL.
+# A scenario that proves only "the malformed push is refused" passes just as well
+# against a validator that refuses EVERYTHING — the strongest possible regression
+# hiding behind the greenest possible result. So the conformant push is asserted
+# end to end: 202, ON THE WIRE, with the exact values the operator sent, and a row
+# in the API read. The malformed and conformant bodies differ in NOTHING but the
+# field under test, so a `422` that came from any OTHER field cannot pass unnoticed:
+# it names that field in `errors`, which the absent-assertions catch here, and it
+# refuses the conformant body too, which the control catches there. Two independent
+# reds for one cause — and neither of them pins a validation message string, because
+# the messages are Laravel's and pinning one would make this file a test of a
+# translation catalogue.
+#
+# TWO MALFORMED PUSHES, ONE FIELD EACH, RATHER THAN ONE CARRYING BOTH. The finding
+# was two independent fields, and a body malformed in both still answers 422 when
+# only ONE of the two patterns is still in place. That green would cover exactly half
+# a regression. Split, each 422 is attributable to its own field: the other three
+# fields are asserted ABSENT from `errors`, and they are the fields the control
+# proves acceptable.
+#
+# WHAT A BROKEN INSTRUMENT WOULD ANSWER HERE. A simulator that ignored payload
+# content would pass the old version of this file, which asserted values. It cannot
+# pass this one: step [7] requires a message to ARRIVE and step [4] requires one NOT
+# to, and no single blindness satisfies both. What this file still cannot do is
+# REFUSE a message the way a real station would — the only Ajv in this repo is the
+# linter, and it checks what scenarios SEND. That gap is unchanged by this inversion
+# and is bigger than this file: no scenario in the corpus can currently fail because
+# the SERVER sent something malformed.
+#
+# WHAT WOULD INVERT IT AGAIN — where this file goes red, and in which place. The
+# bracketed numbers are this file's own BLOCK labels below, NOT the runner's step
+# indices: the runner counts every step including the asserts and starts at zero, so
+# there is no fixed offset between the two. Block [2] is runner step 3.
+#
+#   - loosen `firmwareVersion`'s pattern/length  -> step [2] gets 400/1005, not 422
+#   - loosen `signature`'s pattern               -> step [3] gets 400/1005, not 422
+#   - loosen BOTH gates for a field              -> step [2]/[3] get 202, and then
+#                                                   step [4] hears the command
+#   - refuse the CONFORMANT body at the door     -> step [6] gets 422, not 202
+#   - refuse the conformant PUBLISH              -> step [6] gets 400, not 202
+#
+# BOTH DIRECTIONS WERE MEASURED, because one is not a differential. Against
+# csms-server `d1e5881`, same file, same target, one server line changed each time:
+#
+#   unmodified                                       -> PASSED, 15/15 steps
+#   `firmwareVersion` reverted to `max:64`, no regex  -> FAILED at step [2] (400/1005)
+#   publish gate forced to refuse EVERY request       -> FAILED at step [6] (400/1005),
+#                                                        steps [2]-[5] still green
+#
+# The second row is the refusal working. THE THIRD ROW IS THE POINT OF THE CONTROL:
+# a server that refuses every firmware push satisfies every assertion in the first
+# half of this file, and is caught by one step — the conformant one.
+name: "Firmware Update — A Non-Conformant Command Is Refused At The Door (control: a conformant one is not)"
 description: >
-  Operator pushes a firmware update whose firmwareVersion is not semver and whose
-  signature is not base64. The admin API accepts both, and the server publishes
-  them verbatim to the station. Asserts the malformed values as RECEIVED — a
-  conforming station would drop this message.
+  Operator pushes firmware twice with a body the wire schema forbids — once a
+  non-semver firmwareVersion, once a non-base64 signature — and the admin API
+  refuses both 422 with nothing published and no row created. Then the SAME body
+  with both fields conformant is accepted 202 and reaches the station verbatim.
+  The second half is the assertion that matters: a validator refusing everything
+  would satisfy the first half alone.
 
 station:
   stationId: "{{stationId}}"
@@ -83,6 +147,7 @@ station:
     response_delay_ms: [50, 200]
 
 steps:
+  # [1] --------------------------------------------------------------- BOOT
   - action: send
     message: BootNotification
     payload:
@@ -117,16 +182,23 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # 202, not 422. THIS status is the first half of the finding: the admin API
-  # accepted a body the wire schema forbids in two separate fields.
+  # [2] ------------------------------------------- MALFORMED VERSION -> 422
   #
-  # `firmwareVersion` is 15 characters of non-semver — under the validator's
-  # max:64 and nowhere near `^\d+\.\d+\.\d+$`. It also has to fit
-  # `firmware_updates.firmware_version VARCHAR(20)`, which is why it is short: a
-  # 60-character version would be refused by POSTGRES rather than by any
-  # validator, and a database error is a different finding from this one.
+  # 422, not 202. `not-a-semver-v2` is the exact value that reached a real station
+  # on 2026-08-17: 15 characters, comfortably under the old `max:64`, and nowhere
+  # near `^\d+\.\d+\.\d+$`. It is short because it also has to fit
+  # `firmware_updates.firmware_version VARCHAR(20)` — a 60-character version would
+  # be refused by POSTGRES rather than by any validator, and a database error is a
+  # different finding from this one.
   #
-  # `signature` carries `_` and `!`, both outside the schema's base64 alphabet.
+  # EVERY OTHER FIELD IS THE CONFORMANT BODY, byte for byte with step [6]. That is
+  # what makes the refusal attributable: if the 422 came from `checksum`,
+  # `firmwareUrl` or `signature`, step [6] could not answer 202.
+  #
+  # The absent-assertions say the same thing from the response's own side, and stop
+  # at that: `errors.firmwareVersion` is NOT asserted present, because its value is
+  # a Laravel translation string and pinning it would make a message catalogue
+  # upgrade look like a server regression.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
@@ -134,35 +206,122 @@ steps:
       firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
       firmwareVersion: "not-a-semver-v2"
       checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 422
+    expect_body_absent:
+      - "errors.signature"
+      - "errors.checksum"
+      - "errors.firmwareUrl"
+
+  # [3] ----------------------------------------- MALFORMED SIGNATURE -> 422
+  #
+  # `sig_fw_v2_test!!` is the other value that reached the wire. `_` and `!` are
+  # both outside the schema's base64 alphabet, and the old rule bounded only length.
+  # `firmwareVersion` here is the CONFORMANT `2.0.0`, so this push differs from the
+  # accepted one in a single field — and if it were wrongly accepted it would create
+  # a `2.0.0` row and publish a command, which steps [4] and [5] both catch.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
       signature: "sig_fw_v2_test!!"
+    expect_status: 422
+    expect_body_absent:
+      - "errors.firmwareVersion"
+      - "errors.checksum"
+      - "errors.firmwareUrl"
+
+  # [4] ------------------------------------------------ NOTHING ON THE WIRE
+  #
+  # The half no HTTP status can show: neither refusal published anything. `422` and
+  # "no command was sent" are different claims — a server could answer 422 to the
+  # operator and still have dispatched — and this is the only place the second can
+  # be observed at all.
+  #
+  # AN ABSENCE IS A WEAK PROOF ON ITS OWN. A dead link, a wedged bridge or a
+  # mistyped topic produce exactly this silence, so `expect_silence` is only
+  # attributable when a CLEAN message of the same action arrives afterwards over the
+  # same connection. Step [7] is that control, and it is required rather than
+  # incidental — the step cannot enforce the pairing, so it is stated here.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  # [5] -------------------------------------------------- AND NO ROW EITHER
+  #
+  # The refusal happens in the FormRequest, which resolves BEFORE the controller —
+  # so it precedes the station lookup, the pre-flight checks and the
+  # `(station, version)` claim, and leaves nothing behind. Both versions are named:
+  # `not-a-semver-v2` is step [2]'s, and `2.0.0` is step [3]'s, whose presence here
+  # would mean the signature check let it through.
+  #
+  # ABSENT, not `null`. A firmware row that does not exist is a missing array
+  # element; `expect_body: {…: null}` would compare `undefined` against `null` and
+  # fail against a correct server.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body_absent:
+      - "data[firmware_version=not-a-semver-v2]"
+      - "data[firmware_version=2.0.0]"
+
+  # [6] ------------------------------------------------- THE CONTROL -> 202
+  #
+  # THE ASSERTION THIS FILE EXISTS FOR. Everything above passes against a validator
+  # that refuses every firmware push; this is the step that does not. Identical to
+  # step [2] and step [3] in every field except the one each of them malformed.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
     expect_status: 202
 
-  # And it reaches the wire unchanged. The second half of the finding, and the
-  # half no server-side test can observe.
+  # [7] ------------------------------- AND IT REACHES THE STATION UNCHANGED
+  #
+  # Two jobs in one step. It proves the conformant command is dispatched — 202 alone
+  # would not — and it is the control that makes step [4]'s silence attributable:
+  # the link answered seconds later, so the first two commands were REFUSED rather
+  # than lost.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request
     timeout_ms: 15000
-    capture:
-      receivedVersion: "payload.firmwareVersion"
-      receivedSignature: "payload.signature"
 
-  # EXACT values, not "exists". A sanitising server would publish something else
-  # and both of these would fail — which is what makes them a measurement of the
-  # defect rather than of the transport.
+  # EXACT values across all four fields, not "exists". A server that sanitised on
+  # the way out — publishing a normalised version, or dropping the signature —
+  # would answer 202 and fail here, and that is a different defect from the one this
+  # file was written for but the same blind spot.
   - action: assert
     field: "payload.firmwareVersion"
-    equals: "not-a-semver-v2"
+    equals: "2.0.0"
 
   - action: assert
     field: "payload.signature"
-    equals: "sig_fw_v2_test!!"
+    equals: "MEUCIQDexample"
 
-  # The server recorded the malformed version as the target it is waiting on, so
-  # the damage is not confined to one message: every subsequent
-  # FirmwareStatusNotification must correlate on `(station_id, firmwareVersion)`
-  # (FirmwareStatusNotificationHandler.php:74-78), and a station that normalised
-  # the version to something valid would never match this row again.
+  - action: assert
+    field: "payload.checksum"
+    equals: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+
+  - action: assert
+    field: "payload.firmwareUrl"
+    equals: "https://cdn.example.com/firmware/v2.0.0.bin"
+
+  # [8] --------------------------------------------- AND THE ROW WAS WRITTEN
+  #
+  # `idle` — the station never answers, because scenario mode registers no handlers.
+  # The row's eventual fate is `command_timeout` and that path has its own file
+  # (`firmware-command-timeout-no-response.yaml`); nothing here waits for it.
   - action: delay
     ms: 1000
 
@@ -171,10 +330,5 @@ steps:
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
     expect_status: 200
     expect_body:
-      data[firmware_version=not-a-semver-v2].status: "idle"
-
-  # Left `idle` on purpose — the station never answers. A conforming station
-  # could not have answered: it would have dropped the message at schema
-  # validation, which is exactly the operator-invisible failure this file is
-  # about. The row's eventual fate is `command_timeout`, and that path has its
-  # own file; nothing here waits for it.
+      data[firmware_version=2.0.0].status: "idle"
+      data[firmware_version=2.0.0].failure_reason: null
