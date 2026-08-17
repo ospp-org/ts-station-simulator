@@ -547,3 +547,129 @@ describe('certPathsFor', () => {
     expect(() => certPathsFor({ mqttUrl: 'x' }, 'stn_x')).toThrow(/no certs\.key/);
   });
 });
+
+/**
+ * THE CHAIN DESTINATION MUST NEVER ALIAS THE BROKER TRUST ANCHOR.
+ *
+ * Measured 2026-08-17: bootstrapping one station against `local-mtls` DELETED
+ * `certs/local/broker-ca.pem`. `certPathsFor` resolved the station's chain
+ * destination from `serverCa`, `cli/config.ts:129` maps `serverCa` to the
+ * target's `certs.ca`, and for that target `ca` is the shared, station-agnostic
+ * bundle the CLIENT verifies the BROKER with. The chain was written over it and
+ * teardown then removed it — and `certs/` is gitignored, so nothing restored it.
+ *
+ * WHY THE EXISTING `certPathsFor` BLOCK ABOVE COULD NOT CATCH THIS, which is the
+ * reusable part: its fixture sets `serverCa: 'certs/uat/{{stationId}}-chain.pem'`
+ * — a per-station value that NO committed target actually carries. The real
+ * `uat` target sets `station_ca_chain` and no `ca` at all, so `serverCa` is
+ * undefined there and every green run took the per-station FALLBACK. The
+ * configured branch was never once exercised, by any test or any run, which is
+ * why a bug sitting in it stayed invisible for the life of the function.
+ *
+ * So these cases load the REAL `config/targets.yaml` rather than a hand-written
+ * TargetConfig. A fixture is what hid the defect; a fixture cannot be what
+ * proves it fixed.
+ *
+ * WHAT A BROKEN INSTRUMENT WOULD ANSWER HERE. "chainPath contains the stationId"
+ * passes on the OLD code too for `uat` (fallback) — it discriminates nothing.
+ * The load-bearing assertion is `chainPath !== the target's own ca path` on a
+ * target that HAS a `ca`, because that is the exact aliasing that did the
+ * damage. Reverting the `stationCaChain ??` precedence in `certPathsFor` turns
+ * the `local-mtls` and `local-crl` cases red and leaves `uat` green — the
+ * one-target/one-branch split that made this survivable in the first place.
+ */
+describe('certPathsFor — the station chain must not overwrite a shared broker CA', () => {
+  // Every committed target that carries mTLS material. Named explicitly rather
+  // than discovered, so a target ADDED without a per-station chain fails the
+  // roster check below instead of silently not being covered.
+  const MTLS_TARGETS = ['uat', 'local-mtls', 'local-crl', 'sandbox', 'sandbox-gm'] as const;
+
+  // `loadTarget` hard-fails on an unresolved `${VAR}`, and three targets carry
+  // credential placeholders. Stub them so these cases assert the committed CERT
+  // LAYOUT rather than whatever secrets the developer happens to have exported.
+  const ENV_STUBS: Record<string, string> = {
+    UAT_EMAIL: 'test@invalid',
+    UAT_PASSWORD: 'test',
+    SANDBOX_GM_EMAIL: 'test@invalid',
+    SANDBOX_GM_PASSWORD: 'test',
+    SANDBOX_GM_MQTT_USER: 'test',
+    SANDBOX_GM_MQTT_PASS: 'test',
+  };
+
+  /** The exact shape a real run hands to the bootstrap: yaml -> runner target. */
+  async function runnerTargetFor(name: string): Promise<TargetConfig> {
+    const saved = new Map<string, string | undefined>();
+    for (const [k, v] of Object.entries(ENV_STUBS)) {
+      saved.set(k, process.env[k]);
+      process.env[k] ??= v;
+    }
+    try {
+      const { loadTarget, toRunnerTarget } = await import('../../../cli/config.js');
+      return toRunnerTarget(await loadTarget(name));
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it('covers every committed target that provisions TLS material', async () => {
+    for (const name of MTLS_TARGETS) {
+      const t = await runnerTargetFor(name);
+      expect(t.tls?.keyPattern ?? t.tls?.key, `${name} has no key pattern`).toBeTruthy();
+    }
+  });
+
+  it.each(MTLS_TARGETS)(
+    '%s: the chain lands on a per-station path, never on the shared ca bundle',
+    async (name) => {
+      const t = await runnerTargetFor(name);
+
+      const a = certPathsFor(t, 'stn_aaaaaaaa');
+      const b = certPathsFor(t, 'stn_bbbbbbbb');
+
+      // 1. Per-station by construction: two stations must not share a destination.
+      //    This is the property that matters; the stationId substring is a proxy.
+      expect(a.chainPath).not.toBe(b.chainPath);
+      expect(a.chainPath).toContain('stn_aaaaaaaa');
+
+      // 2. THE ONE THAT DISCRIMINATES. `serverCa` is the bundle we verify the
+      //    broker BY. Writing a station chain there destroys the trust anchor.
+      //    Only `local-mtls`, `local-crl` and `sandbox` actually set it, so this
+      //    is a no-op on `uat` — say so rather than pretend uniform coverage.
+      if (t.tls?.serverCa) {
+        expect(a.chainPath).not.toBe(t.tls.serverCa);
+        expect(b.chainPath).not.toBe(t.tls.serverCa);
+      }
+
+      // 3. And it must not collide with the leaf or key either.
+      expect(a.chainPath).not.toBe(a.certPath);
+      expect(a.chainPath).not.toBe(a.keyPath);
+    },
+  );
+
+  it('at least one covered target actually sets a shared ca (guards the guard)', async () => {
+    const withSharedCa: string[] = [];
+    for (const name of MTLS_TARGETS) {
+      const t = await runnerTargetFor(name);
+      // "Shared" = no {{stationId}} in it, which is what makes it clobberable.
+      if (t.tls?.serverCa && !t.tls.serverCa.includes('{{stationId}}')) withSharedCa.push(name);
+    }
+    // Without this, case 2 above could be vacuously true on every target and the
+    // whole block would pass against the unfixed function.
+    expect(withSharedCa.length).toBeGreaterThan(0);
+  });
+
+  it('refuses outright when the resolved chain destination is station-agnostic', () => {
+    expect(() =>
+      certPathsFor(
+        {
+          mqttUrl: 'mqtts://broker:8883',
+          tls: { keyPattern: 'certs/x/{{stationId}}-key.pem', serverCa: 'certs/x/broker-ca.pem' },
+        },
+        'stn_x',
+      ),
+    ).toThrow(/no \{\{stationId\}\}/);
+  });
+});

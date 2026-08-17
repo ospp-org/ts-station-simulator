@@ -8,7 +8,7 @@ import {
   type ScenarioResult,
   type ScenarioDefinition,
 } from '../scenarios/ScenarioRunner.js';
-import { loadTarget, type TargetConfig } from './config.js';
+import { loadTarget, toRunnerTarget, type TargetConfig } from './config.js';
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
@@ -467,43 +467,6 @@ function logUserVars(userVars: Map<string, string> | undefined): void {
     .map(([k, v]) => `${k}=${v}`)
     .join(', ');
   console.log(chalk.cyan(`  Overrides (${userVars.size}): ${summary}`));
-}
-
-function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {
-  const runnerTarget: RunnerTargetConfig = {
-    mqttUrl: target.mqttUrl,
-    apiBaseUrl: target.csmsUrl,
-  };
-
-  if (target.certs) {
-    runnerTarget.tls = {
-      key: target.certs.key,
-      cert: target.certs.cert,
-      keyPattern: target.certs.keyPattern,
-      certPattern: target.certs.certPattern,
-      chain: target.certs.stationCaChain,
-      serverCa: target.certs.serverCa,
-      minVersion: target.certs.minVersion,
-      maxVersion: target.certs.maxVersion,
-    };
-  }
-
-  if (target.mqttCredentials) {
-    runnerTarget.mqttCredentials = {
-      usernameTemplate: target.mqttCredentials.usernameTemplate,
-      passwordTemplate: target.mqttCredentials.passwordTemplate,
-    };
-  }
-
-  if (target.stationPool) {
-    runnerTarget.stationPool = target.stationPool;
-  }
-
-  if (target.credentials) {
-    runnerTarget.credentials = target.credentials;
-  }
-
-  return runnerTarget;
 }
 
 async function resolveTarget(opts: RunCommandOptions): Promise<TargetConfig> {

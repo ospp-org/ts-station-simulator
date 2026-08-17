@@ -91,30 +91,95 @@ export function _readProtectedEmailsForTesting(
 }
 
 /**
- * Run a SQL script against the UAT database over SSH+psql, feeding the SQL on
+ * `UAT_SSH_HOST` values that mean "the docker daemon is already on this
+ * machine" — take the ssh hop out and spawn `docker` directly.
+ *
+ * WHY THIS EXISTS, and it is not a convenience. Every privileged step in the
+ * pool bootstrap funnels through {@link runUatSql}: the catalog seed, the
+ * identity seed, `users.offline_enabled`, and the FK-ordered teardown. All of
+ * them assumed a REMOTE database, because UAT is the only target that ever had
+ * one. That assumption made the whole bootstrap — and therefore every scenario
+ * that needs a provisioned station — reachable on UAT and nowhere else.
+ *
+ * That is a real ceiling rather than a preference. UAT deploys with
+ * `git pull origin master --ff-only` (`csms-server/scripts/deploy-uat.sh:121`),
+ * so it can only ever run code that is already on trunk AND already deployed;
+ * on 2026-08-17 it sat 15 commits behind, missing two migrations. A server
+ * change therefore has no wire-reachable target until someone deploys it, and
+ * "prove it on the wire" and "do not deploy" could not both be satisfied.
+ * The local dev stack bind-mounts the working tree, so it runs the code under
+ * test with no deploy at all — it just could not be bootstrapped.
+ *
+ * WHAT IT DOES NOT CHANGE. The ssh path is untouched, and the identity pinning
+ * that guards it (`sshIdentityArgs`, and the source sweep in
+ * `sshIdentitiesOnly.test.ts` that catches a new call site written the old way)
+ * still applies to every remote run. This branch spawns no ssh at all, so there
+ * is no identity to fan out and no fail2ban counter to trip.
+ *
+ * WHAT IT DOES NOT PROVE. A local target is the same CODE, not the same
+ * DEPLOYMENT: no image bake, no nginx edge, no supervisord consumer, no
+ * public-CA broker cert. A green local run says the server logic is right; it
+ * says nothing about the artefact UAT or prod would run.
+ */
+const LOCAL_DB_HOSTS = new Set(['local', 'localhost', '127.0.0.1', '-']);
+
+/** True when {@link runUatSql} should skip ssh and drive docker directly. */
+export function isLocalDbHost(cfg: UatDbConfig = uatDbConfigFromEnv()): boolean {
+  return LOCAL_DB_HOSTS.has(cfg.sshHost.trim().toLowerCase());
+}
+
+/**
+ * Run a SQL script against the target database over psql, feeding the SQL on
  * stdin. Resolves with psql stdout; rejects (with stderr) on a non-zero exit.
  * `ON_ERROR_STOP=1` makes any statement error abort the whole script.
+ *
+ * Remote (the default, and every UAT run): `ssh … docker exec -i … psql`.
+ * Local (see {@link isLocalDbHost}): `docker exec -i … psql`, no ssh hop.
+ * Both feed SQL on STDIN rather than as a `-c` argument, so the SQL text is
+ * never subject to shell interpolation on either path.
  */
 export function runUatSql(sql: string, cfg: UatDbConfig = uatDbConfigFromEnv()): Promise<string> {
+  const psqlArgs = [
+    'exec', '-i', cfg.container,
+    'psql', '-U', cfg.dbUser, '-d', cfg.dbName,
+    '-v', 'ON_ERROR_STOP=1', '--no-psqlrc', '-q',
+  ];
+  const local = isLocalDbHost(cfg);
+
+  // The remote form has to be ONE shell word list for the login shell on the
+  // far side; the local form is spawned argv-style with no shell at all.
   const remoteCmd =
     `docker exec -i ${cfg.container} psql -U ${cfg.dbUser} -d ${cfg.dbName} ` +
     `-v ON_ERROR_STOP=1 --no-psqlrc -q`;
-  const args = [
+  const sshArgs = [
     ...sshIdentityArgs(cfg),
     '-o', 'ConnectTimeout=15',
     '-o', 'BatchMode=yes',
     cfg.sshHost,
     remoteCmd,
   ];
+  const command = local ? 'docker' : 'ssh';
 
   return new Promise<string>((resolve, reject) => {
-    const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    // TWO LITERAL SPAWNS, NOT ONE PARAMETERISED BY A VARIABLE — deliberate, and
+    // the first attempt here got it wrong. `spawn(command, args)` with `command`
+    // computed above is tidier and it made `sshIdentitiesOnly.test.ts`'s source
+    // sweep match ZERO files: that sweep finds ssh call sites by the literal
+    // `spawn('ssh'` and then asserts each one passes `sshIdentityArgs()`, which
+    // is what stops a future call site from re-introducing the agent key fan-out
+    // that once earned this box an hour-long fail2ban. Hiding the only call site
+    // from it disarmed the guard silently — and the sweep's own "matches at least
+    // 3 files" meta-check is what caught it, which is precisely why that check
+    // exists. Keep the literal.
+    const child = local
+      ? spawn('docker', psqlArgs, { stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawn('ssh', sshArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
     child.on('error', (err) =>
-      reject(new Error(`runUatSql: failed to spawn ssh — ${err.message}`)),
+      reject(new Error(`runUatSql: failed to spawn ${command} — ${err.message}`)),
     );
     child.on('close', (code) => {
       if (code === 0) {

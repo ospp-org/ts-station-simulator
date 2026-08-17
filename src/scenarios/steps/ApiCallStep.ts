@@ -653,6 +653,37 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
   return accessToken;
 }
 
+/**
+ * Throw away the cached JWT and mint a new one.
+ *
+ * WHY THIS EXISTS — measured 2026-08-17. The access token the login returns lives
+ * **900 seconds**, and nothing refreshed it: `ensureAuth` returns
+ * `context.authToken` if set and the module-level `tokenCache` otherwise, so a
+ * token acquired at the start of a scenario was reused unchanged for the whole
+ * run. Any scenario lasting longer than fifteen minutes therefore could not make
+ * an authenticated API read at the end — the request came back
+ * `401 {"error":"token_expired"}` and the step failed on auth rather than on its
+ * assertion.
+ *
+ * That was a HARD CEILING on what the corpus could prove, not an inconvenience.
+ * `firmware-stalled-after-accept.yaml` has to out-wait
+ * `DetectStalledFirmwareUpdates::STALL_FAILURE_MINUTES = 10` plus one
+ * `everyFiveMinutes()` sweep period — up to fifteen minutes, i.e. exactly the
+ * token's lifetime — and the server did its part correctly: the row was closed
+ * `failed`/`stalled` and the scenario could not read it. Any future proof that
+ * waits on a slow server-side sweep hits the same wall.
+ *
+ * Both stores are cleared, and both matter: `context.authToken` short-circuits
+ * `ensureAuth` at its first line, and `tokenCache` short-circuits it at its
+ * third. Clearing one leaves the stale token reachable through the other.
+ */
+async function reauthenticate(context: ScenarioContext): Promise<string | undefined> {
+  if (!context.apiBaseUrl || !context.apiCredentials) return undefined;
+  tokenCache.delete(`${context.apiBaseUrl}::${context.apiCredentials.email}`);
+  context.authToken = undefined;
+  return ensureAuth(context);
+}
+
 function methodRequiresIdempotencyKey(method: string): boolean {
   const m = method.toUpperCase();
   return m === 'POST' || m === 'PUT' || m === 'PATCH';
@@ -880,11 +911,65 @@ export class ApiCallStep implements Step {
       return;
     }
 
-    const response = await fetchWithThrottleRetry(
+    let response = await fetchWithThrottleRetry(
       url,
       { method, headers: fetchHeaders, body },
       retryOpts,
     );
+
+    // ONE re-auth retry on 401 — see reauthenticate() for why a 900s token was a
+    // ceiling on the corpus rather than a nuisance.
+    //
+    // SCOPED DELIBERATELY, because a blanket "retry every failure" would paper
+    // over real authorization findings, and this corpus has scenarios whose
+    // SUBJECT is a refusal. Three conditions, and they are not equally strong —
+    // said plainly rather than listed as if they were:
+    //
+    //   `context.apiCredentials`  THE OPERATIVE GUARD. Without credentials there
+    //                             is nothing to re-login with, so a 401 on an
+    //                             unauthenticated call stands as the answer.
+    //   `token`                   REDUNDANT, kept for intent. `ensureAuth` returns
+    //                             a token whenever credentials exist, so this can
+    //                             only be false when the guard above is too. It
+    //                             documents "we sent a token and it was refused";
+    //                             it does not independently decide anything, and a
+    //                             test claiming to isolate it would be claiming
+    //                             more than it proves.
+    //   `status === 401`          The real scope. A 403 is a permission verdict —
+    //                             re-logging in as the same identity returns the
+    //                             identical answer — and every other status is
+    //                             the endpoint's own business.
+    //
+    // And ONCE. If the fresh token is refused too, that is authorization and the
+    // response reaches the expect_status check unchanged.
+    //
+    // FOREGROUND ONLY. The background branch returns above without awaiting, so
+    // it cannot observe a 401 in time to do anything about it — one more thing
+    // background mode trades away, listed with the others in its own comment.
+    //
+    // A NEW IDEMPOTENCY KEY on the retry, for the same reason the 429 path mints
+    // one: the header is generated per-request at fetchHeaders above, and reusing
+    // the original would let the server replay a cached response for a request it
+    // never actually authorized.
+    if (response.status === 401 && token && context.apiCredentials) {
+      const freshToken = await reauthenticate(context);
+      if (freshToken && freshToken !== token) {
+        console.warn(
+          `[ApiCallStep] 401 for ${method} ${url} — token expired mid-scenario, ` +
+          're-authenticated and retrying once',
+        );
+        const retryHeaders: Record<string, string> = {
+          ...fetchHeaders,
+          Authorization: `Bearer ${freshToken}`,
+          ...(methodRequiresIdempotencyKey(method) ? { 'Idempotency-Key': randomUUID() } : {}),
+        };
+        response = await fetchWithThrottleRetry(
+          url,
+          { method, headers: retryHeaders, body },
+          retryOpts,
+        );
+      }
+    }
 
     if (definition.expect_status !== undefined) {
       const expectedStatus = definition.expect_status as number;

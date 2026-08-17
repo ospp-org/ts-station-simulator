@@ -2,6 +2,7 @@ import { parse as parseYaml } from 'yaml';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SecureVersion } from 'node:tls';
+import type { TargetConfig as RunnerTargetConfig } from '../scenarios/ScenarioRunner.js';
 
 export interface TargetConfig {
   mqttUrl: string;
@@ -138,4 +139,55 @@ export async function loadTarget(name: string): Promise<TargetConfig> {
   }
 
   return config;
+}
+
+/**
+ * Translate the targets.yaml-shaped {@link TargetConfig} into the runner's own
+ * {@link RunnerTargetConfig}. The two shapes name the same files differently —
+ * `certs.station_ca_chain` here becomes `tls.chain` there, and `certs.ca`
+ * becomes `tls.serverCa` — and that renaming gap is where the 2026-08-17
+ * broker-CA clobber lived: `PoolBootstrap.certPathsFor` read `tls.serverCa` for
+ * a destination that `tls.chain` was the field for.
+ *
+ * It lives HERE rather than in `cli/index.ts` for one reason: `index.ts` ends in
+ * a top-level `program.parse()`, so importing it from a test runs the CLI. This
+ * module has no side effects, so the translation every real run depends on can
+ * now be asserted against the committed `config/targets.yaml` instead of against
+ * a hand-written fixture — which is what let the defect hide.
+ */
+export function toRunnerTarget(target: TargetConfig): RunnerTargetConfig {
+  const runnerTarget: RunnerTargetConfig = {
+    mqttUrl: target.mqttUrl,
+    apiBaseUrl: target.csmsUrl,
+  };
+
+  if (target.certs) {
+    runnerTarget.tls = {
+      key: target.certs.key,
+      cert: target.certs.cert,
+      keyPattern: target.certs.keyPattern,
+      certPattern: target.certs.certPattern,
+      chain: target.certs.stationCaChain,
+      serverCa: target.certs.serverCa,
+      minVersion: target.certs.minVersion,
+      maxVersion: target.certs.maxVersion,
+    };
+  }
+
+  if (target.mqttCredentials) {
+    runnerTarget.mqttCredentials = {
+      usernameTemplate: target.mqttCredentials.usernameTemplate,
+      passwordTemplate: target.mqttCredentials.passwordTemplate,
+    };
+  }
+
+  if (target.stationPool) {
+    runnerTarget.stationPool = target.stationPool;
+  }
+
+  if (target.credentials) {
+    runnerTarget.credentials = target.credentials;
+  }
+
+  return runnerTarget;
 }

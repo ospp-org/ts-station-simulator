@@ -313,9 +313,39 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
   const keyPath = sub(keyPattern);
   const certPattern = target.tls?.certPattern ?? target.tls?.cert ?? keyPattern.replace(/-key\.pem$/, '.pem');
   const certPath = sub(certPattern);
-  // serverCa pattern doubles as the station_ca_chain file the runner uses as the
-  // MQTT TLS trust anchor (UAT broker is a private OneStopPay CA hierarchy).
-  const chainPattern = target.tls?.serverCa ?? keyPattern.replace(/-key\.pem$/, '-chain.pem');
+  // The per-station chain the runner presents as `station_ca_chain`
+  // (`TargetConfig.tls.chain`, mapped from `certs.station_ca_chain` at
+  // `cli/index.ts:484`).
+  //
+  // `tls.chain` COMES FIRST, and the order is the whole point. This line read
+  // `target.tls?.serverCa ?? …` and was documented as "serverCa doubles as the
+  // station_ca_chain file". That was true of exactly one target: `uat` sets
+  // `station_ca_chain` and no `ca`, so `serverCa` was undefined and the fallback
+  // below — which is per-station by construction — is what actually ran. Every
+  // green run took the fallback, so the configured branch was never exercised.
+  //
+  // On any target that DOES set `ca:`, `serverCa` resolves to it
+  // (`cli/config.ts:129` maps `certs.server_ca ?? certs.ca`), and for
+  // `local-mtls`/`local-crl`/`sandbox` that file is SHARED and station-agnostic:
+  // `certs/local/broker-ca.pem`, the bundle the client verifies the BROKER with.
+  // Bootstrapping one station then overwrote the trust anchor with that
+  // station's chain, and teardown deleted it — measured 2026-08-17, which is how
+  // this was found. The two fields are opposite directions of trust and must not
+  // alias: `ca` is what we trust the broker BY, `station_ca_chain` is what we
+  // present ourselves WITH.
+  const chainPattern =
+    target.tls?.chain ?? target.tls?.serverCa ?? keyPattern.replace(/-key\.pem$/, '-chain.pem');
+  // A destination with no `{{stationId}}` in it is shared by construction, so
+  // the second station provisioned would overwrite the first's chain even
+  // without the broker-CA collision above. Fail loudly rather than clobber:
+  // silence here costs a fixture that `certs/` being gitignored cannot restore.
+  if (!/\{\{stationId\}\}/.test(chainPattern)) {
+    throw new Error(
+      `bootstrap: station chain destination "${chainPattern}" has no {{stationId}} — it is a ` +
+      'shared file and would be overwritten by every provisioned station (and deleted at ' +
+      'teardown). Give the target a per-station certs.station_ca_chain in config/targets.yaml.',
+    );
+  }
   const chainPath = sub(chainPattern);
   const dir = path.dirname(keyPath);
   return {
