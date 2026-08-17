@@ -307,8 +307,113 @@ describe('the legitimate overrides in the corpus', () => {
       'e2e-new-customer-onboarding.yaml',
       'e2e-returning-customer-session.yaml',
       'e2e-session-end-matrix.yaml',
+      // --- the seven firmware files, added 2026-08-17. Arguments below. ---
+      'firmware-command-timeout-no-response.yaml',
+      'firmware-rebooted-during-update.yaml',
+      'firmware-rollback-detected.yaml',
+      'firmware-signature-invalid.yaml',
+      'firmware-stalled-after-accept.yaml',
+      'firmware-unexpected-version-at-boot.yaml',
+      'firmware-update-full-cycle-reboot.yaml',
       'heartbeat-silence-offline-sweep.yaml',
       'reserve-expire.yaml',
     ]);
+  });
+
+  /**
+   * THE ARGUMENT FOR THE SEVEN FIRMWARE OVERRIDES, which this suite requires by
+   * design ("every new override should be argued for"). They split into two
+   * kinds, and the split is the argument.
+   *
+   * FIVE ARE NOT DOMINATED BY THEIR DECLARED DELAYS — full-cycle-reboot,
+   * unexpected-version-at-boot, rollback-detected, rebooted-during-update,
+   * signature-invalid. Four of them pay for a REAL MQTT reconnect: `fault:
+   * disconnect` destroys the socket and the client returns on
+   * LIVE_RECONNECT_PERIOD_MS (5s), which is wall clock no `ms:` line declares.
+   * Add bootstrap round-trips, two boots and up to six API reads and 90s is not
+   * comfortably clear. For these the check below is a CEILING only; the
+   * arithmetic argument the e2e trio gets does not apply.
+   *
+   * TWO ARE THE OPPOSITE CASE and are exempted from that ceiling, for a reason
+   * worth stating rather than special-casing silently: their waits are not
+   * padding, they are the subject, and both are sized off a SERVER CONSTANT this
+   * repo does not control.
+   *
+   *   firmware-stalled-after-accept        DetectStalledFirmwareUpdates::STALL_FAILURE_MINUTES
+   *                                        = 10, private const, swept everyFiveMinutes()
+   *                                        -> up to 15 min
+   *   firmware-command-timeout-no-response ospp.command_timeouts.UpdateFirmware = 300s,
+   *                                        scanned everyMinute() -> up to ~6 min
+   *
+   * Those two are checked against the constants they wait on, so trimming either
+   * wait below the thing it is waiting for goes red HERE rather than flaking on a
+   * broker later.
+   */
+  it('the five short firmware overrides are bounds, not absences of one', () => {
+    const RECONNECT_FILES = [
+      'scenarios/device-management/firmware-update-full-cycle-reboot.yaml',
+      'scenarios/device-management/firmware-unexpected-version-at-boot.yaml',
+      'scenarios/device-management/firmware-rollback-detected.yaml',
+      'scenarios/device-management/firmware-rebooted-during-update.yaml',
+      'scenarios/device-management/firmware-signature-invalid.yaml',
+    ];
+
+    for (const rel of RECONNECT_FILES) {
+      const src = fs.readFileSync(path.resolve(rel), 'utf8');
+      const m = src.match(/^scenario_timeout_ms:\s*(\d+)/m);
+      expect(m, `${rel} must declare a budget`).not.toBeNull();
+      const budget = Number(m![1]);
+
+      const declaredDelayMs = [...src.matchAll(/^\s+ms:\s*(\d+)/gm)]
+        .reduce((sum, d) => sum + Number(d[1]), 0);
+
+      // Above the default, or the override would be pointless.
+      expect(budget, `${rel}: override below the default is a no-op`)
+        .toBeGreaterThan(DEFAULT_SCENARIO_TIMEOUT_MS);
+      // Clears its own declared waiting with room for the traffic around it.
+      expect(budget, `${rel}: budget must exceed its ${declaredDelayMs}ms of delay`)
+        .toBeGreaterThan(declaredDelayMs + 30_000);
+      // And is still a BOUND. 3 minutes is the ceiling for a file whose only
+      // undeclared cost is one 5s reconnect; past that it is not bounding anything.
+      expect(budget, `${rel}: budget is not a bound any more`)
+        .toBeLessThanOrEqual(180_000);
+    }
+  });
+
+  // The two sweep-driven files, each against the server constant it waits on.
+  // `mustOutwaitMs` is DERIVED IN THE COMMENT COLUMN from that constant plus one
+  // full period of the job that enforces it — a file that waits for the constant
+  // alone races the sweep and goes red for a reason that is not a defect.
+  it.each([
+    {
+      rel: 'scenarios/device-management/firmware-stalled-after-accept.yaml',
+      // STALL_FAILURE_MINUTES = 10 (private const), swept everyFiveMinutes() -> 15
+      mustOutwaitMs: 15 * 60_000,
+      runtimeNote: /~16 MINUTES/,
+    },
+    {
+      rel: 'scenarios/device-management/firmware-command-timeout-no-response.yaml',
+      // command_timeouts.UpdateFirmware = 300s, scanned everyMinute() -> 360s
+      mustOutwaitMs: 6 * 60_000,
+      runtimeNote: /~7 MINUTES/,
+    },
+  ])('$rel is sized off the server constant it waits on, and says so', (spec) => {
+    const src = fs.readFileSync(path.resolve(spec.rel), 'utf8');
+
+    const budget = Number(src.match(/^scenario_timeout_ms:\s*(\d+)/m)![1]);
+    const declaredDelayMs = [...src.matchAll(/^\s+ms:\s*(\d+)/gm)]
+      .reduce((sum, d) => sum + Number(d[1]), 0);
+
+    // THE assertion that keeps the wait honest if someone later trims it.
+    expect(declaredDelayMs, `${spec.rel}: must out-wait its constant + one sweep period`)
+      .toBeGreaterThanOrEqual(spec.mustOutwaitMs);
+    expect(budget).toBeGreaterThan(declaredDelayMs + 60_000);
+
+    // A file this expensive has to carry its own warning, or the next person to
+    // watch it sit for a quarter of an hour assumes it hung. Both halves are
+    // load-bearing: the runtime, and the scheduler dependency without which a red
+    // here means nothing about the server.
+    expect(src, `${spec.rel}: must state its runtime in the header`).toMatch(spec.runtimeNote);
+    expect(src, `${spec.rel}: must state the scheduler dependency`).toMatch(/schedule:work/);
   });
 });

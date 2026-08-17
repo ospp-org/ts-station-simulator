@@ -1,0 +1,208 @@
+# THE STATION NEVER ANSWERED THE COMMAND AT ALL — no Accepted, no Rejected, no
+# notification. Server cause: `command_timeout`.
+#
+# ⏱  THIS FILE RUNS FOR ~7 MINUTES and ⚠ REQUIRES A RUNNING SCHEDULER. The
+# pending-command TTL for UpdateFirmware is 300s (config/ospp.php:205) and
+# `command:check-timeouts` is scheduled `everyMinute()` (routes/console.php:27-30),
+# so the verdict lands a little over five minutes after dispatch. Nothing invokes
+# that command on its own; on the local stack it needs
+# `docker exec -d csms-app php artisan schedule:work`. Without it the final read
+# finds the row still `idle`, which looks exactly like a broken scanner.
+#
+# THREE SILENCES, AND THIS IS THE THIRD. They are the reason `failure_reason`
+# exists at all — before 0fd0150 all three were the same `failed` with the same
+# empty explanation, and an operator could not tell a station that ignored a
+# command from one that accepted it and died mid-download:
+#
+#   command_timeout          never answers the command      row stays `idle`
+#                            CommandTimeoutScanner, ~5 min  (this file)
+#   superseded               never answers, second push     row stays `idle`
+#                            InitiateFirmwareUpdateAction   (firmware-superseded-by-second-push)
+#   stalled                  ANSWERS Accepted, then silent  row is `downloading`
+#                            DetectStalledFirmwareUpdates, ~10-15 min
+#                                                           (firmware-stalled-after-accept)
+#
+# The first two are indistinguishable from the station's side — it does exactly
+# the same nothing in both — and are separated entirely by what the OPERATOR does
+# next. The third is separated by one message. Four files, one column, four
+# tokens: that is the whole argument for the column, measured rather than argued.
+#
+# THE ROW MUST STILL BE `idle` FOR THIS TO FIRE, which is also why the file sends
+# no FirmwareStatusNotification of any kind. `firmwareUpdatesInFlight()` excludes
+# `idle`, so an `idle` row is invisible to the stall detector and belongs to the
+# timeout scanner alone. The two sweeps partition the space and never both fire on
+# one row — and the intermediate read below is what pins the row on the correct
+# side of that partition before the wait.
+#
+# WHAT WOULD INVERT IT. `FailFirmwareUpdateAction.php:80-85` hard-codes
+# `command_timeout` on this path; change that constant and `failure_reason` fails
+# while `status: failed` beside it still passes. Raising the 300s TTL above the
+# wait below leaves the row `idle` and fails the read instead — a different red
+# in a different place, which is what makes the two causes of failure here
+# distinguishable from each other.
+name: "Firmware Update — No Response To The Command (command_timeout)"
+description: >
+  Station boots and is pushed 2.0.0, receives the UpdateFirmware command and never
+  answers it — while staying online via heartbeats. After the 300s pending TTL the
+  scheduled timeout scanner closes the row `failed` with failure_reason
+  `command_timeout`, from `idle`. REQUIRES a running scheduler; runs ~7 minutes.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SKIPPED — because of a SERVER DEFECT this file measured, not because it is
+# unfinished. Un-skip when the grace period below is widened.
+#
+# THE DEFECT. `PendingCommandRegistry` writes each pending command with
+# `TTL = max(timeoutSeconds + GRACE_PERIOD_SECONDS, MIN_TTL_SECONDS)` (:126), i.e.
+# `max(300 + 30, 120) = 330s` for UpdateFirmware. The command is LOGICALLY expired
+# at 300s and the key VANISHES from Redis at 330s, so the scanner has a
+# **30-second window** in which to see it — while `command:check-timeouts` runs
+# `everyMinute()` (routes/console.php:27-30). A 60s cadence hits a 30s window
+# roughly half the time, and a miss is permanent: the key is gone and nothing else
+# closes the row, which sits `idle` forever.
+#
+# The registry ALREADY documents this exact failure mode at :39-51 and fixes it
+# with `MIN_TTL_SECONDS = 120` — "Retaining every key for at least 2x the 60s
+# cadence guarantees a scan lands while it is still present." That floor works for
+# SHORT timeouts. It does nothing for long ones: at 300s the floor is irrelevant
+# and the window is bounded by the 30s GRACE_PERIOD alone. The reasoning was
+# right; it was applied to the wrong term.
+#
+# MEASURED 2026-08-17, twice, in both directions, same file and same wait:
+#   scheduler at everyMinute() (the real cadence)  ->  FAILED, row still `idle` at 403s
+#   scanner forced to an 8s cadence                ->  PASSED
+# Nothing else differed. That is the whole proof, and it is why this is filed as a
+# server defect rather than a flaky scenario.
+#
+# THE FIX IS ONE CONSTANT: `GRACE_PERIOD_SECONDS` must be at least 2x the scan
+# cadence (>= 120), or the floor must apply to the grace rather than to the total.
+# Every action with a timeout above 90s is affected, not just this one — the
+# per-action timeouts live in config/ospp.php and UpdateFirmware is merely the
+# longest.
+#
+# WHY SKIPPED RATHER THAN LEFT RED. A ~50% scenario is worse than no scenario:
+# this repo's own RUNNING-AGAINST-UAT.md records that a standing failure teaches
+# readers to skim the failure list, "and the run where it means something looks
+# like the twenty where it did not". The file is kept intact so un-skipping is a
+# one-line change once the constant moves.
+# ─────────────────────────────────────────────────────────────────────────────
+skip: true
+skip_reason: >
+  Server defect, measured 2026-08-17: PendingCommandRegistry gives UpdateFirmware
+  a 330s Redis TTL against a 300s logical timeout, leaving command:check-timeouts
+  a 30s window on a 60s cadence — so command_timeout fires ~50% of the time. Same
+  file passed with the scanner forced to 8s and failed at 60s. Un-skip when
+  GRACE_PERIOD_SECONDS >= 2x the scan cadence.
+
+scenario_timeout_ms: 600000
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Same argument as the stall file: the station must stay demonstrably ALIVE, or
+  # this proves only that an unreachable station stops answering. Seven minutes is
+  # well past the 3.5 x 30s offline sweep, so without heartbeats the station would
+  # be marked offline and the timeout would be the less interesting of two
+  # explanations.
+  - action: start_heartbeat
+    interval_sec: 30
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  # The command IS delivered — that is what makes this a timeout rather than a
+  # dispatch failure, and it is the distinction the whole file rests on. The
+  # station receives it and simply does not reply. Nothing follows this step until
+  # the wait.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: delay
+    ms: 2000
+
+  # `idle` — the row has never moved, because only an `Accepted` response moves it
+  # (UpdateFirmwareResponseHandler.php:89-98). This read is what places the row in
+  # the timeout scanner's half of the partition rather than the stall detector's.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "idle"
+      data[firmware_version=2.0.0].failure_reason: null
+
+  # ------------------------------------------------------------- THE SILENCE
+  # 300s TTL + up to 60s of scanner phase + margin. Split so a killed run shows
+  # how far it reached.
+  - action: delay
+    ms: 200000
+  - action: delay
+    ms: 200000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      data[firmware_version=2.0.0].failure_reason: "command_timeout"
+      # Never left idle, so no percentage was ever written — the same 0 the
+      # rejected-by-station and superseded siblings read, and for the same reason.
+      data[firmware_version=2.0.0].progress: 0
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.firmwareVersion: "1.0.0"

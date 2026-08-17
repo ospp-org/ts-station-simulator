@@ -1,0 +1,274 @@
+# THE STATION COMES BACK WRONG — install reported fine, the reboot happened, and
+# the version that booted is not the one that was installed. Server cause:
+# `unexpected_version`, the EIGHTH cause and the one the enum's own docblock still
+# forgets (FirmwareFailureReason.php:8,10 say "seven"; the test asserts eight and
+# names this as the extra — FirmwareFailureReasonTest.php:334-353).
+#
+# THIS FILE IS THE CONTROL FOR `firmware-update-full-cycle-reboot.yaml`, and that
+# is the whole design. The two run the same arc — boot 1.0.0, push 2.0.0, accept,
+# download, install, Installed, disconnect, reconnect, boot — and differ in ONE
+# field: the `firmwareVersion` on the final BootNotification. That file boots
+# 2.0.0 and the row reaches `activated`; this one boots 1.5.0 and the row reaches
+# `failed` / `unexpected_version`.
+#
+# WHY A PAIR RATHER THAN A MUTATION. `HandleBootAfterFirmwareUpdate.php:56`
+# compares the booted version against the row's target, and everything downstream
+# hangs off that equality. A mutation of that line would prove the same thing
+# once, on a tree nobody ships. The pair proves it from the WIRE, repeatably, and
+# it inverts on a value a real station actually controls — which is also the only
+# form of this test a station vendor could run against their own firmware.
+#
+# WHY NOT `ErrorRecovery` AS THE BOOT REASON. That is the OTHER branch of the same
+# comparison and it is a different cause. With the version mismatched, the
+# listener splits on bootReason: `ErrorRecovery` means the station's bootloader
+# reverted and the row is closed `rollback_detected` (:100-106); anything else
+# means the station came up on a version nobody asked for and the row is closed
+# `unexpected_version` (:147-152). `PowerOn` is used below because it is the
+# honest reading of the situation this file describes — the station rebooted into
+# something unexpected without claiming it recovered from anything — and because
+# the rollback branch has its own file, `firmware-rollback-detected.yaml`.
+#
+# The PascalCase is load-bearing and has bitten before: the listener once compared
+# the snake_case literal `error_recovery` against a schema that pins
+# `ErrorRecovery`, so no conforming station could reach the rollback branch at all
+# and every rollback was misdiagnosed (:81-98). Both files send the exact enum
+# spelling from boot-notification-request.schema.json:75-87, and `EnumValuesCheck`
+# in `lint:scenarios` refuses anything else.
+name: "Firmware Update — Unexpected Version At Boot (unexpected_version)"
+description: >
+  Full install cycle for 2.0.0, then the station reboots and announces 1.5.0 with
+  bootReason PowerOn. The server closes the update `failed` with failure_reason
+  `unexpected_version`. Identical to firmware-update-full-cycle-reboot.yaml except
+  for the version on the final boot.
+
+scenario_timeout_ms: 180000
+clean_session: true
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # Abbreviated cadence relative to the success file — 0/50/100 rather than every
+  # 10% mark. The cadence itself is that file's subject and is proven there; here
+  # it is scaffolding, and eleven marks would add 3s and nothing else. What is
+  # kept is the ORDER and the omission rules, because those are what make this a
+  # legitimate install rather than a shortcut into `rebooting`.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 50
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+  - action: delay
+    ms: 300
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloaded"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+  - action: delay
+    ms: 400
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+  - action: delay
+    ms: 400
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installed"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+
+  - action: delay
+    ms: 1500
+
+  # The row must be parked at `rebooting` before the boot, or the assertion at the
+  # end is not about the boot. `unexpected_version` is written ONLY from
+  # `rebooting` — the listener runs on the boot event and reads this state.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "rebooting"
+      data[firmware_version=2.0.0].failure_reason: null
+
+  - action: fault
+    type: disconnect
+
+  - action: wait_for_connect
+    timeout_ms: 30000
+
+  - action: delay
+    ms: 6000
+
+  # THE ONE DIFFERENT FIELD: 1.5.0, not 2.0.0.
+  #
+  # A version BELOW the one installed and ABOVE the one that was running, chosen
+  # so the value cannot be mistaken for either endpoint of the update — a boot at
+  # 1.0.0 would be indistinguishable from "the install silently did nothing", and
+  # this file is about a version nobody asked for rather than a no-op. It is also
+  # not a downgrade of the running firmware, so it stays clear of the separate
+  # 5016 / FirmwareDowngradeAttempt machinery.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.5.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 3
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  # The BOOT is accepted — that is not in question and it is worth pinning,
+  # because it separates "the server rejected the station" from "the server
+  # accepted the station and judged the update failed". Those are different
+  # outcomes and only the second one is this file's subject.
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      # THE INVERSION. The sibling file's identical read says `activated` /
+      # `progress: 100` / `failure_reason: null`.
+      data[firmware_version=2.0.0].failure_reason: "unexpected_version"
+
+  # And the station's own record now carries the version it actually booted — so
+  # the operator sees 1.5.0 running while the 2.0.0 update reads failed. Reading
+  # both is what makes the two halves of the disagreement visible at once; either
+  # alone could be explained by a write that simply did not happen.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.firmwareVersion: "1.5.0"
+      data.isOnline: true

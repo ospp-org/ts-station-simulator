@@ -22,6 +22,39 @@
 #   station's own payload (`$updates['error_text'] = $errorText ?? 'Unknown error'`, :135).
 #   Asserting it proves the report round-tripped and persisted — real, but persistence, not
 #   server judgement. It is the same category as the security-event severity assertions.
+#
+# RE-MEASURED 2026-08-17 against csms-server 9896108, and the paragraph above SURVIVES —
+# which is the opposite of what the intervening commits made it look like.
+#
+#   csms-server 0fd0150 added a `failure_reason` column precisely to end the era where
+#   every firmware failure looked identical, and the enum behind it now carries EIGHT
+#   causes (app/Shared/Enums/FirmwareFailureReason.php; its own docblock still says
+#   "seven" and is wrong — FirmwareFailureReasonTest.php:334-353 asserts eight and names
+#   `unexpected_version` as the extra). Six of those eight are separable on the wire and
+#   now have a scenario each in this directory.
+#
+#   THIS PAIR IS NOT AMONG THEM. Anything a station reports as `Failed` on a
+#   FirmwareStatusNotification is written `reported_by_station` by ONE line —
+#   FirmwareStatusNotificationHandler.php:133-144 — regardless of which phase it was in.
+#   So download-failure, install-failure AND the new firmware-signature-invalid.yaml all
+#   land the same status AND the same failure_reason. The new column separates the SERVER's
+#   judgements from each other (stalled / command_timeout / rollback_detected /
+#   unexpected_version / superseded / rejected_by_station); it does not, and was never
+#   built to, separate the station's own account of itself into phases.
+#
+#   `failure_reason` is asserted below anyway. Not because it discriminates within this
+#   pair, but because it discriminates against the six that are NOT this: a row that
+#   reached `failed` by a stall, a reboot sweep or a supersede carries a different token,
+#   and those are exactly the confusions the column was added to end. It is the assertion
+#   that stops this file passing on the wrong failure.
+#
+#   WHAT WOULD ACTUALLY SEPARATE THE PAIR, since it is worth naming rather than shrugging
+#   at: nothing on this row, because the row holds current state and no history. The phase
+#   at which a station failed is only recoverable from the notification SEQUENCE, and the
+#   server keeps no per-update event log. The one place a phase distinction does survive is
+#   firmware-signature-invalid.yaml — not through the firmware row at all, but through the
+#   FirmwareIntegrityFailure SecurityEvent the spec requires alongside it, which is a
+#   separate table this file has no equivalent of.
 name: "Firmware Update Download Failure"
 description: "Firmware update fails during download phase due to network error"
 station:
@@ -90,6 +123,15 @@ steps:
     payload:
       status: "Accepted"
 
+  # PROGRESS CADENCE — added 2026-08-17. This file used to send exactly one
+  # `Downloading` with `progress: 0` and then fail, which satisfies the MUST
+  # (one notification per transition, firmware-status.md §6 rule 1) and none of
+  # the SHOULD (a mark every 10%, :39). It also never entered the handler's
+  # progress-only short-circuit (FirmwareStatusNotificationHandler.php:93-107),
+  # which fires only when the mapped status EQUALS the row's current status — so
+  # a download that reported once exercised a different code path from every real
+  # one. The marks below make the failure land mid-transfer, which is what a
+  # network error actually looks like.
   - action: send
     message: FirmwareStatusNotification
     messageType: Event
@@ -97,10 +139,34 @@ steps:
       status: "Downloading"
       firmwareVersion: "{{captured.firmwareVersion}}"
       progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 20
+  - action: delay
+    ms: 300
+  # 45, matching the spec's own worked failure form (firmware-status.md:44-65:
+  # "Downloading (45%) -> Failed (errorText: ...)"). Not a round 10% mark on
+  # purpose: a transfer dies where it dies, and the 10% rule is a reporting
+  # cadence, not a grid the failure has to land on.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 45
 
   - action: delay
     ms: 500
 
+  # `progress` OMITTED on Failed — firmware-status.md:41 requires it omitted or 0.
+  # Omitting also leaves the row holding 45, which is what the read below pins.
   - action: send
     message: FirmwareStatusNotification
     messageType: Event
@@ -120,3 +186,12 @@ steps:
     expect_body:
       data[firmware_version=2.0.0].status: "failed"
       data[firmware_version=2.0.0].error_text: "Download failed: network error"
+      # Added 2026-08-17. Shared with install-failure and signature-invalid — see
+      # the header for why that is correct rather than a gap, and for what it
+      # DOES rule out.
+      data[firmware_version=2.0.0].failure_reason: "reported_by_station"
+      # The row still holds where the transfer died. Echoed rather than derived,
+      # but it is the one field that says this failure happened mid-download and
+      # not before a byte moved: the rejected-by-station sibling asserts 0 here
+      # for exactly that contrast.
+      data[firmware_version=2.0.0].progress: 45

@@ -1,0 +1,293 @@
+# THE BOOTLOADER REVERTED — the new image was installed, the station rebooted
+# into it, it failed self-test, and the bootloader fell back to the previous
+# partition. Server cause: `rollback_detected`.
+#
+# WHY IT IS A SEPARATE FILE FROM `firmware-unexpected-version-at-boot.yaml`.
+# The two reach the SAME comparison — booted `firmwareVersion` != the row's
+# target — and split on ONE field, `bootReason`
+# (HandleBootAfterFirmwareUpdate.php:99):
+#
+#     version mismatch + bootReason == "ErrorRecovery"  ->  rollback_detected   (:100-106)
+#     version mismatch + anything else                  ->  unexpected_version  (:147-152)
+#
+# So the three files form a fan on a single boot message: same arc, same
+# `rebooting` row, and `activated` / `unexpected_version` / `rollback_detected`
+# chosen by two fields the station controls. Each is the others' control, and no
+# mutation is needed to make any of them mean something.
+#
+# THE PASCALCASE IS THE POINT, and it is why this file is worth its runtime.
+# This branch was DEAD for as long as it existed: the listener compared the
+# snake_case literal `error_recovery` while boot-notification-request.schema.json
+# pins `ErrorRecovery`, so no conforming station could ever reach it and every
+# real rollback was silently filed as something else (the repair and its
+# reasoning are at :81-98). A branch that cannot execute passes every test that
+# does not drive it — and until this file, nothing on the wire did.
+#
+# WHAT THE SPEC ASKS FOR HERE, and what this file does about the second half.
+# `update-firmware.md:88` — after a rollback the station MUST send a
+# BootNotification with the PREVIOUS version and `bootReason: "ErrorRecovery"`.
+# `05-state-machines.md:748` (§6.5 rule 4) — it MUST ALSO send a
+# FirmwareStatusNotification `Failed` describing the rollback reason. Both are
+# sent below, in that order. Only the first is what the server's listener reads;
+# the second arrives at a row the listener has already closed, and the file
+# asserts that it does NOT overwrite the cause. That is a real ordering property
+# and it is the kind that breaks quietly: `reported_by_station` landing on top of
+# `rollback_detected` would replace the server's own judgement with the station's,
+# and both writes are legal in isolation.
+#
+# THE APPROXIMATION. No partition is switched and no self-test runs; the
+# simulator reports a rollback it did not perform. What the server sees is
+# complete — a disconnect, a reconnect, and a boot at the old version claiming
+# ErrorRecovery — because every input the listener reads is a field on that
+# message. The 5-minute bootloader watchdog (05-state-machines.md:706) is the
+# station's own timer and is not modelled at all: this file rolls back
+# immediately rather than after a watchdog expiry.
+name: "Firmware Update — Rollback Detected (rollback_detected)"
+description: >
+  Full install cycle for 2.0.0, then the station reboots back onto 1.0.0 with
+  bootReason ErrorRecovery and follows it with a Failed notification, as
+  update-firmware.md:88 and 05-state-machines.md:748 require. The server records
+  failure_reason `rollback_detected`, and the later Failed does not overwrite it.
+
+scenario_timeout_ms: 180000
+clean_session: true
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+  - action: delay
+    ms: 300
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloaded"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+  - action: delay
+    ms: 400
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+  - action: delay
+    ms: 400
+
+  # The install SUCCEEDS and is reported as such. That is what makes this a
+  # rollback rather than an install failure: the write completed, the boot target
+  # was switched, and only the new image's own self-test failed afterwards.
+  # `firmware-update-install-failure.yaml` is the other story, and it never
+  # reaches `Installed` at all.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installed"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "rebooting"
+      data[firmware_version=2.0.0].failure_reason: null
+
+  - action: fault
+    type: disconnect
+
+  - action: wait_for_connect
+    timeout_ms: 30000
+
+  - action: delay
+    ms: 6000
+
+  # THE ROLLBACK BOOT. Two fields carry it, and both must be exactly right:
+  #   firmwareVersion 1.0.0  — the PREVIOUS version, i.e. the update did not take
+  #   bootReason ErrorRecovery — PascalCase, the spelling the schema pins and the
+  #                             one the listener spent its life not matching
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 3
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "ErrorRecovery"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  # READ ONE — the cause, judged by the server off the boot alone, BEFORE the
+  # station's own Failed notification arrives. Taking it here is what makes the
+  # second read below meaningful: without it, a final `rollback_detected` could
+  # equally have been written by either message.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      data[firmware_version=2.0.0].failure_reason: "rollback_detected"
+
+  # The second half of what the spec asks of a rolled-back station
+  # (05-state-machines.md:748) — a Failed notification describing why.
+  #
+  # It arrives at a row that is ALREADY closed. Two behaviours are possible and
+  # only one is right: the correlation query only considers UNFINISHED updates
+  # (FirmwareStatusNotificationHandler.php:74-78, StatusValues::unfinishedFirmwareUpdates()
+  # excludes `activated` and `failed`), so this message should find no active
+  # update and be dropped. If it were instead matched, `failure_reason` would be
+  # overwritten with `reported_by_station` and the server's own judgement would be
+  # replaced by the station's account of itself.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Failed"
+      firmwareVersion: "2.0.0"
+      errorText: "Self-test failed after install; bootloader reverted to partition A"
+
+  - action: delay
+    ms: 2000
+
+  # READ TWO — the cause SURVIVED. This is the assertion the file is really for:
+  # `rollback_detected` still standing after a legal, spec-required message that
+  # would have relabelled it. A corpus that only ever sent one failure message per
+  # update could never see this, and the two writes are individually correct.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      data[firmware_version=2.0.0].failure_reason: "rollback_detected"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.firmwareVersion: "1.0.0"
+      data.bootReason: "ErrorRecovery"

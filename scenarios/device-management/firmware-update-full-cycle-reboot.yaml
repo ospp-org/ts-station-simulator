@@ -1,0 +1,562 @@
+# THE PATH BY WHICH THE SERVER LEARNS AN UPDATE SUCCEEDED — and until this file
+# existed, nothing on the wire exercised it.
+#
+# WHAT THE SIBLING `firmware-update-success.yaml` STOPS SHORT OF, and it is not a
+# detail. That file walks Downloading -> Downloaded -> Installing -> Installed and
+# then reads the server's record back as `rebooting`. `rebooting` is where the
+# server PARKS an update; it is not an outcome. The station never reboots, never
+# comes back, and the row never leaves that state — so the whole second half of
+# the cycle (§5 of `profiles/device-management/firmware-status.md`) had no wire
+# coverage at all. `core/boot-firmware-update.yaml` boots at 2.0.0 with
+# `bootReason: FirmwareUpdate`, but on a DIFFERENT station with no update in
+# flight, so it proves a boot was recorded and nothing about reconciliation.
+#
+# The spec is explicit that the boot is the report (`03-messages.md:1656`):
+#   "Station reboots and comes back with a BootNotification carrying the new
+#    `firmwareVersion` — that boot, not a further FirmwareStatusNotification, is
+#    how the update's outcome is reported."
+# and `firmware-status.md:72`: "After `Installed`, the station reboots. The next
+# message from the station MUST be a BootNotification with the new
+# `firmwareVersion`."
+#
+# WHAT THIS FILE ADDS, in the order it matters:
+#   1. The reboot, and therefore `activated` — the ONE state no other scenario
+#      can reach and the only terminal state on the station machine
+#      (FirmwareUpdateStatus::isTerminal(), vendor/.../FirmwareUpdateStatus.php:27-30).
+#   2. The spec's progress cadence rather than a single `progress: 0`.
+#   3. An assertion on the OUTBOUND UpdateFirmware payload, which nothing in the
+#      server validates at runtime (see §"THE OUTBOUND COMMAND" below).
+#
+# HOW FAR THE REBOOT APPROXIMATION GOES — stated because an unnamed approximation
+# is worth less than none. `fault: disconnect` destroys the TCP stream and the
+# mqtt client re-establishes after LIVE_RECONNECT_PERIOD_MS (MqttConnection.ts:225);
+# the simulator process does not restart, no partition is switched, no image is
+# ever fetched from `firmwareUrl`, and no ECDSA signature over a real binary is
+# ever verified. What the SERVER sees, however, is the complete article: the
+# session ends, the will fires, the socket returns, and a BootNotification arrives
+# carrying a new `firmwareVersion` and `bootReason: FirmwareUpdate`. Every input
+# to `HandleBootAfterFirmwareUpdate` is byte-identical to a real reboot, because
+# every one of them is a field on that message. The approximation is in the
+# station's interior, not on the wire.
+#
+# WHAT WOULD INVERT THIS FILE — the falsification, named so the next reader does
+# not have to derive it. `HandleBootAfterFirmwareUpdate.php:56` compares the
+# booted `firmwareVersion` against `firmware_updates.firmware_version`; that
+# equality is the only door to `activated`. Boot 1.9.9 instead of 2.0.0 and the
+# final read fails with `unexpected_version` — which is not a hypothetical, it is
+# the sibling `firmware-unexpected-version-at-boot.yaml`, and the two files are
+# each other's control: same fourteen steps, one field different, opposite
+# `failure_reason`. That pair is why neither needs a mutation to mean something.
+name: "Firmware Update — Full Cycle Through Reboot To Activated"
+description: >
+  Boot at 1.0.0, take an operator-pushed 2.0.0 update through the spec's ordered
+  state sequence with its progress cadence, send Installed, drop the link, come
+  back with a BootNotification at 2.0.0 / FirmwareUpdate, and read the server's
+  record as `activated` with progress 100 and no failure_reason.
+
+# The cadence below is deliberately unhurried (11 download marks + 5 install
+# marks, each with a gap) and the reconnect alone costs ~5s, so the 90s default
+# (ScenarioRunner.ts:47) is not enough. 180s leaves headroom for a slow first
+# API round-trip without hiding a genuine hang — a `wait_for` that blows its own
+# timeout still fails on the step, not on the budget.
+scenario_timeout_ms: 180000
+
+# Declared rather than inherited, and it is load-bearing HERE in a way it is not
+# in most files. `true` ends the MQTT session at the reconnect, which is what
+# makes the drop look like a power cycle rather than a resumed session — the same
+# mechanism `core/reconnect-recovery.yaml` measured and documented. A `false`
+# here would resume the session, suppress the will, and make the "reboot" a
+# reconnect the server cannot distinguish from a flaky link.
+clean_session: true
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  # ---------------------------------------------------------------- 1. BOOT
+  # `deviceManagementSupported: true` is not decoration. Pre-flight check 3
+  # (InitiateFirmwareUpdateAction.php:95-104) refuses with COMMAND_PRE_EMPTED
+  # 6008 unless the column is exactly `true` — NULL ("not stated") is refused
+  # too. The capability-unsupported sibling declares `false` and asserts the 409.
+  #
+  # `firmwareVersion: "1.0.0"` is equally load-bearing: pre-flight check 6
+  # (:146-151) refuses OPERATION_IN_PROGRESS when the station's known current
+  # version already equals the target, so a station booted at 2.0.0 could never
+  # be pushed 2.0.0.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # ------------------------------------------------- 2. OPERATOR PUSHES 2.0.0
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      # A 64-hex digest that is NOT the SHA-256 of the empty string. The spec's
+      # own worked example carried `e3b0c442…` (the empty-string digest) as the
+      # hash of a 12 MB image until 0.20.0 removed it, and the three sibling
+      # scenarios still copy that value. Nothing verifies it here — no image is
+      # fetched — so this changes no behaviour; it just stops propagating a
+      # literal the spec retracted.
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  # ------------------------------------- 3. THE OUTBOUND COMMAND, ON THE WIRE
+  #
+  # WHY THIS STEP ASSERTS AT ALL, when the three sibling files only capture.
+  # Nothing in the server validates this payload. `SchemaRegistry` says of
+  # itself "This registry is an INBOUND-MQTT defense" (:271); the only outbound
+  # validation in the codebase is for RESPONSES and it is log-only, non-blocking
+  # (MessageDispatcher.php:375-385). Server-initiated REQUESTS never pass
+  # through it. The sole coverage anywhere is a hand-written literal in
+  # tests/SchemaValidation/OutboundPayloadSchemaTest.php:315-325 that never
+  # calls InitiateFirmwareUpdateAction and omits its `scheduledAt` branch.
+  #
+  # Meanwhile the two entry points are laxer than the schema they must satisfy:
+  # UpdateFirmwareRequest.php:28-42 takes `firmwareVersion` as any string
+  # max:64 (schema: `^\d+\.\d+\.\d+$`, maxLength 32) and `signature` with no
+  # base64 pattern; DashboardDeviceController.php:92-99 accepts a non-https
+  # `firmware_url` and any `checksum`. So the server CAN publish a command a
+  # conforming station must drop, and no test in any suite would see it.
+  #
+  # A station is the right place to catch that, and these three asserts are a
+  # station doing it. What they do NOT amount to is schema validation: the
+  # simulator validates nothing it receives (the only Ajv in the repo is the
+  # LINTER, src/linter/checks/PayloadSchemaCheck.ts, which checks what scenarios
+  # SEND). Three fields pinned by hand is what is available; a received-payload
+  # schema check is the real fix and it does not exist yet.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+      firmwareUrl: "payload.firmwareUrl"
+      checksum: "payload.checksum"
+
+  - action: assert
+    field: "payload.firmwareVersion"
+    equals: "2.0.0"
+
+  # https, not http — the schema pins `^https://` and the bulk endpoint's
+  # validator does not.
+  - action: assert
+    field: "payload.firmwareUrl"
+    contains: "https://"
+
+  # Required by the schema and, unlike the three above, NOT echoed from the
+  # operator's request body in a form the operator controls end to end: its
+  # presence is what a station needs to verify the image at all.
+  - action: assert
+    field: "payload.signature"
+    exists: true
+
+  # ------------------------------------------------------ 4. ACCEPT THE COMMAND
+  # `Accepted` is the RESPONSE's status and a station MUST NOT send it as a
+  # FirmwareStatusNotification (update-firmware.md:53-59). The server's FSM
+  # agrees and is strict here: UpdateFirmwareResponseHandler.php:89-92 calls
+  # transition() and THROWS on anything but idle -> downloading.
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # ----------------------------------------------- 5. DOWNLOAD, AT SPEC CADENCE
+  #
+  # `firmware-status.md:39` — "the station SHOULD send a notification at every
+  # 10% increment of download progress (i.e., at progress values 10, 20, 30,
+  # ..., 90, 100), and SHOULD send one at least every 30 seconds — whichever
+  # falls sooner."
+  #
+  # Eleven notifications, 0 through 100. The siblings send exactly one
+  # `Downloading` with `progress: 0`, which satisfies the MUST (one per
+  # transition, §6 rule 1) and none of the SHOULD. The difference is not
+  # cosmetic on this server: FirmwareStatusNotificationHandler.php:93-107 has a
+  # progress-only short-circuit that fires when the mapped status equals the row's
+  # current status — so marks 10..100 take a DIFFERENT code path from mark 0,
+  # one that writes `progress` and `last_notification_at` and emits
+  # FirmwareUpdateProgressChanged. A single `progress: 0` never enters it.
+  #
+  # 300ms between marks, not 30s: the floor in the spec is a MINIMUM rate for a
+  # slow download, not a required spacing, and a 30s cadence would put this file
+  # at five and a half minutes for no additional proof.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 10
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 20
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 30
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 40
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 50
+
+  # MID-FLIGHT READ — the cadence has to be observable, not merely sent.
+  #
+  # This is the assertion the corpus has never had for firmware: every existing
+  # file reads the server's record ONCE, at the end, where a single terminal
+  # write would satisfy it just as well as a live progress path. Reading 50 here
+  # pins that the short-circuit at :93-107 actually ran and persisted a value the
+  # station chose mid-transfer. `status` is read alongside it because progress
+  # without status is ambiguous — the row could be anywhere.
+  - action: delay
+    ms: 800
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "downloading"
+      data[firmware_version=2.0.0].progress: 50
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 60
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 70
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 80
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 90
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+
+  - action: delay
+    ms: 400
+
+  # ------------------------------------------------------------ 6. DOWNLOADED
+  # `progress` is OMITTED, not sent as 0. `firmware-status.md:41` — "The
+  # `progress` field MUST be omitted or set to `0` when the status is
+  # `Downloaded`, `Installed`, or `Failed`." Omitting is the stronger of the two
+  # permitted forms and it is also what exercises the handler's nullable path
+  # (the short-circuit at :93-107 is entered only when `progress !== null`).
+  #
+  # Reaching `Downloaded` at all asserts the signature verified: 0.20.0 made
+  # `Downloaded` mean checksum AND ECDSA signature everywhere (CHANGELOG entry 3),
+  # and a station whose signature check fails goes Downloading -> Failed with no
+  # `Downloaded` in between. That negative is the sibling
+  # `firmware-signature-invalid.yaml`.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloaded"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+
+  - action: delay
+    ms: 500
+
+  # ------------------------------------------------- 7. INSTALL, AT SPEC CADENCE
+  # `firmware-status.md:40` — "During `Installing`: The station SHOULD send a
+  # notification at key milestones (25%, 50%, 75%, 100%)." Five marks with 0.
+  #
+  # NOTE ON THE GATE, because this file deliberately does not exercise it. Spec
+  # 0.20.0 moved the active-session gate onto `Verified -> Installing`
+  # (05-state-machines.md:836-845): the station MUST NOT begin installing while
+  # any bay is `Occupied` or `Finishing`. Both bays here are idle, so the gate is
+  # open from the start and this transition is legal. A file that drove the gate
+  # SHUT would have to hold a live session across the install and watch the
+  # server withhold the stall clock — that is `gate_opened_at`
+  # (2026_08_17_000002), it is not exposed by FirmwareUpdateResource, and its
+  # only observable is the absence of a `stalled` failure. Recorded rather than
+  # faked: this file proves the ungated path and says so.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 25
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 50
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 75
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+
+  - action: delay
+    ms: 500
+
+  # -------------------------------------------------------------- 8. INSTALLED
+  # Sent BEFORE the reboot, "on the connection the station is about to drop"
+  # (05-state-machines.md:767). This was a decided contradiction in 0.20.0 — six
+  # sites said before, five said after — and "after" is unimplementable against
+  # firmware-status.md §6 rule 4, which requires the next message to be a
+  # BootNotification.
+  #
+  # The server never stores `installed`: FirmwareStatusNotificationHandler.php:186-193
+  # coerces it to `rebooting` before the write. That coercion is what the sibling
+  # success file asserts as its endpoint; here it is a waypoint.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installed"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+
+  - action: delay
+    ms: 1500
+
+  # The waypoint, read before the reboot so the final `activated` is provably a
+  # TRANSITION and not a state the row was already in. Without this read, an
+  # `activated` at the end is consistent with a server that jumped there on
+  # `Installed` and ignored the boot entirely.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "rebooting"
+      data[firmware_version=2.0.0].failure_reason: null
+
+  # ---------------------------------------------------------------- 9. REBOOT
+  # The drop. `disconnect` rather than `sever`: `sever` latches the client closed
+  # with no auto-reconnect (MqttConnection.ts:623-641) and `wait_for_connect`
+  # would then hang — the corpus has no scenario that reconnects after a sever,
+  # and this file is not the place to prove that path.
+  - action: fault
+    type: disconnect
+
+  - action: wait_for_connect
+    timeout_ms: 30000
+
+  # Let the server consume the will the session-end published before the Boot
+  # arrives, so the two are not racing. `core/reconnect-recovery.yaml` measured
+  # 10s for this; 6s is enough here because nothing in this file asserts the
+  # offline transition itself — it only needs the will to land BEFORE the boot,
+  # not to be observed.
+  - action: delay
+    ms: 6000
+
+  # THE MESSAGE THE WHOLE FILE EXISTS FOR.
+  #
+  # `firmwareVersion: 2.0.0` — equal to the row's target, which is the only
+  # comparison that opens `activated` (HandleBootAfterFirmwareUpdate.php:56).
+  # `bootReason: FirmwareUpdate` — what a station that just installed reports
+  # (05-state-machines.md:687,705; the worked example at
+  # examples/flows/12-firmware-update.md:420-440).
+  #
+  # `uptimeSeconds: 3` rather than 0, matching that worked example: the spec
+  # requires uptime to be consistent with bootReason (boot-notification.md:96),
+  # and a freshly rebooted station has been up for seconds, not zero. Nothing
+  # branches on it here — this is conformance, not a proof.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "2.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 3
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "FirmwareUpdate"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  # ------------------------------------------------------------ 10. THE PROOF
+  #
+  # `activated` is unreachable by any other route. It is the single terminal
+  # state of the station machine and the ONLY edge into it is `rebooting ->
+  # activated` (FirmwareTransitions.php:26-35, thirteen edges). The listener
+  # writes it in one place and only when the booted version equals the target.
+  #
+  # `progress: 100` is written by that same handler (:56-78), not by the station:
+  # the last progress this file SENT was 100 on `Installing`, and `Installed`
+  # carried none — so a server that merely persisted what it was handed would
+  # show the install's 100, not a fresh one. Weaker than `activated` on its own,
+  # but it pins the write rather than the state name.
+  #
+  # `failure_reason: null` is the one that separates this file from FOUR of its
+  # new siblings, all of which reach a terminal row with a populated cause. Read
+  # together with `status`, it is what distinguishes "finished" from "finished
+  # badly" — and until 0fd0150 the column did not exist, so every failure looked
+  # identical here.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "activated"
+      data[firmware_version=2.0.0].progress: 100
+      data[firmware_version=2.0.0].failure_reason: null
+
+  # And the station itself now reports the new version — the operator-visible
+  # half of the same event, written by BootNotificationHandler rather than by
+  # the firmware listener, so a green here plus a green above means both writers
+  # agreed about the same boot.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.firmwareVersion: "2.0.0"
+      data.bootReason: "FirmwareUpdate"
+      data.isOnline: true

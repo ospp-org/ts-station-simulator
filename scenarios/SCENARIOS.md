@@ -18,6 +18,72 @@
 > fleet 3, multiunit-e2e 3, reservations 6, security 24, sessions 21,
 > tls-floor 6.
 
+## The firmware family — added 2026-08-17, measured on the wire
+
+Eleven files now cover the firmware update cycle. They are documented here rather
+than in the stale tables below because they were measured, not migrated.
+
+**Measured against csms-server `9896108` on a real broker (EMQX, mTLS on 8883,
+`signing_mode: All`), every message HMAC-signed.** Not against UAT: UAT was 15
+commits behind and carried neither of the two migrations this cycle added, so it
+cannot exhibit any of the causes in the table.
+
+`csms-server` 0fd0150 added a `failure_reason` column carrying **eight** causes
+(`app/Shared/Enums/FirmwareFailureReason.php` — its own docblock says "seven" and
+is wrong; `FirmwareFailureReasonTest.php:334-353` asserts eight). All eight now
+have a wire scenario, and each asserts its own token read back off
+`GET /api/v1/admin/stations/{id}/firmware`:
+
+| file | `failure_reason` | what drives it |
+|---|---|---|
+| `firmware-update-full-cycle-reboot` | *(none — `activated`)* | full spec cadence, then a real reconnect and a boot at the new version |
+| `firmware-rejected-by-station` | `rejected_by_station` | `Rejected` + **integer** `errorCode` — the form that used to throw |
+| `firmware-update-download-failure` | `reported_by_station` | `Downloading(45) -> Failed` |
+| `firmware-update-install-failure` | `reported_by_station` | `Downloaded -> Installing(50) -> Failed` |
+| `firmware-signature-invalid` | `reported_by_station` | `Downloading -> Failed` with **no** `Downloaded`, + `FirmwareIntegrityFailure` |
+| `firmware-unexpected-version-at-boot` | `unexpected_version` | boots 1.5.0 with `PowerOn` while `rebooting` |
+| `firmware-rollback-detected` | `rollback_detected` | boots 1.0.0 with `ErrorRecovery` while `rebooting` |
+| `firmware-rebooted-during-update` | `rebooted_during_update` | boots while the row is `downloading` |
+| `firmware-superseded-by-second-push` | `superseded` | a second operator push; **no station input at all** |
+| `firmware-stalled-after-accept` ⏱ | `stalled` | accepts, then ~16 min of silence while staying online |
+| `firmware-command-timeout-no-response` ⏱ | `command_timeout` | never answers the command; ~7 min |
+
+**Three of the eleven share `reported_by_station`, and that is correct rather than
+a gap.** One line writes it for anything a station reports as `Failed`
+(`FirmwareStatusNotificationHandler.php:133-144`), whatever phase it was in. The
+column separates the SERVER's judgements from each other; it was never built to
+split the station's account of itself into phases. What separates those three is
+`progress` (45 / 50 / 100) and, for the signature file, a `FirmwareIntegrityFailure`
+SecurityEvent in a different table.
+
+**Three groups are each other's controls, so none needs a source mutation to
+mean anything:**
+
+- one boot message, three outcomes — `activated` / `unexpected_version` /
+  `rollback_detected`, chosen by `firmwareVersion` and `bootReason` alone
+- three silences — `command_timeout` (never answers) / `superseded` (never
+  answers, second push) / `stalled` (answers, then goes quiet)
+- refusal at the door (`progress: 0`) vs failure mid-transfer (`progress: 45`)
+
+⏱ **The two marked files run for ~16 and ~7 minutes and REQUIRE a running
+scheduler** (`docker exec -d csms-app php artisan schedule:work`). Both wait on
+server constants with no config behind them —
+`DetectStalledFirmwareUpdates::STALL_FAILURE_MINUTES = 10` swept
+`everyFiveMinutes()`, and a 300s command TTL scanned `everyMinute()`. Without the
+scheduler both go red with the row untouched, which reads exactly like a broken
+sweep. `ScenarioRunner.scenarioTimeout.test.ts` pins their budgets against those
+constants and requires each file to state its own runtime.
+
+**What none of them prove.** No firmware image is ever fetched, no checksum or
+ECDSA image signature is ever verified, and no partition is written — those
+failures are *reported*, not *discovered*. The reboot is `fault: disconnect` +
+`wait_for_connect` + a fresh BootNotification: the simulator process does not
+restart, though every input the server reads is a field on that message, so the
+approximation is in the station's interior rather than on the wire. And the
+outbound `UpdateFirmware` payload is pinned by three hand-written `assert` steps,
+not schema-validated — the simulator validates nothing it receives (the only Ajv
+in the repo is the linter, which checks what scenarios SEND).
+
 ## What each file states about itself
 
 Every scenario states what it proves and what it cannot. Measured by YAML key —

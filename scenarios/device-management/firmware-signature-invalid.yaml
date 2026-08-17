@@ -1,0 +1,254 @@
+# THE IMAGE ARRIVED AND THE SIGNATURE DID NOT VERIFY — the one firmware failure
+# the spec gives a SHAPE to, not just a code, and the shape is an ABSENCE.
+#
+# `04-flows.md:1549` (TC-DM-004 Failure Criterion 7): a station whose signature
+# check fails goes `Downloading -> Failed` with NO intervening `Downloaded`.
+# 0.20.0 made that binding by settling what `Downloaded` means — four sites had
+# defined it as checksum-only, and it now asserts the ECDSA P-256 signature
+# everywhere (CHANGELOG 0.20.0, decision 3). So `Downloaded` is a CLAIM that the
+# signature verified, and a station that emits it and then fails on signature has
+# lied on the wire.
+#
+# THAT ABSENCE IS THIS FILE'S SUBJECT, and it is why the file is not simply
+# "download-failure with a different errorText". The sibling
+# `firmware-update-download-failure.yaml` also ends `Downloading -> Failed`, and
+# on this server both land the same `failure_reason: reported_by_station` —
+# because the server has ONE cause for anything a station reports as Failed
+# (FirmwareStatusNotificationHandler.php:133-144). Stated plainly rather than
+# papered over: **`failure_reason` does not separate these two files.** What
+# separates them is the SecurityEvent below, which a download failure never
+# sends, and that is the only server-side discriminator that exists.
+#
+# TWO LAYERS OF SIGNING, AND THIS FILE IS ABOUT THE OTHER ONE. Every message this
+# scenario sends is HMAC-signed at the envelope level — `signingMode` defaults to
+# `All` in scenario mode and MessageSender refuses to publish a message that owes
+# a mac without one (MessageSender.ts:149-156), so the FirmwareStatusNotification
+# and SecurityEvent below are both signed and both verified by the server. That
+# is 06-security.md §5.6. The signature that FAILS here is the other one:
+# §4.6's ECDSA P-256 signature over the firmware IMAGE, carried in the
+# UpdateFirmware command's `signature` field. The simulator cannot really verify
+# it — no image is ever fetched — so the failure is REPORTED rather than
+# discovered. The wire shape is identical to a real station's; the verification
+# is not performed. That is the approximation, named.
+#
+# WHY THE ERROR CODE IS ON THE SECURITY EVENT AND NOT ON THE NOTIFICATION.
+# `update-firmware.md:42`: the station MUST report 5112 via SecurityEvent,
+# because FirmwareStatusNotification carries no `errorCode` field at all and is
+# `additionalProperties: false` — there is physically nowhere on that message to
+# put it. Its `errorText` stays free prose, and the spec removed a conformance
+# step that had demanded the literal `FIRMWARE_SIGNATURE_INVALID` there, adding
+# "says not to match it programmatically" (CHANGELOG 0.20.0). So this file asserts
+# the prose is PERSISTED, never that it matches a token.
+name: "Firmware Update — Invalid Image Signature (no Downloaded, + FirmwareIntegrityFailure)"
+description: >
+  Station accepts a 2.0.0 update, downloads it, fails the ECDSA image-signature
+  check and goes straight Downloading -> Failed with no Downloaded, raising a
+  FirmwareIntegrityFailure SecurityEvent carrying 5112. Asserts the update row,
+  the absence of any further command, and the security event.
+
+scenario_timeout_ms: 120000
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      # A well-formed base64 signature that a real station would fetch the image
+      # and fail to verify. It is syntactically valid on purpose: the point of
+      # this file is a signature that PASSES schema validation and FAILS
+      # cryptographic verification, which is the only interesting case. A
+      # malformed one would be rejected by the schema and never reach a station.
+      signature: "MEUCIQDexampleInvalidSignatureBytesForThisScenario=="
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # The transfer itself succeeds — the bytes arrive. Running the download to 100%
+  # before failing is what makes this a SIGNATURE failure rather than a transfer
+  # failure, and it is the difference the sibling download-failure file draws by
+  # stopping at 45%.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 50
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 100
+  - action: delay
+    ms: 400
+
+  # ------------------------------------------------- NO `Downloaded` GOES HERE.
+  #
+  # The gap between the step above and the step below IS the assertion. There is
+  # no step kind that asserts "the station did not send X" about its own output —
+  # `expect_silence` watches what ARRIVES — so this cannot be pinned by a runner
+  # check. What pins it is the read at the end: the row goes `downloading ->
+  # failed` and never holds `downloaded`, and `progress` stays at the download's
+  # last mark rather than being reset by a `Downloaded` write.
+  #
+  # It is also enforceable one level up, and that is where it should eventually
+  # live: a linter rule that rejects a `Downloaded` between a `Downloading` and a
+  # signature-shaped `Failed`. Not written — recording it as the real fix rather
+  # than claiming this comment is one.
+
+  # `progress` omitted on Failed (firmware-status.md:41), and `errorText`
+  # REQUIRED on Failed (:42) — the only field this message can carry about why.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Failed"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      errorText: "Firmware image signature verification failed (ECDSA P-256)"
+
+  # The MUST from 06-security.md:665-679 and update-firmware.md:40 — 5112 travels
+  # on a SecurityEvent because the notification has no field for it. `Critical` is
+  # the severity the error table assigns 5112 (update-firmware.md §9).
+  - action: send
+    message: SecurityEvent
+    messageType: Event
+    payload:
+      eventId: "{{runSecurityEventId}}"
+      type: "FirmwareIntegrityFailure"
+      severity: "Critical"
+      timestamp: "2026-01-01T12:00:00.000Z"
+      details:
+        errorCode: 5112
+        firmwareVersion: "2.0.0"
+        reason: "signature_invalid"
+
+  # The server MUST NOT answer a FirmwareStatusNotification at all — it is
+  # fire-and-forget (firmware-status.md:70) — and it must not take a failed
+  # signature as a reason to re-issue the command, since no retry policy exists
+  # in the spec. Both are covered by the same silence.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      # SHARED with download-failure and install-failure. Asserted anyway,
+      # because a row that reached `failed` by any OTHER cause — a stall, a
+      # reboot sweep, a supersede — would carry a different token here, and those
+      # are exactly the confusions this column was added to end.
+      data[firmware_version=2.0.0].failure_reason: "reported_by_station"
+      # ECHOED, not derived: FirmwareStatusNotificationHandler.php:134 stores
+      # whatever the station sent (or 'Unknown error'). Asserting it proves the
+      # prose round-tripped and persisted — persistence, not server judgement.
+      data[firmware_version=2.0.0].error_text: "Firmware image signature verification failed (ECDSA P-256)"
+      # THE ABSENCE, made observable. 100 is the last mark the DOWNLOAD wrote. A
+      # `Downloaded` would have moved the row's status through `downloaded` on the
+      # way, and the install path would have overwritten progress from 0 again —
+      # so 100 beside `failed` is the row's own record that nothing ran after the
+      # transfer finished.
+      data[firmware_version=2.0.0].progress: 100
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    capture:
+      stationUuid: "data.id"
+
+  # THE DISCRIMINATOR against download-failure. Both files end with the same
+  # three firmware-row values; only this one has a security event to read back.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/security/events?station_id={{captured.stationUuid}}"
+    expect_status: 200
+    expect_body:
+      data[eventId={{runSecurityEventId}}].type: "FirmwareIntegrityFailure"
+      data[eventId={{runSecurityEventId}}].severity: "critical"
+      data[eventId={{runSecurityEventId}}].stationId: "{{stationId}}"
+
+  # The station is STILL RUNNING 1.0.0 — nothing was installed, so the operator's
+  # view must not have moved. This is the cheap assertion that catches the worst
+  # possible bug in this area: a server that records the target version as
+  # current because a firmware row existed for it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.firmwareVersion: "1.0.0"

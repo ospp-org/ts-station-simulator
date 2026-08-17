@@ -1,0 +1,180 @@
+# OBSERVATION INSTRUMENT, AND IT ASSERTS A DEFECT — read this header before
+# treating a green here as good news. This file passes because the server does
+# something wrong, and it MUST BE INVERTED when that is fixed.
+#
+# WHAT IT MEASURES. The server publishes an `UpdateFirmware` command whose
+# `firmwareVersion` and `signature` both violate the wire schema a conforming
+# station validates against. A station that enforced
+# `update-firmware-request.schema.json` would DROP this message, and the update
+# would fail for a reason no operator could diagnose from the server side —
+# because the server believes it dispatched a valid command.
+#
+# THREE THINGS HAVE TO BE TRUE AT ONCE FOR THAT TO HAPPEN, and all three are:
+#
+#   1. THE REQUEST VALIDATOR IS LAXER THAN THE SCHEMA.
+#      app/Http/Requests/Admin/UpdateFirmwareRequest.php:28-32 takes
+#      `firmwareVersion` as any string `max:64` — the schema pins
+#      `^\d+\.\d+\.\d+$` with maxLength 32, i.e. no pattern at all and double the
+#      length. :38-42 takes `signature` as any string — the schema pins
+#      `^[A-Za-z0-9+/=]+$`, maxLength 512. The bulk endpoint
+#      (DashboardDeviceController.php:92-99) is laxer still: `firmware_url` is
+#      `url`, not https-only, and `checksum` has no sha256 pattern.
+#
+#   2. NOTHING VALIDATES THE OUTBOUND COMMAND.
+#      `SchemaRegistry.php:271` describes itself: "This registry is an INBOUND-MQTT
+#      defense." The only outbound validation in the codebase is for RESPONSES and
+#      is log-only and non-blocking (MessageDispatcher.php:375-385). Server-initiated
+#      REQUESTS never pass through it. The registry even MAPS the schema
+#      (`'update-firmware-request' => 'mqtt/update-firmware-request.schema.json'`,
+#      :73) — it is simply never invoked for this direction.
+#
+#   3. NO TEST WOULD SEE IT.
+#      The whole outbound coverage is one hand-written literal in
+#      tests/SchemaValidation/OutboundPayloadSchemaTest.php:315-325 which never
+#      calls InitiateFirmwareUpdateAction and omits its `scheduledAt` branch. The
+#      broker-backed MqttIntegration suite has ZERO firmware files, and it runs
+#      with `config(['ospp.schema_validation_enabled' => false])`
+#      (MqttIntegrationTestCase.php:167) anyway.
+#
+# MEASURED 2026-08-17 BEFORE THIS FILE EXISTED, and the measurement is what
+# justified writing it. Three POSTs to a NON-EXISTENT station id: one conformant
+# (control), one with `firmwareVersion: "not-a-semver-v2"`, one with
+# `signature: "sig_fw_v2_test!!"`. All three answered identically —
+# `404 {"message":"Station not found"}`. Identical to the CONTROL is the whole
+# point: the request got past validation in all three cases and died at the
+# station lookup, so the validator accepted both malformed values. A 422 on
+# either would have meant the opposite.
+#
+# WHAT A COMPLETELY BROKEN INSTRUMENT WOULD ANSWER HERE, since that is the
+# question worth asking of any control. A simulator that ignored payload content
+# entirely would also pass this file — it asserts values, not rejection. So the
+# assertion is deliberately on the EXACT malformed strings rather than on
+# "something arrived": a server that sanitised the version on the way out would
+# publish `2.0.0` or nothing, and both fail. What this file genuinely cannot do is
+# REFUSE the message the way a real station would, because the simulator validates
+# nothing it receives — the only Ajv in this repo is the linter, and it checks
+# what scenarios SEND. That gap is the real finding here, and it is bigger than
+# this file: no scenario in the corpus can currently fail because the SERVER sent
+# something malformed.
+#
+# HOW TO INVERT IT WHEN THE SERVER IS FIXED. Two independent fixes, either of
+# which reddens this file, and they redden it in different places:
+#   - tighten UpdateFirmwareRequest to the schema's patterns  -> the POST answers
+#     422 and step [3] fails
+#   - validate outbound requests against the registry         -> the POST still
+#     answers 202 and no command reaches the wire; step [4] times out
+# Both are correct outcomes. When either lands, replace the asserts below with
+# the refusal that replaced them, and keep this header as the record of why the
+# file existed.
+name: "Firmware Update — Non-Conformant Command Reaches The Wire (DEFECT, observation)"
+description: >
+  Operator pushes a firmware update whose firmwareVersion is not semver and whose
+  signature is not base64. The admin API accepts both, and the server publishes
+  them verbatim to the station. Asserts the malformed values as RECEIVED — a
+  conforming station would drop this message.
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # 202, not 422. THIS status is the first half of the finding: the admin API
+  # accepted a body the wire schema forbids in two separate fields.
+  #
+  # `firmwareVersion` is 15 characters of non-semver — under the validator's
+  # max:64 and nowhere near `^\d+\.\d+\.\d+$`. It also has to fit
+  # `firmware_updates.firmware_version VARCHAR(20)`, which is why it is short: a
+  # 60-character version would be refused by POSTGRES rather than by any
+  # validator, and a database error is a different finding from this one.
+  #
+  # `signature` carries `_` and `!`, both outside the schema's base64 alphabet.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "not-a-semver-v2"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "sig_fw_v2_test!!"
+    expect_status: 202
+
+  # And it reaches the wire unchanged. The second half of the finding, and the
+  # half no server-side test can observe.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      receivedVersion: "payload.firmwareVersion"
+      receivedSignature: "payload.signature"
+
+  # EXACT values, not "exists". A sanitising server would publish something else
+  # and both of these would fail — which is what makes them a measurement of the
+  # defect rather than of the transport.
+  - action: assert
+    field: "payload.firmwareVersion"
+    equals: "not-a-semver-v2"
+
+  - action: assert
+    field: "payload.signature"
+    equals: "sig_fw_v2_test!!"
+
+  # The server recorded the malformed version as the target it is waiting on, so
+  # the damage is not confined to one message: every subsequent
+  # FirmwareStatusNotification must correlate on `(station_id, firmwareVersion)`
+  # (FirmwareStatusNotificationHandler.php:74-78), and a station that normalised
+  # the version to something valid would never match this row again.
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=not-a-semver-v2].status: "idle"
+
+  # Left `idle` on purpose — the station never answers. A conforming station
+  # could not have answered: it would have dropped the message at schema
+  # validation, which is exactly the operator-invisible failure this file is
+  # about. The row's eventual fate is `command_timeout`, and that path has its
+  # own file; nothing here waits for it.

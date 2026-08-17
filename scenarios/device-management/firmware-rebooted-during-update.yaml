@@ -1,0 +1,225 @@
+# THE STATION REBOOTED WHILE THE DOWNLOAD WAS RUNNING — a power cut, a watchdog,
+# an operator with a breaker. Server cause: `rebooted_during_update`.
+#
+# WHAT MAKES IT ITS OWN CAUSE RATHER THAN A STALL. Both end with an update that
+# stops progressing, and before 0fd0150 they were the same `failed`. They are
+# written by different code on different evidence:
+#
+#   stalled                 DetectStalledFirmwareUpdates, a scheduled job, on a CLOCK
+#                           — ten minutes of silence, no message required
+#   rebooted_during_update  BootNotificationHandler.php:574-594, synchronously, on a
+#                           MESSAGE — a boot arriving while the row is mid-flight
+#
+# So this file's verdict lands in SECONDS, not in the ten-to-fifteen minutes its
+# sibling `firmware-stalled-after-accept.yaml` has to wait for. That difference is
+# the practical reason the distinction is worth having: an operator watching a
+# fleet learns immediately that a station bounced, instead of learning in a
+# quarter of an hour that one went quiet.
+#
+# THE SWEEP IS UNCONDITIONAL ON `bootReason` (:398) and covers six row states —
+# downloading, downloaded, verifying, verified, installing, rebooting (:576-583).
+# This file parks the row at `downloading`, the earliest of them and the one a
+# real mid-transfer power cut produces.
+#
+# ORDERING, AND WHY `rebooting` IS DELIBERATELY NOT USED HERE. The sweep fires
+# only for rows "the boot listener did not already close". A row at `rebooting`
+# is exactly what HandleBootAfterFirmwareUpdate claims first — that is the
+# reconciliation path, and depending on the booted version it yields `activated`,
+# `unexpected_version` or `rollback_detected`, all of which have their own files.
+# Driving this file from `rebooting` would race those three and prove whichever
+# won. `downloading` is unambiguous: the listener has nothing to do with it, so
+# the sweep is the only writer that can act.
+#
+# WHAT WOULD INVERT IT. The state list at :576-583 is the whole of the sweep's
+# reach. Remove `downloading` from it and this file's final read stays
+# `downloading` forever while every earlier step passes — the row simply never
+# gets closed, which is the silent-leak shape this sweep exists to prevent.
+name: "Firmware Update — Station Rebooted Mid-Download (rebooted_during_update)"
+description: >
+  Station accepts a 2.0.0 update and starts downloading, then loses its link and
+  comes back with a PowerOn boot while the row is still `downloading`. The server
+  closes the update `failed` with failure_reason `rebooted_during_update`,
+  synchronously on the boot rather than on a timer.
+
+scenario_timeout_ms: 120000
+clean_session: true
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 0
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 35
+
+  - action: delay
+    ms: 2000
+
+  # The row is mid-transfer. Reading it here is what makes the final read a
+  # transition — and it also pins that the sweep had something in reach, since
+  # `downloading` is the state its list is being tested for.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "downloading"
+      data[firmware_version=2.0.0].progress: 35
+      data[firmware_version=2.0.0].failure_reason: null
+
+  # ------------------------------------------------------------- THE POWER CUT
+  # Mid-download, with no Failed notification and no warning — which is the whole
+  # point. A station that could still report would have reported.
+  - action: fault
+    type: disconnect
+
+  - action: wait_for_connect
+    timeout_ms: 30000
+
+  - action: delay
+    ms: 6000
+
+  # `PowerOn`, not `FirmwareUpdate`: nothing was installed, so a station claiming
+  # a firmware boot here would be lying about itself. The sweep does not read
+  # bootReason at all (:398) — this value is chosen for conformance, and the file
+  # would behave identically with `Watchdog`. Stated so the choice is not mistaken
+  # for a trigger.
+  #
+  # `firmwareVersion` stays 1.0.0. The update never got past downloading, so the
+  # running image is unchanged — and a 2.0.0 here would put the row through the
+  # reconciliation listener instead of the sweep, which is a different file.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 2
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  # THE VERDICT — arrived on the boot, seconds after it, with no scheduled job
+  # involved. `firmware-stalled-after-accept.yaml` reaches a comparable row after
+  # sixteen minutes and labels it differently; that pair is what shows the server
+  # tells the two silences apart.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      data[firmware_version=2.0.0].failure_reason: "rebooted_during_update"
+      # 35 — the row still records how far the download had got when the power
+      # went. The sweep closes the row without touching progress.
+      data[firmware_version=2.0.0].progress: 35
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.firmwareVersion: "1.0.0"
+      data.isOnline: true

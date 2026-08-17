@@ -1,0 +1,169 @@
+# REFUSAL AT THE DOOR — the station answers the command `Rejected` and never
+# downloads anything. Server cause: `rejected_by_station`.
+#
+# WHY THIS FILE IS NOT A VARIANT OF THE OTHERS. Every other firmware failure in
+# this corpus is reported through a FirmwareStatusNotification EVENT after the
+# command was accepted. This one is reported on the RESPONSE, before any state
+# machine starts, and the two messages have DIFFERENT schemas with different
+# strictness:
+#
+#   update-firmware-response.schema.json  errorCode: INTEGER, errorText matches
+#                                         ^[A-Z][A-Z0-9_]+$ (the code's name),
+#                                         both REQUIRED when status is Rejected
+#   firmware-status-notification.schema.json  no errorCode at all; errorText is
+#                                         free prose with no pattern
+#
+# THE BUG THIS FILE IS THE WIRE PROOF OF, and it is the reason the file exists at
+# all. `FirmwareUpdateFailed::$errorCode` used to be `?string`. Under
+# `declare(strict_types=1)` a CONFORMING Rejected — one carrying an integer
+# `errorCode`, exactly as the schema requires — threw a TypeError inside
+# UpdateFirmwareResponseHandler. The row had already been written `failed` by the
+# statement above the throw, so the failure looked recorded, while the
+# FirmwareUpdateFailed event never fired and nothing downstream ever heard about
+# it. The signature is now `?int` and the handler reads
+# `is_numeric($raw) ? (int) $raw : null` (UpdateFirmwareResponseHandler.php:110-111,
+# rationale at Events/FirmwareUpdateFailed.php:10-24).
+#
+# A station that sent `errorCode: "5017"` as a STRING would have exercised the
+# old, broken signature and passed. This file sends the integer, which is both
+# what the schema demands and what used to crash — so the assertion below is not
+# "a failure was recorded" but "the conforming form of the failure survives the
+# handler end to end".
+#
+# WHAT WOULD INVERT IT. `UpdateFirmwareResponseHandler.php:115-120` is the only
+# writer of `rejected_by_station`. Change that constant to any other
+# FirmwareFailureReason case and the `failure_reason` assertion below fails while
+# `status: failed` beside it still passes — which is precisely the pre-0fd0150
+# world this column was added to end, where all eight causes wrote the same
+# indistinguishable `failed`.
+name: "Firmware Update — Rejected By Station (rejected_by_station)"
+description: >
+  Station boots, operator pushes 2.0.0, the station answers the UpdateFirmware
+  command with Rejected + an INTEGER errorCode 5017 and errorText
+  INSUFFICIENT_STORAGE, and the server records failure_reason
+  `rejected_by_station` without ever leaving `idle` for a download.
+
+# No `scenario_timeout_ms` here on purpose: this file has no reconnect and ~6s of
+# declared delay, so it fits the 90s default with room to spare. It carried an
+# explicit `90000` in its first draft — which is the default exactly, i.e. an
+# override that overrides nothing, and precisely the unargued line
+# ScenarioRunner.scenarioTimeout.test.ts's roster exists to catch. It caught it.
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  # THE MESSAGE THE FILE IS ABOUT.
+  #
+  # `errorCode: 5017` is an INTEGER in the YAML, not "5017" — the schema types it
+  # `integer` (update-firmware-response.schema.json:19-21) and the string form is
+  # what the old `?string` signature accepted. The linter's PayloadSchemaCheck
+  # Ajv-validates this payload against that schema, so a string here fails
+  # `lint:scenarios` before it ever reaches a broker; that check is a real part of
+  # this file's guarantee, not incidental.
+  #
+  # `errorText: INSUFFICIENT_STORAGE` is the UPPER_SNAKE NAME of 5017, which the
+  # response schema requires by pattern `^[A-Z][A-Z0-9_]+$` (:22-26). Note this is
+  # the OPPOSITE convention from the notification message, where errorText is free
+  # prose and the spec explicitly says not to match it programmatically
+  # (update-firmware.md:42). Two fields with the same name and inverted contracts,
+  # one message apart.
+  #
+  # 5017 over the alternatives on purpose: it is `Recoverable: false`
+  # (update-firmware.md §9), so nothing about it invites a retry, and unlike 5016
+  # VERSION_ALREADY_INSTALLED it is not one of the codes KNOWN-ISSUES flags as
+  # overloaded onto two conditions.
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 5017
+      errorText: "INSUFFICIENT_STORAGE"
+
+  # NOTHING FOLLOWS ON THE WIRE, and asserting that is half the proof.
+  #
+  # A rejected command means the station never entered `Downloading`, so it owes
+  # no FirmwareStatusNotification — §6 rule 1's MUST is per TRANSITION, and there
+  # was none. `expect_silence` here is aimed the other way: it pins that the
+  # SERVER did not answer a Rejected response with a fresh UpdateFirmware. There
+  # is no normative retry policy anywhere in the spec (0.20.0 removed the "retry
+  # up to 3 times" line from the worked example), so a re-issue would be the
+  # server inventing one.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      # `failed` alone says almost nothing — it is where all eight causes land.
+      data[firmware_version=2.0.0].status: "failed"
+      # THE DISCRIMINATOR. One writer, one constant.
+      data[firmware_version=2.0.0].failure_reason: "rejected_by_station"
+      # progress stays 0: the row never left `idle`, so nothing ever wrote a
+      # download percentage. This is what separates a refusal at the door from
+      # every failure that got as far as transferring bytes — and it is derived
+      # from the row's history rather than echoed from anything this file sent.
+      data[firmware_version=2.0.0].progress: 0

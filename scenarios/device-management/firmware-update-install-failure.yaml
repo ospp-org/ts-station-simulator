@@ -22,6 +22,24 @@
 #   station's own payload (`$updates['error_text'] = $errorText ?? 'Unknown error'`, :135).
 #   Asserting it proves the report round-tripped and persisted — real, but persistence, not
 #   server judgement. It is the same category as the security-event severity assertions.
+#
+# RE-MEASURED 2026-08-17 against csms-server 9896108, and the paragraph above SURVIVES.
+# csms-server 0fd0150 added a `failure_reason` column with EIGHT causes behind it, six of
+# which are separable on the wire and now have a scenario each here — but ANY failure a
+# station reports on a FirmwareStatusNotification is written `reported_by_station` by one
+# line (FirmwareStatusNotificationHandler.php:133-144), whatever phase it was in. So this
+# file, firmware-update-download-failure.yaml and firmware-signature-invalid.yaml share
+# both status and failure_reason. The column separates the SERVER's own judgements from
+# each other; it does not separate the station's account of itself into phases. Full
+# reasoning, and what would be needed to separate them, in the download-failure sibling's
+# header — not duplicated here.
+#
+# WHAT THIS FILE HAS THAT ITS SIBLING DOES NOT, and it is the one real distinction
+# available: the row passed THROUGH `downloaded` and `installing` before failing, which
+# means a completed transfer and a verified signature (0.20.0 made `Downloaded` assert the
+# ECDSA signature, not just the checksum). The intermediate read added below pins that
+# passage while it is still true — the final row cannot show it, because the row holds
+# current state and there is no per-update history anywhere.
 name: "Firmware Update Install Failure"
 description: "Firmware update fails during installation due to checksum mismatch"
 station:
@@ -111,6 +129,22 @@ steps:
   - action: delay
     ms: 500
 
+  # THE PASSAGE, READ WHILE IT IS STILL TRUE. `downloaded` is a state the final
+  # row can never show — it holds current state, and there is no per-update
+  # history table anywhere — so if this file is to distinguish itself from a
+  # download that died mid-transfer, the distinction has to be captured here, in
+  # flight. This read is the only place in the corpus that observes `downloaded`
+  # at all.
+  - action: delay
+    ms: 800
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "downloaded"
+      data[firmware_version=2.0.0].failure_reason: null
+
   - action: send
     message: FirmwareStatusNotification
     messageType: Event
@@ -120,8 +154,32 @@ steps:
       progress: 0
 
   - action: delay
+    ms: 300
+
+  # Install milestones per firmware-status.md:40 (25/50/75/100). The write dies at
+  # 50 — the spec's own worked install failure is "Downloaded -> Installing (50%)
+  # -> Failed (errorText: 'Write error on partition B')" (:44-65).
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 25
+  - action: delay
+    ms: 300
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Installing"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 50
+
+  - action: delay
     ms: 500
 
+  # `progress` omitted on Failed (firmware-status.md:41), leaving the row at 50.
   - action: send
     message: FirmwareStatusNotification
     messageType: Event
@@ -141,3 +199,12 @@ steps:
     expect_body:
       data[firmware_version=2.0.0].status: "failed"
       data[firmware_version=2.0.0].error_text: "Installation failed: checksum mismatch"
+      # Added 2026-08-17. Shared with download-failure and signature-invalid — see
+      # the header. It rules out the six causes this is NOT, which is the whole
+      # of what it can do here.
+      data[firmware_version=2.0.0].failure_reason: "reported_by_station"
+      # 50, the install milestone the write died on. The download-failure sibling
+      # reads 45 here and the rejected sibling reads 0 — three files, three
+      # values, none of them server-derived, all of them the row's record of how
+      # far the update actually got.
+      data[firmware_version=2.0.0].progress: 50

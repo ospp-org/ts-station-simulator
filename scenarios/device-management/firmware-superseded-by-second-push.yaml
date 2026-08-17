@@ -1,0 +1,160 @@
+# TWO OPERATORS PUSHED THE SAME VERSION — the first update row is closed
+# `superseded` and the second takes over. Server cause: `superseded`.
+#
+# THE ONLY ONE OF THE EIGHT CAUSES WITH NO STATION INPUT AT ALL. Every other
+# cause is produced by something the station sent, or by its silence. This one is
+# produced entirely inside InitiateFirmwareUpdateAction (:276-289) while the
+# station is doing nothing — it has not even answered the first command. That is
+# why it is worth a scenario despite involving almost no wire traffic: it is the
+# cause a station-driven test suite would never think to reach, and it lands in
+# the same column as the seven that are station-driven.
+#
+# THE PRECONDITION IS EXACT, and getting it wrong yields a REFUSAL rather than a
+# supersede — which is the trap this file is shaped around. Pre-flight check 5
+# (:134-143) refuses OPERATION_IN_PROGRESS if any row is in
+# `firmwareUpdatesInFlight()`, and that set is every status EXCEPT `idle`,
+# `activated` and `failed`. So:
+#
+#   first row still `idle`  (station never answered)  ->  SUPERSEDE, second push 202
+#   first row `downloading` (station answered Accepted) ->  REFUSE, second push 409
+#
+# The station therefore must NOT answer the first UpdateFirmware. `expect_silence`
+# below is what holds that open, and it is the only step in this file the station
+# performs.
+#
+# WHY THE ASSERTION SELECTS BY `update_id` AND NOT BY VERSION. Both rows carry
+# `firmware_version: 2.0.0` — they must, since superseding is defined per
+# (station, version). So `data[firmware_version=2.0.0]` is AMBIGUOUS here: it
+# matches two elements and takes whichever the API happened to order first, which
+# is the shape of assertion that passes for a while and then flips. The first
+# row's `update_id` is captured before the second push and used as the selector
+# afterwards, so each read names exactly one row. Every other file in this family
+# selects by version and is right to — they only ever have one row.
+#
+# WHAT WOULD INVERT IT. `InitiateFirmwareUpdateAction.php:276-289` is the only
+# writer of `superseded`, inside `claimVersionForUpdate()` under a row lock on
+# `stations`. Change the branch at :275 from "existing idle row" to "refuse" and
+# the second POST answers 409 instead of 202 — the step before the assertion goes
+# red, not the assertion, which is the honest place for it to break.
+name: "Firmware Update — Superseded By A Second Push (superseded)"
+description: >
+  Operator pushes 2.0.0, the station never answers the command, a second push for
+  the same version arrives. The first row is closed `failed` with failure_reason
+  `superseded` and the second is created `idle`. No station input produces this.
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # ------------------------------------------------------------ FIRST PUSH
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  # The command reaches the wire — this is a real dispatch, not a refusal — and
+  # the station DELIBERATELY does not answer it. Consuming the request here also
+  # stops it sitting in the buffer where the second wait_for would drain it.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: delay
+    ms: 1000
+
+  # Capture the first row's identity while it is the only row. `update_id` is the
+  # server's own handle for this dispatch (unique, VARCHAR(64)) and is the only
+  # field that distinguishes the two rows this file creates.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "idle"
+      data[firmware_version=2.0.0].failure_reason: null
+    capture:
+      firstUpdateId: "data[firmware_version=2.0.0].update_id"
+
+  # ------------------------------------------------------------ SECOND PUSH
+  # 202, not 409 — because the first row is `idle` and therefore NOT in flight.
+  # This status is doing real work: a 409 here would mean the supersede branch was
+  # not reached, and the assertion below would then be reporting on a row nothing
+  # had superseded.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  # The second dispatch also reaches the wire. Draining it keeps the run clean and
+  # confirms the supersede did not merely close a row — it issued a replacement.
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: delay
+    ms: 1500
+
+  # THE VERDICT, on the row named by the id captured before the second push.
+  # Selecting by update_id is what makes this unambiguous with two same-version
+  # rows present — see the header.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[update_id={{captured.firstUpdateId}}].status: "failed"
+      data[update_id={{captured.firstUpdateId}}].failure_reason: "superseded"
+      # Never left idle, so nothing ever wrote a percentage.
+      data[update_id={{captured.firstUpdateId}}].progress: 0

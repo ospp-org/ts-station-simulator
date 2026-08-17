@@ -1,0 +1,243 @@
+# THE STATION ACCEPTS AND THEN SAYS NOTHING — the path that had no wire coverage
+# at all, and the only one of the eight causes where the SERVER, not the station,
+# decides the update failed. Server cause: `stalled`.
+#
+# ⏱  THIS FILE RUNS FOR ~16 MINUTES. That is not slack and it cannot be tuned
+# down. `DetectStalledFirmwareUpdates::STALL_FAILURE_MINUTES = 10` is a private
+# const with no config or env behind it (:46), and the command is scheduled
+# `everyFiveMinutes()` (routes/console.php:171), so the elapsed check can miss by
+# up to one full period before it lands. Worst case is accept at :00:01, sweeps at
+# :05 (4m59s), :10 (9m59s — still under), :15 (14m59s — fires). The wait below is
+# sized for that worst case rather than the average, because a scenario that
+# passes four times out of five is not a proof.
+#
+# ⚠  IT ALSO REQUIRES A RUNNING SCHEDULER. Nothing invokes
+# `device:detect-stalled-firmware` on its own. On UAT/prod that is supervisord;
+# on the local stack nothing runs it by default, so this file needs
+# `docker exec -d csms-app php artisan schedule:work` (or a manual invocation
+# after the wait). Without it the final read fails with the row still
+# `downloading` — which reads exactly like a broken detector, so check the
+# scheduler before believing a red here.
+#
+# WHAT MAKES THIS DIFFERENT FROM EVERY OTHER FAILURE IN THE CORPUS. The other
+# seven causes are all triggered by something the station SENDS. This one is
+# triggered by what it does not send, which means there is no message to
+# correlate, no errorText to echo, and nothing for the station to be right or
+# wrong about. The row is closed by a scheduled job reading a clock. Until
+# 0fd0150 gave that job its own `failure_reason`, its verdict was indistinguishable
+# from a station-reported failure — same `failed`, same column.
+#
+# THE HEARTBEAT IS PART OF THE PROOF, NOT SCAFFOLDING. The station stays fully
+# alive for the whole sixteen minutes (`start_heartbeat` below), and the final
+# read asserts `isOnline: true`. That is what makes this a STALL rather than a
+# disappearance: the server can see the station, the link is up, the MQTT session
+# is live — and the firmware update has still gone silent. Without the heartbeat
+# the station would cross the offline sweep at 3.5 × 30s = 105s and the run would
+# be proving something much weaker and much more obvious, namely that a vanished
+# station stops reporting. Heartbeats deliberately do NOT feed the stall clock:
+# the detector reads `last_notification_at ?? started_at` (:63), and only a
+# FirmwareStatusNotification writes `last_notification_at`. A liveness signal and
+# a progress signal are different things, and this file is what says so.
+#
+# THE GATE IS NOT IN PLAY HERE, and that matters for what a red means. a081b05
+# taught the detector to withhold the clock while a station is legitimately
+# waiting to install: if the row is exactly `downloaded` AND either `scheduled_at`
+# is in the future or some bay is `occupied`/`finishing`, the gate is shut, the
+# row is spared entirely and `gate_opened_at` is cleared (:78-88, :161-191). Spec
+# `firmware-status.md:71` — "Measure the five minutes from the later of the last
+# notification and the moment the gate opens." This file parks the row at
+# `downloading`, not `downloaded`, with both bays idle and no `scheduledAt`, so
+# the exemption cannot apply and the plain clock runs. The exemption's own proof
+# needs a live session held across the wait and is NOT this file; it is also
+# harder than it looks, because `gate_opened_at` is not exposed by
+# FirmwareUpdateResource and its only observable is a `stalled` that does not
+# happen.
+#
+# WHAT WOULD INVERT IT. `DetectStalledFirmwareUpdates.php:99-104` is the only
+# writer of `stalled`. Raising STALL_FAILURE_MINUTES above the wait below leaves
+# the row `downloading` and fails the final read while every earlier step stays
+# green; changing the constant at :102 fails `failure_reason` alone and leaves
+# `status: failed` passing — which is the pre-0fd0150 world exactly.
+name: "Firmware Update — Silence After Accept (stalled)"
+description: >
+  Station accepts a 2.0.0 update, reports Downloading once, then sends no further
+  firmware notification for ~16 minutes while staying online via heartbeats. The
+  server's scheduled stall detector closes the row failed with failure_reason
+  `stalled`. REQUIRES a running scheduler; runs ~16 minutes.
+
+# 16 min of wait + bootstrap + reads. 20 min budget.
+scenario_timeout_ms: 1200000
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Started BEFORE the long wait, at the interval the boot Response advertises.
+  # See the header: this is what separates a stall from a disappearance.
+  - action: start_heartbeat
+    interval_sec: 30
+
+  # Both bays are left in whatever state provisioning gave them and are never
+  # driven to `Occupied`/`Finishing`. That is deliberate — an occupied bay is one
+  # of the two conditions that SHUTS the install gate and would make the
+  # detector spare this row.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v2.0.0.bin"
+      firmwareVersion: "2.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+      # No `scheduledAt`. A future one is the OTHER gate-shut condition
+      # (:163-164), and the admin route passes null anyway — stated so the
+      # absence reads as a choice rather than an omission.
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      firmwareVersion: "payload.firmwareVersion"
+
+  # ACCEPT — and this is the whole difference from `command_timeout`, the OTHER
+  # silence-shaped cause. Not answering this command at all leaves the row `idle`
+  # and CommandTimeoutScanner closes it `command_timeout` after the 300s pending
+  # TTL (config/ospp.php:205). Answering `Accepted` moves the row to `downloading`,
+  # which is in `firmwareUpdatesInFlight()` and therefore in the stall detector's
+  # selection (:59) and out of the timeout scanner's. Two silences, two causes,
+  # separated by exactly this message.
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # ONE progress report, then nothing — the station that started work and stopped.
+  #
+  # Sending it rather than going silent immediately is what makes the clock basis
+  # unambiguous: the detector uses `last_notification_at ?? started_at` (:63), and
+  # with a notification on the record the measurement is anchored to a firmware
+  # message rather than to the accept. It also makes the row look exactly like a
+  # download that died mid-transfer, which is the real-world shape of this fault.
+  - action: send
+    message: FirmwareStatusNotification
+    messageType: Event
+    payload:
+      status: "Downloading"
+      firmwareVersion: "{{captured.firmwareVersion}}"
+      progress: 20
+
+  - action: delay
+    ms: 3000
+
+  # The row is IN FLIGHT and healthy before the wait. Reading it here is what
+  # makes the final read a transition rather than a state the row might have been
+  # in all along — the same reason the reboot files read `rebooting` first.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "downloading"
+      data[firmware_version=2.0.0].progress: 20
+      data[firmware_version=2.0.0].failure_reason: null
+
+  # ------------------------------------------------------------ THE SILENCE
+  # 16 minutes. Heartbeats continue in the background; no firmware notification
+  # is sent. Split into four quarters purely so a run that is killed mid-wait
+  # shows how far it got in the step list.
+  - action: delay
+    ms: 240000
+  - action: delay
+    ms: 240000
+  - action: delay
+    ms: 240000
+  - action: delay
+    ms: 240000
+
+  # ------------------------------------------------------------- THE VERDICT
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    expect_status: 200
+    expect_body:
+      data[firmware_version=2.0.0].status: "failed"
+      # THE DISCRIMINATOR — and the only cause in the enum that no station input
+      # can produce, because it is the absence of input that produces it.
+      data[firmware_version=2.0.0].failure_reason: "stalled"
+      #
+      # `error_text` IS DELIBERATELY NOT ASSERTED, and the reason is worth
+      # recording rather than leaving as a gap. The detector composes it as
+      # "Stalled: no FirmwareStatusNotification for {N} minutes" (:100-102) — the
+      # one `error_text` in this whole family that is SERVER-AUTHORED rather than
+      # echoed from the station. That makes it the most interesting string here
+      # and also an unassertable one: N depends on which five-minute sweep caught
+      # the row, so it is 10, 15 or 20 depending on phase, and `expect_body`
+      # supports exactly two forms — deep equality and the `is_recent` timestamp
+      # comparator (ApiCallStep.ts:1020-1053). There is no substring or regex
+      # comparator for a JSON body. Writing `equals` with one of the three values
+      # would pass four runs in five and fail the fifth for no defect, which is
+      # worse than not asserting it.
+      #
+      # `failure_reason` already carries the same proof with none of the jitter:
+      # `stalled` has exactly one writer, five lines above the error_text it would
+      # have asserted. What is genuinely missing is a `contains` comparator on
+      # `expect_body`, and that is a runner change, not a scenario one.
+      #
+      # Untouched by the detector: it writes status, error_text, failure_reason
+      # and completed_at, and never progress. 20 is what the station last
+      # reported, sixteen minutes earlier — the row still carries where the
+      # download died.
+      data[firmware_version=2.0.0].progress: 20
+
+  # THE STATION WAS ALIVE THE WHOLE TIME. Without this the file proves only that
+  # a silent update fails, which a disconnected station would also satisfy.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
+      data.firmwareVersion: "1.0.0"
