@@ -89,8 +89,11 @@ steps:
     message: DiagnosticsNotification
     messageType: Event
     payload:
+      # No `progress` on Collecting: diagnostics-status.md rule 4 makes its absence
+      # a MUST, and since spec 0.23.0 the schema enforces it. Collection has no
+      # denominator the station knows in advance, which is why the rule forbids the
+      # field rather than merely not requiring it.
       status: "Collecting"
-      progress: 0
 
   - action: delay
     ms: 500

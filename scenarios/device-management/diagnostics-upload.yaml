@@ -89,19 +89,20 @@ steps:
     message: DiagnosticsNotification
     messageType: Event
     payload:
+      # No `progress` on Collecting: diagnostics-status.md rule 4 makes its absence
+      # a MUST, and since spec 0.23.0 the schema enforces it. This scenario used to
+      # send Collecting/0 and Collecting/100 — the exact payloads that MUST forbids,
+      # validating clean because no schema expressed the rule.
       status: "Collecting"
-      progress: 0
 
   - action: delay
     ms: 500
 
-  - action: send
-    message: DiagnosticsNotification
-    messageType: Event
-    payload:
-      status: "Collecting"
-      progress: 100
-
+  # The progress stream lives on Uploading, and only there. Two notifications
+  # carrying the SAME status is correct and expected here: 05-state-machines.md §8.4
+  # — "the repeated `Uploading` notifications are one state, not many" — and a server
+  # MUST advance on a change of status rather than treating the second as a
+  # duplicate or as an invalid transition.
   - action: send
     message: DiagnosticsNotification
     messageType: Event
@@ -111,6 +112,13 @@ steps:
 
   - action: delay
     ms: 500
+
+  - action: send
+    message: DiagnosticsNotification
+    messageType: Event
+    payload:
+      status: "Uploading"
+      progress: 100
 
   - action: send
     message: DiagnosticsNotification
