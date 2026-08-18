@@ -33,3 +33,16 @@ jobs:
 
       - name: Lint scenarios
         run: npm run lint:scenarios
+
+      # Measures how far the @ospp/protocol pin is from the published SDK, and
+      # separates that from a stale node_modules. This repo vendors no spec artefacts
+      # — it reads schemas through the SDK — so it deliberately has NO `.spec-ref` of
+      # its own: that would be a hand-kept second copy of a number the SDK already
+      # ships. The check reads the SDK's instead.
+      #
+      # It exists because `^0.20.0` sat here while the SDK reached 0.22.0. A caret on
+      # 0.x is minor-locked, so that pin could never have resolved forward and
+      # `npm update` would never have moved it — blocked, not behind, and nothing
+      # said so because a pin that resolves cleanly looks identical to a current one.
+      - name: SDK pin distance
+        run: npm run check:sdk-pin
