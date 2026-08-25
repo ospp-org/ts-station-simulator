@@ -13,7 +13,8 @@ of things that have to be true, so the next run's failures mean something.
 |---|---|---|
 | `OSPP_PROTOCOL_VERSION` | **every scenario** | Must be a member of the server's `supported_versions` set. Negotiation is **exact match** (`VERSIONING.md:25`) — a shared MAJOR implies nothing, and the SDK's MAJOR gate was deleted in 0.12.0. The SDK default is `0.2.1`; spec v0.11.1 mandates **`0.3.0`** on the wire (176 value sites). **Set it explicitly** until the SDK default is corrected, which needs an SDK release. Get it wrong and every boot is refused `1007`. |
 | `UAT_EMAIL` / `UAT_PASSWORD` | **must be SET in every mode; the VALUE matters only in `--station`** | Two different things, and conflating them costs a run either way. **Set:** `resolveEnvVarsDeep` walks all of `config/targets.yaml` at load and throws `Environment variable UAT_EMAIL is not set` on any unresolved `${…}` (`cli/config.ts:54-62`), before a single scenario runs — including under `--bootstrap-pool`, which does not use the identity at all. An empty string satisfies it (the check is `=== undefined`). **Value:** in `--bootstrap-pool` it is never authenticated with — a scenario with no `auth:` block resolves to `undefined` and the caller falls through to the per-scenario pool worker, so the `target.credentials` fallback is *structurally unreachable* while the allocator is active (`ScenarioRunner.ts:502-510`), and the builder authenticates as the platform admin and mints its own ephemeral `tenant_owner` (`PoolBootstrap.ts:304-324`). So a stale value that 401s is harmless in pooled mode, and an *unset* one is fatal in every mode. The repo `.env` values are stale; exporting the platform-admin pair into both is the simplest thing that is correct everywhere. This row used to read "needed by any scenario with an `api_call`", which explains neither half. |
-| `UAT_E2E_PLATFORM_ADMIN_EMAIL` / `_PASSWORD` | the whole `security` suite | Any scenario declaring an `auth` override startup-**fails** the entire run without these, before a single scenario executes. They live in `~/.config/osp-e2e-secrets.env`, and the values there are **single-quoted** — strip the quotes or the login 422s with "The email field must be a valid email address". |
+| `UAT_E2E_PLATFORM_ADMIN_EMAIL` / `_PASSWORD` | `--bootstrap-pool` itself, the `security` suite, the three `e2e/*` | Any scenario declaring an `auth` override startup-**fails** the entire run without these, before a single scenario executes — and so does the pool builder, which authenticates as this account to mint its ephemeral `tenant_owner` (`PoolBootstrap.platformAdminCredsFromEnv`). They live in `~/.config/osp-e2e-secrets.env`. The values there are **single-quoted**: `set -a; source` strips them for you and is the documented way in; extracting a line by hand (`cut -d=`) does not, and the login then 422s with "The email field must be a valid email address". |
+| ↳ **what this account can and cannot do** | read before attributing a `403` | It is a **`platform_admin`**, not a super-admin — `E2EBootstrapSeeder`'s DEFAULT role. Measured on UAT 2026-08-25: `GET /api/v1/me/permissions` returns exactly **13** entries, all `platform.*`. So it creates organisations and reads any station, and it holds **no tenant-prefixed permission at all**. `StationPolicy::checkTenantPermission`'s platform-tier override admits `platform_super_admin` and says in its own comment that `platform_admin` "remains rejected". Every tenant-scoped route is a 403 for it, `catalog.manage` included — which is why `device-management/service-catalog-update` is skipped `inconclusive` (`5490a21`) and why the three `e2e/*` files log in as the customer they registered and replace the JWT before doing anything tenant-scoped. |
 
 `.env` cannot simply be `source`d: at least one value contains a shell metacharacter and
 zsh fails to parse it. Extract per key.
@@ -395,19 +396,77 @@ Nothing was published, so the `wait_for` had nothing to wait for. This is a prop
 instrument — background mode trades assertion for concurrency, deliberately — not of the
 scenario, and it applies to every file using a background call.
 
-### `core/boot-disabled-station-boots-and-stays-gated` — CONTENTION, marked 2026-08-13
+**The grep is still the right first move on a `wait_for` timeout.** What changed is that the
+cause below is no longer an open question, so a `[ApiCallStep:background]` line carrying
+`BAY_NOT_READY/3002` now has a named mechanism to check against before anything else is
+suspected.
 
-Failed in the pooled run of 2026-08-13 with the `BAY_NOT_READY` above. Re-run **three times
-standalone** (`--scenario … --bootstrap-pool --pool-size 1`): **passed 3/3**, all 20 steps, with
-the backgrounded `POST /sessions/start` returning 201 and `StartService` arriving in 251/289/481 ms
-against a 15 s budget — and **zero** `[ApiCallStep:background]` lines in any of the three.
+### ~~`core/boot-disabled-station-boots-and-stays-gated` — CONTENTION~~ — RESOLVED 2026-08-25
 
-So it is pool-dependent, not a defect in the file. **The precise contention mechanism is NOT
-established** and is not claimed here; what is measured is that the refusal does not reproduce
-with the station to itself. Consistent with §5 — the allocator is pure mutual exclusion and does
-not reset station state on release, and `bays.status` resets to `unknown` on every boot while
-this file forces a re-boot by design (disabling severs the connection). Treat a repeat as churn;
-treat a standalone failure as new.
+**The block below is kept because its measurements are all true and its conclusion was
+wrong, which is the more useful record.** It read the standalone 3/3 as evidence of
+*contention for the station* and stopped there, saying so. The mechanism was one line
+higher in the file the whole time.
+
+`send StatusNotification` completes on the broker's **QoS-1 PUBACK** — `MessageSender.send`
+awaits `MqttConnection.publish`, which resolves when EMQX has the bytes, not when the CSMS
+has applied them. An Event is fire-and-forget: the server owes it no Response, so there is
+nothing to synchronise on and the write lands whenever the MQTT consumer reaches it. The very
+next line of that scenario fires the backgrounded `POST /sessions/start`. The bay is still
+`unknown` — every accepted Boot resets it — and `SessionStateMachine::validateBayForStart`
+refuses `unknown` with 3002.
+
+What is MEASURED is the adjacency: the publish resolves on the PUBACK and the next line runs
+immediately, with no step in between. What is INFERRED — and is the reading that fits the
+standalone 3/3 — is that a one-scenario run leaves the shared MQTT consumer with nothing else
+to do, so the report is applied before the POST lands and the race is won every time, while
+`--workers 5` sometimes loses it. Said as an inference because the consumer's queue depth was
+not instrumented on either run. Either way the dependence is on how fast the report is
+APPLIED, which is what the runner now waits for, and not on the station being reused.
+
+Measured across the corpus: **49 adjacencies in 40 files** put an `api_call` directly after an
+Event send, **26 of them backgrounded** (all of them `StatusNotification` → `POST
+/sessions/start` → `wait_for StartService`). Fixed in the runner at `577bc10`:
+`UNACKED_EVENT_SETTLE_MS`, a **floor** of 1000 ms measured from the publish and topped up only
+by the remainder, so a file that already waits pays nothing. Look for
+`[ScenarioRunner] settling …ms before step N (api_call)` in a run log.
+
+Original block, 2026-08-13:
+
+> Failed in the pooled run of 2026-08-13 with the `BAY_NOT_READY` above. Re-run **three times
+> standalone** (`--scenario … --bootstrap-pool --pool-size 1`): **passed 3/3**, all 20 steps, with
+> the backgrounded `POST /sessions/start` returning 201 and `StartService` arriving in 251/289/481 ms
+> against a 15 s budget — and **zero** `[ApiCallStep:background]` lines in any of the three.
+>
+> So it is pool-dependent, not a defect in the file. **The precise contention mechanism is NOT
+> established** and is not claimed here; what is measured is that the refusal does not reproduce
+> with the station to itself. Consistent with §5 — the allocator is pure mutual exclusion and does
+> not reset station state on release, and `bays.status` resets to `unknown` on every boot while
+> this file forces a re-boot by design (disabling severs the connection). Treat a repeat as churn;
+> treat a standalone failure as new.
+
+### A bay the station has not reported is refused by THREE routes, not one
+
+`bays.status` is reset to `unknown` on **every** accepted Boot
+(`BootNotificationHandler::resetBaysToUnknown`, unconditional) and only an accepted
+StatusNotification clears it. Three server surfaces refuse that state with **3002
+BAY_NOT_READY**:
+
+| route | refuses at |
+|---|---|
+| `POST /api/v1/sessions/start` | `SessionStateMachine::validateBayForStart` |
+| `POST /api/v1/reservations` | `ReservationTransitions::validateBayForReservation` |
+| `POST /api/v1/admin/stations/{id}/maintenance` | `SetMaintenanceModeAction::validateBayForMaintenance` |
+
+The third is new — csms-server `e9fa3fc4`, 2026-08-18 — though the rule it applies has been in
+`set-maintenance-mode.md` §6 since spec `7eb6acb`, 2026-08-05. Before that the server answered
+202 for a command a conformant station must refuse, and two scenarios were passing on the gap:
+`maintenance-mode-on` and `maintenance-mode-all-bays`, both of which booted and commanded
+without ever reporting a bay. Repaired at `7b739ba`; `BayGatedCommandsAreArmed.test.ts` now
+recomputes the rule over the whole corpus on every `npm test`.
+
+On the maintenance route an **absent `bayId` means every bay**, and one `unknown` bay refuses
+the whole command.
 
 ---
 
@@ -482,7 +541,91 @@ Sweep 177.9s. The last one holds a pool station application-silent for 175s whil
 workers run, and nothing woke it — which is the contention claim measured under load rather
 than argued from the allocator's source.
 
-### CURRENT baseline — and why it is a SET, not a number
+### CURRENT baseline — 2026-08-25, simulator `5490a21`
+
+`--all --bootstrap-pool --pool-size 5 --parallel --workers 5`, `OSPP_PROTOCOL_VERSION` unset
+(the SDK's own default is `0.3.0`), 130 scenarios, **17m43s**.
+
+**112 passed / 1 failed / 17 skipped (1 of them INCONCLUSIVE).**
+
+```
+chaos 6/7 · core 18/20 · device-management 31/32 · e2e 0/3 · fleet 3/3
+multiunit-e2e 0/3 · reservations 6/6 · security 21/24 · sessions 21/22 · tls-floor 6/10
+```
+
+The previous run of the day was **109 passed / 5 failed / 16 skipped** — the first after the
+bay-count repair (`fbb131a`). Three of those five were the simulator's and are repaired
+(`577bc10`, `7b739ba`, `5490a21`); the fourth is the server's and is below; the fifth was the
+race and did not recur.
+
+**THE FAILURE SET IS ONE FILE, and it is not ours.**
+
+`core/data-transfer-response` — step 4, `POST .../data-transfer` expected 202, got **400
+`INVALID_MESSAGE_FORMAT` / 1005**:
+
+```
+Outbound DataTransfer request violates its wire schema:
+  /data: The data (array) must match the type: object
+```
+
+The scenario sends `data: {}`, which is conformant — `data-transfer-request.schema.json` types
+it `"object"` and does not require it at all. The server accepts that body
+(`DataTransferRequest` validates `data` as `nullable|array`), carries it in
+`DataTransferDto::$data`, typed `?array` — and **PHP has one array type**, so an empty JSON
+object arrives as `[]` and re-serializes as a JSON ARRAY. Its own outbound rail
+(`MqttStationGateway::assertOutboundRequestConforms`, added `430c85f9`, 2026-08-17) then
+refuses the message the server itself built.
+
+That rail already knows this hazard and says so in its own comment — "PHP has one array type,
+so `json_encode([])` is `[]` … Without this line the gate would refuse a conformant
+GetConfiguration" — and normalises `$envelope->payload === [] ? '{}' : …`. The normalisation
+is **top-level only**. `DataTransfer.data` is a NESTED field the schema types as `object`, so
+it never reaches it. Consequence: the server cannot send a `DataTransfer` carrying an empty
+`data` object at all, and answers 400 on its own message rather than 202.
+
+Not worked around here. Omitting `data` or sending a non-empty object would make the line
+green and would delete the only scenario that exercises the server's outbound DataTransfer
+path. **Server-side fix**, in the DTO or in the rail's normalisation.
+
+**What is NOT in the set any more, and why each left:**
+
+1. `device-management/maintenance-mode-on` and `maintenance-mode-all-bays` — commanded a bay
+   at `unknown`. Repaired `7b739ba`; both green (4.8 s / 5.4 s), and `maintenance-mode-off`
+   still green beside them.
+2. `core/boot-disabled-station-boots-and-stays-gated` — the race. **53 settles fired in this
+   run and NOT ONE `[ApiCallStep:background]` line carried `BAY_NOT_READY`.** One background
+   warn appeared in the whole run, `422 PROGRAM_NOT_DECLARED` on
+   `start-service-refused-program-not-declared`, which is that file's own subject and says so
+   in its header; the scenario passed.
+3. `device-management/service-catalog-update` — moved from FAILED to SKIPPED (inconclusive).
+   No identity a scenario can obtain holds `catalog.manage`. See `5490a21` and §1.
+
+**The settle is visible and it is a floor, not an addition.** Grep
+`[ScenarioRunner] settling`: 53 lines, and one of them reads `settling 1ms before step 15`
+— that adjacency had already spent 999 ms on other work and paid only the remainder.
+
+**Throttle:** 3 × `429`, all on `POST /auth/login`, all absorbed at `retry 1/3`. Zero became a
+failure. That is the quiet end of the range §4 describes; do not read a clean run as immunity.
+
+**Teardown clean:** `removed 5 station(s) + location + orphan-swept seeded service_definitions
++ 131 seeded identity(ies)`.
+
+**The 17 skips, enumerated from the run so the number is not a mystery** — three different
+mechanisms, which is why it never adds up from one grep:
+
+  12 `skip_when_pooled`  3 x `e2e/*`; `multiunit-e2e/{batch,jam}-drive`; the 4 `tls-floor`
+                         local-CA files (S6, S6b, S7, S7b); 2 x `security/offline-auth-*`;
+                         `sessions/session-rejected-invalid-service-cross-station`
+   4 `skip: true`        `chaos/connection-timeout`, `core/boot-pending-retry`,
+                         `security/offline-pass-rejected`, and
+                         `device-management/service-catalog-update` — the only INCONCLUSIVE
+   1 preflight `--var`   `multiunit-e2e/single-session-drive`, missing `--var reason`
+
+The previous run's 16 was the same shape with three `skip: true` instead of four.
+
+---
+
+### SUPERSEDED baseline — and why it is a SET, not a number
 
 **Do not compare a run to a pass count. Compare it to the failure SET below.** Two full
 pooled runs on identical code, 40 minutes apart on 2026-08-12, produced:

@@ -55,6 +55,34 @@ steps:
   - action: delay
     ms: 2000
 
+  # ── RED SINCE csms-server 430c85f9 (2026-08-17), AND IT IS THE SERVER'S ─────
+  #
+  # Measured on UAT 2026-08-25: this step answers **400 INVALID_MESSAGE_FORMAT / 1005**,
+  # "Outbound DataTransfer request violates its wire schema: /data: The data (array) must
+  # match the type: object". LEFT FAILING ON PURPOSE — see below.
+  #
+  # The body sent here is conformant. `data-transfer-request.schema.json` types `data` as
+  # `"object"` and does not require it at all, so `{}` is a valid value.
+  #
+  # What happens to it: `DataTransferRequest` validates `data` as `nullable|array` and
+  # `DataTransferDto::$data` is typed `?array` — and PHP HAS ONE ARRAY TYPE, so an empty
+  # JSON object arrives as `[]` and re-serializes as a JSON ARRAY. The server's own outbound
+  # rail (`MqttStationGateway::assertOutboundRequestConforms`, added 430c85f9) then refuses
+  # the message the server itself built, before publishing, so the operator gets 400 instead
+  # of 202.
+  #
+  # That rail already knows this hazard — its comment reads "PHP has one array type, so
+  # `json_encode([])` is `[]` … Without this line the gate would refuse a conformant
+  # GetConfiguration" — and normalises `$envelope->payload === [] ? '{}' : …`. The
+  # normalisation is TOP-LEVEL ONLY. `DataTransfer.data` is a NESTED field the schema types
+  # as `object`, so it never reaches it, and the server cannot send a DataTransfer carrying
+  # an empty `data` object at all.
+  #
+  # WHY `data: {}` STAYS. Dropping the key or sending `{"k":"v"}` makes this line green in a
+  # minute and deletes the only coverage the corpus has of the server's OUTBOUND DataTransfer
+  # path — the sibling `data-transfer.yaml` drives the station->server direction and never
+  # touches it. The fix belongs in csms-server, in the DTO or in the rail's normalisation.
+  #
   # Trigger CSMS to send DataTransfer — but start listening FIRST
   # because the message may arrive before api_call returns.
   # Real route per csms-server routes/api/v1/admin.php:43.
