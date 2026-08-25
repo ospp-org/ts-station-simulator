@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { SecureVersion } from 'node:tls';
 import type { StepDefinition } from './steps/Step.js';
-import type { ScenarioContext, StepResult } from './ScenarioContext.js';
+import type { ProvisioningArtifact, ScenarioContext, StepResult } from './ScenarioContext.js';
 import { createContext } from './ScenarioContext.js';
 import { Station, type Handler } from '../station/Station.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
@@ -835,6 +835,7 @@ function createStationFromScenario(
   scenarioDef: ScenarioDefinition,
   variables: Map<string, string>,
   target: TargetConfig,
+  provisioning?: ProvisioningArtifact,
 ): Station {
   // Default to clean session for scenarios. Persistent sessions accumulate
   // server-published commands while the station is offline; on reconnect
@@ -842,7 +843,32 @@ function createStationFromScenario(
   // pushed Heartbeat Response past the 5s scenario timeout (K2 §34 RCA).
   const cleanSession = scenarioDef.clean_session ?? true;
   const stationId = variables.get('stationId')!;
-  const bayCount = scenarioDef.station.bayCount;
+
+  // THE BAY COUNT DERIVES FROM WHAT WAS PROVISIONED, NOT FROM THE SCENARIO.
+  //
+  // These were two independent sources for one physical fact, and they diverged:
+  // `--bootstrap-pool` provisioned `--pool-bays` bays server-side while every
+  // pooled scenario declared its own `station.bayCount`, so the station booted
+  // declaring a topology it had not been provisioned with. Nothing compared them
+  // until csms-server d11b0896 armed its boot topology gate per-station, and then
+  // 109 of 130 scenarios failed on one UAT run with `status: Pending` (3018).
+  //
+  // Aligning the two numbers would leave two numbers. The three e2e journeys that
+  // survived that run are the shape to copy: they self-provision, so their declared
+  // and provisioned topologies come from ONE source and cannot drift apart.
+  //
+  // This is NOT the station "agreeing with the server" that §05-state-machines.md:126
+  // forbids — the provisioning artifact is the STATION's own declaration of its
+  // hardware, made at provisioning time and read back from its own disk. It takes the
+  // fact from itself, one step earlier. TopologyStore still owns boot-to-boot
+  // stability: this only decides what is written on the FIRST boot.
+  //
+  // The IDs still come from `variables`, not from the artifact, because hydration
+  // writes them there and CLI `--var bayId_N=...` overrides are applied AFTER
+  // hydration (last-write semantics). Reading the artifact directly would silently
+  // discard those overrides.
+  const provisionedBayCount = provisioning?.bayIds?.length ?? 0;
+  const bayCount = provisionedBayCount > 0 ? provisionedBayCount : scenarioDef.station.bayCount;
 
   const bays: BayConfig[] = [];
   for (let i = 1; i <= bayCount; i++) {
@@ -1611,7 +1637,12 @@ export class ScenarioRunner {
       }
     }
 
-    const station = createStationFromScenario(scenario, variables, target);
+    // `context.provisioning` is set just above by disk hydration, and ONLY by it at
+    // this point: a scenario that provisions itself does so in a STEP, which has not
+    // run yet. So a pool station derives its topology from the pool, and a
+    // self-provisioning scenario keeps its own declared `station.bayCount` — which is
+    // the same number its own `provision` step will use.
+    const station = createStationFromScenario(scenario, variables, target, context.provisioning);
     const startTime = Date.now();
 
     try {

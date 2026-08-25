@@ -54,6 +54,22 @@ import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js'
  * tenant_owner, so the bootstrap REUSES that owner's existing org (stable
  * seeded infra) and only the location + stations are fresh-per-run + torn down.
  */
+/**
+ * The `--pool-bays` default: bays provisioned per pool station.
+ *
+ * It MUST cover the highest `{{bayId_N}}` any scenario references, and MUST NOT
+ * exceed it — a pool station that provisions more bays than the corpus uses declares
+ * a topology no scenario asserts on, which is how `maintenance-mode-all-bays.yaml`
+ * came to assert 2 of 4 bays while reading as complete.
+ *
+ * Exported as a constant, not left inline in the Commander `.option()` call, so
+ * `PoolBaysCoversScenarios.test.ts` can compare it against a maximum it recomputes
+ * from scenarios/ on every run. That test is the gate: it fails if this number moves,
+ * and it fails if a scenario starts using a higher bay ordinal. Neither side can drift
+ * without the other being told, and neither has to reach UAT to find out.
+ */
+export const DEFAULT_POOL_BAYS = 2;
+
 export interface PoolBootstrapOptions {
   /** Number of stations to provision into the pool. */
   poolSize: number;

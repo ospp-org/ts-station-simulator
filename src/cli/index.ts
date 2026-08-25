@@ -51,6 +51,7 @@ import { deriveBays } from './connectBays.js';
 import {
   bootstrapPool,
   teardownPool,
+  DEFAULT_POOL_BAYS,
   PoolBootstrapError,
   serializePoolHandle,
   handleFromSerialized,
@@ -109,7 +110,15 @@ program
   .option('--bootstrap-pool', 'Provision a fresh per-run station pool (+ org/location + offline-enable) at suite start; tear it down at the end')
   .option('--pool-size <n>', 'Number of stations to provision when --bootstrap-pool is set', '5')
   .option('--identity-pool-size <n>', 'Number of per-scenario tenant_operator identities to mint (single-use FIFO; defaults to max(scenarioCount, --workers); startup-fails if explicitly set below scenarioCount)')
-  .option('--pool-bays <n>', 'Bays per provisioned pool station', '4')
+  // 2, not 4, and the option's own docstring is the rule: it must cover the max
+  // `{{bayId_N}}` any scenario uses. Measured across all of scenarios/, that max is 2
+  // — `{{bayId_3}}` and `{{bayId_4}}` have ZERO occurrences. The original '4' was read
+  // off `{{captured.bayId_4}}`, which is a DIFFERENT namespace: it is fed by a
+  // scenario's own `action: provision` step, not by the pool, and the only three files
+  // using it are `skip_when_pooled` and never receive a pool station.
+  // PoolBaysCoversScenarios.test.ts recomputes that maximum from the corpus and fails
+  // if this default drifts from it in either direction.
+  .option('--pool-bays <n>', 'Bays per provisioned pool station', String(DEFAULT_POOL_BAYS))
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
   .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
   .option('--keep-created', 'Do not tear down the org/location/station/user a self-provisioning scenario creates (`creates:` in its YAML); print the ids instead (debug/inspection)')
