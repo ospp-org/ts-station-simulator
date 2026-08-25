@@ -68,6 +68,59 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # ── ARM EVERY BAY BEFORE COMMANDING THEM ALL ────────────────────────────────
+  #
+  # This file omits `bayId`, which means ALL bays, and `SetMaintenanceModeAction` takes that
+  # literally: it loops `getBaysForStation()` and validates each one, so a SINGLE bay left at
+  # `Unknown` refuses the whole command with 3002 BAY_NOT_READY. The boot above put every bay
+  # there — `BootNotificationHandler` calls `resetBaysToUnknown()` on every accepted Boot,
+  # unconditionally — and only an accepted StatusNotification clears it.
+  #
+  # THE RULE IS NOT NEW, ONLY ITS ENFORCEMENT. `set-maintenance-mode.md` §6 has carried
+  # `Unknown -> Rejected, 3002 BAY_NOT_READY` in both columns since spec `7eb6acb`
+  # (2026-08-05); csms-server started applying it at `e9fa3fc4` (2026-08-18).
+  #
+  # TWO REPORTS BECAUSE THERE ARE TWO BAYS, and the count is not a coincidence: `fbb131a`
+  # moved `DEFAULT_POOL_BAYS` to 2 naming THIS file — provisioning bays it never asserts on
+  # made "all bays" read as complete while covering a subset. `PoolBaysCoversScenarios` now
+  # pins the two numbers together, so a third bay cannot appear without this arm growing too.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # NO `delay` HERE ON PURPOSE — the runner holds the ordering after an unacknowledged Event
+  # (`UNACKED_EVENT_SETTLE_MS`), measured from the last publish, so both reports above are
+  # covered by one floor. See the read-back note at the foot of this file.
+  #
+  # AND THE ARM IS PROVEN, NOT ASSUMED. Without this read the POST below would be the first
+  # thing to notice a report that had not landed, and it would say 409 BAY_NOT_READY — which
+  # reads as the maintenance gate refusing rather than as an arm that never arrived. Both
+  # bays are asserted because the command below refuses on ANY of them.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
+
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"

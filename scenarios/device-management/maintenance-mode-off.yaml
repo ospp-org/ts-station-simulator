@@ -68,6 +68,15 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # THE ARM — and this file is why the two siblings were repairable rather than mysterious.
+  # It is the only one of the three that already reported the bay before commanding it, and
+  # it is the only one that kept passing when csms-server started refusing an `Unknown` bay
+  # at `e9fa3fc4` (2026-08-18). Same boot, same route, same identity; one step of difference.
+  #
+  # `Unavailable` because the subject is DISABLING maintenance, so the bay must be in it
+  # first. The disable path refuses exactly one state — `Unknown` — and is otherwise
+  # idempotent (SetMaintenanceModeAction, rule 7), which is why any non-Unknown value would
+  # satisfy the gate and only this one makes the scenario mean what its name says.
   - action: send
     message: StatusNotification
     messageType: Event
@@ -79,10 +88,19 @@ steps:
         - programNumber: 1
           available: false
   # Discover real persisted bayIds for this station (Drift 6 fix).
+  #
+  # THE ARM IS NOW PROVEN HERE TOO. This step used to pass this file by accident: it is a
+  # full HTTPS round trip, so it happened to give the MQTT consumer time to apply the report
+  # above — an ordering nothing declared and nothing checked. The runner now owns the wait
+  # (`UNACKED_EVENT_SETTLE_MS`) and this line owns the proof, so a report that never landed
+  # fails here, naming the state, instead of arriving at the POST below as a 409 that reads
+  # like the maintenance gate refusing.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
     expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "unavailable"
     capture:
       real_bay_id_1: data.bays.0.bayId
 

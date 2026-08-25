@@ -47,6 +47,28 @@
 # Pre-fix on the same data: HTTP 201 (wrong) — service_id resolves to station
 # B's station_services row, session is accepted at station A's bay with
 # station B's pricing.
+#
+# ── AND STATION A'S BAY MUST NOT BE `unknown` WHEN YOU RUN STEP 3 ───────────
+#
+# Written down because this file cannot enforce it and nothing else states it.
+# `StartSessionAction` validates the BAY before it resolves the service —
+# `validateBayForStart` at :115, the three INVALID_SERVICE arms at :146/:182/:213 —
+# so a station A whose bays sit at `unknown` answers **409 BAY_NOT_READY 3002**
+# and the subject of this file is never reached. The failure would read as the
+# regression having reopened; it is the precondition having lapsed.
+#
+# Every accepted BootNotification resets every bay to `unknown`
+# (`BootNotificationHandler::resetBaysToUnknown`, unconditional), and only an
+# accepted StatusNotification clears it. This file carries
+# `defer_mqtt_connect: true` — it never connects, so it can send no station
+# message and cannot arm the bay itself. The arm therefore comes from step 1
+# above: the onboarding run reports every bay `Available` and leaves them that
+# way. **If station A has rebooted since, re-run step 1 (or send a
+# StatusNotification for that bay) before step 3.**
+#
+# `BayGatedCommandsAreArmed.test.ts` excuses this file for exactly the reason
+# above and fences the excuse on `skip_when_pooled`, so the exemption can never
+# quietly cover a file the unattended suite runs.
 name: "Session Rejected - Invalid Service Cross-Station (Sprint Server #2 regression)"
 skip_when_pooled: "Needs manual cross-station setup via --var stationA_bayId / stationB_serviceId (two stations, disjoint catalogs) — not auto-runnable in a pooled suite. Run with --scenario <file> --target uat --var ... (see header comment)."
 description: "Two stations in one org with disjoint catalogs. Session-start with bay on station A + serviceId from station B must reject with 404 INVALID_SERVICE. Asserts resolveServiceUuid station-scoping closes the cross-station/cross-tenant ambiguity."
