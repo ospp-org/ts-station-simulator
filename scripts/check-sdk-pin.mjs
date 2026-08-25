@@ -13,6 +13,39 @@
  * programme went stale (`ospp/spec` CONTRIBUTING, "No Number Without Its Measurement
  * Point"). So this reads the SDK's, and never restates it.
  *
+ * ── AND IT DOES NOT READ IT. MEASURED 2026-08-25, RECORDED NOT REPAIRED ──────────
+ *
+ * The paragraph above is the argument for this file's whole shape, and the thing it
+ * argues for does not happen. `sdk-ts` DOES carry `.spec-ref` — `v0.25.0` at tag
+ * `v0.26.0`, checked at the tag — but its `package.json` declares
+ * `files: ["dist", "src/schemas"]`, and a file outside that list is never packed into
+ * the npm tarball. So `node_modules/@ospp/protocol/.spec-ref` has never existed on any
+ * machine that installed this package from the registry.
+ *
+ * The `catch` below then substitutes `(the installed SDK ships no .spec-ref)` and the
+ * run continues green, printing that string where a spec version belongs. Every
+ * successful run of this gate since it was written has printed it. Nothing fails,
+ * nothing is compared, and the line reads as information.
+ *
+ * SO THIS GATE COMPARES SOMETHING NARROWER THAN IT DECLARES. What it actually
+ * enforces — and enforces correctly, which is why the code is untouched — is
+ * pin ↔ installed ↔ published, three package versions on one line. The spec marker is
+ * DISPLAY ONLY and is currently unreadable, so "read the SDK's, never restate it"
+ * describes an intention rather than a behaviour.
+ *
+ * It is the class this programme keeps closing: an instrument right in mechanism and
+ * blind in the one field its justification rests on, with the blindness hidden by a
+ * fallback that reads like a value. The specific trap here is that the failure looks
+ * like DATA — an operator sees a parenthetical and moves on, where a crash would have
+ * been read.
+ *
+ * WHERE THE FIX BELONGS, AND WHY NOT HERE. Adding `.spec-ref` to `files` in
+ * `ospp-sdk-ts/package.json` makes this file's promise true with no change on this
+ * side, and every consumer of the package gets the marker rather than just this one.
+ * Compensating here — vendoring the marker, or fetching it over the network — would
+ * rebuild the second hand-kept copy the docblock above exists to refuse. Recorded so
+ * the next reader knows the parenthetical is a defect and not a property of the SDK.
+ *
  * What actually went wrong, and what this catches
  * -----------------------------------------------
  * The pin was `^0.20.0` while the SDK was at `0.22.0`. On `0.x` a caret is
@@ -99,4 +132,10 @@ if (pMaj === 0 && lMaj === 0 && lMin > pMin) {
 if (lMaj > pMaj) fail(`\nThe published ${PKG} is a major ahead (${latest} vs pin ${pin}). Edit the pin deliberately.`);
 
 console.log(`\nOK — the pin tracks the published ${PKG}, and the tree matches the pin.`);
-console.log(`     Spec version is the SDK's, read from it rather than restated here.`);
+// This line used to read "Spec version is the SDK's, read from it rather than restated
+// here." It is not read: `.spec-ref` is outside the SDK's `files` array and never reaches
+// the npm tarball, so the parenthetical above is the catch's placeholder on every run. Say
+// what is actually enforced — three package versions — rather than claiming a comparison
+// that has never happened. See the docblock for where the fix belongs (`sdk-ts`, not here).
+console.log(`     Scope: pin/installed/published only. The spec marker is NOT compared —`);
+console.log(`     the SDK does not publish .spec-ref, so the value above is a placeholder.`);

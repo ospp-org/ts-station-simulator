@@ -45,9 +45,17 @@ Configured in `config/targets.yaml`:
 
 | Target | Description |
 |--------|-------------|
-| `local` | Local development (mqtt://localhost:1883) |
-| `uat` | UAT environment (mTLS) |
+| `local` | **Cannot connect** — plaintext 1883 is `enabled = false` on the dev broker. Kept for a non-mTLS stack; use `local-mtls`. |
+| `local-mtls` | The local dev stack over mTLS on 8883 — the working local target. See [`docs/RUNNING-AGAINST-LOCAL.md`](docs/RUNNING-AGAINST-LOCAL.md). |
+| `local-crl` | A throwaway broker with `enable_crl_check` on, for the S7/S7b revocation proof only. |
+| `uat` | UAT environment (mTLS) — see [`docs/RUNNING-AGAINST-UAT.md`](docs/RUNNING-AGAINST-UAT.md) |
 | `sandbox` | OSPP conformance sandbox (mTLS + MQTT credentials) |
+
+A local run hits **six** pre-existing blockers in a fixed order — disabled listener, a
+deliberately-expired fixture cert, the `OSPP_PROTOCOL_VERSION` pin, an empty dev database, a
+retired route, and a permission the pool identity does not hold.
+[`docs/RUNNING-AGAINST-LOCAL.md`](docs/RUNNING-AGAINST-LOCAL.md) lists them with the fix for
+each; reading it first saves rediscovering them one at a time.
 
 Override via `--target` flag or `OSPP_TARGET` env var.
 

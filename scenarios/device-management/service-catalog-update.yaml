@@ -1,5 +1,49 @@
 name: "Service Catalog Update"
-description: "Update the service catalog and receive Accepted with previous catalog version"
+description: "Publish the station's catalog through the only door that exists, and answer it carrying previousCatalogVersion"
+
+# THE DOOR THIS FILE USED TO KNOCK ON IS GONE. It called
+# `PUT /api/v1/admin/stations/{id}/catalog` — the legacy push, which csms-server RETIRED at
+# bf35637. Measured against the local stack 2026-08-25: **404**, "The route
+# api/v1/admin/stations/stn_.../catalog could not be found." The failure had nothing to do
+# with the catalog and everything to do with the route no longer existing, so on a UAT run it
+# would have read as a deploy breaking device management when it is a corpus/server divergence
+# that predates the deploy by weeks.
+#
+# `POST .../catalog/publish` is the ONLY catalog route on the server today
+# (`artisan route:list --path=catalog` returns exactly one row). It takes NO body: everything
+# it sends is read from `station_services` JOIN `service_definitions`, which is why the
+# request below carries no `services:` array and cannot. That is the same door the three
+# `e2e/*` parcours already use.
+#
+# ── AND IT IS UNDER A PERMISSION THE POOL IDENTITY DOES NOT HAVE ────────────────────────
+#
+# Stated rather than worked around, because the refusal is a decision and not an obstacle.
+# `StationServiceCatalogController::publish` calls `$this->authorize('manageCatalog', …)`,
+# `StationPolicy::manageCatalog` resolves to the permission `catalog.manage`, and
+# csms-server's own comment says why it sits there: "which prices and programs a station
+# starts selling under is the settlement-critical decision D-RBAC bound to owner+admin."
+#
+# Measured against the seeded role table, not inferred:
+#
+#   catalog.manage  ->  platform_super_admin, tenant_admin, tenant_owner
+#   tenant_operator ->  holds NO catalog permission at all
+#
+# The per-scenario identity `--bootstrap-pool` hands a file with no `auth:` block is a
+# `tenant_operator` — deliberately, "the principled non-owner role"
+# (`uatPrivileged.ts:678`). So this file run under the pool default is **403 "This action is
+# unauthorized"**, measured. The pool DOES mint an ephemeral `tenant_owner`, but its password
+# never leaves `PoolBootstrap` and no scenario can ask for it, so running as the pool owner
+# would need a runner change and is NOT what this file does.
+#
+# What it does instead is declare the identity it needs, the same mechanism and the same
+# credentials the `e2e/*` files already use. A `platform_super_admin` is NULL-scoped and a
+# member of no organisation, which is exactly the case `StationPolicy::checkTenantPermission`
+# admits through its platform-tier override — the station's own org resolves, membership
+# fails, and the NULL-team grant carries it. No header, no SQL, no role edit.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -48,39 +92,42 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # NO BODY — the route takes none and would ignore one. The catalog it ships is the one the
+  # server already holds, which on a bootstrapped pool station is the four seeded services,
+  # each bound to its bay's lowest declared program by the bootstrap's own step 3
+  # (`uatPrivileged.ts`, `INSERT INTO bay_services … MIN(bp.program_number)`).
+  #
+  # `withheld: []` is the assertion `expect_status: 202` cannot make. Publish does not refuse
+  # a catalog over an unbound service — it ships what is sellable and NAMES the rest — so a
+  # bootstrap that stopped writing bindings would still answer 202 here with every service
+  # withheld and dispatch a catalog of nothing. `serviceCount: 4` catches the other direction,
+  # a service that stopped being seeded at all.
+  #
+  # ASSERTION 1 — the version is SERVER-GENERATED, and that is established rather than
+  # assumed. UpdateServiceCatalogAction:80-83:
+  #
+  #   $current = $station->current_catalog_version;
+  #   $nextVersion = ($current === null) ? '1' : (string) ((int) $current + 1);
+  #
+  # monotonic integer-as-string, per station, derived from the row. This request sends no
+  # version and CANNOT send one, so the value is genuinely derived and not a restatement.
+  #
+  # Why "2" and not "1": the pool bootstrap seeds `current_catalog_version = '1'` at
+  # provisioning (`uatPrivileged.ts` step 5, scoped to stations where it IS NULL), so a fresh
+  # pool station's first publish increments 1 -> 2. If this ever fails with "1" the bootstrap
+  # stopped seeding; with "3" or higher the station is not fresh and the run is reusing state.
+  #
+  # The key is `catalogVersion`, camelCase — this response is
+  # `StationServiceCatalogController::publish`, NOT the retired route's flat snake_case
+  # `catalog_version`. Two doors, two spellings; the assertion moved with the door.
   - action: api_call
-    method: PUT
-    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog"
-    body:
-      services:
-        - serviceId: "{{serviceId_1}}"
-          serviceName: "Premium Wash"
-          pricingType: "PerMinute"
-          priceCreditsPerMinute: 100
-          available: true
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
     expect_status: 202
-    # ASSERTION 1 — the version is SERVER-GENERATED, and that is established
-    # rather than assumed. UpdateServiceCatalogAction:80-83:
-    #
-    #   $current = $station->current_catalog_version;
-    #   $nextVersion = ($current === null) ? '1' : (string) ((int) $current + 1);
-    #
-    # monotonic integer-as-string, per station, derived from the row. The request
-    # body above carries NO version — the scenario cannot echo what it never
-    # sends, so this is a genuinely derived value and not a restatement.
-    #
-    # Why "2" and not "1": the pool bootstrap seeds current_catalog_version = '1'
-    # at provisioning (uatPrivileged.ts, scoped to stations where it IS NULL), so
-    # a fresh pool station's FIRST push through this endpoint increments 1 -> 2.
-    # A station that had never been seeded would answer '1' here. If this file
-    # ever fails with "1", the bootstrap stopped seeding; if it fails with "3" or
-    # higher, the station is not fresh and the run is reusing state.
-    #
-    # Response is FLAT — StationManagementController:570-576 returns
-    # {message, message_id, station_id, catalog_version, service_count} with no
-    # `data` wrapper. Unlike every other read-back in this corpus.
     expect_body:
-      catalog_version: "2"
+      catalogVersion: "2"
+      serviceCount: 4
+      withheld: []
 
   - action: wait_for
     message: UpdateServiceCatalog
@@ -88,18 +135,30 @@ steps:
     timeout_ms: 15000
     capture:
       catalogVersion: "payload.catalogVersion"
+      catalog_msg_id: "messageId"
 
-  # ASSERTION 2 — the same server-generated version CROSSES THE WIRE. The REST
-  # response above proves the server computed it; this proves it reached the
-  # station in the published Request, which is the half that actually matters to
-  # a fleet. Two surfaces, one value, neither supplied by this scenario.
+  # ASSERTION 2 — the same server-generated version CROSSES THE WIRE. The REST response above
+  # proves the server computed it; this proves it reached the station in the published
+  # Request, which is the half that actually matters to a fleet. Two surfaces, one value,
+  # neither supplied by this scenario.
   - action: assert
     field: "payload.catalogVersion"
     equals: "2"
 
+  # `correlationId` is what makes this a ROUND TRIP rather than a message shouted at a server
+  # that will drop it. UpdateServiceCatalogResponseHandler:32 resolves the pending command by
+  # (stationId, messageId) and returns early with "no pending command found" when it cannot —
+  # so without this the catalog is never persisted and every assertion above still passes.
+  # The three e2e parcours have always correlated; this file did not.
   - action: send
     message: UpdateServiceCatalog
     messageType: Response
+    correlationId: "{{captured.catalog_msg_id}}"
     payload:
       status: "Accepted"
-      previousCatalogVersion: "1.0.0"
+      # REQUIRED on the Accepted arm since spec v0.25.0. "1" and not "1.0.0": catalog versions
+      # in this system are monotonic integers-as-strings, and "1" is what the bootstrap wrote
+      # into `stations.current_catalog_version` — i.e. what this station actually held before
+      # the publish above. The old literal was coherent with no version this server can ever
+      # produce, and it only ever passed because nothing read it.
+      previousCatalogVersion: "1"
