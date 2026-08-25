@@ -46,6 +46,72 @@ import type { StationPool, PoolEntry } from './stations/StationPool.js';
  */
 export const DEFAULT_SCENARIO_TIMEOUT_MS = 90_000;
 
+/**
+ * THE FLOOR ON AN ORDERING THE PROTOCOL CANNOT ACKNOWLEDGE.
+ *
+ * A `send` step whose `messageType` is `Event` completes when the BROKER acknowledges the
+ * publish — `MessageSender.send` awaits a QoS-1 PUBACK (`MqttConnection.publish`). That is
+ * not when the CSMS has applied it. An Event is fire-and-forget by definition: the server
+ * owes it no Response, so there is nothing for a `wait_for` to synchronise on, and the
+ * effect lands whenever the MQTT consumer gets to it — later under load, because the queue
+ * is shared across `--workers`.
+ *
+ * So the step boundary is a lie, and the next step starts against a server that has not
+ * caught up. When that next step is an `api_call`, the REST read races the write the Event
+ * carried. `StatusNotification` is the case that matters: it is the ONLY thing that clears
+ * `bays.status` from `unknown` (every accepted Boot resets it), and three server surfaces
+ * refuse an `unknown` bay with 3002 BAY_NOT_READY — `POST /sessions/start`
+ * (SessionStateMachine::validateBayForStart), `POST /reservations`
+ * (ReservationTransitions::validateBayForReservation) and, since csms-server `e9fa3fc4`,
+ * `POST .../maintenance` (SetMaintenanceModeAction::validateBayForMaintenance).
+ *
+ * WHY THIS IS THE RUNNER'S AND NOT A FILE'S. 49 adjacencies across 40 scenario files put an
+ * `api_call` directly after an Event send with nothing in between; 26 of them fire it with
+ * `background: true`, where a 409 is downgraded to a `console.warn` and the run dies three
+ * steps later on a `wait_for` timeout that names the message which never arrived
+ * (ApiCallStep.ts, measured 2026-08-13 on core/boot-disabled-station-boots-and-stays-gated).
+ * A per-file `delay` would answer it in 40 places, which is 40 copies of one number — the
+ * shape `PoolBaysCoversScenarios` exists to refuse. A step that reports itself finished
+ * before its effect exists is a property of the runner.
+ *
+ * A FLOOR, NOT AN ADDITION. The top-up is measured from the publish and only covers the
+ * REMAINDER, so a file that already waits — `full-session-lifecycle.yaml` (500 ms), the
+ * three `maintenance-mode-*` read-backs (1500 ms) — pays nothing extra, and a `wait_for`
+ * that happened to take a second has already satisfied it. Nothing in the corpus needs
+ * editing for this, and a file that wants MORE than the floor still gets what it asks for.
+ *
+ * 1000 ms IS MEASURED, NOT CHOSEN. `status-all-bay-states.yaml` established it on UAT after
+ * 300 ms read back the PREVIOUS state; `boot-resets-bays-to-unknown.yaml:69-71` records
+ * both numbers. It is the corpus's own value, promoted from a literal repeated in scenario
+ * files to the one place that can enforce it.
+ */
+export const UNACKED_EVENT_SETTLE_MS = 1000;
+
+/**
+ * True for a step that publishes a station EVENT — the fire-and-forget half of the
+ * protocol, which the server never answers. `Request` and `Response` sends are excluded:
+ * both have a counterpart on the wire, and a scenario that cares already `wait_for`s it.
+ */
+export function isUnackedEventSend(step: StepDefinition | undefined): boolean {
+  return step?.action === 'send' && step?.messageType === 'Event';
+}
+
+/**
+ * Milliseconds still owed before a server-touching step may run, given when the last
+ * unacknowledged Event was published. `null` (no Event outstanding) and an elapsed time
+ * already past the floor both return 0 — this never delays anything twice.
+ */
+export function settleTopUpMs(
+  unackedEventAt: number | null,
+  now: number,
+  floorMs: number = UNACKED_EVENT_SETTLE_MS,
+): number {
+  if (unackedEventAt === null) return 0;
+  const remaining = floorMs - (now - unackedEventAt);
+
+  return remaining > 0 ? remaining : 0;
+}
+
 export interface ScenarioDefinition {
   name: string;
   target_url?: string;
@@ -1702,8 +1768,29 @@ export class ScenarioRunner {
         await station.connect();
       }
 
+      // See UNACKED_EVENT_SETTLE_MS. Held across the loop, not per step: the floor is
+      // measured from the publish, so anything the scenario did in between counts towards it.
+      let unackedEventAt: number | null = null;
+
       for (let i = 0; i < scenario.steps.length; i++) {
         const rawStep = scenario.steps[i];
+
+        // BEFORE stepStart, so the wait belongs to the ordering and not to the step's own
+        // reported duration. `action` is read off the raw step deliberately: it carries no
+        // template and substitution has not run yet.
+        if ((rawStep as StepDefinition | undefined)?.action === 'api_call') {
+          const topUp = settleTopUpMs(unackedEventAt, Date.now());
+          if (topUp > 0) {
+            console.log(
+              '[ScenarioRunner] settling %dms before step %d (api_call) — an unacknowledged Event is still in flight',
+              topUp,
+              i,
+            );
+            await new Promise<void>((resolve) => setTimeout(resolve, topUp));
+          }
+          unackedEventAt = null;
+        }
+
         const stepStart = Date.now();
 
         // Apply template substitution to the entire step definition.
@@ -1751,6 +1838,9 @@ export class ScenarioRunner {
 
         try {
           await stepImpl.execute(substitutedStep, context, station);
+          if (isUnackedEventSend(substitutedStep)) {
+            unackedEventAt = Date.now();
+          }
           context.stepResults.push({
             stepIndex: i,
             action: substitutedStep.action,
