@@ -73,6 +73,17 @@ export class Station extends EventEmitter {
   public readonly sessions: Map<string, SessionInfo> = new Map();
   public readonly reservations: Map<string, ReservationInfo> = new Map();
   public currentRevocationEpoch: number = 0;
+  /**
+   * The catalog version this station currently holds. Empty until the server has
+   * pushed one and this station has answered `Accepted`.
+   *
+   * `''` is a VALUE, not a placeholder for "unknown": spec v0.25.0 made
+   * `previousCatalogVersion` required on the `Accepted` arm and states that the
+   * empty string is the conforming answer from a station that has never held a
+   * catalog. Absent and `''` are two different statements on the wire and only one
+   * of them is allowed there, so this field must never be optional.
+   */
+  public currentCatalogVersion: string = '';
   public sessionKey: string | null = null;
   // Device-held key for an in-flight cert renewal (ADR-0002 T1): set by
   // TriggerCertificateRenewalHandler, consumed by CertificateInstallHandler.

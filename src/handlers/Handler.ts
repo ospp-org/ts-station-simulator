@@ -12,6 +12,12 @@ export interface StationContext {
   sessions: Map<string, SessionInfo>;
   reservations: Map<string, ReservationInfo>;
   currentRevocationEpoch: number;
+  /**
+   * The catalog version this station currently holds — `''` before the first one.
+   * Read and then advanced by UpdateServiceCatalogHandler, which reports the old
+   * value as `previousCatalogVersion`; see the field's docblock on `Station`.
+   */
+  currentCatalogVersion: string;
   sessionKey: string | null;
   /**
    * The device-held private key (PKCS8 PEM) minted for an in-flight certificate

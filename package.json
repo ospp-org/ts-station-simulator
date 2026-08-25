@@ -1,7 +1,7 @@
 {
   "name": "@ospp/station-simulator",
   "version": "0.6.3",
-  "description": "OSPP Station Simulator \u2014 TypeScript CLI for testing CSMS implementations",
+  "description": "OSPP Station Simulator — TypeScript CLI for testing CSMS implementations",
   "type": "module",
   "license": "MIT",
   "author": "OSPP Standard Organization",
@@ -29,7 +29,7 @@
     "check:sdk-pin": "node scripts/check-sdk-pin.mjs"
   },
   "dependencies": {
-    "@ospp/protocol": "^0.23.0",
+    "@ospp/protocol": "^0.26.0",
     "@peculiar/x509": "^2.0.0",
     "axios": "^1.7.0",
     "chalk": "^5.3.0",

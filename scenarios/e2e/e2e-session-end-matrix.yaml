@@ -517,6 +517,17 @@ steps:
     correlationId: "{{captured.catalog_msg_id}}"
     payload:
       status: "Accepted"
+      # REQUIRED on the Accepted arm since spec v0.25.0, and the EMPTY STRING is the
+      # conforming value here rather than a placeholder: this station is provisioned
+      # and booted inside this run and has held no catalog before this one, which is
+      # exactly the case the schema names. Absent and "" are two different statements
+      # on the wire and only "" is allowed on an Accepted.
+      #
+      # It changes nothing the server does — csms-server builds its own
+      # `previous_catalog_version` from stations.current_catalog_version and has never
+      # read this member off the wire. It is required all the same, and the server
+      # refuses the message without it before any handler runs.
+      previousCatalogVersion: ""
 
   # 35 s drain — Path B consumer single-threaded latency (see audit §33).
   - action: delay
