@@ -15,34 +15,85 @@ description: "Publish the station's catalog through the only door that exists, a
 # request below carries no `services:` array and cannot. That is the same door the three
 # `e2e/*` parcours already use.
 #
-# ── AND IT IS UNDER A PERMISSION THE POOL IDENTITY DOES NOT HAVE ────────────────────────
+# ── AND IT IS UNDER A PERMISSION NO IDENTITY THIS CORPUS CAN OBTAIN ─────────────────────
 #
-# Stated rather than worked around, because the refusal is a decision and not an obstacle.
-# `StationServiceCatalogController::publish` calls `$this->authorize('manageCatalog', …)`,
-# `StationPolicy::manageCatalog` resolves to the permission `catalog.manage`, and
-# csms-server's own comment says why it sits there: "which prices and programs a station
-# starts selling under is the settlement-critical decision D-RBAC bound to owner+admin."
+# THE FILE IS SKIPPED. Not because the door is missing — it is the only one that exists and
+# the steps below are the right ones for it — but because `publish` authorizes
+# `catalog.manage` and nothing a scenario can authenticate as holds it.
 #
-# Measured against the seeded role table, not inferred:
+# WHAT THE PREVIOUS REVISION CLAIMED, AND WHY IT WAS WRONG. It added the `auth:` block below
+# on the premise that `UAT_E2E_PLATFORM_ADMIN_*` names a `platform_super_admin`, which
+# `StationPolicy::checkTenantPermission` admits through its platform-tier override. The
+# override is real; the premise about the account is not. `E2EBootstrapSeeder` assigns
+# `E2E_PLATFORM_ROLE`, DEFAULT `platform_admin`, and that is the role the account carries —
+# `~/.config/osp-e2e-secrets.env` says so in its own header, and UAT confirms it:
 #
-#   catalog.manage  ->  platform_super_admin, tenant_admin, tenant_owner
-#   tenant_operator ->  holds NO catalog permission at all
+#   GET /api/v1/me/permissions  ->  200, exactly 13 entries, all `platform.*`
+#                                   (the `platform_admin` grant list verbatim,
+#                                    RolesAndPermissionsSeeder.php:323-337)
 #
-# The per-scenario identity `--bootstrap-pool` hands a file with no `auth:` block is a
-# `tenant_operator` — deliberately, "the principled non-owner role"
-# (`uatPrivileged.ts:678`). So this file run under the pool default is **403 "This action is
-# unauthorized"**, measured. The pool DOES mint an ephemeral `tenant_owner`, but its password
-# never leaves `PoolBootstrap` and no scenario can ask for it, so running as the pool owner
-# would need a runner change and is NOT what this file does.
+# `catalog.manage` is not among them, and csms-server's own comment on that override names
+# this exact case: "Super-admin's enumerated grants land here; platform_admin /
+# platform_support remain REJECTED because tenant-prefixed permissions are not on their
+# roles." Two different roles with adjacent names, and only one of them passes.
 #
-# What it does instead is declare the identity it needs, the same mechanism and the same
-# credentials the `e2e/*` files already use. A `platform_super_admin` is NULL-scoped and a
-# member of no organisation, which is exactly the case `StationPolicy::checkTenantPermission`
-# admits through its platform-tier override — the station's own org resolves, membership
-# fails, and the NULL-team grant carries it. No header, no SQL, no role edit.
-auth:
-  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
-  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+# MEASURED ON UAT 2026-08-25, without publishing anything, on the READ half of the same gate:
+#
+#   GET  /api/v1/admin/stations/stn_68e67283/services   ->  403 "This action is unauthorized"
+#   GET  /api/v1/admin/stations/stn_68e67283            ->  200
+#
+# Same token, same station, one step apart. `index` and `publish` both call
+# `$this->authorize('manageCatalog', …)`; the second route is gated on
+# `stations.view`/`platform.support.read_any`, which this account does hold. So the refusal
+# is the PERMISSION and not the identity, the token, or the station.
+#
+# EVERY IDENTITY A SCENARIO CAN REACH, AND WHAT EACH HOLDS. `catalog.manage` is granted to
+# `platform_super_admin`, `tenant_owner` and `tenant_admin` (RolesAndPermissionsSeeder:196,
+# 372, 419) and to nothing else:
+#
+#   `auth:` env override            platform_admin      NO   — measured above
+#   pool per-scenario identity      tenant_operator     NO   — holds no catalog permission at
+#                                                              all; "the principled non-owner
+#                                                              role", uatPrivileged.ts:678
+#   `UAT_EMAIL` / `UAT_PASSWORD`    —                   —    — 401 on UAT (stale, as
+#                                                              RUNNING-AGAINST-UAT.md §1 says),
+#                                                              and structurally unreachable
+#                                                              while the allocator is active
+#   pool ephemeral owner            tenant_owner        YES  — but `ownerPassword` never
+#                                                              leaves PoolBootstrap and no
+#                                                              scenario can ask for it
+#
+# AND THE ONE THAT LOOKS LIKE A WAY THROUGH IS NOT. The three `e2e/*` parcours DO publish a
+# catalog with these very credentials in their `auth:` block — but not AS them. Each logs in
+# as the customer it registered first and `set_auth_token` replaces the context JWT, and
+# their own comment says why: "running tenant ops as the platform admin would 403 even
+# though the platform admin is omnipotent at the platform layer"
+# (e2e-new-customer-onboarding.yaml:161-170). That customer is `tenant_owner` OF THE ORG IT
+# JUST CREATED, and `checkTenantPermission` resolves the STATION's organisation — so the
+# same trick against a POOL station fails membership and falls through to a NULL-team grant
+# a tenant role does not have. Self-provisioning the station too is what makes those three
+# files `skip_when_pooled`; it would make this one a fourth copy of them, not a
+# device-management scenario.
+#
+# SO THE FINDING IS THE ROUTE, NOT THE FILE: the only catalog door on the server sits behind
+# a role this corpus cannot obtain. Recorded rather than worked around — the alternatives are
+# re-seeding the UAT account at `platform_super_admin`, or teaching the runner to hand a
+# scenario the pool owner's password. Both are identity changes made to get a green line,
+# which is the reason a refusal proof is worth having in the first place.
+#
+# `skip_kind: inconclusive`, not the default `not-applicable`: the catalog round-trip below
+# is a property that IS owed and is not being proven, so `--require-conclusive` must not go
+# green on it. It was proven once, on the wire, against the local stack at `cc92bfc` — 7/7
+# steps, `catalogVersion "2"`, `previousCatalogVersion "1"`, `serviceCount 4` — which is what
+# makes the steps below worth keeping intact rather than deleting.
+#
+# WHAT LIFTS THE SKIP: any identity holding `catalog.manage` over the station's own
+# organisation that a scenario can name. The cheapest is the pool's ephemeral `tenant_owner`,
+# which already exists on every pooled run and is one runner change away from being
+# declarable. That change is not made here.
+skip: true
+skip_kind: inconclusive
+skip_reason: "POST .../catalog/publish authorizes `catalog.manage`; no identity a scenario can authenticate as holds it. The `auth:` account is platform_admin (13 platform.* permissions, measured on UAT), the pool identity is tenant_operator, and the only tenant_owner in a pooled run is the pool's own ephemeral owner, whose password never leaves PoolBootstrap. Measured 2026-08-25: 403 on GET .../services (same manageCatalog gate), 200 on GET .../stations/{id} with the same token. See the header."
 
 station:
   stationId: "{{stationId}}"

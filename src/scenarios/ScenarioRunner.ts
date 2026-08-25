@@ -118,6 +118,23 @@ export interface ScenarioDefinition {
   skip?: boolean;
   skip_reason?: string;
   /**
+   * WHY the unconditional `skip` above, in the only distinction a machine reads — see
+   * {@link SkipKind}. Defaults to `not-applicable`, which is what every `skip: true` in the
+   * corpus meant before this key existed and still means without it.
+   *
+   * `inconclusive` exists for a scenario that is READY and whose INSTRUMENT is absent — the
+   * same class `requires_files` covers for a deliberately-broken certificate, reached here
+   * for a reason that is not a file on disk. `device-management/service-catalog-update` is
+   * the case: `POST .../catalog/publish` authorizes `catalog.manage`, held by
+   * `platform_super_admin`, `tenant_owner` and `tenant_admin`, and NO identity a scenario can
+   * authenticate as holds it. The catalog round-trip is a real property and it is not being
+   * proven, so a run asked for a conclusive answer has no business reporting green on it.
+   *
+   * Stated as a key rather than inferred, for the reason {@link SkipKind} gives: a default
+   * would let a future skip acquire the harmless kind by omission.
+   */
+  skip_kind?: SkipKind;
+  /**
    * Override the per-scenario wall-clock budget (ms). Only for a scenario whose slowness is
    * DELIBERATE — arc8-reconnect-preserve holds a connection past the server's 300s recovery
    * deadline and legitimately runs ~348s. Raising this to paper over a scenario that hangs
@@ -1570,7 +1587,7 @@ export class ScenarioRunner {
       return this.skippedResult(
         scenario.name,
         scenario.skip_reason ?? 'marked as skip',
-        'not-applicable',
+        scenario.skip_kind ?? 'not-applicable',
       );
     }
     // Conditional skip: a pool-incompatible scenario in a --bootstrap-pool run (this.runPool set).
