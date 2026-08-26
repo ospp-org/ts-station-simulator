@@ -1,0 +1,267 @@
+name: "Provision Rejected — rungs 4 to 8, on a station this file registers itself"
+description: "Register a station of this file's own, mint a token for it, and walk the last five rungs of the provisioning precedence chain on that one token: 4010 CSR_INVALID, 4020 BAY_COUNT_MISMATCH, 4019 PUBLIC_KEY_INVALID, 4016 PROVISIONING_KEY_REUSE, then a SUCCESSFUL provision and a retry with drifted keys for 4015 PROVISIONING_KEY_MISMATCH."
+# WHY THIS FILE COULD NOT BE WRITTEN UNTIL THE IDENTITY WAS PUBLISHED. Rungs 4-8 all need a
+# VALID, UNCONSUMED provisioning token, and minting one authorizes
+# `stations.manage_provisioning_tokens`. Until 2026-08-26 no identity a scenario could
+# authenticate as held it: the per-scenario pool identity is a `tenant_operator`
+# (csms-server's IssueProvisioningTokenTest.php:48 pins the 403), and the only `auth:`
+# override was a `platform_admin` belonging to no organization. `tenant_owner` holds it
+# (RolesAndPermissionsSeeder.php:369), the run mints one for exactly these endpoints, and
+# PoolBootstrap now publishes it. The same repair lifted `service-catalog-update.yaml`'s
+# INCONCLUSIVE skip — one cause, one fix, two areas.
+#
+# AND WHY IT REGISTERS ITS OWN STATION RATHER THAN USING THE POOL'S. Two reasons, and the
+# second is the one that matters. First, a token minted for a pool station SUPERSEDES that
+# station's existing token rows (IssueProvisioningTokenAction.php:73-76) — harmless, but it
+# is someone else's state. Second, and decisive: rung 8 requires a SUCCESSFUL provisioning,
+# which issues a new certificate and rebinds the station's keys. Doing that to a station five
+# other scenarios are sharing would rotate an identity mid-run. `{{runStationId}}` is
+# generated per scenario and never replaced by the pool, so everything below happens to a
+# station this file created and `creates:` deletes.
+#
+# THE CHAIN IS THE SUBJECT, NOT ANY ONE CODE. spec/04-flows.md:358-367, quoted by
+# csms-server's own tests/Feature/Provisioning/ErrorPrecedenceTest.php:
+#
+#     1. Request well-formedness         -> 400 / 4017   (provision-rejected-request-and-token)
+#     2. Token authentication            -> 401 / 2019   (provision-rejected-request-and-token)
+#     3. Token state                     -> 409 / 4018   NOT CONSTRUCTIBLE — see below
+#     4. CSR decodability                -> 400 / 4010   here
+#     5. Declared bay count              -> 422 / 4020   here
+#     6. Submitted public key validity   -> 400 / 4019   here
+#     7. Request self-consistency        -> 422 / 4016   here
+#     8. Comparison against the bound set-> 409 / 4015   here
+#
+# Each call below is malformed in EXACTLY ONE dimension and correct in every dimension a
+# LOWER rung inspects — which is what makes each verdict attributable to its own rung rather
+# than to whatever the request got wrong first. The token is the same one throughout, because
+# a refusal consumes nothing (`04-flows.md`, 4017's recommendedAction says it in as many
+# words: "resubmit on the **same** token — this rejection does not consume it").
+#
+# RUNG 3 IS NOT HERE AND IS NOT REACHABLE. 4018 has two arms and neither can be built over
+# HTTP: a token consumed WITH a certificate REPLAYS 200 rather than being refused
+# (ProvisioningTokenConsumer.php:87-102), so `consumed_without_certificate` needs a row
+# inserted directly into the database, and `already_consumed` needs a genuine concurrent race
+# between two overlapping requests on one token. Recorded so the next reader does not spend
+# an afternoon on it.
+#
+# WHAT MAKES 4015 DIFFERENT FROM THE OTHER FOUR, and why it is last. It is the only rung that
+# depends on state the requester cannot see — the key set bound by an earlier SUCCESSFUL
+# provisioning — and `04-flows.md:369` says that is why the spec seats it last: its recovery,
+# obtaining a new token, is the most expensive of the eight. So this file provisions for real
+# first (the step with no `expect_status`), then retries with a SECOND key set. The second set
+# is produced by pointing `artifacts_dir` somewhere else: key reuse is decided by whether the
+# key files exist at the resolved paths (persistedKeySet.ts:167-176), so a different directory
+# means a genuinely different keypair for the same station id — the exact firmware accident
+# spec step 6b exists to forbid, which is why the simulator commits keys BEFORE the request.
+#
+# NO SERVER-STATE ASSERTION ON THE REFUSALS — a refused provisioning writes nothing. The one
+# call that DOES write is asserted by the step itself: it demands 200 and a parseable
+# certificate, and rung 8 below is meaningless unless it succeeded.
+requires_pool: >-
+  Minting a provisioning token authorizes `stations.manage_provisioning_tokens`, held by
+  tenant_owner and by no identity that exists outside a bootstrapped run — the pool's
+  ephemeral owner is minted and deleted per run, so there is no account to seed.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # The org the run owner belongs to. Captured rather than assumed: /api/v1/locations is not
+  # under /api/v1/admin/, so the runner does not auto-inject X-Organization-Id for it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Provisioning refusal rungs {{runStationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  # Two bays, one program each — the same shape the pool provisions, so rung 5's mismatch
+  # below is a deliberate difference from a known-good baseline rather than from nothing.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{runStationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+        - bayNumber: 2
+    expect_status: 201
+    # Recorded at registration, not after provisioning: the row exists from this 201 onward,
+    # so a run that dies at any step below still has it cleaned up.
+    creates:
+      station: "data.station_id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{runStationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "provisioning refusal rungs 4-8"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  # --- RUNG 4 — 4010 CSR_INVALID. The CSR is schema-valid (min:100, and it opens with the
+  # PEM header) but truncated, so it passes the request layer and fails to PARSE. Everything
+  # else in the body is the generated, correct material.
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs"
+    csr_override: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBIjCByAIBADBmMQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExFDASBgNVBAcM\nC0xvcyBBbmdlbGVzMRIwEAYDVQQKDAlBY21lQ29ycDEgMB4GA1UEAwwXc3RuX2Ex\nYjJjM2Q0LmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END CERTIFICATE REQUEST-----"
+    expect_status: 400
+    expect_body:
+      errorCode: 4010
+      errorText: "CSR_INVALID"
+      # `phase` separates a first attempt from a retry on the same token, and this is the
+      # first — pinning it is what would catch the chain being re-entered out of order.
+      details.phase: "first-provision"
+
+  # --- RUNG 5 — 4020 BAY_COUNT_MISMATCH. The CSR is now the generated, parseable one, so
+  # rung 4 is satisfied. The declared set is {1,3} against a registered {1,2}: note it is a
+  # SET comparison, not a count (CertificateManager.php:194-200), so the counts matching is
+  # exactly what makes this a real test of the predicate rather than of an integer.
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs"
+    bays:
+      - bayNumber: 1
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+      - bayNumber: 3
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+    expect_status: 422
+    expect_body:
+      errorCode: 4020
+      errorText: "BAY_COUNT_MISMATCH"
+      details.reason: "bay_count_mismatch"
+      # BOTH sides, because the server puts both on the wire and because a `declared` that
+      # echoed the registered set would satisfy the code alone.
+      details.declaredBayNumbers: [1, 3]
+      details.registeredBayNumbers: [1, 2]
+
+  # --- RUNG 6 — 4019 PUBLIC_KEY_INVALID. CSR and bays are both correct, so rungs 4 and 5 are
+  # satisfied; the receipt key is not a key at all.
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs"
+    receipt_key_override: "-----BEGIN PUBLIC KEY-----\nTHIS-IS-NOT-A-KEY-AND-IS-ONLY-HERE-TO-BE-LONG-ENOUGH-FOR-THE-MIN-100\nCHARACTER-RULE-SO-THE-REQUEST-LAYER-PASSES-IT-TO-THE-VALIDATOR-BELOW\n-----END PUBLIC KEY-----"
+    expect_status: 400
+    expect_body:
+      errorCode: 4019
+      errorText: "PUBLIC_KEY_INVALID"
+      details.reason: "malformed"
+      # A constant in the server, and asserted precisely because it is: it is the only thing
+      # in the body naming WHICH key was rejected, and there are two keys in the request.
+      details.field: "receiptSigningPublicKey"
+
+  # --- RUNG 7 — 4016 PROVISIONING_KEY_REUSE. Every field is individually VALID: the receipt
+  # key here is the TLS keypair's own public half, a real P-256 SPKI, so rung 6 passes. What
+  # fails is the relationship between two valid fields — the request is not self-consistent.
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs"
+    receipt_key_from_tls: true
+    expect_status: 422
+    expect_body:
+      errorCode: 4016
+      errorText: "PROVISIONING_KEY_REUSE"
+      details.reason: "keys_not_pairwise_distinct"
+
+  # --- RUNG 8, FIRST HALF — the only call in this file that is meant to SUCCEED. It binds
+  # this key set to the token (provisioning_bound_keys) and issues a certificate for a
+  # station this file owns. No `expect_status`: the step's own success path demands 200 and a
+  # parseable clientCert, so a failure here is loud and rung 8 below cannot be vacuous.
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs"
+
+  # --- RUNG 8, SECOND HALF — 4015 PROVISIONING_KEY_MISMATCH. Same token, same station, same
+  # declared bays; a DIFFERENT `artifacts_dir`, so the step finds no keys to reuse and
+  # generates a second set. That is the whole difference, and it is the accident spec
+  # 04-flows.md:302 forbids a real station from having: "the station MUST resubmit THOSE keys
+  # on every retry rather than generating new ones".
+  - action: provision
+    station_id: "{{runStationId}}"
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uat-refusal-rungs-drifted"
+    expect_status: 409
+    expect_body:
+      errorCode: 4015
+      errorText: "PROVISIONING_KEY_MISMATCH"
+      details.reason: "key_drift"
+      # `recoverable: false` is asserted and the drifted-key LIST is not, and the second half
+      # is the deliberate one.
+      #
+      # MEASURED 2026-08-26, on the first run of this file: the assertion here WAS
+      # `details.driftedKeyKinds: ["tls", "receipt"]` and the server answered
+      # `["receipt", "tls"]`. Everything else in this rung — 409, 4015, the errorText, the
+      # reason — was exactly right. The order is not a contract: the list is built from
+      # `array_unique([...array_keys($bound), ...array_keys($presented)])` where `$bound` is a
+      # `pluck` off `provisioning_bound_keys` with NO `ORDER BY`
+      # (CertificateManager.php:1238-1294), so it is whatever Postgres returns for those two
+      # rows. Flipping this assertion to match what one run produced would pin a coincidence
+      # and turn the file into a flake with a schedule.
+      #
+      # So do not "strengthen" this by adding the list back. Proving WHICH kinds drifted needs
+      # either an order-insensitive matcher, or a drift of exactly ONE kind — which would be a
+      # better test anyway, since it would show the comparison is per-kind rather than
+      # all-or-nothing, and neither exists yet. The instability is recorded as a server finding
+      # in docs/MEASURED-server-refusal-defects-*.md: `errorDescription` interpolates the same
+      # list, so its prose varies run to run too.
+      #
+      # `recoverable: false` is worth pinning on its own: spec/04-flows.md:369 seats 4015 last
+      # in the chain BECAUSE its recovery is the most expensive of the eight, and a server that
+      # answered this code as recoverable would be inviting exactly the retry loop the code
+      # exists to stop.
+      recoverable: false

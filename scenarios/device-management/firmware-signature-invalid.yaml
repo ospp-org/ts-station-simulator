@@ -206,9 +206,15 @@ steps:
   # silence" means neither is separable from the other: one absence is being read
   # as two distinct server decisions.
   #
-  # SO: this proves a downlink that was already idle stayed idle 6s longer. The
-  # repair is the two-step control in
-  # firmware-nonconformant-command-reaches-the-wire.yaml. Not done here.
+  # REPAIRED 2026-08-26, in the half that a control CAN repair — the two-step control from
+  # firmware-nonconformant-command-reaches-the-wire.yaml is now at the bottom of this file,
+  # so an link that died anywhere earlier fails there and the silence is attributable.
+  #
+  # THE SECOND WEAKNESS IS NOT REPAIRED AND CANNOT BE BY A CONTROL. "Both are covered by the
+  # same silence" is still true: one absence stands for two distinct server decisions (no
+  # answer to a fire-and-forget notification, and no re-issue of the command). Separating
+  # them needs two windows with a stimulus between, and the second decision has no stimulus a
+  # station can produce — only the server chooses to re-issue. Named rather than closed.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request
@@ -265,3 +271,42 @@ steps:
     expect_status: 200
     expect_body:
       data.firmwareVersion: "1.0.0"
+
+  # ═══ THE CLEAN CONTROL — the downlink, after the window ═══
+  #
+  # The silence above sits at the end of a stretch where the downlink had been idle since the
+  # UpdateFirmware drain four sends and three delays earlier, so a link that died anywhere in
+  # between satisfied it identically. This pair is what the docblock's "follow" means: a
+  # command issued AFTER the window and observed arriving on this same connection.
+  #
+  # 3.0.0, not a re-push of 2.0.0, for the reason firmware-rejected-by-station.yaml gives at
+  # its own control: re-pushing the version the server just declined to re-issue would make a
+  # green ambiguous between "the operator may" and "the server did". A new version is an
+  # operator action the server has no opinion about.
+  #
+  # Placed after the two GETs deliberately: `data.firmwareVersion: "1.0.0"` is asserted above
+  # and a new push must not be allowed to precede the read it could be suspected of moving.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v3.0.0.bin"
+      firmwareVersion: "3.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+
+  # Answered, so the station goes back to the pool with no command in flight. Rejected rather
+  # than Accepted: accepting starts a download this scenario will not drive.
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 5017
+      errorText: "INSUFFICIENT_STORAGE"

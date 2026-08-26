@@ -238,9 +238,11 @@ steps:
   # runs on separate connections, and a different process's success cannot
   # attribute this process's silence.
   #
-  # SO: this proves a station that has never been sent a Reset still has not been
-  # sent one. It CLAIMS the pre-flight fired before the publish. Not repaired
-  # here.
+  # REPAIRED 2026-08-26 — the control is the five steps at the end of this file. Read them
+  # before trusting this one: they issue the IDENTICAL command on the IDENTICAL route over
+  # this same connection once the session is gone, and a Reset Request arrives. So the
+  # silence below is now attributable — a station that could not receive a Reset at all
+  # fails at the bottom of the file, which is exactly what it used to pass.
   - action: wait_for
     message: Reset
     messageType: Request
@@ -268,3 +270,48 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # ═══ THE CLEAN CONTROL — the thing this file lacked in EITHER direction ═══
+  #
+  # WaitForStep's docblock makes it a MUST: "every scenario using this MUST follow it with
+  # an ordinary wait_for on a CLEAN message of the same action", because a dead link, a
+  # wedged worker and a correct pre-flight produce identical silence. This file used to have
+  # no control at all — its only `wait_for`s were BootNotification and StartService, so it
+  # never once showed a Reset arriving on this connection and a station that could not
+  # receive one passed it identically.
+  #
+  # WHY THIS IS A STRONGER CONTROL THAN THE ONE THE DOCTRINE ASKS FOR. It is not merely "a
+  # clean message of the same action" — it is the SAME COMMAND on the SAME ROUTE with the
+  # SAME BODY, differing from the refused call in exactly one thing: the session that was
+  # active then has been settled by the two Events above. So the pair below does not just
+  # prove the link is alive; it proves the pre-flight's PREDICATE, by exercising both of its
+  # positions on one connection within seconds.
+  #
+  # The settle is needed because the SessionEnded above is an EVENT: the server has
+  # acknowledged the publish, not applied it, and the pre-flight reads the session table.
+  - action: delay
+    ms: 2000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
+    body:
+      command: "Reset"
+      payload: {}
+    expect_status: 202
+
+  - action: wait_for
+    message: Reset
+    messageType: Request
+    timeout_ms: 15000
+
+  # ANSWER IT, for the reason soft-reset.yaml gives at its own Response: scenario mode
+  # registers no ResetHandler, so an unanswered command is left for its Redis TTL to expire
+  # and this file would hand the pool a station with a command still in flight.
+  # ResetResponseHandler resolves the pending command and dispatches StationReset, which has
+  # zero listeners — so the Response writes nothing queryable and disturbs no later scenario.
+  - action: send
+    message: Reset
+    messageType: Response
+    payload:
+      status: "Accepted"

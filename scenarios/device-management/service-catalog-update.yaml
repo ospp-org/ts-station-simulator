@@ -81,19 +81,43 @@ description: "Publish the station's catalog through the only door that exists, a
 # scenario the pool owner's password. Both are identity changes made to get a green line,
 # which is the reason a refusal proof is worth having in the first place.
 #
-# `skip_kind: inconclusive`, not the default `not-applicable`: the catalog round-trip below
-# is a property that IS owed and is not being proven, so `--require-conclusive` must not go
-# green on it. It was proven once, on the wire, against the local stack at `cc92bfc` — 7/7
-# steps, `catalogVersion "2"`, `previousCatalogVersion "1"`, `serviceCount 4` — which is what
-# makes the steps below worth keeping intact rather than deleting.
+# ── THE SKIP IS LIFTED, 2026-08-26 — BY THE CHANGE THIS HEADER ASKED FOR ────────────────
 #
-# WHAT LIFTS THE SKIP: any identity holding `catalog.manage` over the station's own
-# organisation that a scenario can name. The cheapest is the pool's ephemeral `tenant_owner`,
-# which already exists on every pooled run and is one runner change away from being
-# declarable. That change is not made here.
-skip: true
-skip_kind: inconclusive
-skip_reason: "POST .../catalog/publish authorizes `catalog.manage`; no identity a scenario can authenticate as holds it. The `auth:` account is platform_admin (13 platform.* permissions, measured on UAT), the pool identity is tenant_operator, and the only tenant_owner in a pooled run is the pool's own ephemeral owner, whose password never leaves PoolBootstrap. Measured 2026-08-25: 403 on GET .../services (same manageCatalog gate), 200 on GET .../stations/{id} with the same token. See the header."
+# The paragraph that stood here said: "WHAT LIFTS THE SKIP: any identity holding
+# `catalog.manage` over the station's own organisation that a scenario can name. The cheapest
+# is the pool's ephemeral `tenant_owner`, which already exists on every pooled run and is one
+# runner change away from being declarable. That change is not made here."
+#
+# It is made now. `PoolBootstrap` publishes the owner it already mints — and already deletes
+# at teardown — to `SIM_POOL_OWNER_EMAIL` / `SIM_POOL_OWNER_PASSWORD`, and the `auth:` block
+# below names them. Nothing in the permission model moved: no account was re-seeded, no grant
+# widened, no role changed. The identity that always held `catalog.manage`
+# (RolesAndPermissionsSeeder:372) is now reachable by the run that creates it. The two
+# alternatives this header rejected — re-seeding the UAT account at `platform_super_admin`,
+# or working around the gate — are still rejected and were not taken.
+#
+# THE SAME REPAIR UNBLOCKED A SECOND AREA, which is why it was worth making rather than
+# working around: `stations.manage_provisioning_tokens` sits on the same role
+# (RolesAndPermissionsSeeder:369), and its absence was the reason five of the eight
+# provisioning refusals could not be provoked at all. See scenarios/provisioning/.
+#
+# `requires_pool` REPLACES `skip: true` + `skip_kind: inconclusive`, and the change of kind
+# is deliberate. `inconclusive` was right while the property was OWED and unprovable — it
+# made `--require-conclusive` refuse to call such a run successful. Outside a pooled run the
+# identity does not exist to be published, so nothing about the server is in question and the
+# skip is honestly `not-applicable`. Inside one — which is every unattended run — the file
+# now RUNS, so the property is proven rather than excused.
+#
+# It was proven once before, on the wire, against the local stack at `cc92bfc` — 7/7 steps,
+# `catalogVersion "2"`, `previousCatalogVersion "1"`, `serviceCount 4` — which is what made
+# the steps below worth keeping intact rather than deleting.
+requires_pool: >-
+  POST .../catalog/publish authorizes `catalog.manage`, held by tenant_owner and by no
+  identity that exists outside a bootstrapped run — the pool's ephemeral owner is minted and
+  deleted per run, so there is no account to seed or to source from a secrets file.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
 
 station:
   stationId: "{{stationId}}"

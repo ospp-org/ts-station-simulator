@@ -5,6 +5,7 @@ import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
 import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
+import { getNestedValue } from './ApiCallStep.js';
 
 interface ProvisioningResponseData {
   clientCert?: string;
@@ -34,6 +35,38 @@ interface ProvisioningResponseData {
  *   capture_certs_path_into: variable name to receive the directory where
  *                            artifacts were persisted (for downstream
  *                            connect_mqtt step). Default: "certs_dir".
+ *   station_id:    provision THIS station rather than the scenario's `{{stationId}}` — for a
+ *                  file that registers a station of its own (`{{runStationId}}`).
+ *
+ * REFUSAL MODE — `expect_status` (+ optional `expect_body`).
+ *
+ * Until 2026-08-26 this step THREW on any status other than 200, so a provisioning
+ * REFUSAL could not be asserted through it in any run. That was not a gap in the
+ * corpus, it was a gap in the instrument: the provisioning door has eight reachable
+ * refusals and the only step that can produce a well-formed request for it could not
+ * observe any of them. Reaching them another way is not possible either — rungs 4-8 of
+ * the precedence chain need a CSR that PARSES, self-verifies and carries `CN=<stationId>`,
+ * and a station id is generated per run, so no static literal in a YAML file can serve.
+ *
+ * With `expect_status` set, the step asserts the status (and each dotted path in
+ * `expect_body`) and RETURNS — it persists nothing, captures nothing and does not touch
+ * `context.provisioning`, because a refused request issued no certificate and there is
+ * nothing to write. The key set is still committed to disk BEFORE the request, exactly as
+ * on the success path: spec/04-flows.md:253 step 6b is about what the device did before
+ * the bytes left, not about what the server answered.
+ *
+ * KEY-SHAPE KNOBS, one per refusal that is ABOUT the keys:
+ *   csr_override:          send this string as `tlsCsr` instead of the generated CSR
+ *                          (4010 CSR_INVALID — a schema-valid, unparseable PEM).
+ *   receipt_key_override:  send this as `receiptSigningPublicKey` (4019 PUBLIC_KEY_INVALID).
+ *   receipt_key_from_tls:  send the TLS keypair's OWN public key as the receipt key, so the
+ *                          two are not pairwise distinct (4016 PROVISIONING_KEY_REUSE).
+ *
+ * There is deliberately NO `fresh_keys` knob for 4015 PROVISIONING_KEY_MISMATCH: pointing
+ * the retry at a different `artifacts_dir` already produces a second, independent key set
+ * for the same station id, because reuse is decided by whether the key files exist at the
+ * resolved paths (persistedKeySet.ts:167-176). A second knob would be a second way to say
+ * the same thing.
  */
 export class ProvisionStep implements Step {
   async execute(
@@ -69,9 +102,20 @@ export class ProvisionStep implements Step {
       throw new Error('ProvisionStep: "bay_count" field is required (integer ≥ 1)');
     }
 
-    const stationId = context.variables.get('stationId');
-    if (typeof stationId !== 'string') {
-      throw new Error('ProvisionStep: stationId not found in scenario variables');
+    // WHICH STATION. Default is the scenario's own `{{stationId}}` — which in a pooled run
+    // is the POOL's station, and that is right for every file that provisions the identity it
+    // then connects as. A file that must register a station OF ITS OWN cannot use it: the
+    // pool already registered that id, so the registration answers 409, which is exactly why
+    // the three `e2e/*` parcours are `skip_when_pooled`. `station_id:` lets such a file name
+    // `{{runStationId}}` — generated fresh per scenario and never replaced by the pool — so
+    // it owns what it creates instead of standing on the pool's identity.
+    const stationId = (definition.station_id as string | undefined)
+      ?? context.variables.get('stationId');
+    if (typeof stationId !== 'string' || stationId.length === 0) {
+      throw new Error(
+        'ProvisionStep: no station id — set `station_id:` on the step or provide `stationId` ' +
+          'in the scenario variables',
+      );
     }
 
     if (!context.apiBaseUrl) {
@@ -99,6 +143,15 @@ export class ProvisionStep implements Step {
     const csrPem = keySet.csrPem;
     const receiptPubPem = keySet.receiptPubPem;
 
+    // The three key-shape knobs. Each exists for exactly one refusal, and each replaces a
+    // field the generated set would otherwise supply — so a scenario using one is malformed
+    // in ONE dimension and the refusal it provokes is attributable to that dimension.
+    const csrPemToSend = (definition.csr_override as string | undefined) ?? csrPem;
+    const receiptPubToSend =
+      definition.receipt_key_from_tls === true
+        ? keySet.tlsPubPem
+        : (definition.receipt_key_override as string | undefined) ?? receiptPubPem;
+
     // 3. POST /api/v1/stations/provision
     const url = `${context.apiBaseUrl}/api/v1/stations/provision`;
     const response = await fetch(url, {
@@ -117,10 +170,54 @@ export class ProvisionStep implements Step {
         // server creates the bay records and the moment an operator needs the
         // labels to build the service bindings".
         bays: declaredBays,
-        tlsCsr: csrPem,
-        receiptSigningPublicKey: receiptPubPem,
+        tlsCsr: csrPemToSend,
+        receiptSigningPublicKey: receiptPubToSend,
       }),
     });
+
+    // REFUSAL MODE. Settled here, before the success path's `status !== 200` throw, so a
+    // scenario asserting a refusal never reaches code that assumes a certificate came back.
+    const expectStatus = definition.expect_status as number | undefined;
+    if (expectStatus !== undefined) {
+      const raw = await response.text();
+      if (response.status !== expectStatus) {
+        throw new Error(
+          `ProvisionStep: expected status ${expectStatus} from /api/v1/stations/provision, ` +
+            `got ${response.status} — ${raw.slice(0, 500)}`,
+        );
+      }
+
+      const expectBody = definition.expect_body as Record<string, unknown> | undefined;
+      if (expectBody !== undefined) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error(
+            `ProvisionStep: expect_body is set but the response body is not JSON — ${raw.slice(0, 500)}`,
+          );
+        }
+        for (const [path, want] of Object.entries(expectBody)) {
+          const got = getNestedValue(parsed, path);
+          const same =
+            got === want ||
+            (typeof got === 'object' && got !== null && JSON.stringify(got) === JSON.stringify(want));
+          if (!same) {
+            throw new Error(
+              `ProvisionStep: expected body "${path}" to equal ${JSON.stringify(want)}, ` +
+                `but got ${JSON.stringify(got)} (full body: ${raw.slice(0, 800)})`,
+            );
+          }
+        }
+      }
+
+      console.log(
+        `[ProvisionStep] refusal asserted for ${stationId} — ${response.status}, ` +
+          `no certificate issued and nothing persisted`,
+      );
+
+      return;
+    }
 
     // OSPP §2 provisioning is an UPDATE of an already-registered station
     // (registration via POST /admin/stations precedes this), so the contract

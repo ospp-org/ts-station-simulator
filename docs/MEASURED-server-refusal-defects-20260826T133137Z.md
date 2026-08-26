@@ -1,4 +1,4 @@
-# MEASURED — four refusal defects in `csms-server`, from the station's side of the wire
+# MEASURED — five refusal defects in `csms-server`, from the station's side of the wire
 
 **Read-only, 2026-08-26.** Measured while writing the first refusal scenarios for the entry
 path (provisioning / boot / SignCertificate / message layer). Every line reference below was
@@ -6,12 +6,53 @@ opened and read in `csms-server` at **`c5878a3d`**; nothing in that repo was mod
 
 **Who this is for.** A session working in `csms-server`. Each finding names the file:line, what
 is there today, what an integrator observes, and what the decision actually is — because three
-of the four are **deliberate**, with the rationale written in the code, and the thing to decide
-is not "is this a bug" but "who pays for it".
+of the five are **deliberate**, with the rationale written in the code, and the thing to decide
+is not "is this a bug" but "who pays for it". Findings 4 and 5 are not: they are plain defects.
+
+**READ IN THE ORDER PRINTED; THE NUMBERS ARE IDENTIFIERS, NOT RANKING.** Finding 5 is first
+because it is the cheapest to fix — one `->orderBy` — and because it is the only one that makes
+the prose a HUMAN reads vary between runs of the same code on the same input. It is also the
+only one of the five not found by reading: a scenario went red on it. The numbers were assigned
+when the file was written and are left alone, so the commit that introduced it — which says
+"the silent one is first", true of the order it shipped in — stays reconcilable with this file.
 
 **Why they are grouped.** All four share one consequence: **a firmware author who makes a
 mistake cannot tell from the wire what he did wrong.** Individually each is defensible.
 Together they are the reason an integration week becomes an integration month.
+
+---
+
+## 5. `4015`'s `driftedKeyKinds` has no stable order, and its prose interpolates it
+
+**Where.** `app/Shared/Crypto/CertificateManager.php:1290-1294`:
+```php
+foreach (array_unique([...array_keys($bound), ...array_keys($presented)]) as $kind) {
+    if (($bound[$kind] ?? null) !== ($presented[$kind] ?? null)) { $drifted[] = $kind; }
+}
+```
+`$bound` comes from `DB::table('provisioning_bound_keys')->…->pluck('spki_der_b64', 'key_kind')`
+(`:1238-1241`) with **no `ORDER BY`**, so the list's order is whatever Postgres returns for
+those rows.
+
+**How it was found.** Not by reading — by a scenario going red on it. A retry with both keys
+regenerated asserted `details.driftedKeyKinds: ["tls","receipt"]` and the server answered
+`["receipt","tls"]`. Everything else in that response was exactly right: `409`, `4015`,
+`PROVISIONING_KEY_MISMATCH`, `details.reason: "key_drift"`.
+
+**Why it reaches the integrator.** `errorDescription` interpolates the same list — the
+measured body reads *"bound to a different public key for: receipt, tls"* — so the prose a
+human reads and the array a machine matches on both vary between runs of the same code
+against the same input. `4015` is `recoverable: false`, which means this is the message a
+firmware author reads at the one moment the spec tells him to stop retrying and call an
+operator.
+
+**Cost of the fix.** One `->orderBy('key_kind')`, or sorting `$drifted` before it is thrown.
+Whether the ORDER is part of the contract is a spec question; whether it should be
+*deterministic* is not.
+
+**What the scenario does meanwhile.** `provision-rejected-key-and-topology-rungs.yaml` pins
+`errorCode`, `errorText`, `details.reason` and `recoverable`, and deliberately does NOT pin
+the list — with a comment saying why, so it is not "strengthened" back into a flake.
 
 ---
 

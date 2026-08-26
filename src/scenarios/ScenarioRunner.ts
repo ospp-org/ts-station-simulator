@@ -190,6 +190,27 @@ export interface ScenarioDefinition {
    */
   skip_when_pooled?: string;
   /**
+   * The INVERSE of `skip_when_pooled`: when set AND the run has NO bootstrapped pool, the
+   * scenario is skipped with this reason (`not-applicable`). For a file whose precondition
+   * is produced BY the per-run bootstrap and exists nowhere else.
+   *
+   * There is exactly one such precondition today and it is the reason this key exists: the
+   * run's ephemeral `tenant_owner`, published to `SIM_POOL_OWNER_EMAIL` /
+   * `SIM_POOL_OWNER_PASSWORD` by PoolBootstrap. It is the only identity a scenario can
+   * authenticate as that holds `stations.manage_provisioning_tokens` or `catalog.manage`,
+   * and it is created and destroyed inside one run.
+   *
+   * WHY A KEY AND NOT "SKIP WHEN THE ENV IS UNSET". `auth:` resolution THROWS on an unset
+   * variable, deliberately: for the five files using `UAT_E2E_PLATFORM_ADMIN_*` an unset
+   * variable means the operator forgot to source the secrets file, and a silent skip there
+   * would turn a fixable mistake into a green run that proved less than it claimed. Softening
+   * that globally to a skip would lose the distinction. This key states which of the two
+   * situations a file is in, at the file, where it is checked before auth resolution runs.
+   *
+   * A file may not declare both this and `skip_when_pooled` — that pair can never run.
+   */
+  requires_pool?: string;
+  /**
    * On-disk fixtures this scenario cannot run without. If any path is absent the
    * scenario is SKIPPED (status 'skipped', reason names the missing file), never
    * failed and never silently passed.
@@ -777,6 +798,14 @@ export function generateVariables(
   // unique event_id (SecurityAuditLogger.php:67), so a hardcoded one is insertable exactly
   // once per database. See generateSecurityEventId.
   vars.set('runSecurityEventId', generateSecurityEventId());
+
+  // A station id that is FRESH PER SCENARIO and, unlike `stationId` above, is NEVER replaced
+  // by the pool's. Same reason as the two ids above: a file that needs to REGISTER a station
+  // of its own cannot use `stationId`, because in a pooled run that resolves to a station the
+  // pool already registered and the registration answers 409 — which is precisely why the
+  // three `e2e/*` parcours are `skip_when_pooled`. A file using this one owns what it creates
+  // and declares it in `creates:`, so it collides with nothing and cleans up after itself.
+  vars.set('runStationId', generateStationId());
 
   const bayCount = scenarioDef.station.bayCount;
   for (let i = 1; i <= bayCount; i++) {
@@ -1634,6 +1663,17 @@ export class ScenarioRunner {
     // Transparent — reported 'skipped', never silently dropped or counted as passed.
     if (scenario.skip_when_pooled && this.runPool !== null) {
       return this.skippedResult(scenario.name, scenario.skip_when_pooled, 'not-applicable');
+    }
+    // The inverse. Checked BEFORE auth resolution, which is the whole point: the credentials
+    // this class of file needs are published by the bootstrap, so without one the `auth:`
+    // block would throw "env var unset" — a message that names the wrong problem.
+    if (scenario.requires_pool && this.runPool === null) {
+      return this.skippedResult(
+        scenario.name,
+        `${scenario.requires_pool} Run with --bootstrap-pool (the identity it needs is minted ` +
+          `and destroyed per run, so there is nothing to source from a secrets file).`,
+        'not-applicable',
+      );
     }
     // Conditional skip: a required on-disk fixture is absent (see requires_files).
     // INCONCLUSIVE — the scenario was ready and the instrument was missing.

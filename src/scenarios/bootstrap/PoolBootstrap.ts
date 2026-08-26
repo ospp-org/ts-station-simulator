@@ -419,6 +419,55 @@ export interface EphemeralProvisioningIdentity {
 const EPHEMERAL_OWNER_DOMAIN = 'onestoppay.dev';
 
 /**
+ * The env names a scenario's `auth:` block reads to authenticate AS this run's ephemeral
+ * tenant_owner. Paired with the `requires_pool` scenario key, which is what keeps a file
+ * depending on them out of a non-pooled run instead of throwing on an unset variable.
+ */
+export const POOL_OWNER_EMAIL_ENV = 'SIM_POOL_OWNER_EMAIL';
+export const POOL_OWNER_PASSWORD_ENV = 'SIM_POOL_OWNER_PASSWORD';
+
+/**
+ * PUBLISH THE RUN'S OWN IDENTITY TO ITS OWN SCENARIOS.
+ *
+ * WHY THIS EXISTS, measured rather than assumed. Two areas of the server were unreachable
+ * from ANY scenario, for one shared cause: no identity a scenario could authenticate as held
+ * the tenant permission the endpoint wanted.
+ *
+ *   `POST /admin/stations/{id}/provisioning-tokens`  ->  stations.manage_provisioning_tokens
+ *   `POST /admin/stations/{id}/catalog/publish`      ->  catalog.manage
+ *
+ * The per-scenario pool identity is a `tenant_operator` and holds NEITHER — csms-server's own
+ * IssueProvisioningTokenTest pins the 403. The only `auth:` override this repo had is
+ * `UAT_E2E_PLATFORM_ADMIN_*`, a `platform_admin` that is deliberately a member of no
+ * organization, so it holds no tenant permission either; `service-catalog-update.yaml` spent
+ * two revisions establishing that. `tenant_owner` holds both
+ * (RolesAndPermissionsSeeder.php:369,372), and this run MINTS one — for exactly these
+ * endpoints — and then threw the password away.
+ *
+ * WHAT THIS IS NOT. It is not a new identity, not a new grant and not a seeded account: it
+ * publishes credentials the bootstrap already created and already deletes at teardown, to the
+ * process it created them in. Nothing about the fleet's permission model moves.
+ *
+ * WHY THE ENVIRONMENT AND NOT A TEMPLATE NAMESPACE. `auth:` is resolved from `process.env`
+ * (ScenarioRunner `_resolveScenarioAuthForTesting`) before any template scope exists, and it
+ * is the mechanism five files already use. A `{{pool.owner.password}}` would have to put a
+ * live password through the same substitution that writes request bodies into scrollback.
+ *
+ * CLEARED AT TEARDOWN, deliberately: the account is deleted there, so leaving the variables
+ * set would leave a credential in the environment that no longer authenticates — which is the
+ * shape of a confusing 401 much later.
+ */
+export function exportEphemeralOwnerToEnv(identity: EphemeralProvisioningIdentity): void {
+  process.env[POOL_OWNER_EMAIL_ENV] = identity.ownerEmail;
+  process.env[POOL_OWNER_PASSWORD_ENV] = identity.ownerPassword;
+}
+
+export function clearEphemeralOwnerFromEnv(): void {
+  delete process.env[POOL_OWNER_EMAIL_ENV];
+  delete process.env[POOL_OWNER_PASSWORD_ENV];
+}
+
+/**
  * Generate a random password meeting typical complexity (upper + lower + digit + special +
  * entropy). The `Pp1!` prefix guarantees one of each class; the UUID hex supplies the entropy.
  */
@@ -537,6 +586,7 @@ export async function bootstrapPool(
     handle.orgId = identity.orgId;
     handle.createdOrgId = identity.orgId;
     handle.ephemeralOwnerEmail = identity.ownerEmail;
+    exportEphemeralOwnerToEnv(identity);
     console.log(`[bootstrap] ephemeral owner ${identity.ownerEmail} → org ${handle.orgId}`);
 
     // 3. Fresh location
@@ -817,6 +867,11 @@ export async function teardownPool(
   dbConfig: UatDbConfig = uatDbConfigFromEnv(),
 ): Promise<void> {
   const errors: string[] = [];
+
+  // The account these credentials name is deleted below. Clearing them FIRST means a failure
+  // anywhere in this function still leaves the environment honest — a variable that survives
+  // the user it authenticates as is a 401 nobody can attribute.
+  clearEphemeralOwnerFromEnv();
 
   // 1. Server-side rows (single transaction, FK-ordered).
   try {

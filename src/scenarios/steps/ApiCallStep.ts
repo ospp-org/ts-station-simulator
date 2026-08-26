@@ -275,7 +275,7 @@ function splitPath(path: string): string[] {
   return parts;
 }
 
-function getNestedValue(obj: unknown, path: string): unknown {
+export function getNestedValue(obj: unknown, path: string): unknown {
   const parts = splitPath(path);
   let current: unknown = obj;
   for (const part of parts) {

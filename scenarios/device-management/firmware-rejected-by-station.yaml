@@ -158,10 +158,10 @@ steps:
   # to require. The GET below is HTTP, a different transport, so it cannot stand
   # in either.
   #
-  # SO: this proves no UpdateFirmware landed in a 6s window. It CLAIMS the server
-  # chose not to re-issue. The transplantable repair is the two-step control in
-  # firmware-nonconformant-command-reaches-the-wire.yaml (api_call POST -> 202,
-  # then wait_for UpdateFirmware Request). Not done here.
+  # REPAIRED 2026-08-26 — the control is at the bottom of this file, and it is exactly the
+  # transplant this paragraph named: `api_call POST -> 202`, then `wait_for UpdateFirmware
+  # Request`, on this connection, after the window. A dead link or a wedged worker now fails
+  # there, so the silence above is attributable to the server declining to re-issue.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request
@@ -182,3 +182,47 @@ steps:
       # every failure that got as far as transferring bytes — and it is derived
       # from the row's history rather than echoed from anything this file sent.
       data[firmware_version=2.0.0].progress: 0
+
+  # ═══ THE CLEAN CONTROL — a DIFFERENT version, pushed after the window ═══
+  #
+  # WaitForStep's docblock requires a clean `wait_for` on the same action to FOLLOW the
+  # silence, because a dead link, a wedged worker and a correct server are indistinguishable
+  # from an absence. The `UpdateFirmware` drain earlier in this file is the stimulus, not a
+  # control: it proves the channel worked BEFORE the window, which is the specific thing the
+  # word "follow" was chosen to exclude. The GET above is HTTP, a different transport, and
+  # cannot stand in either.
+  #
+  # WHY 3.0.0 AND NOT A RE-PUSH OF 2.0.0. Re-pushing the version this file just had rejected
+  # would be asking the server for the very thing the silence says it must not do on its own;
+  # a green would then be ambiguous between "the operator may re-issue" and "the server
+  # re-issued". A new version is unambiguous — it is an operator action the server has no
+  # opinion about, and the 202 proves the door is open while the Request proves the wire is.
+  #
+  # The 2.0.0 row is `failed` by now (asserted immediately above), so this push starts a new
+  # row rather than colliding with a live one — the collision case is what
+  # firmware-superseded-by-second-push.yaml is about, and it needs the first row `idle`.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/firmware"
+    body:
+      firmwareUrl: "https://cdn.example.com/firmware/v3.0.0.bin"
+      firmwareVersion: "3.0.0"
+      checksum: "sha256:9f2c4a1e7b3d5086af41c2b9e6d8073152ca4be97f0d3a6c8b1e52947dcf60ab"
+      signature: "MEUCIQDexample"
+    expect_status: 202
+
+  - action: wait_for
+    message: UpdateFirmware
+    messageType: Request
+    timeout_ms: 15000
+
+  # And it is answered, so this file does not hand the pool a station with a command in
+  # flight. Rejected rather than Accepted deliberately: accepting would start a download this
+  # scenario has no intention of driving, and would leave the row mid-transfer.
+  - action: send
+    message: UpdateFirmware
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 5017
+      errorText: "INSUFFICIENT_STORAGE"
