@@ -1,0 +1,252 @@
+name: "Maintenance Refused — the station never declared device management"
+description: "Boot declaring deviceManagementSupported:false, then request maintenance on a reported bay: 409 + ospp_code 6008 with details.wouldBe 2007 and details.reason device_management_not_declared, and NOTHING on the wire. Re-boot with the flag TRUE — the only field that changes — and the identical request is 202 and reaches the station."
+# WHY THIS FILE, WHEN firmware-update-capability-unsupported.yaml ALREADY PROVES 6008/2007.
+# It proves ONE of them. `grep -rn 'device_management_not_declared' app/` returns SEVEN
+# sites, one per action class, copy-pasted with no shared trait or base class:
+#   ReadConfigurationAction:56    WriteConfigurationAction:87    ResetStationAction:69
+#   SetMaintenanceModeAction:59   RequestDiagnosticsAction:71    UpdateServiceCatalogAction:257
+#   InitiateFirmwareUpdateAction:97
+# At the level of REASON the area was covered. At the level of SITE, six copies had never
+# been executed, and a defect local to one of them — a flag misspelled at a refactor, a guard
+# dropped — would not be caught by the one site that is proven. This file adds a second.
+#
+# AND THE SEVEN ARE INDISTINGUISHABLE FROM EACH OTHER ON THE WIRE. That is a server finding,
+# recorded rather than worked around: all seven answer the identical
+# (6008, wouldBe 2007, reason `device_management_not_declared`), `OsppError::toArray()` has no
+# action/command/endpoint field, and six of the seven carry byte-identical `message` text (only
+# RequestDiagnostics differs, by appending the stationId). So the response cannot say WHICH of
+# the seven device-management commands was refused — that fact exists only in which endpoint
+# the caller hit. A scenario therefore attributes by the ROUTE it called, which is what this
+# file does, and no assertion here can do better.
+#
+# WHY THE CAPABILITY GATE IS THE CHEAPEST OF THE SIX MAINTENANCE REFUSALS TO PROVE. It is
+# driven entirely by the station's own BootNotification: `deviceManagementSupported` is copied
+# straight into `stations.device_management_supported`
+# (BootNotificationHandler.php:55, CAPABILITY_COLUMNS). No fixture, no privileged call, no DB
+# state — the station simply says a different thing about itself, and the two halves of this
+# file differ in exactly that one boolean.
+#
+# ORDER OF THE GUARDS, and why the bay is reported even in the refused half.
+# SetMaintenanceModeAction runs its capability gate at :59, BEFORE the bay lookup at :86 and
+# the bay-state checks at :160-188. So the first POST below would be refused with 6008 even
+# on an unreported bay. The bay is reported anyway, so the ONLY difference between the two
+# POSTs is the boot flag — a refused-because-unreported first half and a
+# refused-because-uncapable one would be indistinguishable to a reader, and the corpus's own
+# arming gate exists precisely because that confusion is easy.
+#
+# NO SERVER-STATE ASSERTION ON THE REFUSAL — a pre-empted command writes no row and
+# publishes nothing. The absence on the wire IS the assertion, and it is controlled.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- BOOT WITHOUT THE CAPABILITY. Everything else is the corpus's standard boot.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: false
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Every accepted boot resets bays to `unknown` and only a StatusNotification clears it, so
+  # this is what keeps the refusal below attributable to the capability rather than to the
+  # bay state (3002 BAY_NOT_READY, which is a different guard eleven lines further down).
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # --- THE REFUSAL.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 6008
+      # 6008 alone is NOT an assertion — the server emits it from eight pre-flight gates, two
+      # of them adjacent in ResetStationAction, and the corpus has a linter check
+      # (PreEmptDiscriminatorCheck) that refuses a bare 6008 for exactly this reason.
+      error.details.wouldBe: 2007
+      # And `reason` goes one further than `wouldBe`: seven of the eight sites share
+      # wouldBe 2007, so `reason` is what names the GATE rather than the code the station
+      # would have answered.
+      error.details.reason: "device_management_not_declared"
+
+  # NOTHING WAS PUBLISHED. A pre-flight that ran too late would have put the command on the
+  # wire before refusing the caller, which is the side effect the gate exists to prevent.
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL: the same boot with the ONE flag flipped. WaitForStep's docblock makes a
+  # clean same-action wait mandatory after a silence, and the pair below is it — but it is
+  # also the discriminator for the whole file, because the request body, the route, the bay
+  # and the connection are all unchanged.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Re-reported because the second boot reset it again — the corpus's arming gate models this
+  # exactly, and `boot-disabled-station-boots-and-stays-gated.yaml` is the other file that has
+  # to report twice for the same reason.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 202
+
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: SetMaintenanceMode
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Unavailable"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 1000
+
+  # --- LEAVE THE BAY AS IT WAS FOUND. The station goes back to the pool allocator and the
+  # next scenario to lease it would meet an Unavailable bay — which every bay-gated route
+  # refuses with 3011 BAY_MAINTENANCE, far from here and for a reason nobody would connect
+  # to this file.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: false
+      reason: "Scenario teardown"
+    expect_status: 202
+
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: SetMaintenanceMode
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Unavailable"
+      programs:
+        - programNumber: 1
+          available: true

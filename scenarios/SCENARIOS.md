@@ -196,9 +196,9 @@ branch that `core/happy-boot.yaml` does not.
 | `reservations/reserve-and-start.yaml` | Reserve and Start | ReserveBay → StartService with reservationId | migrated |
 | `reservations/reserve-cancel.yaml` | Reserve and Cancel | ReserveBay → CancelReservation → Available | migrated |
 | `reservations/reserve-expire.yaml` | Reserve and Expire | ReserveBay → TTL expiry → Available | migrated |
-| `reservations/reserve-rejected-bay-busy.yaml` | Reserve Rejected - Bay Busy | Occupied bay rejects reservation (3001) | new |
-| `reservations/reserve-rejected-maintenance.yaml` | Reserve Rejected - Maintenance | Maintenance bay rejects reservation (3011) | new |
-| `reservations/reserve-rejected-already-reserved.yaml` | Reserve Rejected - Already Reserved | Double reservation rejected (3014) | new |
+| `reservations/reserve-rejected-bay-busy.yaml` | Reserve Rejected - Bay Busy | SERVER refuses `POST /reservations` on an occupied bay, 409 + `ospp_code 3001`; nothing on the wire | new |
+| `reservations/reserve-rejected-maintenance.yaml` | Reserve Rejected - Maintenance | SERVER refuses `POST /reservations` on a bay in maintenance, 409 + `ospp_code 3011`; nothing on the wire | new |
+| `reservations/reserve-rejected-already-reserved.yaml` | Reserve Rejected - Already Reserved | First reservation ACCEPTED on the wire; SERVER refuses the second, 409 + `ospp_code 3014` | new |
 
 ## Device Management (20 scenarios)
 
@@ -314,7 +314,7 @@ All 26 MQTT actions are covered by at least one scenario:
 | ConnectionLost | Broker→Server | connection-lost-lwt, disconnect-during-session |
 | DataTransfer | Bidirectional | data-transfer, data-transfer-response |
 | TriggerMessage | Server→Station | trigger-message-heartbeat, trigger-message-status, trigger-message-boot |
-| ReserveBay | Server→Station | reserve-and-start, reserve-cancel, reserve-expire, reserve-rejected-* |
+| ReserveBay | Server→Station | reserve-and-start, reserve-cancel, reserve-expire, reserve-rejected-already-reserved (**Accepted only** — the station has never REFUSED a ReserveBay in this corpus; `reserve-rejected-bay-busy` and `-maintenance` put nothing on this wire at all and are SERVER-side REST refusals) |
 | CancelReservation | Server→Station | reserve-cancel |
 | StartService | Server→Station | start-service, full-session-lifecycle, session-rejected-*, session-with-reservation, session-web-payment |
 | StopService | Server→Station | stop-service, stop-service-rejected, full-session-lifecycle |

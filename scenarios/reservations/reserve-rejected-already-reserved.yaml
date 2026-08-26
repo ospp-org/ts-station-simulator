@@ -5,7 +5,21 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Reserve Rejected - Already Reserved"
-description: "Attempt to reserve a bay that is already reserved - verifies the station rejects with errorCode 3014 BAY_RESERVED."
+description: "Reserve a bay, then attempt to reserve it again: the SERVER refuses the second REST request with 409 + error.ospp_code 3014 BAY_RESERVED. The FIRST reservation does go on the wire and the station ACCEPTS it; the station never refuses anything here, despite what this description used to claim."
+# THE ACTOR NAMED HERE WAS WRONG UNTIL 2026-08-26, and the correction is the point of this
+# comment rather than a tidy-up. The description said "verifies the STATION rejects with
+# errorCode NNNN". It does not: what is asserted is the SERVER refusing a REST request, and
+# the code is read off `error.ospp_code`, not off a wire payload.
+#
+# WHY IT MATTERED. `ReserveBay` has six codes the station may answer with
+# (ErrorCodeRegistry.php:251-258) and the corpus exercises ZERO of them — every ReserveBay
+# response in the corpus is `Accepted`. Three files whose names and descriptions said
+# "the station rejects" made that empty area look covered, and `SCENARIOS.md` propagated it
+# by listing `reserve-rejected-*` under `ReserveBay | Server->Station`.
+#
+# The scenarios themselves are good and are unchanged. Only the sentence describing them is,
+# and the precedent is in this same directory: `reserve-cancel.yaml` was rewritten the same
+# way — "despite what this description used to claim, the bay side is not verified here".
 station:
   stationId: "{{stationId}}"
   bayCount: 2

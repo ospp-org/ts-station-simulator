@@ -1,4 +1,4 @@
-# MEASURED — five refusal defects in `csms-server`, from the station's side of the wire
+# MEASURED — refusal defects in `csms-server`, from the station's side of the wire
 
 **Read-only, 2026-08-26.** Measured while writing the first refusal scenarios for the entry
 path (provisioning / boot / SignCertificate / message layer). Every line reference below was
@@ -207,6 +207,113 @@ cannot connect to anything.
 and `security/sign-certificate-empty-csr-rejected-correlated.yaml` proves it. This is the one
 input for which the guarantee quietly does not apply, and it is the input a firmware bug in
 id generation produces.
+
+---
+
+# PART TWO — the operating phase: refusals that ARRIVE but cannot be told apart
+
+Added 2026-08-26 while scoping the second group of scenarios (state, heartbeat, catalog,
+commands, sessions). Findings 1-5 above are about refusals that never reach the station.
+These are the opposite failure: the answer arrives, carries a code, and still does not
+identify which of several conditions produced it. Every one was measured by reading the
+files in full; counts are from exhaustive enumeration, not sampling.
+
+## 6. `3002 BAY_NOT_READY` — three different bay states produce a BYTE-IDENTICAL body
+
+`SessionStateMachine::validateBayForStart()` maps `FINISHING`, `FAULTED` and `UNKNOWN` all to
+`BayValidationResult::rejected(3002, 'BAY_NOT_READY')` (lines 77, 78, 80). The DTO carries no
+per-branch text, so all three answer the same `ospp_code`, the same HTTP 409, `error.code`
+`BAY_NOT_READY`, `error.message` the literal string **`"BAY_NOT_READY"`**, and no `details`
+object at all.
+
+"The bay is finishing the previous wash", "the bay is broken" and "the bay has never reported
+since boot" are three different operator actions, and the response cannot distinguish them.
+This is the sharpest collision in the taxonomy: the others below at least differ by prose.
+`ReservationTransitions::validateBayForReservation()` has the identical three-way collapse on
+the reservation door.
+
+**Cost of the fix.** A `details.reason` naming the bay status, on the one `rejected()` call.
+
+## 7. `StopSessionAction`'s five refusals are ALL unreachable from `POST /sessions/{id}/stop`
+
+Enumerated per caller, not assumed. `SessionController::stop()` (`:117-141`) re-implements the
+first three checks before calling the action, so `SESSION_NOT_FOUND` (`:36`),
+`SESSION_GENERIC`/not-active (`:40`) and the ownership check (`:48`) are all shadowed. The
+remaining two are dead by construction: `:61` needs `ACTIVE → STOPPING` to be an invalid
+transition, which the vendor table always allows, and `:79` needs an orphaned bay FK.
+
+**And "you do not own this session" is implemented twice, with different codes.** The live one
+is the controller's `SESSION_MISMATCH` 3007 / **403** (`:128-132`). The dead one is the
+action's `ACTION_NOT_PERMITTED` 2008 / **401** (`:48-51`). A client — or a test — written
+against the action would learn the wrong code and the wrong status for what actually appears
+on the wire.
+
+Sibling of the same shape in `CancelReservationAction`: three of its four refusal sites are
+dead behind its controllers, and the only live one is reachable through just one of its two
+REST callers.
+
+## 8. `3000 SESSION_GENERIC` is five conditions, and its HTTP status is not consistent
+
+Five sites: `StopSessionAction:40`, `:61`, `SessionController:89` ("Station rejected: …"),
+`:95` ("Session failed: …"), `:136` ("cannot be stopped in current state"). None carries
+`details`. The status depends on which builder emitted it — `ErrorCodeRegistry` resolves
+`SESSION_GENERIC` to **500** (it has no arm in the vendor `httpStatus()` and falls to the
+default), while `SessionController::errorResponse()` passes a hard-coded **422** or **409**.
+So the same `ospp_code` reaches the client as three different HTTP statuses depending on the
+path, and a client branching on status alone gets a different answer per condition while one
+branching on the code gets none.
+
+`SessionController::errorResponse()` (`:248-260`) also **structurally cannot emit `details`** —
+its signature has no parameter for it. Across the four session files there are 37 refusal
+sites and exactly ONE carries `details`: `SERVICE_NOT_BOUND` (`StartSessionAction:315`).
+
+## 9. The capability guard is copied seven times and the seven are indistinguishable
+
+`grep -rn 'device_management_not_declared' app/` gives seven sites — `ReadConfiguration:56`,
+`WriteConfiguration:87`, `ResetStation:69`, `SetMaintenanceMode:59`, `RequestDiagnostics:71`,
+`UpdateServiceCatalog:257`, `InitiateFirmwareUpdate:97` — with no shared trait or base class.
+All seven answer the identical `(6008, details.wouldBe 2007, details.reason
+device_management_not_declared)`, and six of the seven carry byte-identical `message` text
+(only `RequestDiagnostics` differs, by appending the stationId). `OsppError::toArray()` has no
+action or command field, so **nothing in the body says which of the seven commands was
+refused** — that fact exists only in which endpoint was called.
+
+**And the check immediately above it disagrees with itself across the same seven files.** For
+the identical "station row not found" condition, `SetMaintenanceMode` / `UpdateServiceCatalog`
+/ `ResetStation` throw `BAY_NOT_FOUND` 3005 → 404, while `ReadConfiguration` /
+`WriteConfiguration` / `RequestDiagnostics` / `InitiateFirmwareUpdate` throw
+`STATION_NOT_REGISTERED` 2001 → 422. Same condition, two codes, two statuses, seven adjacent
+files. (Both are also unreachable — see finding 3's pattern: every controller resolves the
+station and 404s first.)
+
+## 10. `ReserveBayAction` cannot distinguish "disconnected" from "disabled"
+
+`:45-53` — two `OsppError::from()` calls with **no third argument**, so neither carries
+`details`:
+```php
+if (! $station->is_online) { throw … STATION_OFFLINE, 'Station is offline'  … }
+if (! $station->is_active) { throw … STATION_OFFLINE, 'Station is disabled' … }
+```
+Same code 6003, same HTTP 502; the only discriminator is the prose. `StartSessionAction:68`
+and `:76` are the same pair on the session door, and there the source comment states it is
+deliberate — "the disabled-vs-offline distinction is surfaced in the dashboard, not the
+protocol reject". Recorded so the decision is visible rather than rediscovered: an operator
+who disabled a station and an integrator whose link dropped get the same code.
+
+## 11. Four refusals are dead behind a FormRequest or a duplicated controller check
+
+Not defects on their own — listed because each is a branch that reads as live and is not, and
+because three of them cost a scenario author an afternoon to discover.
+
+| site | shadowed by |
+|---|---|
+| `StartSessionAction:63` `BAY_NOT_FOUND` | `SessionController:52-55`, identical lookup, runs first |
+| `StartSessionAction:107` `DURATION_INVALID` | `StartSessionRequest` rule `min:60` |
+| `StartSessionAction:145` `INVALID_SERVICE` | `SessionController:59` + the shared INNER JOIN |
+| `ReserveBayAction:68-74` `DURATION_INVALID` | `CreateReservationRequest` rule `min:1,max:15` — bounds identical to the action's own |
+
+`SessionStateMachine::validateBayForStop()` (3006) has **zero production callers** — its only
+caller is its own unit test.
 
 ---
 

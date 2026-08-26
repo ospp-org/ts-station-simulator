@@ -1,0 +1,171 @@
+name: "Session Rejected — the reservation does not exist (3012)"
+description: "Start a session on an Available bay naming a well-formed reservation id nothing owns: 404 + error.ospp_code 3012 RESERVATION_NOT_FOUND, and no StartService on the wire. The identical body without reservation_id is accepted — which is what attributes the refusal to that one field."
+# WHY THIS ONE, OUT OF THE ELEVEN REACHABLE START REFUSALS. It is the only one that needs
+# NOTHING to be true beforehand: no wallet balance to tune, no catalog row to misconfigure, no
+# bay to drive into a particular state, no second identity. `rsv_ffffffff` satisfies
+# StartSessionRequest's `regex:/^rsv_[a-f0-9]+$/` so it passes the request layer, and
+# `ReservationQuery::resolveUuid` answers null. The refusal writes nothing and publishes
+# nothing, so the file leaves the shared pool station exactly as it found it.
+#
+# WHERE IT SITS IN THE ORDER, and why the bay must be Available rather than Reserved.
+# StartSessionAction validates the BAY first (:122, via SessionStateMachine) and resolves the
+# reservation only at :264. On a RESERVED bay a mismatched id is answered 3014 BAY_RESERVED by
+# the earlier gate and this line is never reached — a different refusal with a different code.
+# So the bay is reported Available below, and the 3012 is attributable to the id alone.
+#
+# WHAT 3012 DOES NOT TELL YOU, recorded because it is the shape this corpus keeps finding.
+# The code carries no `details`, and it is reused: CancelReservationAction answers the same
+# 3012 for a reservation that EXISTS but is already expired or cancelled
+# (CancelReservationAction.php:64-71). On that route the "truly absent" half is dead code —
+# the controller 404s first — so 3012 there always means "already finished", and here it
+# always means "never existed". Same code, opposite meanings, separated only by which
+# endpoint answered.
+#
+# NO SERVER-STATE ASSERTION ON THE REFUSAL — a session that was never created writes nothing,
+# and the silence proof below shows nothing was published either. The 201 on the control is
+# the state assertion, and the session it opens is closed before the file ends.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Available, not merely reported: every accepted boot resets bays to `unknown`, and an
+  # unreported bay is refused 3002 BAY_NOT_READY by an EARLIER gate than the one under test.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # --- THE REFUSAL. Not backgrounded: this call is answered by the server alone and never
+  # reaches the station, so there is nothing for the scenario to do while it is in flight.
+  # That is itself part of the subject — see the silence step below.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+      reservation_id: "rsv_ffffffff"
+    expect_status: 404
+    expect_body:
+      error.ospp_code: 3012
+      error.code: "RESERVATION_NOT_FOUND"
+
+  # NOTHING REACHED THE STATION. The refusal is raised before the StartService publish, so a
+  # command arriving here would mean the server committed to a session it then refused —
+  # and the bay would be left held by a session the caller was told does not exist.
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. The identical body with `reservation_id` removed. It is also the clean
+  # same-action wait WaitForStep's docblock requires after a silence: the command arrives
+  # seconds later on the same connection, so the absence above was the server declining,
+  # not a dead link.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      controlSessionId: "payload.sessionId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: delay
+    ms: 1000
+
+  # --- LEAVE THE BAY AS IT WAS FOUND. The control opened a real session on a station that
+  # goes back to the allocator; stopping it is the difference between the next scenario
+  # meeting an Available bay and meeting an Occupied one.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.controlSessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 5
+      creditsCharged: 10
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
