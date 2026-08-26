@@ -34,6 +34,46 @@ import type { Step } from './steps/Step.js';
 import { teardownScenarioResources } from './bootstrap/ScenarioResources.js';
 import type { StationPool, PoolEntry } from './stations/StationPool.js';
 
+/**
+ * How long a scenario waits, at its end, for its backgrounded api_calls to
+ * settle so their `expect_status` can be judged.
+ *
+ * Generous on purpose: these are the synchronous REST endpoints that block on
+ * the station's own MQTT Response, so their latency is a full round trip plus
+ * whatever the scenario did in between.
+ */
+const BACKGROUND_SETTLE_MS = 20000;
+
+/**
+ * Wait for every backgrounded api_call, and treat one that never settles as a
+ * FINDING rather than a pass.
+ *
+ * An unsettled call is one whose assertion did not run. Resolving quietly here
+ * would put back exactly the property being removed — an `expect_status` that
+ * cannot fail — one layer further from where anyone would look for it.
+ */
+async function settleBackgroundCalls(context: ScenarioContext): Promise<void> {
+  if (context.backgroundCalls.length === 0) return;
+
+  const pending = Promise.allSettled(context.backgroundCalls);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), BACKGROUND_SETTLE_MS);
+  });
+
+  try {
+    const outcome = await Promise.race([pending.then(() => 'settled' as const), timeout]);
+    if (outcome === 'timeout') {
+      context.backgroundFailures.push(
+        `${context.backgroundCalls.length} background api_call(s) had not settled after ` +
+          `${BACKGROUND_SETTLE_MS}ms, so their expect_status could not be judged`,
+      );
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1875,6 +1915,17 @@ export class ScenarioRunner {
           });
           throw err;
         }
+      }
+
+      // Background api_calls are fired and not awaited — deliberately, so the
+      // scenario can keep sending on MQTT while a synchronous REST endpoint
+      // blocks on the station's Response. Their `expect_status` is still an
+      // assertion, so it is settled HERE, before the scenario is allowed to
+      // pass. Without this the 37 background `expect_status` steps in this
+      // corpus could not fail: the verdict arrived after the step was green.
+      await settleBackgroundCalls(context);
+      if (context.backgroundFailures.length > 0) {
+        throw new Error(context.backgroundFailures.join(' | '));
       }
 
       return {

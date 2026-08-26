@@ -115,10 +115,19 @@ steps:
 
   # Background: /sessions/start blocks on the station's MQTT Response
   # (SessionController.php:80 waits on SessionReadySignal), so the refusal below
-  # must be sent while the fetch is in flight. The endpoint's own 422 is
-  # therefore NOT the assertion here — background mode downgrades a status
-  # mismatch to a warning. The assertions are the two below, read back
-  # afterwards on a foreground call.
+  # must be sent while the fetch is in flight.
+  #
+  # 422 is what this endpoint ANSWERS, and it is now asserted. This step read
+  # `expect_status: 201` for as long as it existed, justified by background mode
+  # downgrading a mismatch to a console warning — which it did, so the wrong
+  # number cost nothing and was never noticed. Measured on the UAT run of
+  # 2026-08-26: `expected 201, got 422 — PROGRAM_NOT_DECLARED`, warned at log
+  # line 320, scenario green at line 1916. The runner settles background calls
+  # now, so a declared code that the endpoint does not return is a red.
+  #
+  # This is a SCENARIO defect, not a server one: refusing an undeclared program
+  # with 422 is the behaviour the file is built to prove, and the two assertions
+  # below are still what prove it on the wire.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
@@ -127,7 +136,7 @@ steps:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
       duration_seconds: 300
-    expect_status: 201
+    expect_status: 422
 
   - action: wait_for
     message: StartService

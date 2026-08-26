@@ -101,6 +101,19 @@ export interface ScenarioContext {
    * runner's per-scenario teardown. See {@link ScenarioResourceLedger}.
    */
   created: ScenarioResourceLedger;
+  /**
+   * In-flight `background: true` api_call requests, and what their assertions
+   * found once they settled.
+   *
+   * A backgrounded call returns before its response exists — that is the point,
+   * since the scenario must keep sending on MQTT while the REST call blocks on
+   * it. The cost, until now, was that `expect_status` on such a step could only
+   * `console.warn`: 37 steps across 33 files declared an expected code that
+   * nothing could act on. Recording the verdict here and settling it at the end
+   * of the scenario keeps the concurrency and gets the assertion back.
+   */
+  backgroundCalls: Promise<void>[];
+  backgroundFailures: string[];
 }
 
 export interface StepResult {
@@ -123,5 +136,7 @@ export function createContext(): ScenarioContext {
     stepResults: [],
     startTime: Date.now(),
     created: new ScenarioResourceLedger(),
+    backgroundCalls: [],
+    backgroundFailures: [],
   };
 }

@@ -876,38 +876,44 @@ export class ApiCallStep implements Step {
       }
       // HOW A BACKGROUND FAILURE PRESENTS ITSELF — read this before attributing one.
       //
-      // This warn is the ONLY trace a refused background request leaves. The step
-      // itself is already green (it returned the moment the fetch was fired), so the
-      // run reports the failure at whatever step notices the CONSEQUENCE — normally a
-      // `wait_for` that times out several steps later, because the request that would
-      // have made the server publish never succeeded. The reported error names the
-      // message that never arrived; it does not name the refusal that explains why.
+      // The step is green the moment the fetch is FIRED, so a refusal still shows up
+      // at whatever step notices the CONSEQUENCE — normally a `wait_for` that times
+      // out several steps later, because the request that would have made the server
+      // publish never succeeded. The reported error names the message that never
+      // arrived; it does not name the refusal that explains why.
       //
       // Measured 2026-08-13, core/boot-disabled-station-boots-and-stays-gated: the run
       // failed as `Timeout waiting for StartService Request after 15000ms` at step 16,
       // and the cause was this line at step 15 — `409 BAY_NOT_READY/3002` on the
       // backgrounded POST /sessions/start. Three steps and one subsystem apart.
       //
-      // So: when a `wait_for` times out in a scenario that has a background call
-      // upstream, grep the run log for `[ApiCallStep:background]` BEFORE reading
-      // anything into the timeout. This is a property of the instrument — background
-      // mode trades assertion for concurrency, deliberately — not of any scenario.
-      fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
-        .then(async (response) => {
-          if (definition.expect_status !== undefined) {
+      // WHAT CHANGED: the mismatch is no longer ONLY a warn. It is recorded on the
+      // context and settled by ScenarioRunner before the scenario is allowed to
+      // pass, so `expect_status` on a background step is a real assertion again —
+      // 37 of them, across 33 files, had been unable to fail. The warn stays because
+      // it is what makes the failure legible LIVE, mid-run, next to the timeout it
+      // causes; the recorded failure is what makes the scenario red.
+      context.backgroundCalls.push(
+        fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
+          .then(async (response) => {
+            if (definition.expect_status === undefined) return;
             const expectedStatus = definition.expect_status as number;
-            if (response.status !== expectedStatus) {
-              const responseBody = await response.text();
-              console.warn(
-                `[ApiCallStep:background] ${method} ${url}: expected ${expectedStatus}, got ${response.status} — ${responseBody.slice(0, 200)}`,
-              );
-            }
-          }
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          console.warn(`[ApiCallStep:background] ${method} ${url} failed: ${message}`);
-        });
+            if (response.status === expectedStatus) return;
+            const responseBody = await response.text();
+            const detail =
+              `${method} ${url}: expected ${expectedStatus}, got ${response.status} — ` +
+              responseBody.slice(0, 200);
+            console.warn(`[ApiCallStep:background] ${detail}`);
+            context.backgroundFailures.push(`background api_call ${detail}`);
+          })
+          .catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[ApiCallStep:background] ${method} ${url} failed: ${message}`);
+            context.backgroundFailures.push(
+              `background api_call ${method} ${url} failed: ${message}`,
+            );
+          }),
+      );
       return;
     }
 
