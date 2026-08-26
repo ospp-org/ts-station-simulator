@@ -1,0 +1,327 @@
+name: "Session Start ACK Timeout — 504/6002, and the bay it claims against one door only"
+description: "Start a session and never answer the StartService. The caller gets 504 + ospp_code 6002 ACK_TIMEOUT. While the row sits Pending: a second start on the SAME bay is refused 409/3001, and a reservation on the SAME bay is ACCEPTED 201 — the two doors do not share a lock. Then the sweep reaps it (failed, fail_error_code 1010) and a start on that bay succeeds, so the bay is proven free rather than presumed."
+# WHAT THIS FILE IS FOR, AND WHY IT IS ONE FILE AND NOT THREE.
+# `ACK_TIMEOUT` is the refusal a firmware integrator meets first and most often — his station
+# is slow, or wedged, or answering on the wrong topic — and the corpus has never once observed
+# it. The state it creates is ALSO the only way to observe the false-isolation gap below, so
+# splitting them would mean provoking the same timeout twice and asserting half of it in each.
+#
+# THE ARC, in the order it happens:
+#   1. the command REACHES the station (wait_for StartService) — without this the 504 could
+#      mean "never dispatched", which is a different defect with a different repair;
+#   2. the caller is answered 504 / 6002 after `ospp.start_session_timeout_ms` (10s);
+#   3. the bay is claimed against `/sessions/start` — 409 / 3001;
+#   4. and NOT claimed against `/reservations` — 201;
+#   5. a sweep reaps the row: `failed`, `fail_error_code 1010`;
+#   6. and a start on that same bay now succeeds.
+#
+# STEP 6 IS WHY THIS FILE IS SAFE ON A SHARED POOL. The residue is real: the `sessions` row is
+# written BEFORE StartService is published (StartSessionAction:336-359) and outlives the 504.
+# The alternative was to give this scenario a station of its own — which would have HIDDEN the
+# window rather than closed it. Asserting the reaping closes it: the bay is handed back to the
+# allocator proven free, not presumed free, and if the sweep ever stops running this file goes
+# red instead of the next scenario that leases the station.
+#
+# ── STEPS 3 AND 4 ARE THE SUBJECT, NOT COLOUR ──────────────────────────────────────────────
+# A session start writes `sessions` and NEVER writes `bays.status` — the only writers in the
+# whole server are BayRepository (creation, boot reset) and StatusNotificationHandler, and the
+# latter only on an inbound station report. So the bay ends up behind two disjoint locks:
+#
+#   POST /sessions/start   reads the SESSIONS table   (SessionRepository:39-46,
+#                          findActiveByBayId over {pending,authorized,active,stopping})  -> 3001
+#   POST /reservations     reads `bays.status`        (ReserveBayAction:55-65)           -> 201
+#   POST .../maintenance   reads `bays.status`        (SetMaintenanceModeAction:153-194) -> 202
+#
+# An integrator who sees `BAY_BUSY` concludes the bay is occupied, and occupied means occupied:
+# he reserves it, or takes it out of service. Both succeed, and he is now in a state the
+# server's own model says cannot exist — with every call having returned success, so the only
+# explanation left to him is that he misunderstood something.
+#
+# THE SERVER KNOWS. ReserveBayAction:91-97 — "KNOWN GAP, deliberately not closed here … today a
+# reservation on an occupied bay is accepted whenever the station has not reported Occupied."
+# So step 4 is not a discovery; it is a recorded debt, and this file is what turns it from
+# reasoned into measured. IF STEP 4 EVER GOES RED, the gap was closed and this file is the
+# thing that says so — read it that way before assuming a flake.
+#
+# The maintenance door shares the mechanism and is deliberately NOT probed here: it would take
+# the bay out of service mid-file and the teardown would have to put it back, adding a failure
+# mode to a file whose subject is elsewhere. Same lock, same evidence, one probe.
+#
+# ── WHAT IS ASSERTED ABOUT THE REAPING, AND WHAT IS NOT ────────────────────────────────────
+# `data.status: failed` and `data.fail_error_code: 1010` are pinned. `data.fail_reason` is NOT,
+# deliberately: TWO sweeps can reap this row and they write DIFFERENT strings. Measured —
+#   command:check-timeouts  (CommandTimeoutScanner, Redis, eligible at T+10s)
+#       -> "StartService command timeout: station did not respond"
+#   session:check-timeouts  (SessionTimeoutService, DB, eligible at T+60s)
+#       -> "Pending timeout (60s): no StartService response from station"
+# Both run everyMinute() and both end in the same FailSessionAction with the same 1010, so the
+# code is deterministic and the sentence is a race. Pinning the sentence would pin whichever
+# sweep happened to win — the same mistake as pinning an unordered array, and this corpus has
+# made it once already this week.
+#
+# Worth knowing while reading UAT rows: the SECOND string is the one recorded in earlier audits,
+# because CommandTimeoutScanner returned an empty set in every environment until a Redis-prefix
+# fix (csms-server 402ae97b, 2026-08-17). At HEAD the fast sweep is live and usually wins, so a
+# fresh row is more likely to carry the FIRST.
+#
+# ── WHAT THIS FILE CANNOT REACH ────────────────────────────────────────────────────────────
+# The dangerous half of this defect is a LATE `StartServiceResponse: Accepted` — after the 504,
+# before the sweep — which drives the session to ACTIVE and locks the bay for the full paid
+# duration, invisibly to a caller that already gave up. Scenario mode registers exactly one
+# handler (BootNotificationHandler, autoReact:false), so this file cannot answer late by
+# wall-clock: it provokes the timeout precisely BY not answering. Left uncovered and written
+# down — see the findings document.
+#
+# WHY THE BUDGET IS RAISED. The reaping needs a scheduler tick: eligible at T+10s, both sweeps
+# run everyMinute(), so ~70s typical and ~130s if a tick is missed. 240s leaves room for that
+# plus the round trips, and is still under a fifth of what firmware-stalled-after-accept takes.
+scenario_timeout_ms: 240000
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # KEEP THE STATION ONLINE ACROSS THE 130s WAIT — measured, not anticipated.
+  #
+  # The first UAT run of this file passed every assertion through the sweep read and then
+  # failed at the LAST start with `502` / `6003 STATION_OFFLINE`. The cause was this file's own
+  # wait: the heartbeat sweep marks a silent station offline, and 130s of stillness is exactly
+  # what that sweep exists to catch (core/heartbeat-silence-offline-sweep.yaml is the file that
+  # proves it). So the scenario had extinguished its own precondition — every long file in the
+  # corpus calls `start_heartbeat` for this reason, and StartHeartbeatStep's docblock says
+  # short files omit it deliberately so an offline-detection test stays scriptable.
+  #
+  # 30s is the interval the boot Response advertises (`heartbeatIntervalSec`), so this is the
+  # station behaving as instructed rather than a number chosen to beat a sweep.
+  - action: start_heartbeat
+    interval_sec: 30
+
+  - action: delay
+    ms: 1000
+
+  # --- [1] THE START THAT WILL NOT BE ANSWERED.
+  #
+  # FOREGROUND, and that is a deliberate inversion of what every other file on this route
+  # does. They background it because the endpoint blocks on the station's Response and they
+  # must send that Response while it is in flight. This file must NOT send one — the silence
+  # IS the stimulus — so it has nothing to do during the 10s and no reason to background.
+  #
+  # It also has a reason not to: `background: true` cannot assert on a body at all
+  # (ApiCallStep refuses the combination, because the response is never awaited), and the
+  # body is where the motive lives. Backgrounding here would have cost `6002` and left
+  # `expect_status: 504` alone — a status four other refusals on this endpoint also produce.
+  # Measured the hard way: the first run of this file did exactly that and the runner
+  # refused it, which is the gate working.
+  #
+  # The StartService Request that arrives during those 10s is BUFFERED by the router, and the
+  # ordinary `wait_for` below drains the buffer before it waits (WaitForStep.ts:277-286), so
+  # nothing is lost by the call returning first.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 504
+    expect_body:
+      error.ospp_code: 6002
+      error.code: "ACK_TIMEOUT"
+
+  # --- [2] IT REACHED THE STATION. Two jobs: it is the proof that the 504 means "no answer"
+  # rather than "never sent", and it is where the session id comes from — the REST call is
+  # going to return an error body, which carries none.
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      stuckSessionId: "payload.sessionId"
+
+  # NOTHING IS SENT BACK. That omission is the whole stimulus; there is no step here on purpose.
+
+  # --- [3] THE LOCK THAT HOLDS. Same bay, same body. The row is `pending`, which is in
+  # `liveSessions()`, so createClaimingBay refuses inside its own transaction.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 3001
+      error.code: "BAY_BUSY"
+
+  # --- [4] THE LOCK THAT DOES NOT. Same bay, seconds later, a different door — and it is
+  # ACCEPTED, because this one reads `bays.status`, which the start never wrote.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
+
+  - action: wait_for
+    message: ReserveBay
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      probeReservationId: "payload.reservationId"
+
+  - action: send
+    message: ReserveBay
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # NO StatusNotification("Reserved") — unlike reserve-cancel.yaml, and deliberately. Reporting
+  # it would move `bays.status`, which is the very column whose stillness let step 4 through;
+  # leaving it Available keeps the file's own evidence intact and keeps step 6 reachable.
+
+  # --- CANCEL THE PROBE. It has done its job, and a live reservation would refuse step 6 for a
+  # reason that has nothing to do with what this file measures.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations/{{captured.probeReservationId}}/cancel"
+    expect_status: 200
+
+  - action: wait_for
+    message: CancelReservation
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: CancelReservation
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # --- [5] WAIT FOR THE SWEEP. Eligible at T+10s; both sweeps run everyMinute().
+  - action: delay
+    ms: 130000
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.stuckSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      # 1010 is written by BOTH sweeps, through the same FailSessionAction. The sentence beside
+      # it is not — see the header.
+      data.fail_error_code: 1010
+      # Never started, never charged. This is the money half: a station that said nothing must
+      # not have cost the customer anything.
+      data.credits_charged: 0
+
+  # --- [6] THE BAY IS FREE, PROVEN. Same bay, same body as [3], which was refused. The only
+  # thing that changed is that the sweep ran — so this both closes the window this file opened
+  # and shows that the 409 in [3] was the stuck row and not a permanent state of the bay.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      controlSessionId: "payload.sessionId"
+
+  # ANSWERED this time. The difference between [1] and [6] is not a field in the request — it
+  # is whether the station replies, which is the actual variable under test.
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.controlSessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 5
+      creditsCharged: 10
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

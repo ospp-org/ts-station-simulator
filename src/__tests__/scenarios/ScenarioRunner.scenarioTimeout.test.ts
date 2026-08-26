@@ -251,6 +251,10 @@ describe('the legitimate overrides in the corpus', () => {
       'scenarios/e2e/e2e-new-customer-onboarding.yaml',
       'scenarios/e2e/e2e-returning-customer-session.yaml',
       'scenarios/e2e/e2e-session-end-matrix.yaml',
+      // Held to the same arithmetic rather than merely allowlisted: its budget is dominated
+      // by ONE declared wait, so "does the budget account for what the file says it waits
+      // for" is answerable here and should be answered here.
+      'scenarios/sessions/session-start-ack-timeout-and-the-bay-it-half-claims.yaml',
     ];
 
     for (const rel of files) {
@@ -317,8 +321,41 @@ describe('the legitimate overrides in the corpus', () => {
       'firmware-update-full-cycle-reboot.yaml',
       'heartbeat-silence-offline-sweep.yaml',
       'reserve-expire.yaml',
+      // --- added 2026-08-26. Argument below the firmware block. ---
+      'session-start-ack-timeout-and-the-bay-it-half-claims.yaml',
     ]);
   });
+
+  /**
+   * THE ARGUMENT FOR `session-start-ack-timeout-and-the-bay-it-half-claims`, added
+   * 2026-08-26.
+   *
+   * It is the only override in the corpus whose wait is set by a SERVER SCHEDULE rather than
+   * by anything the file or the station does, and that is the whole argument.
+   *
+   * The file provokes a session start the station never answers. The stuck `sessions` row is
+   * reaped by a sweep, and the file asserts that reaping — because asserting it is what makes
+   * the file safe to run on a shared pool: the bay it half-claims is handed back PROVEN free
+   * instead of presumed free. Waiting is therefore not incidental to the subject, it IS the
+   * subject's closing assertion.
+   *
+   * THE NUMBER IS ARITHMETIC, not a guess. The command is eligible for reaping at
+   * `ospp.command_timeouts.StartService` = 10s. Both sweeps that can reap it —
+   * `command:check-timeouts` and `session:check-timeouts` — are scheduled `everyMinute()`, so
+   * the worst case is 10s plus a full missed tick plus the next: ~130s. The file declares
+   * exactly that as its one long delay, and 240000 covers it with the round trips on either
+   * side while staying inside the `2x declared + 60s` ceiling the test above enforces.
+   *
+   * IF THE SCHEDULE CHANGES, THIS SHOULD BE RE-ARGUED. A sweep moved to `everyFiveMinutes()`
+   * makes 130s too short and the file starts failing at its GET rather than at its subject —
+   * which reads as a server regression and is not one. The eligibility threshold is the thing
+   * to check first (`config/ospp.php:224` for the command timeout, `:358` for the session
+   * one), and the delay follows from it.
+   *
+   * WHY NOT POLL INSTEAD OF WAITING. A retry loop on the GET would shorten the common case,
+   * and the runner has no polling step — adding one for a single file would be a mechanism
+   * with one caller. The flat wait costs ~2 minutes of a 46-minute suite and needs nothing new.
+   */
 
   /**
    * THE ARGUMENT FOR THE SEVEN FIRMWARE OVERRIDES, which this suite requires by

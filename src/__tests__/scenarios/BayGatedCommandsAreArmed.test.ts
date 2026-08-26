@@ -58,6 +58,17 @@ const GATED_ROUTES: ReadonlyArray<{ pattern: RegExp; bayKey: string; allWhenAbse
 /** 3005 — see the exclusion in `unarmedCommandsIn`. */
 const BAY_NOT_FOUND = 3005;
 
+/**
+ * Does this scenario connect its station DURING its steps? A `defer_mqtt_connect` file that
+ * does is on the wire and can report a bay; one that does not, cannot.
+ */
+export function connectsLater(doc: unknown): boolean {
+  const steps = (doc as { steps?: unknown[] } | null)?.steps;
+
+  return Array.isArray(steps)
+    && steps.some((raw) => (raw as { action?: string } | null)?.action === 'connect_mqtt');
+}
+
 interface Offender {
   file: string;
   step: number;
@@ -189,15 +200,28 @@ function scanCorpus(): Scan {
     // answer is 3005 BAY_NOT_FOUND; the shared justification is that the remedy this gate
     // prescribes — report the bay first — is IMPOSSIBLE for the file in question.
     //
-    // `defer_mqtt_connect: true` means the file never connects, so it cannot send ANY
-    // station message — demanding a StatusNotification of it is not a requirement, it is an
-    // impossibility. `session-rejected-invalid-service-cross-station` is the only such file
-    // and its bay is armed OUT OF BAND, by the onboarding run its header tells you to do
-    // first. That precondition is real and is now written into the file.
+    // `defer_mqtt_connect: true` means the runner does not connect the station before the
+    // steps run. On its own that is NOT enough to excuse anything, and the predicate was
+    // narrowed on 2026-08-26 to say so: what excuses a file is never connecting AT ALL, and
+    // that is visible in the file — a `connect_mqtt` step.
     //
-    // The exclusion is fenced by the assertion below: a deferred file must also declare
-    // `skip_when_pooled`, so this can never quietly cover a file the unattended suite runs.
-    if (doc.defer_mqtt_connect === true) {
+    //   defers and NEVER connects   -> cannot send any station message -> excused
+    //   defers and THEN connects    -> can send StatusNotifications    -> held to the rule
+    //
+    // The second row is the one that changed. A file that provisions a station of its own
+    // and then connects it (`owns_station`) is on the wire for the rest of its run; excusing
+    // it because of how it STARTED would hand the whole class a permanent exemption on the
+    // strength of a key that no longer describes it.
+    //
+    // Derived from the file rather than declared, deliberately — the same argument the
+    // variable preflight makes: a hand-maintained list drifts the first time someone adds a
+    // file, and drift here means the gate either blocks a correct file or waves through the
+    // one it exists to catch.
+    //
+    // The exclusion is fenced by the assertion below: a file that is excused must also
+    // declare `skip_when_pooled`, so it can never quietly cover a file the unattended suite
+    // runs.
+    if (doc.defer_mqtt_connect === true && !connectsLater(doc)) {
       deferred.push(label);
       continue;
     }
@@ -313,6 +337,45 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
     expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, base] }, 'x')).toHaveLength(1);
   });
 
+  // ---- CONTROL FOR THE NARROWED EXCUSE --------------------------------------
+  // Both directions, and then the corpus effect — an exclusion that excuses the same set it
+  // did before is a comment, not a change.
+  it('excuses a deferred file only while it never connects', () => {
+    const defer = { defer_mqtt_connect: true, steps: [{ action: 'api_call' }] };
+    expect(connectsLater(defer)).toBe(false);
+
+    const deferThenConnect = {
+      defer_mqtt_connect: true,
+      steps: [{ action: 'api_call' }, { action: 'provision' }, { action: 'connect_mqtt' }],
+    };
+    expect(connectsLater(deferThenConnect)).toBe(true);
+
+    // Not fooled by a file with no steps at all, nor by a step of another kind.
+    expect(connectsLater({ steps: [] })).toBe(false);
+    expect(connectsLater({ steps: [{ action: 'send' }] })).toBe(false);
+    expect(connectsLater(null)).toBe(false);
+  });
+
+  it('the narrowing actually moved files INTO the checked set', () => {
+    // Measured, not asserted as a constant: every file declaring `defer_mqtt_connect` used to
+    // be excused. Now only the ones that never connect are, and the difference must be
+    // non-empty or this predicate is decoration.
+    const defers: string[] = [];
+    const stillExcused: string[] = [];
+    for (const file of yamlFiles(SCENARIOS_DIR)) {
+      const doc = YAML.parse(readFileSync(file, 'utf-8')) as { defer_mqtt_connect?: boolean } | null;
+      if (doc?.defer_mqtt_connect !== true) continue;
+      defers.push(file);
+      if (!connectsLater(doc)) stillExcused.push(file);
+    }
+    expect(defers.length).toBeGreaterThan(0);
+    expect(
+      defers.length - stillExcused.length,
+      'no file lost the excuse, so narrowing it changed nothing — either the predicate is ' +
+        'wrong or the corpus no longer has a file that defers and then connects',
+    ).toBeGreaterThan(0);
+  });
+
   // ---- THE ASSERTIONS -------------------------------------------------------
   it('no scenario commands a bay it has not reported since the last boot', () => {
     const scan = scanCorpus();
@@ -338,6 +401,9 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
         skip_when_pooled?: string;
       } | null;
       if (doc?.defer_mqtt_connect !== true) continue;
+      // Only an EXCUSED file needs the fence. A deferred file that connects later is held to
+      // the arming rule like every other, so it is free to run in the unattended suite.
+      if (connectsLater(doc)) continue;
       if (typeof doc.skip_when_pooled !== 'string' || doc.skip_when_pooled === '') {
         leaking.push(file.slice(SCENARIOS_DIR.length + 1));
       }

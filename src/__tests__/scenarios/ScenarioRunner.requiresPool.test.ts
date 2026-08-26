@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { ScenarioRunner, type ScenarioDefinition, type TargetConfig } from '../../scenarios/ScenarioRunner.js';
+import { ScenarioRunner, generateVariables, type ScenarioDefinition, type TargetConfig } from '../../scenarios/ScenarioRunner.js';
 import { StationPool } from '../../scenarios/stations/StationPool.js';
 import {
   POOL_OWNER_EMAIL_ENV,
@@ -115,6 +115,50 @@ describe('the identity the key exists for', () => {
     clearEphemeralOwnerFromEnv();
     expect(process.env[POOL_OWNER_EMAIL_ENV]).toBeUndefined();
     expect(process.env[POOL_OWNER_PASSWORD_ENV]).toBeUndefined();
+  });
+});
+
+describe('owns_station — the scenario brings its own station instead of taking one', () => {
+  // The pool allocator is what a lease comes from; a scenario that owns its station must take
+  // none, or a run of N scenarios exhausts a pool it never used.
+  it('takes NO pool lease and resolves stationId to the scenario\'s own fresh id', async () => {
+    const runner = new ScenarioRunner();
+    runner.setRunPool(new StationPool());
+    const withPool: TargetConfig = { ...target, stationPool: ['stn_poolaaaa', 'stn_poolbbbb'] } as TargetConfig;
+
+    const owning = scenario({
+      owns_station: 'registers and provisions its own',
+      defer_mqtt_connect: true,
+      steps: [],
+    });
+    const result = await runner.runScenario(owning, withPool);
+    expect(result.status).not.toBe('skipped');
+
+    // BOTH directions on the same runner: an ordinary scenario still gets a pool station, so
+    // a broken opt-out that skipped allocation for everyone would fail here.
+    const ordinary = scenario({ defer_mqtt_connect: true, steps: [] });
+    const second = await runner.runScenario(ordinary, withPool);
+    expect(second.status).not.toBe('skipped');
+  });
+
+  // The identity a station-owning file uses must not be one the pool handed out, or the
+  // registration it performs answers 409 — which is exactly why the three e2e parcours are
+  // skip_when_pooled.
+  it('the own id is NOT any pool id', () => {
+    const withPool: TargetConfig = { ...target, stationPool: ['stn_poolaaaa'] } as TargetConfig;
+    const vars = generateVariables(
+      scenario({ owns_station: 'x' }),
+      withPool,
+      'stn_poolaaaa',
+    );
+    expect(vars.get('runStationId')).toMatch(/^stn_[0-9a-f]{8}$/);
+    expect(vars.get('runStationId')).not.toBe('stn_poolaaaa');
+  });
+
+  it('runStationId is fresh per scenario, so two files never collide', () => {
+    const a = generateVariables(scenario({}), target, null).get('runStationId');
+    const b = generateVariables(scenario({}), target, null).get('runStationId');
+    expect(a).not.toBe(b);
   });
 });
 

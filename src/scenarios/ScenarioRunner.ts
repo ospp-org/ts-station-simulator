@@ -211,6 +211,30 @@ export interface ScenarioDefinition {
    */
   requires_pool?: string;
   /**
+   * This scenario REGISTERS AND PROVISIONS A STATION OF ITS OWN, and must not be given one
+   * from the pool. Set to the reason; the runner then takes no pool lease and resolves
+   * `{{stationId}}` to `{{runStationId}}` — fresh per scenario, so nothing collides and the
+   * scenario owns everything it creates (declare it in `creates:`).
+   *
+   * WHY IT IS NEEDED AT ALL, measured rather than assumed. Two areas cannot be reached from a
+   * pool station because the pool's own bootstrap makes them unreachable, not because of any
+   * permission:
+   *
+   *   - `POST .../catalog/publish` answers 6004 in two different situations — a station with
+   *     NO services, and a station whose services are all withheld for want of a (bay,
+   *     program) binding. `seedServiceCatalog` gives every pool station four services and
+   *     binds all four, so on a pool station the call always succeeds.
+   *   - anything whose subject is a session or command left in an unusual state: a pool
+   *     station is leased to one scenario and handed straight to the next, so residue that
+   *     self-heals in a minute is still a minute in which another file can meet it.
+   *
+   * The station must also be ONLINE for either — `requireDispatchableStation` checks
+   * `is_online` before the catalog's own guards — so a file using this key provisions and
+   * CONNECTS its station, which is why it pairs with `defer_mqtt_connect` and a
+   * `connect_mqtt` step rather than excusing itself from the wire.
+   */
+  owns_station?: string;
+  /**
    * On-disk fixtures this scenario cannot run without. If any path is absent the
    * scenario is SKIPPED (status 'skipped', reason names the missing file), never
    * failed and never silently passed.
@@ -1716,11 +1740,13 @@ export class ScenarioRunner {
       this.poolAllocator = new StationPoolAllocator(target.stationPool);
     }
 
-    // Allocate stationId from pool if available (skip if YAML hardcodes one)
+    // Allocate stationId from pool if available (skip if YAML hardcodes one, and skip if the
+    // scenario brings its own — `owns_station`, which also releases the lease it would
+    // otherwise hold for a station it never touches).
     const hardcodedStationId = scenario.station.stationId &&
       !scenario.station.stationId.includes('{{');
     let poolStationId: string | null = null;
-    if (this.poolAllocator && !hardcodedStationId) {
+    if (this.poolAllocator && !hardcodedStationId && !scenario.owns_station) {
       poolStationId = await this.poolAllocator.acquire();
     }
 
@@ -1736,6 +1762,21 @@ export class ScenarioRunner {
     }
 
     const variables = generateVariables(scenario, target, poolStationId, userVars);
+    // `owns_station` resolves the scenario's identity to its OWN fresh id. Done here rather
+    // than inside generateVariables so the two ids stay one value: everything downstream —
+    // the Station object, ConnectMqttStep, the cert-path templates — reads `stationId`, and
+    // a scenario that owned a station under a second name would have to remember which of
+    // the two each step meant.
+    if (scenario.owns_station) {
+      const own = variables.get('runStationId');
+      if (typeof own !== 'string' || own.length === 0) {
+        throw new Error(
+          'owns_station is set but `runStationId` was not generated — generateVariables must ' +
+            'provide it; see the key\'s docblock.',
+        );
+      }
+      variables.set('stationId', own);
+    }
     context.variables = variables;
     context.apiBaseUrl = target.apiBaseUrl;
     // Identity resolution precedence (C-018):

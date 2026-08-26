@@ -218,6 +218,125 @@ These are the opposite failure: the answer arrives, carries a code, and still do
 identify which of several conditions produced it. Every one was measured by reading the
 files in full; counts are from exhaustive enumeration, not sampling.
 
+**THESE COST MORE THAN THE FIRST FIVE, AND THAT IS WHY THEY ARE HERE.** A refusal that never
+arrives BLOCKS the integrator: he knows something is wrong, he has no information, and he
+goes looking. It is expensive and it is honest. A refusal that arrives with an ambiguous
+motive MISDIRECTS him — he reads a code, believes he knows which of his assumptions failed,
+and spends the day fixing the wrong one. Silence costs hours of searching. A wrong pointer
+costs the searching AND the repair AND the time to stop trusting the code, and he has no
+signal that any of it is happening, because from where he stands the server answered him
+clearly.
+
+That is also why the ORDER below is not the order they were found in. **Finding 13 is first
+and is the most important thing in this document**: a bay can be simultaneously too busy to
+start a session on and free to reserve and free to put into maintenance. Finding 14 is the
+one nobody can test and everybody should read. Finding 6 follows because three different
+operator situations arrive as one body identical to the byte, and finding 12 after it because
+it is not a defect at a site — it is the STRUCTURAL CAUSE of several of the others, and
+reading it as separate omissions is what has kept it open.
+
+## 13. FALSE ISOLATION — a bay is claimed against `/sessions/start` and free to everything else
+
+**This is not partial isolation. It is false isolation**, and it outranks everything else in
+this document because of what it does to the person on the other end.
+
+**The mechanism, traced.** A session start writes its `sessions` row BEFORE it publishes
+StartService (`StartSessionAction:336-359`, via `SessionRepository::createClaimingBay`, which
+commits in its own transaction). It never writes `bays.status` — grepped exhaustively, the
+only writers in the codebase are `BayRepository` (creation and the boot reset) and
+`StatusNotificationHandler`, and the latter only in response to an inbound station report. **No
+server-side session action writes `bays.status` on any path, terminal or not.**
+
+So the bay ends up guarded by TWO DISJOINT LOCKS:
+
+| door | what it reads | verdict while a session sits `pending` |
+|---|---|---|
+| `POST /sessions/start` | the SESSIONS table — `SessionRepository:39-46`, `findActiveByBayId` over `{pending, authorized, active, stopping}` | **refused** `409` / `3001 BAY_BUSY` |
+| `POST /reservations` | `bays.status` — `ReserveBayAction:55-65` | **accepted** `201` |
+| `POST /admin/stations/{id}/maintenance` | `bays.status` — `SetMaintenanceModeAction:153-194` | **accepted** `202`, command dispatched |
+
+**Why this outranks the ambiguity findings.** An integrator who sees a start refused with
+`BAY_BUSY` draws the only reasonable conclusion: the bay is occupied. Occupied means occupied
+— so he reserves it for later, or takes it out of service to look at it. **Both succeed.** He
+now holds a reservation on a bay the server will not start, or has put a bay into maintenance
+while a live session row still points at it — a state the server's own model says cannot
+exist. And because every call he made returned success, the only remaining explanation
+available to him is that he has misunderstood something. He goes looking for a defect in his
+own code, and there isn't one.
+
+The earlier findings send him in the wrong direction. This one sends him into a state the
+system does not believe in, and then makes him doubt himself for arriving there.
+
+**AND THE SERVER ALREADY KNOWS.** `ReserveBayAction.php:91-97`:
+
+> *"KNOWN GAP, deliberately not closed here: a bay carrying a LIVE SESSION … is therefore
+> still refused only by step 3 — that is, by `bays.status = occupied` … today a reservation on
+> an occupied bay is accepted whenever the station has not reported Occupied."*
+
+So this is not a discovery. It is an accepted debt, written down at the site, and what is new
+here is only that the consequence is now **measured** rather than reasoned about — including
+the exact window (below) and the two doors that walk straight through it.
+
+**The window is not hypothetical and not brief.** With a station that never answers, the stuck
+`pending` row lives from the request until a sweep reaps it — typically 10-70s, up to ~130s if
+a scheduler tick is missed. If the station answers `Accepted` late, see finding 14: the bay is
+genuinely locked for the paid duration plus grace, minutes, and `bays.status` still says
+whatever the station last reported.
+
+**Cost of the fix.** Either door could consult the session table the way `/sessions/start`
+already does; the query exists (`findActiveByBayId`). The comment says the gap was left open
+deliberately, so the decision is whether the reasoning still holds now that the two doors have
+been walked through end to end.
+
+---
+
+## 14. A late `StartServiceResponse: Accepted` can dispense product with NO server record
+
+The one finding here that **cannot be exercised by this corpus**, written down anyway because
+it is not a test gap — it is a path along which work gets done and nobody knows.
+
+**The path.** The REST caller gives up at 10s with `504` / `6002`. The session row is still
+`PENDING`. `StartServiceResponseHandler::handleAccepted()` has no knowledge of, and no
+dependency on, whether anyone is still waiting (`:80-188`) — it acts on session status alone.
+Two outcomes, decided purely by which sweep tick lands first:
+
+- **Response arrives BEFORE the sweep**: the handler drives `PENDING → AUTHORIZED → ACTIVE`
+  and stamps `started_at` (`:134-149`). The station is dispensing, the session is real and
+  billable — and the caller that asked for it was told `504` minutes ago. `signalAuthorized()`
+  writes a Redis key nobody is polling; it expires unread after 30s.
+- **Response arrives AFTER the sweep**: the session is already `FAILED`, so the handler's
+  `status !== PENDING` guard (`:89-96`) discards it with a log line. **No DB change, no billing
+  correction.** If that response was `Accepted`, the physical station may be dispensing product
+  with zero server-side record of it.
+
+The second is the one that matters and it is why this has its own number rather than a
+paragraph inside finding 13. Every other finding in this document is about a message being
+wrong, ambiguous or absent. This one is about the machine doing real, chargeable work while
+the system that is supposed to know has already written the episode off as failed. Nothing
+alerts; the log line is the only trace.
+
+**WHY THIS CORPUS CANNOT PROVE IT, stated so nobody assumes it was checked.** In scenario mode
+the simulator registers exactly one handler — `BootNotificationHandler`, with `autoReact:
+false` (`ScenarioRunner.ts:1142-1145`) — and every station→server message is scripted in YAML.
+A scenario therefore cannot answer a command it was not written to answer, and it cannot answer
+one *late by wall-clock* on the server's terms: `scenarios/sessions/session-rejected-start-ack-timeout.yaml`
+provokes the timeout precisely BY not answering.
+
+Exercising this needs one of two things this repo does not have:
+1. an **auto-reactive station in scenario mode** — the `connect`-mode AutoResponder driving a
+   scenario's connection, so a response can be emitted on a delay the scenario does not
+   script; or
+2. a **stimulus the scenario can aim at the window** — a way to publish a raw
+   `StartServiceResponse` for a session whose id the scenario captured, after the REST call
+   has already returned. The second is much the cheaper: the session id is already on the wire
+   in the `StartService` Request, and `send` can already publish a Response. What is missing is
+   only that the scenario currently has no reason to hold one back and no way to know the
+   sweep has not yet run.
+
+Until one exists, this is a reasoned path, not a measured one, and it is labelled as such.
+
+---
+
 ## 6. `3002 BAY_NOT_READY` — three different bay states produce a BYTE-IDENTICAL body
 
 `SessionStateMachine::validateBayForStart()` maps `FINISHING`, `FAULTED` and `UNKNOWN` all to
@@ -233,6 +352,48 @@ This is the sharpest collision in the taxonomy: the others below at least differ
 the reservation door.
 
 **Cost of the fix.** A `details.reason` naming the bay status, on the one `rejected()` call.
+
+## 12. THE STRUCTURAL CAUSE — a refusal builder with no parameter for a reason
+
+Read this before treating 6, 8 and 10 as separate omissions. They are not thirty-seven
+independent decisions not to explain a refusal; they are one signature.
+
+```php
+// app/Http/Controllers/Api/V1/SessionController.php:248-260
+private function errorResponse(OsppErrorCode $code, string $message, int $httpStatus): JsonResponse
+{
+    return new JsonResponse([
+        'error' => ['code' => $code->errorText(), 'ospp_code' => $code->value, 'message' => $message],
+        'meta'  => ['timestamp' => now()->toISOString()],
+    ], $httpStatus);
+}
+```
+
+**There is no parameter a caller could pass a reason through.** Every refusal this helper
+builds is `details`-free by construction, and no amount of care at a call site can change
+that — the only channel left for "which condition was it" is the free-text `message`, which
+`07-errors.md` defines as per-occurrence prose and explicitly not for programmatic matching.
+
+The measurement: across the four session files there are **37 refusal sites and exactly ONE
+carries `details`** — `SERVICE_NOT_BOUND` (`StartSessionAction:315`), and it is the one that
+does not go through this helper. `ReserveBayAction`'s two `STATION_OFFLINE` calls (finding 10)
+are the same shape from the other direction: `OsppError::from()` DOES take a third argument (`app/Shared/Exceptions/OsppError.php:54`, `?array $details = null`),
+and both call sites simply omit it.
+
+So the fix is not thirty-seven edits. It is one parameter here, plus the habit of passing the
+third argument to `OsppError::from()`. `OsppError` already carries `details`, the global
+renderer already emits it when present (`bootstrap/app.php:264-266`), and the corpus already
+has a linter check that refuses a bare `6008` without `details.wouldBe` — the mechanism, the
+transport and the precedent all exist. What is missing is a way for one of the two builders
+to reach them.
+
+**And the same shape explains why the seven copies in finding 9 are indistinguishable.**
+`OsppError::toArray()` has no field for the action or endpoint, so even a correct
+`details.reason` cannot say WHICH of seven commands was refused. That one is a second missing
+field, not a missing parameter — but it is the same category: the answer has nowhere to put
+the thing the reader needs.
+
+---
 
 ## 7. `StopSessionAction`'s five refusals are ALL unreachable from `POST /sessions/{id}/stop`
 
@@ -263,9 +424,7 @@ So the same `ospp_code` reaches the client as three different HTTP statuses depe
 path, and a client branching on status alone gets a different answer per condition while one
 branching on the code gets none.
 
-`SessionController::errorResponse()` (`:248-260`) also **structurally cannot emit `details`** —
-its signature has no parameter for it. Across the four session files there are 37 refusal
-sites and exactly ONE carries `details`: `SERVICE_NOT_BOUND` (`StartSessionAction:315`).
+The absence of `details` on all five is not five oversights — see finding 12.
 
 ## 9. The capability guard is copied seven times and the seven are indistinguishable
 
