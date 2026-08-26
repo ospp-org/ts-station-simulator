@@ -1,0 +1,189 @@
+name: "Provision Rejected — the request layer, then the token layer, in that order"
+description: "POST /api/v1/stations/provision three times on one well-formed-but-unknown token: a malformed token field and an empty bays array are each refused 400 / 4017 PROVISIONING_REQUEST_INVALID naming only the offending property, and the same body with nothing else wrong is refused 401 / 2019 PROVISIONING_TOKEN_INVALID with details.reason not_found. The third call is what proves the first two were about the property."
+# WHY THIS FILE EXISTS. The provisioning door is where a station gets its identity
+# and its certificate, and before this file the corpus provoked ZERO of its refusals:
+# `grep '4015\|4016\|4017\|4018\|4019\|4020\|2019\|PROVISIONING_'` over all 130
+# scenarios returned nothing. `action: provision` appears in exactly three files, all
+# `skip_when_pooled`, and it could not have helped anyway — ProvisionStep.ts:129
+# THROWS on any status other than 200 and has no `expect_status`, so a refusal
+# cannot be asserted through it in any run. The vehicle has to be `api_call`, and
+# this file is the first one to use it against this endpoint.
+#
+# THE ENDPOINT IS PUBLIC. routes/api/v1/provisioning.php:18-21 — no auth middleware,
+# no mTLS; ProvisionStationRequest::authorize() returns true with the comment "No
+# auth — public endpoint, gated by the provisioning token." It has to be, since its
+# job is to ISSUE the station's first certificate. That is why this file needs no
+# identity, no station of its own and no pool interaction: a refused provisioning
+# request creates nothing and consumes nothing.
+#
+# THE BODY SHAPE IS NOT THE ONE THE REST OF THE CORPUS ASSERTS. Thirteen files pin
+# `error.ospp_code`. This door does not use that envelope: OsppErrorObject::response
+# (app/Shared/Protocol/Rest/OsppErrorObject.php:117-130) emits the spec's FLAT Error
+# Object — top-level `errorCode`, `errorText`, `errorDescription`, `severity`,
+# `recoverable`, `recommendedAction`, `timestamp`, and `details` only when non-empty.
+# There is no `error` wrapper to reach through. Asserting `error.ospp_code` here
+# would look right and match nothing.
+#
+# WHAT THE THREE CALLS PROVE TOGETHER, AND WHY THEY ARE ONE FILE.
+# spec/04-flows.md:358-367 fixes an ORDER on this door, and the order is the
+# property — csms-server's own tests/Feature/Provisioning/ErrorPrecedenceTest.php
+# quotes it:
+#     1. Request well-formedness        -> 400 / 4017
+#     2. Token authentication           -> 401 / 2019
+#     3. Token state                    -> 409 / 4018
+#     4. CSR decodability               -> 400 / 4010
+#     ... 5-8 bay count, key validity, self-consistency, bound-set comparison.
+# A single call can only ever show ONE rung. The token below is byte-identical in
+# all three: 64 hex characters that hash to no row. Calls 1 and 2 answer 4017 even
+# though the token is already doomed — which is rung 1 beating rung 2 — and call 3,
+# with the body corrected and NOTHING else changed, falls through to 2019. Split
+# into three files each would assert a code; together they assert the ladder.
+#
+# THE CONTROL IS CALL 3, and it is the one that matters. Without it, calls 1 and 2
+# prove only "this endpoint answers 400 to something", which a server that refused
+# every request identically would also satisfy. With it, the difference between 400
+# and 401 is produced by the body alone.
+#
+# AND THE ATTRIBUTION WITHIN EACH 400 IS STRUCTURAL, not textual. Each call is
+# malformed in exactly ONE property, and each asserts that `details.fields` names
+# THAT property and NOT the others (`expect_body_absent`). The alternative — pinning
+# Laravel's rendered message string — would tie this file to wording that is not part
+# of any contract. This is the same discrimination-by-structure that
+# firmware-nonconformant-command-reaches-the-wire.yaml uses for its two 422s.
+#
+# MEASURED AND DELIBERATELY NOT ASSERTED: `stationPubKey` is `prohibited` on this
+# request (ProvisionStationRequest.php:107-112) — the BLE identity field this server
+# revision refuses outright, and a fourth 4017 arm. It is left out because the rule
+# is conditional on `config('features.ble_support_enabled')`: if that flag is ever
+# turned on the field becomes `nullable` and the arm would answer 2019 instead, i.e.
+# it would go red for a reason that has nothing to do with what it tests. An
+# assertion whose meaning depends on a feature flag is not a control.
+#
+# WHAT IS NOT HERE, AND WHY — read this before adding to the file. Rungs 3-8 need a
+# VALID, UNCONSUMED token, and no identity a scenario can authenticate as can mint
+# one: the route requires `stations.manage_provisioning_tokens`
+# (StationPolicy.php:80), the per-scenario pool identity is a `tenant_operator`
+# which csms-server's own IssueProvisioningTokenTest.php:48 pins at 403, and the
+# only `auth:` override in this repo is a platform_admin that is not a member of any
+# organization and therefore holds no tenant permission either. The identity that
+# CAN mint is the ephemeral tenant_owner PoolBootstrap creates per run — it exists
+# for exactly these endpoints — but it is never exposed to a scenario. This is the
+# same class the corpus already records for service-catalog-update
+# (ScenarioRunner.ts:171, "NO identity a scenario can authenticate as holds it").
+# Rung 3 (4018) is a separate matter and is not a permissions problem: a consumed
+# token with a certificate REPLAYS (200) rather than being refused, so the two 4018
+# arms need a raw DB insert or a genuine concurrent race — neither is constructible
+# over HTTP.
+# TWO HARNESS NOTES, so neither is rediscovered the hard way.
+#
+# THIS FILE IS REST-ONLY AND STILL CONNECTS MQTT, DELIBERATELY. The obvious
+# `defer_mqtt_connect: true` is wrong here: BayGatedCommandsAreArmed.test.ts fences
+# that key — a file declaring it must ALSO declare `skip_when_pooled`, because the
+# key excuses a file from the bay-arming rule and that excuse is only tolerable
+# while the file stays out of the unattended suite. This file must RUN in the
+# unattended suite; that is its whole point. It therefore takes the pool identity
+# and connects like every other scenario, and simply never sends on it. Adding
+# `defer_mqtt_connect` here would either turn that gate red or, with
+# `skip_when_pooled` alongside it, silently move this file back into the 17 skipped.
+#
+# THE ENDPOINT SHARES A RATE LIMITER WITH LOGIN. `throttle:auth` is
+# `perMinute(30)->by(ip)` (AppServiceProvider.php:92-94) and the suite's own logins
+# go through the same bucket, which is why LoginPacer exists. Three POSTs per run
+# is inside the noise, but a future file that loops this door is not — pace it or
+# expect 429s that look like server faults.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- RUNG 1, ARM A: the token FIELD is malformed (fails size:64 and the
+  # ^[a-f0-9]{64}$ rule). Everything else is well-formed. The complaint must name
+  # provisioningToken and nothing else.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/provision"
+    body:
+      provisioningToken: "not-a-64-hex-token"
+      serialNumber: "SN-REFUSAL-{{stationId}}"
+      bays:
+        - bayNumber: 1
+          programs:
+            - programNumber: 1
+              label: "Basic Wash"
+      tlsCsr: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBIjCByAIBADBmMQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExFDASBgNVBAcM\nC0xvcyBBbmdlbGVzMRIwEAYDVQQKDAlBY21lQ29ycDEgMB4GA1UEAwwXc3RuX2Ex\nYjJjM2Q0LmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END CERTIFICATE REQUEST-----"
+      receiptSigningPublicKey: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleex\nampleexampleexampleexampleexampleexampleexampleexampleexampleex==\n-----END PUBLIC KEY-----"
+    expect_status: 400
+    expect_body:
+      errorCode: 4017
+      errorText: "PROVISIONING_REQUEST_INVALID"
+    # THE ATTRIBUTION. The one property that is wrong is named; the ones that are
+    # fine are not. A validator that rejected the whole body indiscriminately, or
+    # one whose `details.fields` were a constant, fails here rather than passing on
+    # the code alone.
+    expect_body_absent:
+      - "details.fields.tlsCsr"
+      - "details.fields.receiptSigningPublicKey"
+      - "details.fields.bays"
+      - "details.fields.serialNumber"
+
+  # --- RUNG 1, ARM B: the token field is now well-formed; `bays` violates min:1.
+  # Same rung, different property, and the two arms' `expect_body_absent` sets are
+  # each other's mirror — so a `details.fields` that named everything would fail
+  # both, and one that named nothing would fail both.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/provision"
+    body:
+      provisioningToken: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+      serialNumber: "SN-REFUSAL-{{stationId}}"
+      bays: []
+      tlsCsr: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBIjCByAIBADBmMQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExFDASBgNVBAcM\nC0xvcyBBbmdlbGVzMRIwEAYDVQQKDAlBY21lQ29ycDEgMB4GA1UEAwwXc3RuX2Ex\nYjJjM2Q0LmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END CERTIFICATE REQUEST-----"
+      receiptSigningPublicKey: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleex\nampleexampleexampleexampleexampleexampleexampleexampleexampleex==\n-----END PUBLIC KEY-----"
+    expect_status: 400
+    expect_body:
+      errorCode: 4017
+      errorText: "PROVISIONING_REQUEST_INVALID"
+    expect_body_absent:
+      - "details.fields.provisioningToken"
+      - "details.fields.tlsCsr"
+      - "details.fields.receiptSigningPublicKey"
+      - "details.fields.serialNumber"
+
+  # --- RUNG 2, AND THE CONTROL FOR BOTH ARMS ABOVE. Byte-identical to arm B except
+  # that `bays` is now valid. The token is the same 64 hex characters arm B carried,
+  # and it hashes to no row in provisioning_tokens — so with the body no longer
+  # objectionable the request reaches rung 2 and is answered 401 / 2019.
+  #
+  # `details.reason: not_found` is the discriminator and it is load-bearing: 2019 is
+  # answered for FOUR distinct token conditions — not_found, expired, superseded,
+  # revoked — all four deliberately sharing 401 so an unauthenticated caller cannot
+  # probe which tokens exist (ProvisioningController.php:126-132). Without the
+  # reason this assert would pass on any of them, including on a token this file
+  # never sent.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/stations/provision"
+    body:
+      provisioningToken: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+      serialNumber: "SN-REFUSAL-{{stationId}}"
+      bays:
+        - bayNumber: 1
+          programs:
+            - programNumber: 1
+              label: "Basic Wash"
+      tlsCsr: "-----BEGIN CERTIFICATE REQUEST-----\nMIIBIjCByAIBADBmMQswCQYDVQQGEwJVUzELMAkGA1UECAwCQ0ExFDASBgNVBAcM\nC0xvcyBBbmdlbGVzMRIwEAYDVQQKDAlBY21lQ29ycDEgMB4GA1UEAwwXc3RuX2Ex\nYjJjM2Q0LmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END CERTIFICATE REQUEST-----"
+      receiptSigningPublicKey: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleex\nampleexampleexampleexampleexampleexampleexampleexampleexampleex==\n-----END PUBLIC KEY-----"
+    expect_status: 401
+    expect_body:
+      errorCode: 2019
+      errorText: "PROVISIONING_TOKEN_INVALID"
+      details.reason: "not_found"
+    # AND THE BODY IS NO LONGER THE COMPLAINT. `details.fields` is the validator's
+    # key; its absence here is what says the request layer passed and a later rung
+    # answered.
+    expect_body_absent:
+      - "details.fields"

@@ -1,0 +1,170 @@
+name: "Boot Pending — declared topology disagrees with the provisioned one"
+description: "Declare a third bay the station never provisioned. Server answers Pending + errorCode 3018 TOPOLOGY_MISMATCH and names both sides in details. The station then re-declares its real topology and is Accepted, which both controls the proof and returns the station to Operational."
+# WHY THIS FILE EXISTS, AND WHY IT COULD NOT BE WRITTEN UNTIL 2026-08-26.
+# core/boot-pending-retry.yaml is `skip: true` and its second stated blocker is that
+# `Pending` is unreachable: "the server writes it from exactly one place, the
+# topology comparator behind config('ospp.enforce_boot_topology'), which is false on
+# UAT ... With it off the server answers Accepted". That premise died the same day it
+# was true. csms-server 27032a35 established that `false` was never an off switch —
+# "false is the neutral element of ||", so the flag could only WIDEN the comparison,
+# never narrow it — and replaced the boolean with a three-position enum whose
+# historical default is `Auto`: compare wherever a topology is RECORDED. 483f73e3
+# established who records one: `CertificateManager:404-407` writes `bay_programs`
+# unconditionally on EVERY provisioning, so every pool station this suite bootstraps
+# is armed the moment it is provisioned. The key ships absent in every environment,
+# which resolves to `Auto`.
+#
+# So `Pending` is reachable today, on an ordinary pooled run, with no conformance
+# route, no config change and no --var. boot-pending-retry's OTHER blockers are
+# untouched and it stays skipped: it needs POST /api/v1/conformance/reset and
+# POST /api/v1/stations/{id}/force-pending, which do not exist, and a hardcoded
+# sandbox identity whose certs are gitignored. This file needs none of them.
+#
+# WHAT IT ASSERTS, AND WHY details IS NOT DECORATION. `status: Pending` alone would
+# pass on any future Pending cause. `errorCode: 3018` names the cause. `details`
+# names the DISAGREEMENT — BootTopologyComparator.php:62-66 puts both sides on the
+# wire, `expected` from bay_programs and `declared` from this payload — so the two
+# asserts below prove the server compared THIS declaration against THIS station's
+# provisioned set, and not, say, an empty expectation against anything.
+#
+# ---------------------------------------------------------------------------
+# THE ONE THING TO KNOW BEFORE EDITING THIS FILE: IT MOVES SHARED STATE.
+# ---------------------------------------------------------------------------
+# BootNotificationHandler.php:421-424 runs `$station->transitionTo(PENDING, viaBoot:
+# true)` on a mismatch, and Pending is a RESTRICTED state — `mayStartNewService()` is
+# false there. The pool station is leased to this scenario for its lifetime and
+# returned to the allocator afterwards, so a run that DIED between the two boots
+# would hand the next scenario a station that cannot start a session.
+#
+# The window is one round trip and it is closed deliberately: the conformant boot is
+# the very next step, and `transitionTo(..., viaBoot: true)` evaluates
+# `canTransition(BOOTING, $to)` — the FROM state is not consulted — so an accepted
+# boot restores Operational from Pending unconditionally
+# (Station.php:193-212). The REST read at the end proves it did.
+#
+# That is also why `auto_retry_boot: false` is set. The simulator's own handler
+# schedules `station.retryBoot()` on Pending (BootNotificationHandler.ts:93-103), and
+# a retry landing between the two sends would put an unasserted boot on the wire
+# whose Response could satisfy the wait_for below — and it would re-send the
+# station's CONFIGURED topology, not this file's payload, so it would silently
+# supply the very control this file exists to make explicit.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    auto_retry_boot: false
+steps:
+  # --- THE DISAGREEMENT. Bays 1 and 2 are what the pool provisions (--pool-bays 2,
+  # one program each). Bay 3 was never provisioned, so `bay_programs` has no row for
+  # it and the declared set is a strict superset of the expected one. Schema-valid on
+  # purpose (bays is minItems 1 / maxItems 64), so it reaches the comparator rather
+  # than the payload-schema gate — hence no `expect_invalid:`.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+        - bayNumber: 3
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Pending"
+
+  - action: assert
+    field: "payload.errorCode"
+    equals: 3018
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "TOPOLOGY_MISMATCH"
+
+  # BOTH SIDES OF THE COMPARISON, so the verdict is attributable to this pair and not
+  # to an empty expectation. `declared[2]` is the bay this file invented;
+  # `expected[2]` must be ABSENT, because the station provisioned two bays.
+  - action: assert
+    field: "payload.details.declared.2.bayNumber"
+    equals: 3
+
+  - action: assert
+    field: "payload.details.expected.2"
+    exists: false
+
+  - action: assert
+    field: "payload.details.expected.1.bayNumber"
+    equals: 2
+
+  # --- THE CONTROL, AND THE REPAIR. Identical send with bay 3 removed: the ONE
+  # thing that changes is the declaration. Accepted here proves the Pending was
+  # about the topology and nothing else, and returns the station to Operational
+  # before the lease is released.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # THE STATE IS BACK. Not decoration: this is the assertion that the shared pool
+  # station was handed back usable. `isOnline` is server-derived from the boot just
+  # accepted; a station still held in Pending would fail the next scenario that
+  # leases it, far from here and for a reason nobody would connect to this file.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true

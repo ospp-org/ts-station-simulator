@@ -1,0 +1,138 @@
+name: "Schema-invalid Request — answered on SignCertificate, silent on Heartbeat"
+description: "Publish a Heartbeat Request carrying a property its schema forbids. The server refuses it at the message layer and answers NOTHING, because Heartbeat has no rejection shape; a clean Heartbeat on the same connection is answered immediately. The contrast with sign-certificate-empty-csr-rejected-correlated.yaml — same layer, same code, a Response there — is the subject."
+# WHAT AN INTEGRATOR ACTUALLY NEEDS FROM THIS FILE. The same mistake — a payload
+# the action's schema forbids — is answered on some actions and answered with
+# NOTHING on others, and which is which is not derivable from the spec's error
+# tables. A firmware author who sends a malformed SignCertificate gets `Rejected`
+# + 1005 and knows within a second. The same author sending a malformed Heartbeat
+# gets silence, and every hour he spends looking for a bug in his own retry logic
+# is spent on the wrong side of the wire.
+#
+# WHERE THE SPLIT LIVES, MEASURED. MessageDispatcher::buildRejectionPayload
+# (:415-432) is a five-arm `match` over the ACTION, and it is the only thing that
+# decides whether a message-layer refusal reaches the station:
+#     BootNotification                    -> full Boot Response, errorCode + errorText
+#     SignCertificate                     -> {status, errorCode, errorText}
+#     TransactionEvent, AuthorizeOfflinePass -> {status, reason}   (prose, NO code)
+#     DataTransfer                        -> {status}             (no code, no text)
+#     everything else                     -> null  => nothing is sent
+# `null` is the branch this file exercises. Heartbeat is in "everything else", so
+# `buildErrorResponseFromRawJson` returns null and `dispatch()` returns null at
+# :133-151: nothing published, connection untouched, the worker records the
+# delivery as handled.
+#
+# THE SAME LAYER, THE SAME CODE, THE OTHER OUTCOME:
+# security/sign-certificate-empty-csr-rejected-correlated.yaml sends `csr: ""`,
+# is refused by the identical payload-schema gate for the identical reason, and
+# asserts `errorCode: 1005` off a Response. Read the two files together; neither
+# says anything about the split on its own.
+#
+# WHY A HEARTBEAT WITH AN EXTRA PROPERTY, and not a missing one.
+# heartbeat-request.schema.json has NO required fields and NO properties, with
+# `additionalProperties: false` — an empty object is the only conforming payload.
+# So the only way to malform a Heartbeat is to ADD something, which is also the
+# realistic firmware mistake (a vendor field, a debug counter, a copied field from
+# another message).
+#
+# HOW THIS DIFFERS FROM security/mac-missing-drops-request.yaml, which also proves
+# a silent Heartbeat. That file's cause is the MAC gate — VerifyIncomingMiddleware,
+# which runs LATER (MessageDispatcher:162) and never computes an error code at all.
+# This file's cause is the schema gate, which runs FIRST (:127) and DOES compute
+# 1005 — the code simply has nowhere to go. Same observable, two different
+# mechanisms, and the repairs are not the same repair.
+#
+# THE CONTROL IS MANDATORY AND IT IS HERE. WaitForStep's own docblock makes it a
+# MUST: "every scenario using this MUST follow it with an ordinary wait_for on a
+# CLEAN message of the same action", because a dead link, a wedged worker and a
+# correct server produce identical silence. The clean Heartbeat below is that
+# control, on the same connection, immediately after, and it is the only reason
+# the silence above is attributable to anything.
+#
+# WHAT A RED HERE MEANS, so it is not misread. If the silence step fails because a
+# Heartbeat Response DID arrive, either the server grew a rejection shape for
+# Heartbeat, or `OSPP_SCHEMA_VALIDATION_ENABLED` is off on the target and the
+# extra property was accepted (config/ospp.php:135 defaults it true and no env
+# template sets it). Both are worth knowing and neither is a flake.
+#
+# NO SERVER-STATE ASSERTION IS POSSIBLE. A refused message writes nothing but a
+# dead-letter record, and the DLQ has no read surface scoped to a station — see
+# chaos/malformed-messages.yaml for the full survey of why the fleet-wide metric
+# cannot stand in for one.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot. Not scenery: Heartbeat is not one of the three structural signing
+  # exemptions (BootNotification Request/Response, ConnectionLost Event), so a
+  # Heartbeat needs the session key this boot returns. Without it both Heartbeats
+  # below would be dropped by the MAC gate and the silence would be vacuous —
+  # true for the wrong reason, and the control would fail too.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- THE MALFORMED HEARTBEAT. `additionalProperties: false` with no declared
+  # properties, so this one extra key is the whole defect. expect_invalid: true
+  # tells PayloadSchemaCheck the malformedness is deliberate.
+  - action: send
+    message: Heartbeat
+    messageType: Request
+    expect_invalid: true
+    payload:
+      uptimeSeconds: 42
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. Same action, same connection, conforming payload. The ONE
+  # thing that changed is the extra property.
+  - action: send
+    message: Heartbeat
+    messageType: Request
+    payload: {}
+
+  - action: wait_for
+    message: Heartbeat
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.serverTime"
+    exists: true

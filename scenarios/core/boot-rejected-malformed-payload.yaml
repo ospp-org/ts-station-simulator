@@ -1,0 +1,128 @@
+name: "Boot Rejected — payload missing a required field"
+description: "Send a BootNotification with `firmwareVersion` omitted. Server answers Rejected + errorCode 1005 INVALID_MESSAGE_FORMAT. The same station then boots with the field present and is Accepted, which is what attributes the refusal to the missing field."
+# WHY THIS FILE EXISTS. A missing required field is the first mistake a firmware
+# integrator makes, and until this file the corpus could not say what comes back.
+# The one place it publishes a schema-invalid frame deliberately —
+# chaos/malformed-messages.yaml — uses StatusNotification, which is an EVENT: the
+# server answers an EVENT with silence and that file says so at length ("a rejected
+# EVENT is answered with silence"). BootNotification is REQ/RES, so the same class of
+# defect is OBSERVABLE here and nowhere else in the corpus.
+#
+# WHICH LAYER ANSWERS, AND WHY THIS FILE DOES NOT CLAIM TO KNOW. Two layers refuse
+# this payload with the SAME code, deliberately:
+#   - MessageFactory.php:86-105 — the action's payload schema
+#     (boot-notification-request.schema.json lists `firmwareVersion` in `required`)
+#     computes 1005, and MessageDispatcher::buildBootRejectionPayload turns it into a
+#     Boot Response;
+#   - BootNotificationHandler.php:107-132 — if the schema gate is off
+#     (`ospp.schema_validation_enabled`), the DTO constructor's non-nullable
+#     `string $firmwareVersion` throws and the handler answers 1005 itself.
+# The handler's own comment names the intent: "1005 — the same code the schema layer
+# answers for a malformed boot, which is what keeps this second line
+# indistinguishable from the first." So this file asserts the CODE, which is
+# well-defined, and does NOT assert which layer produced it, which is not
+# observable from the wire and is not meant to be.
+#
+# A REAL OPEN QUESTION UPSTREAM, recorded because a future reader will hit it: the
+# spec contradicts itself on whether a malformed boot should be answered AT ALL —
+# profiles/core/boot-notification.md:88 says drop, §2.1 says respond. csms-server
+# responds, and its handler comment explicitly declines to settle it there
+# (docs/KNOWN-ISSUES.md). If that is ever resolved towards "drop", this file becomes
+# an expect_silence file, not a deleted one.
+#
+# THE CONTROL. The two sends differ in ONE field: the second carries
+# `firmwareVersion`. Everything else is identical. A server that refused for any
+# other reason — an unregistered station, a wedged worker, a dead link — fails the
+# second half.
+#
+# NO SERVER-STATE ASSERTION ON THE REFUSAL — a rejected boot writes nothing.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    # See boot-rejected-station-id-spoof.yaml — an auto-retry between the two boots
+    # would put an unasserted third boot on the wire.
+    auto_retry_boot: false
+steps:
+  # --- THE MALFORMED BOOT. `firmwareVersion` omitted; every other required field
+  # present, so the ONE thing wrong is the one thing named. expect_invalid: true
+  # tells PayloadSchemaCheck this send is deliberately schema-invalid — the
+  # malformedness IS the subject.
+  - action: send
+    message: BootNotification
+    expect_invalid: true
+    payload:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.errorCode"
+    equals: 1005
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "INVALID_MESSAGE_FORMAT"
+
+  # --- THE CONTROL. Same payload with `firmwareVersion` restored.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"

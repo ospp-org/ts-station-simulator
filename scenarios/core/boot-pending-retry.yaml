@@ -14,12 +14,22 @@ skip_reason: >-
   (1) The setup routes do not exist. Steps 1 and 3 call POST /api/v1/conformance/reset and
   POST /api/v1/stations/{id}/force-pending with expect_status 200; grep over csms-server routes/
   for "conformance" and "force-pending" returns ZERO hits. This file would fail on its first step.
-  (2) Even reaching the boot, Pending is unreachable: the server writes it from exactly one place,
-  the topology comparator behind config('ospp.enforce_boot_topology'), which is false on UAT
-  (measured at runtime, not read from .env), false on master (config/ospp.php:74) and false in both
-  env templates. With it off the server answers Accepted, so `assert payload.status == Pending`
-  fails. Turning it on is not a workaround: bay_programs is written only by provisioning, so it
-  puts the whole fleet into Pending on next boot.
+  (2) IS NO LONGER TRUE — CORRECTED 2026-08-26, and it was measured on the wire, not re-read.
+  It said: "Pending is unreachable: the server writes it from exactly one place, the topology
+  comparator behind config('ospp.enforce_boot_topology'), which is false on UAT ... With it off
+  the server answers Accepted." Both halves died the same day. csms-server 27032a35 established
+  that `false` was never an off position — "false is the neutral element of ||", so the flag could
+  only ever WIDEN the comparison — and replaced the boolean with a three-position enum
+  (Force/Auto/Off) whose historical default, and the value every environment resolves to because
+  the key ships absent, is Auto: compare wherever a topology is RECORDED. 483f73e3 established who
+  records one: CertificateManager:404-407 writes bay_programs UNCONDITIONALLY on every
+  provisioning, so every station this suite bootstraps is armed the moment it is provisioned.
+  Measured live in results/uat-refusals-20260826T132926.log — a pool station declaring a bay it never provisioned was answered
+  Pending + 3018 with both sides of the comparison in details, and the next conformant boot was
+  Accepted. The proof now lives in core/boot-pending-topology-mismatch.yaml, which needs none of
+  this file's setup. The remaining sentence of the old text still stands as a warning: arming this
+  fleet-wide is not a workaround, and `Off` exists precisely because there is no return edge for a
+  station whose real hardware disagrees.
   (3) The hardcoded sandbox identity and its gitignored cert material — declared as requires_files
   below, and unchanged.
   Fixing (1) and (2) is a server question, not a scenario edit. If you need only to prove the

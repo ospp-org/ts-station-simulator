@@ -55,6 +55,9 @@ const GATED_ROUTES: ReadonlyArray<{ pattern: RegExp; bayKey: string; allWhenAbse
   { pattern: /\/api\/v1\/reservations$/, bayKey: 'bay_id', allWhenAbsent: false },
 ];
 
+/** 3005 — see the exclusion in `unarmedCommandsIn`. */
+const BAY_NOT_FOUND = 3005;
+
 interface Offender {
   file: string;
   step: number;
@@ -119,6 +122,28 @@ export function unarmedCommandsIn(doc: unknown, label: string): Offender[] {
     const route = GATED_ROUTES.find((candidate) => candidate.pattern.test(url));
     if (!route) return;
 
+    // THE SECOND PRINCIPLED EXCLUSION, and it is the same shape as the first: not a
+    // name on a list, but a case where the requirement is an IMPOSSIBILITY.
+    //
+    // The rule this gate enforces is "do not command a bay the server still holds at
+    // `unknown`", and its remedy is "report that bay first". A step whose expected
+    // answer is 3005 BAY_NOT_FOUND is not asking for a bay to be READY — it is naming
+    // a bay that does not exist, on purpose, and a station cannot report a bay it does
+    // not have. The server agrees on the ordering: SessionController:53-55 resolves the
+    // bay and answers 3005 BEFORE SessionStateMachine::validateBayForStart can answer
+    // 3002, so the state this gate is about is never reached.
+    //
+    // Deliberately keyed on the ASSERTED code and not on the bay id looking synthetic.
+    // A heuristic on the id ("does it look made up?") would be a guess about intent; the
+    // assertion is the intent, written down, and a step that stops expecting 3005 stops
+    // being excused in the same edit.
+    const expectBody = step.expect_body as Record<string, unknown> | undefined;
+    const expectsBayNotFound = expectBody !== undefined
+      && Object.entries(expectBody).some(
+        ([path, want]) => /(^|\.)ospp_code$/.test(path) && want === BAY_NOT_FOUND,
+      );
+    if (expectsBayNotFound) return;
+
     const body = step.body as Record<string, unknown> | undefined;
     const named = body?.[route.bayKey];
     const required = named !== undefined
@@ -159,7 +184,10 @@ function scanCorpus(): Scan {
       if (GATED_ROUTES.some((candidate) => candidate.pattern.test(url))) gatedCommands++;
     }
 
-    // THE ONE PRINCIPLED EXCLUSION, and it is structural rather than a name on a list.
+    // THE FIRST OF TWO PRINCIPLED EXCLUSIONS, and both are structural rather than a name
+    // on a list. The second lives in `unarmedCommandsIn` and excuses a step whose expected
+    // answer is 3005 BAY_NOT_FOUND; the shared justification is that the remedy this gate
+    // prescribes — report the bay first — is IMPOSSIBLE for the file in question.
     //
     // `defer_mqtt_connect: true` means the file never connects, so it cannot send ANY
     // station message — demanding a StatusNotification of it is not a requirement, it is an
@@ -259,6 +287,30 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
     ];
 
     expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, ...notGated] }, 'x')).toEqual([]);
+  });
+
+  // ---- CONTROL FOR THE 3005 EXCLUSION ---------------------------------------
+  // Both directions, because an exclusion that only ever excuses is indistinguishable
+  // from a deleted rule. The two steps below are IDENTICAL but for the expected code.
+  it('excuses a command that expects 3005, and still flags the same command expecting 3001', () => {
+    const boot = { action: 'send', message: 'BootNotification' };
+    const base = {
+      action: 'api_call',
+      method: 'POST',
+      url: '{{target_url}}/api/v1/sessions/start',
+      body: { bay_id: 'bay_ffffffff' },
+    };
+
+    const expectsNotFound = { ...base, expect_body: { 'error.ospp_code': 3005 } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, expectsNotFound] }, 'x')).toEqual([]);
+
+    const expectsBusy = { ...base, expect_body: { 'error.ospp_code': 3001 } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, expectsBusy] }, 'x'))
+      .toEqual([{ file: 'x', step: 1, url: '/api/v1/sessions/start', unarmed: ['bay_ffffffff'] }]);
+
+    // And an unasserted command is still flagged — the excuse requires the assertion,
+    // it is not inherited from the route or from the shape of the id.
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, base] }, 'x')).toHaveLength(1);
   });
 
   // ---- THE ASSERTIONS -------------------------------------------------------

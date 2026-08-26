@@ -1,0 +1,152 @@
+name: "Boot Rejected — payload stationId does not match the authenticated identity"
+description: "Send a BootNotification whose payload claims a DIFFERENT stationId than the mTLS-authenticated topic. Server answers Rejected + errorCode 2001 STATION_NOT_REGISTERED. The same station then boots conformantly and is Accepted, which is what attributes the refusal to the claimed id."
+# WHY THIS FILE EXISTS. Before it, every one of the corpus's ten boot scenarios
+# asserted `payload.status == "Accepted"` and nothing asserted a boot REFUSAL at all
+# (the one file that asserts `Pending` is `skip: true`). The server has four
+# non-Accepted boot exits and none was exercised. An integrator whose firmware puts
+# the wrong id in the payload got a `Rejected` nobody had ever seen and no record of
+# which code comes with it.
+#
+# THE REFUSAL BEING PROVEN. BootNotificationHandler.php:80-95 — the station identity
+# is the cert-authenticated MQTT topic, never the payload. A Boot whose payload
+# claims a different stationId is a cross-station spoof; unguarded it would generate
+# and persist a session key under the VICTIM's id while the sessionKey response is
+# delivered on the ATTACKER's topic. The guard returns
+# `rejectResponse(..., STATION_NOT_REGISTERED)` BEFORE any key material is touched.
+#
+# THE CODE IS 2001, AND IT IS DELIBERATELY NOT UNIQUE TO THIS CAUSE. This is a
+# server finding, recorded here rather than filed as a scenario limitation: the
+# handler answers the SAME 2001 for an unregistered station (:158-164), and its own
+# comment says why — "answering 'not registered' also declines to tell the caller
+# whether the station it named exists", the same non-disclosure the spec applies to
+# 2019. So `errorCode: 2001` alone does NOT discriminate this refusal from
+# "the booting station has no DB row".
+#
+# WHICH IS EXACTLY WHY THE SECOND BOOT IS PART OF THE PROOF AND NOT DECORATION.
+# The two sends below differ in ONE field — `payload.stationId`. Everything else,
+# including the connection, the certificate, the topic and every other payload
+# field, is identical. So:
+#   - if the server had refused because THIS station is unregistered, the second
+#     boot would be refused too, and this file goes red;
+#   - if the link or the worker were wedged, the second boot would time out, and
+#     this file goes red.
+# The refusal is attributable to the claimed id because the only thing that changed
+# is the claimed id. That is the whole control, and it is the same "one variable"
+# discipline the TLS-floor files apply to a certificate.
+#
+# WHAT IT DOES NOT PROVE. Nothing about the VICTIM. `stn_ffffffff` is a well-formed
+# id that no station owns, chosen so the request cannot touch a real row; this file
+# therefore cannot show that a real victim's session key was left alone, only that
+# the request was refused before any key was issued to the caller. Proving the
+# victim side needs two provisioned identities in one scenario, which the pool
+# hands out one per scenario.
+#
+# NO SERVER-STATE ASSERTION ON THE REFUSAL ITSELF — a rejected boot writes nothing.
+# The REST read at the end is about the SECOND boot: it shows the station is
+# Operational and online, i.e. the spoof left no residue on the identity that sent it.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    # Rejected schedules `station.retryBoot()` in the simulator's own handler
+    # (BootNotificationHandler.ts:83-89). This file drives both boots explicitly,
+    # and an auto-retry landing between them would put a THIRD, unasserted boot on
+    # the wire whose Response could satisfy the wait_for below.
+    auto_retry_boot: false
+steps:
+  # --- THE SPOOF. Schema-valid on purpose: `stn_ffffffff` satisfies
+  # common/station-id.schema.json (^stn_[a-f0-9]{8,}$, minLength 12), so the
+  # envelope passes the payload-schema gate and REACHES the handler. That is the
+  # point — a schema-invalid id would be refused one layer earlier, with 1005, and
+  # would prove nothing about :80-95. No `expect_invalid:` here for the same reason.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "stn_ffffffff"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  # THE MOTIVE, NOT THE VERDICT. `status: Rejected` alone would pass on any of the
+  # four non-Accepted exits. Both fields come from `rejectResponse()`
+  # (BootNotificationHandler.php:1009-1022) and boot-notification-response.schema.json
+  # carries them, so this is a field the server already had and the corpus never read.
+  - action: assert
+    field: "payload.errorCode"
+    equals: 2001
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "STATION_NOT_REGISTERED"
+
+  # --- THE CONTROL. Identical send, `payload.stationId` restored to the
+  # authenticated identity. If this is not Accepted, the refusal above was not
+  # about the claimed id and this file has proven nothing.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true

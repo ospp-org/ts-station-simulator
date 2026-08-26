@@ -4,28 +4,50 @@ description: "Boot, then send SignCertificate Request with a truncated PEM CSR. 
 # The subject is that a MALFORMED (not empty) CSR is refused AND that the refusal
 # is CORRELATED to the request that caused it.
 #
-# WHAT THIS FILE ACTUALLY ASSERTS — two things, both wire properties:
+# WHAT THIS FILE ASSERTS — three things, all wire properties:
 #   1. `payload.status == "Rejected"` on the SignCertificate Response;
-#   2. the correlation itself, enforced by the runner: `wait_for ... Response`
+#   2. `payload.errorCode == 4010` / `errorText == "CSR_INVALID"` — the MOTIVE,
+#      added 2026-08-26; see below for why it is this code and not the sibling's;
+#   3. the correlation itself, enforced by the runner: `wait_for ... Response`
 #      auto-correlates on messageId, so a Response echoing the wrong one never
 #      matches and the step times out instead of passing.
 #
-# It does NOT assert errorCode or errorText, and it must not: this header used to
-# claim "the server-produced errorCode 1005 / errorText INVALID_MESSAGE_FORMAT on
-# the Response ... are already asserted". Neither assert exists in this file, and
-# the values named are the SIBLING's. sign-certificate-empty-csr-rejected-
-# correlated.yaml carries this same header block verbatim and does assert both —
-# the sentence was copied from it and left describing a file it no longer
-# described.
+# WHY THE MOTIVE HAD TO BE ADDED HERE SPECIFICALLY. This file's whole reason to
+# exist, per its own description, is to cover the handler's EXCEPTION path as
+# distinct from the sibling's EARLY-RETURN path. With `status: Rejected` alone the
+# two files are indistinguishable — they assert the same string about the same
+# action — so the one assertion that separates them was the one missing.
 #
-# The values are wrong for this file even as an aspiration. 1005
-# INVALID_MESSAGE_FORMAT is produced by the payload-schema gate BEFORE any
-# SignCertificate handling runs, because `csr: ""` violates the schema's
-# `^-----BEGIN CERTIFICATE REQUEST-----` — which is why the sibling's send
-# carries `expect_invalid: true` and this one does not. The CSR below is
-# schema-valid and truncated, so it reaches the handler and is refused there
-# (RuntimeException -> Rejected). That path answers a different code, and pinning
-# it is the discrimination arc's work, not this guard's.
+# WHY 4010 AND NOT 1005. This header used to claim "the server-produced errorCode
+# 1005 / errorText INVALID_MESSAGE_FORMAT on the Response ... are already
+# asserted". Neither assert existed here, and the values named are the SIBLING's:
+# sign-certificate-empty-csr-rejected-correlated.yaml carries this same header
+# block verbatim and does assert both. 1005 is produced by the payload-schema gate
+# BEFORE any SignCertificate handling runs, because `csr: ""` violates the schema's
+# `^-----BEGIN CERTIFICATE REQUEST-----` — which is why the sibling's send carries
+# `expect_invalid: true` and this one does not. The CSR below is schema-valid and
+# truncated, so it REACHES the handler and is refused inside it:
+# SignCertificateHandler.php:109-116, the generic `RuntimeException` catch (in
+# practice `InvalidCsrException` from `CsrValidator::validate()`), answering
+# `CSR_INVALID` 4010.
+#
+# 4010 IS NOT UNIQUE TO THIS PATH, and that is a server fact worth stating rather
+# than a weakness of the assert. SignCertificateHandler has three refusal exits and
+# TWO of them answer 4010 — :59-66 (csr absent or empty) and :109-116 (anything the
+# CSR validator throws). The first is UNREACHABLE over MQTT: an empty `csr` is
+# refused by the payload-schema gate one layer earlier, with 1005, which is exactly
+# what the sibling file measures. So within this transport 4010 does identify this
+# path — but the reason is that the other 4010 branch cannot be reached, not that
+# the code discriminates on its own.
+#
+# THE THIRD EXIT HAS NO SCENARIO ANYWHERE: :89-96, CertificateRevokedException ->
+# 2008 ACTION_NOT_PERMITTED. `grep '2008\|ACTION_NOT_PERMITTED'` over all scenarios
+# returns nothing. Its ordering above the generic catch is load-bearing — the
+# server's own comment at :77 calls the order "the whole fix", because a revoked
+# station that receives 4010 "retries with a fresh keypair forever" — and with this
+# assert in place, reversing that order now turns THIS file red, which it did not
+# before. Provoking 2008 directly still needs a revoked certificate and is not
+# attempted here.
 #
 # No certificate row exists for a CSR that was never signed — and no route reads
 # the certificates table in any case; see trigger-cert-renewal.yaml for that
@@ -89,3 +111,13 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Rejected"
+
+  # THE MOTIVE. Without these two the file cannot tell its own subject from its
+  # sibling's, and reversing the handler's catch order (see header) stays green.
+  - action: assert
+    field: "payload.errorCode"
+    equals: 4010
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "CSR_INVALID"
