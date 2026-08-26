@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { MessageRouter } from '../../mqtt/MessageRouter.js';
 import { computeMac, OsppAction, MessageType, MessageSource, OSPP_PROTOCOL_VERSION } from '@ospp/protocol';
 import type { OsppEnvelope } from '@ospp/protocol';
+import { conformantPayloadFor } from '../helpers/conformantPayloads.js';
 
 // The router verifies inbound MACs now and fails closed, so these routing tests
 // sign their envelopes rather than bypass the check. Signing here is not the
@@ -9,18 +10,23 @@ import type { OsppEnvelope } from '@ospp/protocol';
 // routable at all, which is the point of the change.
 const TEST_SESSION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 
+// The payload is the message's REAL minimal shape, not `{}`. These tests are
+// about routing and correlation, not payloads — but the router now refuses a
+// payload that does not match its schema, and a fixture that could never be on
+// the wire would be testing the router against a message no server sends.
 function makeEnvelope(
   action: OsppAction,
   overrides: Partial<OsppEnvelope> = {},
 ): OsppEnvelope {
+  const messageType = overrides.messageType ?? MessageType.REQUEST;
   return {
     messageId: 'msg-001',
-    messageType: MessageType.REQUEST,
+    messageType,
     action,
     timestamp: new Date().toISOString(),
     source: MessageSource.SERVER,
     protocolVersion: OSPP_PROTOCOL_VERSION,
-    payload: {},
+    payload: conformantPayloadFor(action, messageType),
     ...overrides,
   };
 }

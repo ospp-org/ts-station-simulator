@@ -27,6 +27,7 @@ import {
   type ReconnectProbeResult,
 } from '../mqtt/MqttConnection.js';
 import { MessageRouter } from '../mqtt/MessageRouter.js';
+import { resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { MessageSender } from '../mqtt/MessageSender.js';
 import type { StationConfig } from './StationConfig.js';
 import { StationLifecycle } from './StationLifecycle.js';
@@ -123,7 +124,14 @@ export class Station extends EventEmitter {
     // The getter, not a captured value: the session key arrives in the
     // BootNotification response, necessarily AFTER this router exists. Passing
     // `this.sessionKey` here would freeze null forever.
-    this.router = new MessageRouter(() => this.sessionKey);
+    // The inbound schema gate is armed HERE, on the wire path, and reads the
+    // environment at construction so a measuring run can lower it to `warn`
+    // without a code change. Unit tests that build a MessageRouter directly get
+    // the same `strict` default; nothing about this station's wiring is softer
+    // than what those tests exercise.
+    this.router = new MessageRouter(() => this.sessionKey, {
+      schemaMode: resolveInboundSchemaMode(),
+    });
     this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
 
     // Wire inbound MQTT messages to the router ONCE, here — NOT per connect().

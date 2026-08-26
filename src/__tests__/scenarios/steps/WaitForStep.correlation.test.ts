@@ -10,6 +10,7 @@ import { computeMac,
   type OsppEnvelope,
 } from '@ospp/protocol';
 import type { Station } from '../../../station/Station.js';
+import { conformantPayloadFor } from '../../helpers/conformantPayloads.js';
 
 // The router verifies inbound MACs now and fails closed, so these routing tests
 // sign their envelopes rather than bypass the check. Signing here is not the
@@ -30,7 +31,9 @@ function makeEnvelope(
     timestamp: new Date().toISOString(),
     source,
     protocolVersion: OSPP_PROTOCOL_VERSION,
-    payload: {},
+    // Real minimal shape, not `{}`: the router refuses a non-conformant inbound
+    // payload, so a `{}` Heartbeat Response would never reach the wait at all.
+    payload: conformantPayloadFor(action, messageType),
   };
 }
 

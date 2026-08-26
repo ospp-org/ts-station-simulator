@@ -159,11 +159,20 @@ steps:
   # conforming station must drop, and no test in any suite would see it.
   #
   # A station is the right place to catch that, and these three asserts are a
-  # station doing it. What they do NOT amount to is schema validation: the
-  # simulator validates nothing it receives (the only Ajv in the repo is the
-  # LINTER, src/linter/checks/PayloadSchemaCheck.ts, which checks what scenarios
-  # SEND). Three fields pinned by hand is what is available; a received-payload
-  # schema check is the real fix and it does not exist yet.
+  # station doing it.
+  #
+  # They are no longer the ONLY thing doing it. This comment used to end "the
+  # simulator validates nothing it receives ... a received-payload schema check
+  # is the real fix and it does not exist yet". It exists now:
+  # src/mqtt/inboundSchema.ts validates every inbound payload against the same
+  # vendored SDK schemas the linter uses on outbound ones, and MessageRouter
+  # refuses a message that fails. So `UpdateFirmware Request` reaching this step
+  # at all already means it matched update-firmware-request.schema.json.
+  #
+  # These three stay because the schema is not the whole contract: the schema
+  # cannot say the version is THIS version, and the `contains: "https://"` below
+  # duplicates a `^https://` the schema does enforce only so the failure names
+  # the field an operator would fix.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request

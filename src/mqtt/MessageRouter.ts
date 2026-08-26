@@ -6,12 +6,39 @@ import {
   requiresMac,
   verifyMac,
 } from '@ospp/protocol';
+import {
+  DEFAULT_INBOUND_SCHEMA_MODE,
+  echoPayload,
+  type InboundSchemaMode,
+  type InboundSchemaViolation,
+  validateInbound,
+} from './inboundSchema.js';
 
 type ActionHandler = (envelope: OsppEnvelope) => void;
+
+export interface MessageRouterOptions {
+  /** See InboundSchemaMode. Defaults to `strict` — fail closed, like the MAC gate. */
+  schemaMode?: InboundSchemaMode;
+}
 
 export class MessageRouter extends EventEmitter {
   private readonly recentMessages: OsppEnvelope[] = [];
   private static readonly MAX_BUFFER = 50;
+
+  /**
+   * Every inbound message this router refused (or, in `warn` mode, would have
+   * refused) for not matching its schema.
+   *
+   * Kept rather than only logged because a refusal is invisible at the step
+   * level: the message is not emitted, so the `wait_for` expecting it simply
+   * times out, and "Timeout waiting for GetConfiguration Request" names the
+   * wrong culprit. WaitForStep reads this list on timeout and reports the schema
+   * errors instead — the difference between a scenario that says the server is
+   * slow and one that says the server sent `payload: []`.
+   */
+  private readonly schemaViolationLog: InboundSchemaViolation[] = [];
+
+  private readonly schemaMode: InboundSchemaMode;
 
   /**
    * The session key the station currently holds, or null before boot.
@@ -24,9 +51,25 @@ export class MessageRouter extends EventEmitter {
    */
   private readonly getSessionKey: () => string | null;
 
-  constructor(getSessionKey: () => string | null = () => null) {
+  constructor(
+    getSessionKey: () => string | null = () => null,
+    options: MessageRouterOptions = {},
+  ) {
     super();
     this.getSessionKey = getSessionKey;
+    this.schemaMode = options.schemaMode ?? DEFAULT_INBOUND_SCHEMA_MODE;
+  }
+
+  /** Refusals recorded so far, oldest first. */
+  get schemaViolations(): readonly InboundSchemaViolation[] {
+    return this.schemaViolationLog;
+  }
+
+  /** The violations recorded for one action, for step-level attribution. */
+  violationsFor(action: OsppAction, messageType?: MessageType): InboundSchemaViolation[] {
+    return this.schemaViolationLog.filter(
+      (v) => v.action === action && (!messageType || v.messageType === messageType),
+    );
   }
 
   /**
@@ -94,6 +137,14 @@ export class MessageRouter extends EventEmitter {
       return;
     }
 
+    // AFTER the MAC gate, deliberately. A forgery is already refused above, and
+    // schema-reporting one would file a server defect against bytes the server
+    // never sent. What reaches here is what this station accepts as authentic —
+    // so a violation found here IS a conformance defect in the peer.
+    if (!this.conformant(topic, envelope)) {
+      return;
+    }
+
     this.recentMessages.push(envelope);
     if (this.recentMessages.length > MessageRouter.MAX_BUFFER) {
       this.recentMessages.shift();
@@ -151,6 +202,65 @@ export class MessageRouter extends EventEmitter {
     }
 
     return true;
+  }
+
+  /**
+   * Validate the payload against the schema its own (action, messageType) names.
+   *
+   * Returns false only in `strict` mode: a non-conformant message is then
+   * neither emitted NOR buffered, for the same reason a failed MAC is not —
+   * `drainBuffered()` is what `wait_for` reads, so leaving it there would let a
+   * scenario assert on a malformed message and pass, which is the whole defect
+   * this closes.
+   *
+   * An UNMAPPED pair is reported and let through. It is not evidence of
+   * non-conformance — it is evidence this router has no schema to judge by — and
+   * silently treating "I cannot check" as "it checks out" is how a gate goes
+   * blind across an SDK rename. inboundSchema.keys.test.ts pins the mapping so
+   * that rename reds a test instead.
+   */
+  private conformant(topic: string, envelope: OsppEnvelope): boolean {
+    if (this.schemaMode === 'off') return true;
+
+    const verdict = validateInbound(envelope);
+    if (verdict.kind === 'conformant') return true;
+
+    if (verdict.kind === 'unmapped') {
+      console.warn(
+        '[MessageRouter] UNMAPPED %s %s on %s: %s — payload NOT schema-checked',
+        String(envelope.action),
+        String(envelope.messageType),
+        topic,
+        verdict.reason,
+      );
+      return true;
+    }
+
+    const refused = this.schemaMode === 'strict';
+    this.schemaViolationLog.push({
+      topic,
+      action: String(envelope.action),
+      messageType: String(envelope.messageType),
+      messageId: String(envelope.messageId),
+      schemaKey: verdict.schemaKey,
+      errors: verdict.errors,
+      payload: envelope.payload,
+      refused,
+    });
+
+    const verb = refused ? 'REFUSED' : 'NONCONFORMANT (warn mode, delivered anyway)';
+    console.warn(
+      '[MessageRouter] %s %s %s on %s: payload violates %s — %s | payload=%s',
+      verb,
+      String(envelope.action),
+      String(envelope.messageType),
+      topic,
+      verdict.schemaKey,
+      verdict.errors.join('; '),
+      echoPayload(envelope.payload),
+    );
+
+    return !refused;
   }
 
   onAction(action: OsppAction, callback: ActionHandler): this {

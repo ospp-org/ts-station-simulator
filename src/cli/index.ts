@@ -13,6 +13,7 @@ import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
 import { OsppAction } from '@ospp/protocol';
+import { inboundSchemaStats, resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
@@ -608,6 +609,25 @@ function printConsoleReport(results: ScenarioResult[]): void {
     }
   }
   console.log(`  Duration: ${totalDuration}ms`);
+
+  // THE DENOMINATOR, always printed. "0 non-conformant" is a measurement only
+  // next to the number of messages actually judged; on its own it is equally
+  // consistent with a gate that never ran. Printing `checked` makes the two
+  // distinguishable from the console alone, without trusting that the wiring
+  // held.
+  const schema = inboundSchemaStats();
+  const schemaLine =
+    `  Inbound schema (${resolveInboundSchemaMode()}): ${schema.checked} payload(s) checked, ` +
+    `${schema.violations} non-conformant, ${schema.unmapped} unmapped`;
+  if (schema.checked === 0) {
+    console.log(
+      chalk.yellow(`${schemaLine} — NOTHING WAS CHECKED; treat 0 as unmeasured, not as clean.`),
+    );
+  } else if (schema.violations > 0 || schema.unmapped > 0) {
+    console.log(chalk.yellow(schemaLine));
+  } else {
+    console.log(chalk.green(schemaLine));
+  }
 }
 
 /**

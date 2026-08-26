@@ -11,6 +11,7 @@ import { WaitForStep } from '../../../scenarios/steps/WaitForStep.js';
 import { createContext } from '../../../scenarios/ScenarioContext.js';
 import { MessageRouter } from '../../../mqtt/MessageRouter.js';
 import type { Station } from '../../../station/Station.js';
+import { conformantPayloadFor } from '../../helpers/conformantPayloads.js';
 
 /*
  * `expect_silence: true` asserts an ABSENCE, which is the only wire-observable
@@ -41,7 +42,9 @@ function makeEnvelope(
     timestamp: new Date().toISOString(),
     source,
     protocolVersion: OSPP_PROTOCOL_VERSION,
-    payload: {},
+    // Real minimal shape, not `{}`: the router refuses a non-conformant inbound
+    // payload, so a `{}` Heartbeat Response would never reach the wait at all.
+    payload: conformantPayloadFor(action, messageType),
   };
 }
 

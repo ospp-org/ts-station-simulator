@@ -700,3 +700,74 @@ the occurrences before reading anything structural into it.
 Read against `docs/audits/adjudication/SCENARIO-AUDIT-0.13.0.md` in csms-server, which
 classifies every failure. A run that reproduces those numbers is telling you the same
 things; a run that does not has found something new.
+
+---
+
+## 7. Inbound schema validation — the measuring run, 2026-08-26
+
+The station validates every message it RECEIVES against that message's schema
+(`src/mqtt/inboundSchema.ts`, wired in `MessageRouter.route()` after the MAC gate). Before this,
+the only structural check on an inbound message was `if (!envelope.action)`; everything past the
+`JSON.parse` was a TypeScript cast, which is a compile-time claim about run-time bytes.
+
+`OSPP_SIM_INBOUND_SCHEMA` selects `off` | `warn` | `strict`. **The default is `strict`** and the
+router fails closed, exactly like the MAC gate three lines above it. An unrecognised value THROWS
+rather than falling back, so a typo cannot silently disable the gate.
+
+### The measurement, and why it came first
+
+Arming a gate on a corpus nobody has measured turns every latent server defect into a scenario
+failure at once, and the first one to land hides the rest. So the corpus was measured in `warn`
+— which delivers every message anyway and only records — before `strict` was trusted.
+
+```
+OSPP_SIM_INBOUND_SCHEMA=warn OSPP_PROTOCOL_VERSION=0.3.0 \
+node dist/cli/index.js run --all --bootstrap-pool --pool-size 5 --parallel --workers 5 --target uat
+```
+
+`results/uat-inbound-warn-20260826T133610.log`, sim `1e4a9bc`+working tree, exit 0:
+
+| | |
+|---|---|
+| non-conformant inbound messages | **0** |
+| unmapped `(action, messageType)` pairs | **0** |
+| scenarios | **113 passed / 0 failed / 17 skipped** |
+| scenario set vs the 08:40 baseline | **identical — same names, same statuses, same STEP results** |
+
+So `strict` is not merely safe here, it is provably a no-op on this corpus: `warn` and `strict`
+differ **only** in the value returned on the violation branch, and that branch was never reached.
+
+### Reading a zero — the part that is easy to get wrong
+
+The gate logs only when something is wrong, so a clean corpus and a gate that never executed
+produce byte-identical output: nothing. A zero is therefore only a measurement next to a
+DENOMINATOR, which the run summary now always prints:
+
+```
+  Inbound schema (strict): 4213 payload(s) checked, 0 non-conformant, 0 unmapped
+```
+
+and which says so explicitly when it is `0` — *"NOTHING WAS CHECKED; treat 0 as unmeasured, not
+as clean."* The 13:36 run predates that counter, so its zero was corroborated two other ways:
+`dist/mqtt/MessageRouter.js` gates `emit()` on `conformant()`, and 126 `[BootNotification] Accepted`
+lines in the log are 126 messages that were emitted and therefore checked.
+
+This is the same shape as the MAC bug recorded in `Station.routerWiring.test.ts` — machinery built
+correctly and never wired, whose failure mode looked like correct behaviour.
+`Station.inboundSchemaWiring.test.ts` now asserts the wiring rather than the class.
+
+### What a violation looks like when one appears
+
+```
+[MessageRouter] REFUSED GetConfiguration Request on ospp/v1/stations/stn_x/to-station:
+  payload violates get-configuration-request — / must be object | payload=[]
+```
+
+That exact payload is the canary (`MessageRouter.inboundSchema.test.ts`): csms-server shipped
+`"payload":[]` for a keyless GetConfiguration for months, fixed in `abebd749` by a gate on the
+SERVER, on the published bytes — never by this suite.
+
+A refused message is neither emitted nor buffered, so the `wait_for` expecting it times out. The
+timeout message names the schema errors and the payload rather than blaming the clock, and
+`expect_silence` FAILS on a refused matching message instead of passing vacuously — without that,
+arming the gate would have hollowed out all six silence controls in the corpus.

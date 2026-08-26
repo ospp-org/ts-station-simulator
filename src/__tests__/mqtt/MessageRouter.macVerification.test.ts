@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MessageType, MessageSource, OsppAction, computeMac } from '@ospp/protocol';
 import { MessageRouter } from '../../mqtt/MessageRouter.js';
+import { conformantPayloadFor } from '../helpers/conformantPayloads.js';
 
 // ---------------------------------------------------------------------------
 // spec v0.11.0 §06-security.md:852 — "The signing path and the verification path
@@ -32,7 +33,11 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     timestamp: new Date().toISOString(),
     source: MessageSource.CSMS,
     protocolVersion: '0.2.1',
-    payload: { sessionId: 'sess_1', bayId: 'bay_1' },
+    // A schema-conformant StartService payload: the router validates inbound
+    // payloads now, and `{sessionId, bayId}` alone is missing four required
+    // members, so the MAC verdict under test would have been masked by a
+    // schema refusal.
+    payload: conformantPayloadFor(OsppAction.START_SERVICE, MessageType.REQUEST),
     ...overrides,
   };
 }
@@ -107,6 +112,11 @@ describe('MessageRouter — inbound MAC verification', () => {
     router.route('t', Buffer.from(JSON.stringify(envelope({
       action: OsppAction.BOOT_NOTIFICATION,
       messageType: MessageType.RESPONSE,
+      // The payload must match the ACTION being overridden — the default is a
+      // StartService one. A BootNotification Response carrying StartService
+      // fields is refused by the schema gate, which would have masked the MAC
+      // exemption this test is about behind an unrelated refusal.
+      payload: conformantPayloadFor(OsppAction.BOOT_NOTIFICATION, MessageType.RESPONSE),
     }))));
 
     expect(seen).toHaveLength(1);
