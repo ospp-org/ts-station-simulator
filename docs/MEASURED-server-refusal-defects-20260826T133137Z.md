@@ -9,7 +9,10 @@ is there today, what an integrator observes, and what the decision actually is �
 of the five are **deliberate**, with the rationale written in the code, and the thing to decide
 is not "is this a bug" but "who pays for it". Findings 4 and 5 are not: they are plain defects.
 
-**READ IN THE ORDER PRINTED; THE NUMBERS ARE IDENTIFIERS, NOT RANKING.** Finding 5 is first
+**READ IN THE ORDER PRINTED; THE NUMBERS ARE IDENTIFIERS, NOT RANKING.** Findings 15-17 open
+Part Two because each one changes what can be DONE about it: 15 cannot be fixed in this repo at
+all (the repair was tried and it broke the wire), 16 is a two-line fix with a spec-facing
+consequence, and 17 is a product decision wearing the shape of a harness gap. Finding 5 is first
 because it is the cheapest to fix — one `->orderBy` — and because it is the only one that makes
 the prose a HUMAN reads vary between runs of the same code on the same input. It is also the
 only one of the five not found by reading: a scenario went red on it. The numbers were assigned
@@ -234,6 +237,137 @@ one nobody can test and everybody should read. Finding 6 follows because three d
 operator situations arrive as one body identical to the byte, and finding 12 after it because
 it is not a defect at a site — it is the STRUCTURAL CAUSE of several of the others, and
 reading it as separate omissions is what has kept it open.
+
+## 15. THE OFFLINE CYCLE COMPUTES 25 ERROR CODES AND THROWS THEM AWAY BEFORE THE WIRE
+
+**This one is not repairable in the server, and that is the finding.** It belongs in `ospp/spec`.
+
+`RevalidationGate` computes `errorCode`, `errorText` and a `details.field` for all twelve of
+its reconcile-time checks. `PassValidator` computes one for each of its thirteen. **None of
+them reaches the station.** The response schemas cannot carry the field:
+
+- `transaction-event-response.schema.json` — `additionalProperties: false`, properties are
+  exactly `status` and `reason`. There is no `errorCode` property in the schema at all.
+- `authorize-offline-pass-response.schema.json` — `additionalProperties: false`, properties are
+  exactly `status`, `sessionId`, `durationSeconds`, `creditsAuthorized`, `reason`.
+  `AuthorizeOfflinePassResponseDto` does not even declare the field
+  (`app/Modules/Offline/DTOs/AuthorizeOfflinePassResponseDto.php:22-28,63-86`).
+
+**THE REPAIR WAS TRIED AND WITHDRAWN, AND THE REASON IS WRITTEN AT THE SITE.**
+`TransactionEventHandler.php:143-155`:
+
+> *"Serialising them here made the dispatcher's outbound validation fail and a conformant
+> station drop the response as malformed … the reject never reached the station."*
+
+`RevalidationGateResult.php:14-18` states the same conclusion as a property of the class: the
+code pair are *"internal forensic fields (logging / SecurityEvent details), NOT returned to the
+station — the wire response is `{status, reason}` only."*
+
+So a server-side change here does not merely fail to help — it has already been measured to
+make things WORSE: the station stopped receiving the rejection at all. **The field has to exist
+in the schema first.** Until it does, twenty-five distinct refusal conditions arrive at the
+station as one status and a sentence.
+
+**What survives, and for whom.** The operator's audit trail is fully coded — the reconcile path
+mirrors every rejection into a `SecurityEvent` carrying `errorCode`/`errorText`/`details`
+(`TransactionEventHandler.php:492-517`). On the authorize path only TWO of thirteen do
+(signature failure and counter replay, the ones flagged `isSecurityEvent`). So the operator can
+often see what happened and **the station never can** — which is the wrong way round for a
+defect the station is the one that has to fix.
+
+**What the scenarios do about it, and what they do not.** The thirteen `PassValidator` reason
+strings are textually distinct, so a scenario CAN discriminate on them today. Those scenarios
+assert prose, and each says in its header that it does so because the protocol offers nothing
+else — and therefore that a reworded message updates the scenario, not the server. That is a
+test-maintenance cost accepted knowingly, not a property being proven.
+
+**FOR THE SPEC.** Add an optional `errorCode` to `transaction-event-response` and
+`authorize-offline-pass-response`. Both are `additionalProperties: false`, which is why the
+server's attempt failed — the field cannot be smuggled. Note the asymmetry with
+`sign-certificate-response` and `boot-notification-response`, which already carry it: the
+offline profile is the outlier, not the norm.
+
+---
+
+## 16. A check ordinal is used twice, so a consumer branching on it cannot tell two conditions apart
+
+`PassValidator` stamps `check: <n>` on every rejection. **`check: 6` appears at two different
+sites** — `:183` (pass not found in server records, code 2002) and `:221` (usage limit
+exceeded, code 4002) — while `check: 5` appears once, at `:205`, BETWEEN them.
+
+The out-of-order numbering is deliberate and explained in the file (the absence check was left
+at its original position, comment at `:174-180`). The COLLISION is not explained anywhere.
+
+**Why it matters beyond tidiness.** `failedCheck` is the one structured field this validator
+produces besides the code, and finding 15 establishes that the code never reaches the wire. So
+for any consumer reading the internal result — the logs, the SecurityEvent details, a future
+dashboard — `check: 6` means either "this pass does not exist" or "this pass is used up",
+which are opposite operator actions: one is a provisioning problem, the other is a top-up.
+
+Cost of the fix: renumber one of the two, or add the distinct identifier the checks already
+have in prose. Note that the ordinals are cited in `06-offline.md`'s check list, so renumbering
+is a spec-facing change too — which is the argument for adding a name rather than moving a
+number.
+
+---
+
+## 17. The certificate lifecycle is unreachable by ANY identity a scenario can authenticate as
+
+Third instance of a class this document has already recorded twice — and the first one the
+identity work did NOT solve.
+
+`POST /admin/stations/{id}/install-certificate` and `.../trigger-certificate-renewal` are gated
+by `permission:platform.certificates.manage` (`routes/api/v1/admin.php:169-172`), and the route
+comment states the scope: *"granted only to platform_super_admin … platform_admin no longer
+passes here, which is the intended Phase Y tightening."*
+
+The two actions behind them have two refusal exits each (station-not-found → **3005**, offline
+→ 6003) and neither is shadowed by a controller pre-check — in fact neither controller method
+calls `authorize()` at all; the route middleware is the whole gate. So the refusals are live and
+correct, and no scenario can see them: `tenant_owner` — the identity this repo now publishes per
+run — 403s at the middleware before the controller runs.
+
+**This is not a harness gap and should not be closed like one.** The previous two instances were
+fixed by exposing an identity the run already created. There is no `platform_super_admin` the
+run creates; seeding one would hand the test suite the most privileged role in the system for
+the sake of two refusal assertions.
+
+### DECIDED, 2026-08-26: the two exits are ACCEPTED AS UNPROVEN
+
+Not deferred, not pending a harness change — decided, with the reasoning recorded so it can be
+re-opened on its merits rather than rediscovered as a gap.
+
+**The reason is who triggers these.** Certificate installation and renewal are PLATFORM
+operations. An integrator does not call them; we call them, for him. So the hole does not
+touch the person this whole body of work is for — a firmware author cannot reach a refusal he
+has no route to request, and the failure mode this document exists to prevent (an integrator
+misled or blocked by a refusal) cannot occur here. That is a different argument from "it is
+hard to test", and it is the one that decides it.
+
+**Both alternatives were rejected on their own terms**, not on cost:
+- Seeding a `platform_super_admin` for the suite trades the system's most privileged role
+  against two assertions, and every scenario in the corpus would then run in a process that
+  holds credentials for it. The risk is not the assertions; it is what else a future file could
+  do with the identity once it exists.
+- Relaxing the route to `tenant_owner` for a station inside its own organization is a real
+  authorization change, and `routes/api/v1/admin.php:20-28` records the tightening as
+  deliberate ("the intended Phase Y tightening"). Loosening a deliberate tightening to make a
+  test possible is the test dictating the product.
+
+**WHAT WOULD RE-OPEN IT.** If certificate install/renewal ever becomes something an operator or
+an integrator triggers — a self-service renewal button, a tenant-facing rotation flow — the
+argument above expires, because then the person who meets the refusal IS the person this
+document is about. At that point the route's permission will have changed anyway, and the
+exits become reachable by whatever identity the new flow uses. The two exits to pick up then
+are `InstallCertificateAction:36-39` / `TriggerCertificateRenewalAction:38-41` (station not
+found, **3005**) and `:43-46` / `:45-48` (offline, 6003).
+
+Note the code these two use for a missing station: **3005 `BAY_NOT_FOUND`**, not
+`STATION_NOT_REGISTERED` — the same substitution finding 9 records across the maintenance and
+catalog actions, while `RequestDiagnostics`, `InitiateFirmwareUpdate` and
+`AuthorizeOfflineSession` use 2001 for the identical precondition.
+
+---
 
 ## 13. FALSE ISOLATION — a bay is claimed against `/sessions/start` and free to everything else
 

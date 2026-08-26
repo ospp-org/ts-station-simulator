@@ -1,0 +1,185 @@
+name: "Diagnostics Refused — the one instant the validator allows and the action does not, then the one already running"
+description: "Request diagnostics with startTime EQUAL to endTime: the FormRequest permits it (after_or_equal) and the action refuses it, 422 + ospp_code 5020 INVALID_TIME_WINDOW, with nothing on the wire. Widen the window by one hour and the identical request is 202 and reaches the station. Then, with that upload still unfinished, a second request is refused 409 + 5107 OPERATION_IN_PROGRESS."
+# ARM 1 IS A DISAGREEMENT BETWEEN TWO LAYERS, and it is exactly one instant wide.
+#
+#   GetDiagnosticsRequest.php:32-36   'endTime' => ['nullable','date','after_or_equal:startTime']
+#   RequestDiagnosticsAction.php:91   if ($start !== null && $end !== null && $start >= $end)
+#
+# `after_or_equal` ADMITS equality; `>=` REFUSES it. For every other pair of timestamps the two
+# layers agree — endTime before startTime is caught by the FormRequest as a Laravel 422 with no
+# ospp code, endTime after startTime passes both. The single point where they disagree is
+# `startTime == endTime`, and it is the ONLY input for which this action's 5020 can ever fire.
+# That is what the first arm below sends.
+#
+# So this file is not merely covering a code; it is standing on the one input that proves the
+# action's own guard is load-bearing rather than a duplicate of the request rule above it.
+# Widen the window and the same request is accepted, which is the control.
+#
+# ARM 2 IS THE ONE THAT WOULD HAVE BITTEN A LATER SCENARIO. `5107 OPERATION_IN_PROGRESS` needs
+# an unfinished diagnostics upload — and creating one is exactly how a file leaves a station
+# wedged: `diagnostics-upload.yaml` and `diagnostics-failure.yaml` both request diagnostics and
+# would meet a 409 from a leftover row rather than the 202 they expect. The upload this file
+# opens is therefore DRIVEN TO `Uploaded` before the file ends, and the closing GET asserts it
+# — which both frees the station and proves arm 2's precondition was real rather than assumed.
+#
+# TWO OF THE SEVEN EXITS ARE DEAD AND ARE NOT ATTEMPTED, measured rather than skipped quietly:
+#   :45 STATION_NOT_REGISTERED — every caller resolves the station and 404s first
+#                                (StationManagementController:277-288 on the per-station route,
+#                                Station::findOrFail on the fleet one).
+#   :83 VALIDATION_ERROR       — `url:https` in the FormRequest pre-empts the action's own
+#                                uploadUrl check on both routes.
+# The capability gate (:71) is proved at a different site by
+# maintenance-refused-capability-not-declared.yaml; the seven copies are indistinguishable on
+# the wire, so a second proof of the same triple here would add a site and no discrimination.
+# `6003 STATION_OFFLINE` (:53) is left to a file whose subject is being offline.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        # Load-bearing: without it the capability gate at :71 answers 6008 and neither exit
+        # under test is ever reached.
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- ARM 1 — THE ZERO-WIDTH WINDOW. Identical timestamps: admitted by `after_or_equal`,
+  # refused by `>=`. A window that ran BACKWARDS would be a Laravel 422 with no ospp code,
+  # which is a different refusal from a different layer and would not exercise this guard.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    body:
+      uploadUrl: "https://diagnostics.example.com/upload"
+      startTime: "2026-01-01T00:00:00Z"
+      endTime: "2026-01-01T00:00:00Z"
+    expect_status: 422
+    expect_body:
+      error.ospp_code: 5020
+      error.code: "INVALID_TIME_WINDOW"
+
+  # NOTHING WAS PUBLISHED. The guard runs before the command is built, so a GetDiagnostics
+  # arriving here would mean the station was asked to collect over a window the server had
+  # already decided it would refuse.
+  - action: wait_for
+    message: GetDiagnostics
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. One field changes: `endTime` moves an hour later. Everything else —
+  # route, uploadUrl, startTime, station, connection — is identical. This is also the clean
+  # same-action wait the silence above requires.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    body:
+      uploadUrl: "https://diagnostics.example.com/upload"
+      startTime: "2026-01-01T00:00:00Z"
+      endTime: "2026-01-01T01:00:00Z"
+    expect_status: 202
+
+  - action: wait_for
+    message: GetDiagnostics
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: GetDiagnostics
+    messageType: Response
+    payload:
+      status: "Accepted"
+      fileName: "diag_{{stationId}}.tar.gz"
+
+  - action: delay
+    ms: 1000
+
+  # --- ARM 2 — ONE IS ALREADY RUNNING. The row the control just created is unfinished, so the
+  # in-transaction recheck refuses a second. Note this is NOT the same guard as the DB unique
+  # index below it (:199), which is the backstop for the case where the lock was bypassed;
+  # the two answer the same code and the same message shape, and nothing on the wire tells
+  # them apart — recorded, not asserted, because a scenario cannot bypass the lock to reach
+  # the second one.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    body:
+      uploadUrl: "https://diagnostics.example.com/upload-second"
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 5107
+      error.code: "OPERATION_IN_PROGRESS"
+
+  # --- DRIVE THE UPLOAD TO A TERMINAL STATE. Not teardown politeness: an unfinished row is
+  # what arm 2 stands on, so leaving it would hand the next scenario that requests diagnostics
+  # the 409 this file just proved — a red far from here, for a reason nobody would connect to
+  # this file.
+  - action: send
+    message: DiagnosticsNotification
+    messageType: Event
+    payload:
+      status: "Collecting"
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: DiagnosticsNotification
+    messageType: Event
+    payload:
+      status: "Uploading"
+      progress: 100
+
+  - action: send
+    message: DiagnosticsNotification
+    messageType: Event
+    payload:
+      status: "Uploaded"
+      fileName: "diag_{{stationId}}.tar.gz"
+
+  - action: delay
+    ms: 1500
+
+  # THE STATION IS FREE, PROVEN. `uploaded` is terminal, so the row no longer counts as
+  # unfinished — which is the same fact arm 2 relied on, read from the server rather than
+  # assumed from the notifications this file sent.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    expect_status: 200
+    expect_body:
+      data[upload_url=https://diagnostics.example.com/upload].status: "uploaded"

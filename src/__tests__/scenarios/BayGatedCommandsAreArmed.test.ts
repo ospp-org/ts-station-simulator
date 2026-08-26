@@ -55,8 +55,20 @@ const GATED_ROUTES: ReadonlyArray<{ pattern: RegExp; bayKey: string; allWhenAbse
   { pattern: /\/api\/v1\/reservations$/, bayKey: 'bay_id', allWhenAbsent: false },
 ];
 
-/** 3005 — see the exclusion in `unarmedCommandsIn`. */
-const BAY_NOT_FOUND = 3005;
+/**
+ * The codes whose ASSERTION excuses a step from the arming rule — see `unarmedCommandsIn`.
+ * The two are excused for DIFFERENT reasons and both are worth stating:
+ *
+ *   3005 BAY_NOT_FOUND  the bay does not exist, so reporting it is IMPOSSIBLE and the remedy
+ *                       this gate prescribes cannot be performed at all.
+ *   3002 BAY_NOT_READY  the bay exists and could be reported — but this refusal IS the gate's
+ *                       own subject. A file that pins it is testing the rule, not tripping
+ *                       over it, and the only way to test it is to command an unreported bay.
+ *
+ * A SET, not a band: 3011 BAY_MAINTENANCE is the adjacent bay-state refusal and is NOT
+ * excused, which the control below pins in both directions.
+ */
+const DELIBERATE_BAY_REFUSALS = new Set([3005, 3002]);
 
 /**
  * Does this scenario connect its station DURING its steps? A `defer_mqtt_connect` file that
@@ -146,14 +158,19 @@ export function unarmedCommandsIn(doc: unknown, label: string): Offender[] {
     //
     // Deliberately keyed on the ASSERTED code and not on the bay id looking synthetic.
     // A heuristic on the id ("does it look made up?") would be a guess about intent; the
-    // assertion is the intent, written down, and a step that stops expecting 3005 stops
+    // assertion is the intent, written down, and a step that stops expecting the code stops
     // being excused in the same edit.
+    //
+    // 3002 joined 3005 on 2026-08-26 for a DIFFERENT reason — see DELIBERATE_BAY_REFUSALS.
+    // Excusing it does not weaken the rule: a file that hits 3002 by ACCIDENT is asserting
+    // something else, and is still flagged.
     const expectBody = step.expect_body as Record<string, unknown> | undefined;
-    const expectsBayNotFound = expectBody !== undefined
+    const expectsDeliberateRefusal = expectBody !== undefined
       && Object.entries(expectBody).some(
-        ([path, want]) => /(^|\.)ospp_code$/.test(path) && want === BAY_NOT_FOUND,
+        ([path, want]) => /(^|\.)ospp_code$/.test(path)
+          && typeof want === 'number' && DELIBERATE_BAY_REFUSALS.has(want),
       );
-    if (expectsBayNotFound) return;
+    if (expectsDeliberateRefusal) return;
 
     const body = step.body as Record<string, unknown> | undefined;
     const named = body?.[route.bayKey];
@@ -331,6 +348,14 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
     const expectsBusy = { ...base, expect_body: { 'error.ospp_code': 3001 } };
     expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, expectsBusy] }, 'x'))
       .toEqual([{ file: 'x', step: 1, url: '/api/v1/sessions/start', unarmed: ['bay_ffffffff'] }]);
+
+    // 3002 is excused too — and 3011, the adjacent bay-state refusal, is NOT. The set is a
+    // set, not "anything in the 30xx band".
+    const notReady = { ...base, expect_body: { 'error.ospp_code': 3002 } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, notReady] }, 'x')).toEqual([]);
+
+    const maintenance = { ...base, expect_body: { 'error.ospp_code': 3011 } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, maintenance] }, 'x')).toHaveLength(1);
 
     // And an unasserted command is still flagged — the excuse requires the assertion,
     // it is not inherited from the route or from the shape of the id.

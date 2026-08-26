@@ -1,0 +1,201 @@
+name: "Maintenance Refused — the bay that does not exist, and the one that has not spoken"
+description: "Request maintenance on a well-formed bayId nothing owns: 404 + ospp_code 3005 BAY_NOT_FOUND. Then on a REAL bay the station has not reported since boot: 409 + ospp_code 3002 BAY_NOT_READY. Report it and the identical request is 202 — so each refusal is attributable to the one thing that changed."
+# THREE OF THE SEVEN MAINTENANCE EXITS, and the two here are the ones an operator meets by
+# accident rather than by contriving state.
+#
+# SetMaintenanceModeAction has seven refusal sites. One is DEAD (:37, station-not-found —
+# every one of its three controllers resolves the station and 404s first). Of the six live
+# ones, `maintenance-refused-capability-not-declared.yaml` proves the capability gate; this
+# file takes the two bay-identity ones. `6003` (offline), `3001` (occupied bay) and `3014`
+# (reserved bay) are left: each needs a station or bay driven into a state whose setup is
+# longer than the assertion, and each is the same shape as a refusal already proven on the
+# session or reservation door.
+#
+# WHY THESE TWO TOGETHER. They are adjacent in the action — :86-93 resolves the bay, :160-165
+# checks its state — and they are the pair an operator confuses: "the server says my bay is
+# not ready" and "the server says my bay does not exist" are different problems with
+# different fixes, and both come back from the same request with the same shape. Proving them
+# in one file, one call apart, is what makes each one's code mean something.
+#
+# THE SECOND ARM IS THE SUBJECT OF THIS CORPUS'S OWN ARMING GATE, and that is why it is here.
+# Every accepted BootNotification resets `bays.status` to `unknown` and only a
+# StatusNotification clears it; `BayGatedCommandsAreArmed` exists to stop a scenario commanding
+# a bay in that state BY ACCIDENT. This file does it ON PURPOSE — that is the only way to
+# observe 3002 — and the gate excuses a step whose asserted answer IS 3002 for exactly that
+# reason. A file that hits 3002 by accident asserts something else and is still flagged.
+#
+# AND 3002 IS ONE CODE FOR THREE CONDITIONS, on the session door where the same state machine
+# is read: FINISHING, FAULTED and UNKNOWN all answer 3002 with `error.message` literally the
+# string "BAY_NOT_READY" and no `details`. Here the maintenance action reaches it from UNKNOWN
+# only, so the code is unambiguous ON THIS ROUTE — but a reader should not carry that
+# assumption to `/sessions/start`, where it is not true. Recorded in the findings document.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # NO StatusNotification YET — deliberately. The boot above reset both bays to `unknown`, and
+  # that is arm 2's precondition. Reporting here would make it unreachable.
+
+  # --- ARM 1 — A BAY NOTHING OWNS. `bay_ffffffff` satisfies the request rule
+  # (`nullable,string,max:64`), so it reaches the action's own lookup at :86 rather than being
+  # refused by the request layer with a code-less Laravel 422.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "bay_ffffffff"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 404
+    expect_body:
+      error.ospp_code: 3005
+      error.code: "BAY_NOT_FOUND"
+
+  # --- ARM 2 — A REAL BAY THAT HAS NOT SPOKEN. Same route, same body but for the bay id,
+  # which is now this station's own. The bay EXISTS — so arm 1's lookup passes — and its
+  # status is still `unknown`, which the state check at :160 refuses.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 3002
+      error.code: "BAY_NOT_READY"
+
+  # NOTHING WAS PUBLISHED for either. Both guards run before the command is built, so a
+  # SetMaintenanceMode arriving here would mean the station was asked to take a bay out of
+  # service that the server had already decided it would not command.
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
+
+  # --- THE CONTROL. The ONE thing that changes is that the bay now has a reported status.
+  # Same route, same body as arm 2, same connection. It is also the clean same-action wait the
+  # silence above requires.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: true
+      reason: "Scheduled cleaning"
+    expect_status: 202
+
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: SetMaintenanceMode
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Unavailable"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 1000
+
+  # --- LEAVE THE BAY AS IT WAS FOUND. An Unavailable bay is refused 3011 by every bay-gated
+  # route, so handing one back to the pool would fail the next scenario that leases it.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/maintenance"
+    body:
+      bayId: "{{bayId_1}}"
+      enabled: false
+      reason: "Scenario teardown"
+    expect_status: 202
+
+  - action: wait_for
+    message: SetMaintenanceMode
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: SetMaintenanceMode
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Unavailable"
+      programs:
+        - programNumber: 1
+          available: true
