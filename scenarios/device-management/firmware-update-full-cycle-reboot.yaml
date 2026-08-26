@@ -192,9 +192,19 @@ steps:
     field: "payload.firmwareUrl"
     contains: "https://"
 
-  # Required by the schema and, unlike the three above, NOT echoed from the
-  # operator's request body in a form the operator controls end to end: its
-  # presence is what a station needs to verify the image at all.
+  # Server-resolved: what the REST call supplied, as it reached the wire.
+  #
+  # This read "unlike the three above, NOT echoed from the operator's request
+  # body in a form the operator controls end to end". Both halves were false.
+  # `signature: "MEUCIQDexample"` is the fourth field of THIS file's own POST
+  # body (see the api_call above) — an operator-supplied literal, echoed
+  # verbatim, exactly like the others; and there are TWO asserts above, not
+  # three. The weak `exists` was justified by a property the field does not have.
+  #
+  # It stays weak here on purpose: pinning the exact value is what
+  # firmware-nonconformant-command-reaches-the-wire.yaml does, on the same body,
+  # and that file is where a server that sanitised the signature on the way out
+  # is caught. This one proves the field survives the full reboot cycle.
   - action: assert
     field: "payload.signature"
     exists: true

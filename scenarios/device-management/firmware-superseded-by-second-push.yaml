@@ -18,9 +18,22 @@
 #   first row still `idle`  (station never answered)  ->  SUPERSEDE, second push 202
 #   first row `downloading` (station answered Accepted) ->  REFUSE, second push 409
 #
-# The station therefore must NOT answer the first UpdateFirmware. `expect_silence`
+# The station therefore must NOT answer the first UpdateFirmware.
+#
+# NOTHING IN THIS FILE ENFORCES THAT. This comment used to read "`expect_silence`
 # below is what holds that open, and it is the only step in this file the station
-# performs.
+# performs" — and there is no `expect_silence` step in this file, in this or any
+# earlier revision; the word appears here and nowhere else. The two `wait_for
+# UpdateFirmware / Request` steps below are ordinary drains. The station also
+# sends a BootNotification, so it was not "the only step" either.
+#
+# What actually holds the precondition open is OMISSION: this file never sends an
+# UpdateFirmware Response, so the first row stays `idle` and the second push
+# supersedes. That works, and it is invisible — a step added between the drain and
+# the second push could answer the first command and flip the expected 202 to 409
+# with nothing naming the rule it broke. Converting the first drain into a real
+# `expect_silence` + clean control is the repair; it is NOT done here, and this
+# note is the marker, not the fix.
 #
 # WHY THE ASSERTION SELECTS BY `update_id` AND NOT BY VERSION. Both rows carry
 # `firmware_version: 2.0.0` — they must, since superseding is defined per

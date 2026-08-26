@@ -196,6 +196,19 @@ steps:
   # fire-and-forget (firmware-status.md:70) — and it must not take a failed
   # signature as a reason to re-issue the command, since no retry policy exists
   # in the spec. Both are covered by the same silence.
+  #
+  # AND THAT IS THE WEAKNESS, TWICE OVER. No clean control follows this silence,
+  # which WaitForStep's docblock makes mandatory ("every scenario using this MUST
+  # follow it with an ordinary `wait_for` on a CLEAN message of the same
+  # action") — the downlink has been idle since the UpdateFirmware drain four
+  # sends and three delays earlier, so an link that died anywhere in between
+  # satisfies this step identically. Second, "both are covered by the same
+  # silence" means neither is separable from the other: one absence is being read
+  # as two distinct server decisions.
+  #
+  # SO: this proves a downlink that was already idle stayed idle 6s longer. The
+  # repair is the two-step control in
+  # firmware-nonconformant-command-reaches-the-wire.yaml. Not done here.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request

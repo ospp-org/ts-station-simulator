@@ -225,6 +225,22 @@ steps:
   # ASSERTION 2 — nothing was published. The station is never asked, so a Reset
   # REQUEST arriving here would mean the pre-flight ran too late to prevent the
   # side effect it exists to prevent.
+  #
+  # THE WEAKEST OF THE SIX SILENCES IN THIS CORPUS, and it needs saying here. No
+  # clean control follows it — WaitForStep's docblock requires one — and unlike
+  # the two firmware cases there is no control in EITHER direction: this file
+  # never once shows a Reset Request arriving on this connection. Its only
+  # `wait_for`s are BootNotification and StartService. A station that could never
+  # receive a Reset at all passes this step exactly as a correct pre-flight does.
+  #
+  # Reset delivery IS proven elsewhere — soft-reset.yaml, hard-reset.yaml,
+  # reset-forced-settles-session-as-operator-stop.yaml — but those are separate
+  # runs on separate connections, and a different process's success cannot
+  # attribute this process's silence.
+  #
+  # SO: this proves a station that has never been sent a Reset still has not been
+  # sent one. It CLAIMS the pre-flight fired before the publish. Not repaired
+  # here.
   - action: wait_for
     message: Reset
     messageType: Request

@@ -147,6 +147,21 @@ steps:
   # is no normative retry policy anywhere in the spec (0.20.0 removed the "retry
   # up to 3 times" line from the worked example), so a re-issue would be the
   # server inventing one.
+  #
+  # WEAKER THAN IT READS — no clean control follows it. WaitForStep's own docblock
+  # makes the pairing mandatory: "every scenario using this MUST follow it with an
+  # ordinary `wait_for` on a CLEAN message of the same action", because a dead
+  # link, a wedged worker and a correct server produce identical silence. The
+  # UpdateFirmware drain EARLIER in this file is the stimulus, not a control —
+  # it proves the channel worked BEFORE the window, not during it, and "the link
+  # answered a second later" is the specific thing the word "follow" was chosen
+  # to require. The GET below is HTTP, a different transport, so it cannot stand
+  # in either.
+  #
+  # SO: this proves no UpdateFirmware landed in a 6s window. It CLAIMS the server
+  # chose not to re-issue. The transplantable repair is the two-step control in
+  # firmware-nonconformant-command-reaches-the-wire.yaml (api_call POST -> 202,
+  # then wait_for UpdateFirmware Request). Not done here.
   - action: wait_for
     message: UpdateFirmware
     messageType: Request

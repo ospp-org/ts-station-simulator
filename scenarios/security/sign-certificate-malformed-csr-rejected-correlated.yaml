@@ -1,15 +1,35 @@
 name: "SignCertificate Rejected (malformed CSR) — correlation regression guard"
 description: "Boot, then send SignCertificate Request with a truncated PEM CSR. Server's SignCertificateHandler throws RuntimeException → Rejected, and the Response MUST echo the inbound messageId. Regression guard for fix at csms-server@406925b — covers Rejected exception path (line 68) distinct from empty-csr scenario which covers Rejected early-return (line 52)."
 # NO SERVER-STATE ASSERTION IS POSSIBLE — A REJECTED CSR WRITES NOTHING.
-# The subject is that a malformed/empty CSR is refused AND that the refusal is
-# CORRELATED to the request that caused it. Both are wire properties, and both
-# are already asserted: the server-produced errorCode 1005 / errorText
-# INVALID_MESSAGE_FORMAT on the Response, plus the messageId match the runner
-# performs when pairing a Response to its Request.
+# The subject is that a MALFORMED (not empty) CSR is refused AND that the refusal
+# is CORRELATED to the request that caused it.
+#
+# WHAT THIS FILE ACTUALLY ASSERTS — two things, both wire properties:
+#   1. `payload.status == "Rejected"` on the SignCertificate Response;
+#   2. the correlation itself, enforced by the runner: `wait_for ... Response`
+#      auto-correlates on messageId, so a Response echoing the wrong one never
+#      matches and the step times out instead of passing.
+#
+# It does NOT assert errorCode or errorText, and it must not: this header used to
+# claim "the server-produced errorCode 1005 / errorText INVALID_MESSAGE_FORMAT on
+# the Response ... are already asserted". Neither assert exists in this file, and
+# the values named are the SIBLING's. sign-certificate-empty-csr-rejected-
+# correlated.yaml carries this same header block verbatim and does assert both —
+# the sentence was copied from it and left describing a file it no longer
+# described.
+#
+# The values are wrong for this file even as an aspiration. 1005
+# INVALID_MESSAGE_FORMAT is produced by the payload-schema gate BEFORE any
+# SignCertificate handling runs, because `csr: ""` violates the schema's
+# `^-----BEGIN CERTIFICATE REQUEST-----` — which is why the sibling's send
+# carries `expect_invalid: true` and this one does not. The CSR below is
+# schema-valid and truncated, so it reaches the handler and is refused there
+# (RuntimeException -> Rejected). That path answers a different code, and pinning
+# it is the discrimination arc's work, not this guard's.
 #
 # No certificate row exists for a CSR that was never signed — and no route reads
 # the certificates table in any case; see trigger-cert-renewal.yaml for that
-# survey. The wire assertion is the complete observable, not a partial one.
+# survey.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
