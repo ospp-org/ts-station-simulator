@@ -1,0 +1,328 @@
+name: "Offline Pass Refused — the wrong device, the retry that came too soon, the used-up pass"
+description: "Present a real server-signed pass three ways a station gets it wrong: bound to another device, retried inside the minimum interval, and after its last use is spent. Each is Rejected and each carries a DIFFERENT reason string — which is the only discriminator the protocol allows on this action."
+# ── WE MATCH PROSE HERE, AND IT IS NOT A SHORTCUT ─────────────────────────────────────────
+#
+# Every other refusal file in this corpus pins a NUMERIC code, because a code is a contract and
+# a sentence is not. This one cannot, and the reason is structural rather than an omission:
+#
+#   `authorize-offline-pass-response.schema.json` is `additionalProperties: false` and its
+#   properties are exactly `status`, `sessionId`, `durationSeconds`, `creditsAuthorized`,
+#   `reason`. There is no `errorCode` field in the schema, and
+#   `AuthorizeOfflinePassResponseDto` (app/Modules/Offline/DTOs/…:22-28,63-86) does not even
+#   declare the property.
+#
+# The server DOES compute a code for each of these — `PassValidator` assigns 2002, 2005, 4002
+# to the three below — and then discards it before the wire. Two of thirteen validator
+# rejections reach the audit trail as a SecurityEvent carrying the code; the station never sees
+# one for any of them.
+#
+# THE CONSEQUENCE FOR THIS FILE, stated so nobody mistakes it for rigour we do not have:
+#
+#   * The assertions below are STRING EQUALITY on server prose. They discriminate today because
+#     all thirteen `PassValidator` reason strings are textually distinct — verified by reading
+#     the file, not assumed.
+#   * If someone rewords one of those sentences, THIS FILE GOES RED AND THE SERVER IS FINE.
+#     That is not a behavioural regression and must not be read as one: the scenario is
+#     updated, not the server. A red here means "the text moved", and the only way to tell that
+#     from a real regression is to check whether `status` is still `Rejected` — it will be.
+#   * We accept that maintenance cost knowingly, because the alternative is asserting
+#     `status: Rejected` alone, which passes on all twenty of this action's refusal paths and
+#     would prove nothing about which one fired.
+#
+# The repair is a SPEC change, not a server one, and it was already attempted the other way and
+# withdrawn — see finding 15 in docs/MEASURED-server-refusal-defects-*.md.
+#
+# ── WHY THESE THREE ─────────────────────────────────────────────────────────────────────────
+# They are what a station meets in integration, in the order it meets them: a pass issued for a
+# different device (a copy-paste between two test handsets), a retry sent after a timeout it
+# did not see answered, and a pass whose last use is spent.
+#
+# ARM 2 WAS WRITTEN AS THE REPLAY CHECK AND THE FIRST UAT RUN CORRECTED IT — kept here because
+# the correction is the more useful fact. Re-presenting the identical counter answered
+# `Minimum interval between uses not yet elapsed`, not the replay message: check 9
+# (PassValidator:266-283) runs BEFORE check 10 (:302-308), and `min_interval_seconds` is 60 by
+# default (OfflinePass.php:127, the migration default, and config/ospp.php:677) and is NOT
+# settable through the issue API — `IssueOfflinePassRequest` has no field for it.
+#
+# So for ANY retry inside sixty seconds — which is when retries actually happen — the station
+# is told it is too soon and never learns its counter was already used. The replay defence is
+# real and it is simply not what a fast retry meets. Reaching check 10 needs a wait longer than
+# the interval, which is a different file with a budget override; recorded in the findings
+# document rather than forced in here.
+#
+# TWO OF THE THIRTEEN ARE NOT REACHABLE FROM THE ISSUE API and are therefore not attempted:
+#   `Offline pass has expired`  — `durationHours` is bounded `min:1`
+#                                 (IssueOfflinePassRequest.php:65-70), so the shortest pass a
+#                                 scenario can mint outlives any run.
+#   `Station is not in the allowed stations list` — the issue request has no field for scoping
+#                                 a pass to stations; `allowedStations` is set elsewhere and
+#                                 nothing a scenario can call writes it.
+# Both are recorded rather than skipped silently; reaching them needs an issue-side knob that
+# does not exist today.
+#
+# ── THE SESSIONS THIS FILE OPENS ARE CLOSED ────────────────────────────────────────────────
+# An ACCEPTED AuthorizeOfflinePass opens a real session and claims the bay against
+# `/sessions/start` — see finding 13. Two acceptances are unavoidable here (a replay needs a
+# first use, an exhausted pass needs its use spent), so each is ended with `SessionEnded` and
+# the bay reported back to Available before the station returns to the pool.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # --- PASS A — room for several uses, so arms 1 and 2 do not exhaust it.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_bound001"
+      serviceIds:
+        - "{{serviceId_1}}"
+      maxUses: 10
+      maxTotalCredits: 5000
+      durationHours: 24
+    expect_status: 201
+    capture:
+      passA: "data.attributes"
+      passAId: "data.attributes.passId"
+
+  # --- ARM 1 — THE PASS IS BOUND TO ANOTHER DEVICE. The pass object is presented verbatim, so
+  # the signature verifies (check 1 passes) and the refusal is the device binding at check 4.
+  # `deviceId` is the ONLY field that differs from the accepted presentation below.
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.passAId}}"
+      offlinePass: "{{captured.passA}}"
+      deviceId: "dev_someoneelse"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    equals: "Device ID does not match the pass binding"
+
+  # --- THE CONTROL, and the first use. One field changes: the device is the bound one.
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.passAId}}"
+      offlinePass: "{{captured.passA}}"
+      deviceId: "dev_bound001"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      sessionA: "payload.sessionId"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # Close it before the next arm: an open offline session claims this bay.
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionA}}"
+      bayId: "{{bayId_1}}"
+      reason: "Local"
+      actualDurationSeconds: 2
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # --- ARM 2 — THE RETRY CAME TOO SOON. Byte-for-byte the accepted presentation above. A
+  # station that did not see its answer and re-sends is refused for TIMING, not for the
+  # counter — check 9 is ahead of check 10 and the interval is 60s.
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.passAId}}"
+      offlinePass: "{{captured.passA}}"
+      deviceId: "dev_bound001"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    equals: "Minimum interval between uses not yet elapsed"
+
+  # --- PASS B — exactly one use, so its second presentation is the exhausted case rather than
+  # a replay. A second pass is needed because pass A still has nine uses left.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_bound002"
+      serviceIds:
+        - "{{serviceId_1}}"
+      maxUses: 1
+      maxTotalCredits: 5000
+      durationHours: 24
+    expect_status: 201
+    capture:
+      passB: "data.attributes"
+      passBId: "data.attributes.passId"
+
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.passBId}}"
+      offlinePass: "{{captured.passB}}"
+      deviceId: "dev_bound002"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      sessionB: "payload.sessionId"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionB}}"
+      bayId: "{{bayId_1}}"
+      reason: "Local"
+      actualDurationSeconds: 2
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1000
+
+  # --- ARM 3 — THE LAST USE IS SPENT. Reached even though this presentation is also inside
+  # the 60s interval, because the usage-limit check (:220-225) runs BEFORE the interval one
+  # (:266-283) — the ordering that put arm 2 where it is now works in this arm's favour. A NEW
+  # counter, so nothing here is a replay: the pass is simply out of uses.
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.passBId}}"
+      offlinePass: "{{captured.passB}}"
+      deviceId: "dev_bound002"
+      counter: 2
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    equals: "Offline pass usage limit exceeded"

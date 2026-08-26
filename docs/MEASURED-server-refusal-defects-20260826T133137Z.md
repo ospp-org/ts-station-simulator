@@ -289,6 +289,43 @@ offline profile is the outlier, not the norm.
 
 ---
 
+## 18. The replay defence is shadowed by the rate limit for exactly the retries that happen
+
+Found by a scenario going red, not by reading — the file expected the replay message and got a
+different one.
+
+`PassValidator` runs its minimum-interval check (#9, `:266-283`, code 4003
+`OFFLINE_RATE_LIMITED`) **before** its counter-replay check (#10, `:302-308`, code 2005
+`OFFLINE_COUNTER_REPLAY`). `min_interval_seconds` defaults to **60** in three places that agree
+— `OfflinePass.php:127`, the table default in
+`2026_02_20_000021_create_offline_passes_table.php:25`, and `config/ospp.php:677` — and there is
+no field for it in `IssueOfflinePassRequest`, so nothing a caller can do makes it smaller.
+
+**Consequence.** A station that sends `AuthorizeOfflinePass`, does not see the answer, and
+re-sends the identical frame within a minute is told *"Minimum interval between uses not yet
+elapsed"*. That is the retry that actually happens — a timeout, a dropped link, a worker
+restart — and it never learns its counter was already consumed. The replay defence is real,
+correctly ordered for safety (refusing early is refusing), and simply not what a fast retry
+meets.
+
+**Why it is worth writing down rather than shrugging at.** The two answers call for opposite
+station behaviour. "Too soon" means *wait and retry the same counter* — which is right. "Replay
+detected" means *the previous attempt SUCCEEDED; do not retry, reconcile* — and a station that
+waits sixty seconds and retries after a rate-limit answer will then get the replay message and
+have to unwind a use it already spent. A station cannot distinguish "my message was lost" from
+"my message arrived and I did not hear the answer" from either sentence.
+
+**Not a code problem — an ORDER problem, and the order is defensible.** Whether check 10 should
+run first (tell the station the truth about its counter even inside the interval) is a
+behavioural question for the offline profile, not a bug to patch. Recorded so it is decided
+rather than inherited.
+
+`scenarios/security/offline-pass-refused-the-three-a-station-meets.yaml` asserts the
+rate-limit sentence, because that is what the server says. Reaching check 10 needs a wait
+longer than the interval and therefore a budget override — a separate file, not yet written.
+
+---
+
 ## 16. A check ordinal is used twice, so a consumer branching on it cannot tell two conditions apart
 
 `PassValidator` stamps `check: <n>` on every rejection. **`check: 6` appears at two different
