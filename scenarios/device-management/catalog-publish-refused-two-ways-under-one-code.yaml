@@ -1,0 +1,236 @@
+name: "Catalog Publish Refused — the same 6004 twice, told apart by one field"
+description: "On a station this file registers, provisions and connects: publish with no services at all (400 + ospp_code 6004, and NO details), then create ONE service and leave it unbound and publish again (400 + the SAME 6004, this time carrying details.withheld naming the service and why). A scenario asserting only the code would pass on both."
+# WHY THIS FILE EXISTS, AND WHY THE ASSERTION IS THE POINT.
+# `UpdateServiceCatalogAction` answers `6004 VALIDATION_ERROR` from two different places for
+# two different operator situations:
+#
+#   :87-93   the station has NO services at all      -> 6004, NO `details` key
+#   :176-184 it has services and EVERY one was       -> 6004, `details.withheld` naming each
+#            withheld for want of a (bay, program)      service and the reason
+#            binding
+#
+# Same code, same HTTP status, same route, one call apart. **A scenario asserting only
+# `error.ospp_code: 6004` passes on both** — and that is precisely the defect this group of
+# scenarios exists to catch, so a file about these two that stopped at the code would be an
+# instance of the thing it is testing. The discriminator is the presence and content of
+# `details`, and both halves are asserted below: `expect_body_absent` on the first, the
+# service id and the reason string on the second.
+#
+# THE SERVICE ID IS SCOPED TO THIS STATION, NOT `{{serviceId_1}}` — measured on the first UAT
+# run of this file, which failed here with `422 SERVICE_ID_TAKEN`. `generateServiceId` is
+# deterministic (`svc_` + the lowercased name), so `{{serviceId_1}}` is literally
+# `svc_wash_basic` in every run — and `seedServiceCatalog` has already put that exact id into
+# THIS RUN'S ORGANIZATION for the five pool stations. Service ids are unique per ORGANIZATION,
+# not per station, and `owns_station` puts this file's station in the same org as the pool's.
+# So the id below is derived from the station id, which is fresh per scenario.
+#
+# ONE SERVICE, NOT FOUR, DELIBERATELY. `details.withheld` is a list, and this corpus pinned an
+# unordered list once already this week and got a red for it (4015's `driftedKeyKinds`). With
+# exactly one withheld service the order cannot vary, so `withheld.0` is a stable address
+# rather than whichever row the query happened to return first.
+#
+# ── WHY IT NEEDS A STATION OF ITS OWN, measured rather than assumed ────────────────────────
+# Neither arm is reachable on a pool station. `seedServiceCatalog` gives every pool station
+# four services and BINDS all four — `program_number` taken from `bay_programs` rather than
+# invented — so `publish()` finds four sellable rows and answers 202. Arm 1 needs a station
+# with zero services; arm 2 needs one where EVERY service is unbound, and adding an unbound
+# fifth to a pool station leaves the other four sellable, which is the success path with a
+# populated `withheld` — the opposite of what is being tested.
+#
+# AND THE STATION MUST BE ONLINE. `publish()` calls `requireDispatchableStation()` FIRST
+# (:67), before it looks at services at all: a station that is offline answers 6003 and one
+# that never declared device management answers 6008, both before either 6004 can fire. So
+# this file does not merely register a station — it provisions it, connects it over mTLS and
+# boots it declaring `deviceManagementSupported: true`, and only then publishes. Everything
+# before step "ARM 1" is that precondition, not scenery.
+#
+# `owns_station` is what keeps the station out of the pool's way, and `requires_pool` is what
+# keeps this file out of a run that has no tenant_owner: minting a provisioning token needs
+# `stations.manage_provisioning_tokens` and publishing needs `catalog.manage`, and the only
+# identity holding either is the ephemeral owner the bootstrap mints and deletes per run.
+#
+# NO SERVER-STATE ASSERTION ON EITHER REFUSAL — a refused publish writes nothing and puts no
+# UpdateServiceCatalog on the wire. What IS asserted server-side is the precondition: the 201s
+# on registration and service creation, and the Accepted boot that makes the station
+# dispatchable.
+requires_pool: >-
+  Minting a provisioning token needs `stations.manage_provisioning_tokens` and publishing a
+  catalog needs `catalog.manage`; both live on tenant_owner, and the only tenant_owner that
+  exists is the one the per-run bootstrap mints and deletes.
+owns_station: >-
+  Both 6004 arms need a station whose catalog this file controls — one with no services, then
+  one with a single unbound service. Every pool station is seeded with four services and all
+  four are bound, so on a pool station this call always succeeds.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+defer_mqtt_connect: true
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Catalog refusal {{stationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  # No `services:` under a bay — registration writes nothing into the services tier and
+  # csms-server refuses the field outright (dbc45f7, 422). That is what leaves this station
+  # with an EMPTY catalog, which is arm 1's whole precondition.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+        - bayNumber: 2
+    expect_status: 201
+    creates:
+      station: "data.station_id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "catalog refusal arms"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+
+  - action: connect_mqtt
+
+  # `deviceManagementSupported: true` is load-bearing: without it `requireDispatchableStation`
+  # answers 6008 with `wouldBe 2007` and neither 6004 is ever reached. The capability gate is
+  # proved separately in maintenance-refused-capability-not-declared.yaml; here it must PASS.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- ARM 1 — NOTHING TO PUBLISH. The station is online and device-management-declared, so
+  # both earlier guards passed and this 6004 is the empty-catalog one.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 400
+    expect_body:
+      error.ospp_code: 6004
+      error.code: "VALIDATION_ERROR"
+    # THE HALF THAT SEPARATES THIS FROM ARM 2. `details` is emitted by the renderer only when
+    # the OsppError carried one, and this throw site passes no third argument. Asserting its
+    # ABSENCE is what makes the pair discriminating — without it both arms assert the same
+    # thing and the file proves only that the endpoint answers 6004 to something.
+    expect_body_absent:
+      - "error.details"
+
+  # --- ONE SERVICE, AND NO BINDING. The binding route is deliberately not called: an unbound
+  # service is exactly what `bindingsFor()` returns null for.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      serviceId: "svc_unbound_{{stationId}}"
+      serviceName: "Basic Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 10
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "svc_unbound_{{stationId}}"
+
+  # --- ARM 2 — SOMETHING TO PUBLISH, AND NONE OF IT SELLABLE. Same route, same station, same
+  # code — and now a `details` object that says which service and why. The price is present and
+  # matches the pricing type on purpose, so the withheld reason is the BINDING and not the
+  # price branch, which is a different string from the same list.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 400
+    expect_body:
+      error.ospp_code: 6004
+      error.code: "VALIDATION_ERROR"
+      error.details.withheld.0.serviceId: "svc_unbound_{{stationId}}"
+      error.details.withheld.0.reason: "no (bay, program) binding"
+
+  # NOTHING WENT ON THE WIRE for either arm — a refused publish dispatches no command. The
+  # control for this silence is the BootNotification round trip above: it happened on this same
+  # connection minutes earlier and the connection is still the one the station is holding.
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 6000
+    expect_silence: true
