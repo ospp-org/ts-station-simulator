@@ -98,8 +98,47 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 #      is additive rather than the CURL_CA_BUNDLE replacement the override uses, and so
 #      does not take every other outbound HTTPS down with it.
 #
-# UN-SKIP WHEN THE LOCAL STACK ANSWERS BootNotification AGAIN AND THE DOUBLE IS ON
-# csms-network — and un-skip in the same commit as the run that proves it, not before.
+# MEASURED END TO END, 2026-08-27, and this is now a NARROW gap rather than a blocked file.
+# Steps 0-8 pass, reproducibly, on the local stack with the BT double:
+#
+#   [5] GET /w/{slug}                 200, the form renders, the CSRF token is captured
+#   [6] POST /w/{slug}/process        302 to ecclients-sandbox.btrl.ro (the double answered
+#                                     register.do); payment_intents row: 400 cents = 2 x 200,
+#                                     metadata.unit_count = 2, payment_url = the double's form
+#   [7] GET /api/v1/admin/payments    the intent found by referenceId = the bay
+#   [8] GET /pay/callback?intent=     200, settled synchronously; the double's ledger records
+#                                     register_calls and the captured amount
+#   [9] wait_for StartService         TIMES OUT at 60s  <-- the whole remaining gap
+#
+# AND THE BATCH BRANCH EXECUTED. `unit_batches` had ZERO rows in this programme, ever. The
+# settle wrote one: n_total 2, unit_price 200, service_kind MultiUnit, duration_seconds 5,
+# status in_progress, current_unit_index 1 — and the server logged "WebPaymentOrchestrator:
+# unit batch created, driving unit 1" and published 286 bytes to this station's to-station
+# topic. So the fork, the row and the push are all proven; what is NOT proven is the station
+# observing that push.
+#
+# WHAT STEP 9 IS WAITING ON, as far as it was measured: the server publishes the first
+# StartService roughly 22 seconds AFTER the batch is created (StartServiceRetryJob is queued,
+# not immediate), and the station reports three inbound payloads in the run — the boot
+# Response and two more — none of which matched. Whether that is the wait window, the retry
+# cadence, or the station not being addressed is NOT settled here, and saying which would be
+# guessing.
+#
+# WHAT ELSE THE RUN NEEDED, and neither is expressible in this file today:
+#   - BT CREDENTIALS FOR THE RUN'S ORG. `--bootstrap-pool` mints a FRESH organisation every
+#     run, so no credential row can pre-exist for it, and `tenant_payment_credentials.password`
+#     is an `encrypted` cast — SQL cannot write it, only the seeder can. Reaching step 5 meant
+#     keeping a pool and running `db:seed --class=BtSandboxCredentialSeeder` against the org
+#     afterwards. Making this a bootstrap step needs an artisan channel the bootstrap does not
+#     have, which is a design decision rather than a fix.
+#   - AN ORG-MEMBER IDENTITY for step 7. `DashboardPaymentController::index` scopes to the
+#     caller's active org memberships unless they hold `platform.support.read_any`, and a
+#     platform admin is a member of no organisation — so it answers an empty list. In the
+#     pooled mode this file is designed for, the per-scenario `tenant_operator` is a member
+#     and this is a non-issue; it only bites in the `--station` mode used to get past the
+#     credential problem above.
+#
+# UN-SKIP WHEN STEP 9 OBSERVES THE PUSH — in the same commit as the run that proves it.
 #
 # A NOTE ON THE HOST, because it is the one way this file can go red for a reason that is
 # not its own. PaymentUrl::to() roots every webpay route at WEBPAY_URL when that is set,
@@ -118,6 +157,9 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 # would destroy its subject: client-initiated starts are the opposite of the server-pushed
 # batch rounds this file exists to prove.
 requires_multiunit_service: 2
+skip: true
+skip_kind: not-applicable
+skip_reason: "Steps 0-8 pass on the local stack with the BT double and the batch branch DID execute — unit_batches got its first row ever (n_total 2, MultiUnit, in_progress). Step 9 times out: the server publishes StartService ~22s after creating the batch and the station does not observe it. Also needs, and neither is expressible here: BT credentials for the run's fresh org (encrypted cast, seeder-only, and --bootstrap-pool mints a new org each run) and an org-member identity for the admin payments read."
 # The gate, and it is ONE LINE so that lifting it is a deliberate act.
 #
 # NOT `skip_when_pooled` any more: this file now needs a BOOTSTRAPPED pool, because that is
@@ -134,12 +176,15 @@ requires_multiunit_service: 2
 # `not-applicable` rather than `inconclusive` leaves the UAT run's exit code exactly where it
 # is. The honest kind is arguable — the thing this file exists to prove IS unavailable — but
 # moving it changes what --require-conclusive reports, and that is a separate decision.
-skip: true
-skip_kind: not-applicable
-skip_reason: "The purchase chain is built and the fixtures exist; what is missing is an environment. Needs (a) a processor that can be told the order is PAID — csms-server tools/bt-ipay-double/, which must be on the csms-network, not the `default` its compose file puts it on — and (b) a stack that answers BootNotification: measured 2026-08-27, the local stack answers none, and a control that ran 7/7 green on 2026-08-25 fails identically today."
 station:
+  # TWO bays, and only bay 1 is driven. The count matches DEFAULT_POOL_BAYS, not the
+  # subject: `csms-server` compares the DECLARED boot topology against the PROVISIONED
+  # one and answers 3018 Pending when they differ, so a file declaring one bay against
+  # the two a pool provisions is held out of service before its first step. This file
+  # declared one bay for as long as it was skipped, which is exactly why nothing caught
+  # it — the gate was armed after the skip went on.
   stationId: "{{stationId}}"
-  bayCount: 1
+  bayCount: 2
   stationModel: "WashPro X200"
   stationVendor: "SimCorp"
   behavior:
@@ -156,6 +201,8 @@ steps:
       serialNumber: "{{serialNumber}}"
       bays:
         - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
           programNumbers: [1]
       uptimeSeconds: 0
       pendingOfflineTransactions: 0
