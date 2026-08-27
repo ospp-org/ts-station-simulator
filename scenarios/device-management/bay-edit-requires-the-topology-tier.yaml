@@ -1,0 +1,88 @@
+name: "Bay Edit — tenant_operator may look at the bay set and may not change it"
+description: "The day-to-day tier reads the station's bays fine and is refused 403 on both bay-edit routes: `bays.update` gates something now, and tenant_operator no longer holds it."
+
+# WHAT THIS PINS, and why a file exists for it at all.
+#
+# Until 2026-08-27 `bays.update` was granted in 10 seeder rows and enforced NOWHERE — no
+# `permission:` middleware, no `can()`, no policy method. It asserted for as long as it
+# existed that bays could be edited, while nothing in the server could edit one. The same
+# change that gave it teeth (StationPolicy::manageBays) also narrowed who holds it:
+# migration 2026_08_27_000003 revoked it from `tenant_operator`, on the reasoning that
+# editing a station's bay set is a TOPOLOGY decision and not an operations task — a bay
+# carries the programs services BIND to, so adding or retiring one changes what the station
+# can sell and therefore what it settles on.
+#
+# Both halves of that are claims about runtime behaviour, and neither was observable from
+# any scenario. This file is the observation.
+#
+# THE CONTROL IS IN THIS FILE, not across two. A bare 403 proves very little on its own: a
+# broken identity, a wrong organisation, an expired token and a missing permission all read
+# the same at the door. Step 0 is the conformant arm — the SAME identity, against the SAME
+# station, reading the SAME bay set it is refused permission to change. A 403 that follows a
+# 200 from the same caller can only be about the permission.
+#
+# NO `auth:` BLOCK, AND THAT IS THE WHOLE MECHANISM. `--bootstrap-pool` hands a scenario
+# with no override a per-scenario `tenant_operator` — the tier under test. The sibling files
+# (`bay-edit-releases-a-blocked-station`, `bay-edit-refused`) declare
+# `auth: SIM_POOL_OWNER_*` precisely because they need the tier that DOES hold it; that they
+# pass while this one is refused is the two-sided statement about who may.
+#
+# NOTHING IS WRITTEN. Both refusals land at the policy, before the action, so this file is
+# order-independent against every other scenario on a shared pool station.
+requires_pool: >-
+  The identity under test is the per-scenario `tenant_operator` that only a bootstrapped run
+  mints. Outside a pool the run authenticates as whatever UAT_EMAIL names, which is not that
+  tier, so the refusal would be measuring a different account.
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  # THE CONFORMANT ARM. tenant_operator keeps `bays.view` — it is a day-to-day tier and
+  # seeing the hardware is day-to-day. This read is what makes the two refusals below
+  # attributable to `bays.update` and to nothing else about this caller.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].retiredAt: null
+
+  # ADDING a bay is refused. The body is well-formed and would be accepted from a
+  # tenant_owner — `bay-edit-releases-a-blocked-station.yaml` sends materially this request
+  # and gets a 201 — so what differs is the tier, not the request.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays"
+    body:
+      bayNumber: 4
+      programs:
+        - programNumber: 1
+          label: "Basic Wash"
+    expect_status: 403
+
+  # RETIRING a bay is refused by the same policy method. Asserted separately rather than
+  # assumed from the first: they are two routes and two controller actions, and a policy
+  # wired to one of them is exactly the shape of defect `bays.update` had for months.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays/2/retire"
+    expect_status: 403
+
+  # AND THE REFUSALS WERE REFUSALS. Bay 4 was never created and bay 2 is still in service.
+  # A 403 that had already written would be the worst of both, and the status code cannot
+  # see it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=2].retiredAt: null
+    expect_body_absent:
+      - "data.bays[bayNumber=4]"

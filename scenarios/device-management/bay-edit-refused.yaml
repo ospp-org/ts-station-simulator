@@ -1,0 +1,74 @@
+name: "Bay Edit Refused — the state-conflict refusals both new routes own"
+description: "A bay number already in use, and a bay number that does not exist: both answer 409 with the reason named, and neither writes anything."
+
+# THE REFUSAL SIDE of POST /admin/stations/{stationId}/bays and
+# POST /admin/stations/{stationId}/bays/{bayNumber}/retire. `bay-edit-releases-a-blocked
+# -station.yaml` drives the happy path and the whole mismatch→blocked→retire→released chain;
+# this file drives the two refusals that need no state to reach and leave none behind.
+#
+# 409 AND NOT 422, WHICH IS THE POINT OF ASSERTING THE CODE AT ALL. Both requests below are
+# well-formed and the caller is entitled to make them — what refuses is the CURRENT STATE of
+# the station. A 422 would send an operator to re-read their JSON, which is exactly the wrong
+# place to look when the JSON is fine and the bay number is taken.
+#
+# NOTHING HERE MUTATES. Both calls are refused before any write, so this file can run on a
+# shared pool station in any order relative to any other scenario. That is deliberate:
+# retirement has no inverse at the API, so a refusal file that accidentally succeeded would
+# strip a bay from a station every later scenario still has to use.
+requires_pool: >-
+  Both routes authorize `bays.update` (StationPolicy::manageBays), held by tenant_owner and
+  tenant_admin and NOT by tenant_operator since 2026_08_27_000003 — and tenant_operator is
+  what a pooled run hands a scenario with no `auth:` block. The pool's ephemeral owner is
+  minted per run, so there is no account to seed.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  # A NUMBER ALREADY IN USE. Bay 1 exists on every pool station, so this needs no setup.
+  #
+  # The refusal is not about tidiness. `bays_station_bay_number_unique` is left in place
+  # deliberately so a number can never be re-issued — `bay_number` is what the station
+  # declares on the wire and what `bay_programs` binds, so a second bay 1 would make every
+  # historical row that says "bay 1" ambiguous about which physical bay it meant.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays"
+    body:
+      bayNumber: 1
+      programs:
+        - programNumber: 1
+          label: "Basic Wash"
+    expect_status: 409
+
+  # A BAY THAT DOES NOT EXIST. 97 is inside the route's `[0-9]+` constraint and inside the
+  # request-validation ceiling, so this reaches the ACTION and is refused there — which is
+  # what makes it a 409 about state rather than a 404 about routing or a 422 about shape.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays/97/retire"
+    expect_status: 409
+
+  # AND THE STATION IS UNTOUCHED. Two refusals, and the bay set is exactly what it was:
+  # bays 1 and 2, both in service, and no bay 97. Without this the file proves the server
+  # answered 409 and not that it declined to WRITE — a refusal that returns the right code
+  # after mutating is the failure mode worth catching, and the status code alone cannot see
+  # it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].retiredAt: null
+      data.bays[bayNumber=2].retiredAt: null
+    expect_body_absent:
+      - "data.bays[bayNumber=97]"

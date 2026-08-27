@@ -1,0 +1,455 @@
+name: "Bay Edit — a topology mismatch blocks the station, and retiring the bay releases it"
+description: "Add a bay the station does not have, so its next boot is a 3018 mismatch and it is held in Pending; prove the hold STOPS IT SELLING (3002 on ReserveBay); retire that bay; prove the very next boot is Accepted and the station sells again."
+
+# THE TWO ROUTES THIS FILE EXISTS FOR, AND WHY THEY HAD NOTHING.
+#
+#   POST /api/v1/admin/stations/{stationId}/bays
+#   POST /api/v1/admin/stations/{stationId}/bays/{bayNumber}/retire
+#
+# Both shipped 2026-08-27 and the pooled suite went 128 green over them without touching
+# either — no scenario called them, and no scenario retired a bay. A green run said nothing
+# about them, which is the whole class of `a_green_run_across_a_wire_change_can_mean_zero
+# _coverage`: the corpus was never asked the question.
+#
+# WHAT IS ACTUALLY PROVEN HERE, and it is a CHAIN rather than four separate facts. Each link
+# is asserted, and each one is what makes the next meaningful:
+#
+#   1. mismatch   adding a bay moves `provisionedTopology()`, so the station's UNCHANGED
+#                 declaration stops matching — 3018 TOPOLOGY_MISMATCH, status Pending.
+#   2. blocked    Pending is RESTRICTED, and since 936ebdbb §1.4 is enforced: ReserveBay is
+#                 refused 3002 BAY_NOT_READY. This is the link that makes the state cost
+#                 money rather than being a badge, and it is the half nothing else pins.
+#   3. retirement the operator takes the bay off the station through the new route.
+#   4. released   THE CONTROL THAT MATTERS: the very next boot, declaring exactly what it
+#                 declared in step 1, is now ACCEPTED. Retirement is what changed, and the
+#                 station's declaration is byte-identical across the two boots — so nothing
+#                 but the server's expectation can account for the different answer.
+#   5. sells      and the refusal from step 2 is gone.
+#
+# WHY IT ADDS A BAY RATHER THAN RETIRING AN EXISTING ONE, and this is a correctness point
+# about the POOL, not a stylistic one. `StationPoolAllocator` is pure mutual exclusion — it
+# does not reset station state on release (ScenarioRunner.ts:919) — so whatever this file
+# does to a pool station is inherited by every scenario that runs on it afterwards. And
+# retirement has NO INVERSE at the API: `retired_at = NULL` is deliberately a second write
+# with its own caller, and no route performs it. Retiring bay 1 or bay 2 would therefore
+# strip a shared station of a bay for the rest of the run, permanently, and every later
+# scenario resolving `{{bayId_2}}` on it would fail for a reason nothing in its own file
+# explains.
+#
+# Bay 3 is created by this file and retired by this file. Nothing else references it — it
+# did not exist when the run started. `bay_count` is recomputed off in-service bays by both
+# actions, so it returns to 2, and `provisionedTopology()` skips retired bays, so the
+# expectation returns to {1,2}. The station is handed back exactly as it was found, which is
+# the property that lets this run in the pooled suite at all.
+#
+# BAY 3 IS NOT REUSABLE AFTERWARDS, and that is deliberate server behaviour rather than a
+# leak: `bays_station_bay_number_unique` is left in place on purpose so a retired number can
+# never be re-issued (a historical row saying "bay 3" must stay unambiguous). The row it
+# leaves behind is retired, invisible to the boot comparison, and referenced by nothing.
+#
+# WHY `auth:` IS THE POOL OWNER. Both routes are gated by StationPolicy::manageBays, which
+# consults `bays.update`. Migration 2026_08_27_000003 revoked that permission from
+# `tenant_operator` in the same change that gave it teeth — and `tenant_operator` is exactly
+# what --bootstrap-pool hands a scenario with no `auth:` block. Without this override every
+# bay-edit step below is a 403, and the 403 would look like a route defect.
+requires_pool: >-
+  Both bay-edit routes authorize `bays.update`, which since 2026_08_27_000003 is held by
+  tenant_owner and tenant_admin and NOT by tenant_operator — the tier a pooled run hands a
+  scenario by default. The pool's ephemeral owner is minted and deleted per run, so there is
+  no account to seed or to source from a secrets file. The file also needs a station whose
+  `bay_programs` are written, which is what arms the boot comparison at all.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+    # The station must NOT re-boot on its own: this file drives three boots by hand and
+    # reads the answer to each. An auto-retry would interleave a fourth and the assertions
+    # would be reading whichever response arrived last.
+    auto_retry_boot: false
+
+steps:
+  # ============================================================================
+  # BASELINE — the station and the server agree BEFORE anything is edited.
+  # ============================================================================
+  # Not decoration. Every later assertion is a claim that something CHANGED, and a change
+  # is only readable against a known starting point. If this boot were already Pending the
+  # 3018 in step 2 would prove nothing about the bay that gets added, and the Accepted in
+  # step 4 would be repairing a fault this file did not cause.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # ============================================================================
+  # LINK 1 — ADD A BAY. `POST /admin/stations/{stationId}/bays`
+  # ============================================================================
+  # 201, and the body names the bay the server created. `programs` is REQUIRED and must be
+  # non-empty: AddBayAction refuses an empty list outright, because `provisionedTopology()`
+  # skips a bay with no programs — so a program-less bay would be invisible to the boot
+  # comparison and the station would sit in Pending declaring a bay the server cannot see.
+  # The refusal is the server declining to build exactly the trap this file is about.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays"
+    body:
+      bayNumber: 3
+      programs:
+        - programNumber: 1
+          label: "Basic Wash"
+    expect_status: 201
+    expect_body:
+      data.bayNumber: 3
+      data.status: "unknown"
+    capture:
+      addedBayId: "data.bayId"
+
+  # ============================================================================
+  # LINK 1 (proof) — THE SAME DECLARATION IS NOW A MISMATCH.
+  # ============================================================================
+  # Byte-identical to the baseline boot above. The station did not change; the server's
+  # expectation did. That is what makes this a proof about the ADD rather than about the
+  # station's firmware.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Pending"
+
+  - action: assert
+    field: "payload.errorCode"
+    equals: 3018
+
+  - action: assert
+    field: "payload.errorText"
+    equals: "TOPOLOGY_MISMATCH"
+
+  # The added bay is named on the EXPECTED side and absent from the DECLARED side, which is
+  # the mismatch stated as data rather than inferred from the code. Selected by bayNumber
+  # rather than by index: `details.expected` is built from a sorted collection today, and an
+  # assertion that survives only because of that is pinned to an implementation detail.
+  - action: assert
+    field: "payload.details.expected[bayNumber=3].bayNumber"
+    equals: 3
+
+  - action: assert
+    field: "payload.details.declared[bayNumber=3]"
+    exists: false
+
+  # THE SAME TWO FACTS AS AN OPERATOR SEES THEM. Two different handlers answer under
+  # `/api/v1/admin/stations/`, told apart by the ID FORMAT: `stn_*` reaches
+  # StationManagementController::showStation, a 36-char UUID reaches
+  # DashboardStationController::show. Only the second carries `stationState`, so the station
+  # UUID is captured here and used below rather than assumed to be the wire id.
+  #
+  # THE BAY ROW ITSELF, not `bayCount`. MEASURED 2026-08-27, and it is the reason this
+  # assertion is shaped this way: `bay_count` has TWO writers with different meanings.
+  # AddBayAction/RetireBayAction recompute it from bays IN SERVICE, while
+  # BootNotificationHandler:214 writes `count($dto->bays)` — what the station DECLARED — on
+  # every boot. A boot therefore overwrites the operator's number, so immediately after the
+  # mismatch boot above the column reads 2 while three un-retired bays exist. Asserting 3
+  # here reds against a server that is behaving exactly as written.
+  #
+  # `data.bays[...]` is the unambiguous witness: it is per-bay, it is what the add actually
+  # created, and `retiredAt: null` says IN SERVICE in the same breath. Selected by
+  # bayNumber, so it does not depend on the order the rows come back in.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=3].retiredAt: null
+    capture:
+      stationUuid: "data.id"
+
+  # The cause is PERSISTED, not just carried once to the station in the boot response.
+  # Before 7c81ad57 the comparison reached a log line and the Pending response and nothing
+  # durable, so an operator saw a station held for no readable reason. `errorCode` on the
+  # stored reason is that repair, asserted through the door an interface actually calls.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{captured.stationUuid}}"
+    expect_status: 200
+    expect_body:
+      data.stationState: "Pending"
+      data.stationStateReason.errorCode: 3018
+
+  # ============================================================================
+  # LINK 2 — BLOCKED. The state COSTS SOMETHING.
+  # ============================================================================
+  # spec 05-state-machines.md §1.4: while RESTRICTED (Pending or Rejected) a station "MUST
+  # reject StartService and ReserveBay with 3002 BAY_NOT_READY, on every transport". Until
+  # 936ebdbb the server enforced none of it and a held station went on selling.
+  #
+  # ReserveBay rather than StartService, for two reasons that are both about keeping the
+  # proof clean. It needs no funded wallet — StartSessionAction refuses a card-free start on
+  # `balance < creditsAuthorized` (402/4001), and this scenario authenticates as the pool
+  # OWNER, whose wallet nothing seeds — so a 402 would mask the 3002 this step is for. And
+  # ReserveBayAction returns without waiting for the station to answer the MQTT command, so
+  # the step needs no `background:` and no hand-written response.
+  #
+  # BAY 1, NOT BAY 3: bay 1 is in service, un-reserved and un-faulted, so the ONLY thing
+  # that can refuse it here is the restriction. Probing the added bay would confuse "the
+  # station is held" with "that bay is not real yet".
+  # BAY 1 TO Available, AND THIS STEP IS LOAD-BEARING RATHER THAN SETUP.
+  #
+  # `BootNotificationHandler::resetBaysToUnknown` sets every bay of the station to `unknown`
+  # on EVERY boot, and `ReservationTransitions` refuses `BayStatus::UNKNOWN` with
+  # **3002 BAY_NOT_READY** — the same code the §1.4 restriction uses. Without this step the
+  # refusal below is ambiguous: it would pass whether or not the restriction exists, which
+  # is a step that proves nothing while looking green. Measured exactly that way on the
+  # first run of this file.
+  #
+  # Re-sent after each boot because each boot wipes it again.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # The publish is acknowledged by the broker, not by the server's writer — a PUBACK is not
+  # the effect. Small settle so the reservation below reads the status this step set.
+  - action: delay
+    ms: 750
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 3002
+      # WHICH 3002. The code alone cannot tell the restriction apart from a bay that is
+      # merely not ready — both answer 3002 BAY_NOT_READY, and ReserveBayAction checks them
+      # in that order (the §1.4 gate at :67, the bay-state machine at :76). The MESSAGE is
+      # what separates them: this sentence is written only by the restriction guard, while
+      # the bay-state refusal carries the bare literal "BAY_NOT_READY". With bay 1 set
+      # Available above, the ONLY thing left that can refuse is the state the station is in.
+      error.message: "Station is not released for service"
+
+  # ============================================================================
+  # LINK 3 — RETIRE. `POST /admin/stations/{stationId}/bays/{bayNumber}/retire`
+  # ============================================================================
+  # POST and not DELETE, and the verb is the server's documentation: `sessions`,
+  # `reservations` and `offline_transactions` all reference `bays(id)` with no ON DELETE
+  # clause, so the first session ever run on a bay makes it undeletable at the database.
+  # `retiredAt` is asserted present because it is the column the whole mechanism turns on —
+  # a 200 whose body carried a null there would be the action reporting a write it did not
+  # make.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays/3/retire"
+    expect_status: 200
+    expect_body:
+      data.bayNumber: 3
+      data.bayId: "{{captured.addedBayId}}"
+      data.retiredAt:
+        is_recent: 300
+
+  # RETIRED, AND STILL THERE — which is the entire reason the route is a POST and not a
+  # DELETE. The same selector that read `retiredAt: null` before the retirement now finds
+  # the SAME ROW carrying a timestamp: the bay was not removed, so every session,
+  # reservation, meter_value and unit_batch that names it stays joinable. A DELETE would
+  # have 23503'd on any used bay and silently orphaned four tables that carry `bay_id` with
+  # no foreign key at all.
+  #
+  # `is_recent` rather than an equality: the value is a server clock reading this file
+  # cannot predict, and a bound is what turns "the column is non-null" into "THIS run wrote
+  # it". A stale timestamp from an earlier retirement would fail.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=3].bayNumber: 3
+      data.bays[bayNumber=3].retiredAt:
+        is_recent: 300
+
+  # ============================================================================
+  # LINK 4 — RELEASED. THE CONTROL THIS FILE IS FOR.
+  # ============================================================================
+  # The third boot sends the SAME `bays` array as the first and second. The first was
+  # Accepted, the second was Pending, and this one must be Accepted again. Three identical
+  # declarations, three answers decided entirely by what the operator did in between — which
+  # is the strongest available statement that retirement is what releases the station.
+  #
+  # It is also the only exit that exists. `transitionTo()` has one production caller
+  # (BootNotificationHandler:422) and there is no force-to-Operational route, so a matching
+  # boot IS the release path. Before retirement existed, a station whose hardware genuinely
+  # changed could be held here for ever — and after §1.4 that meant held AND unable to sell.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # A repaired station must ALSO stop carrying the reason for a fault it no longer has.
+  # `transitionTo` writes the reason on EVERY transition including the ones with nothing to
+  # explain, precisely so a cleared mismatch does not keep showing on the dashboard — a
+  # write-only reason column outlives its cause.
+  #
+  # `null`, NOT `expect_body_absent`. DashboardStationController::show emits the key
+  # unconditionally, so after the repair it is PRESENT carrying JSON null. Absence and null
+  # are different assertions here and the runner enforces the difference: asserting absence
+  # against a present-but-null field reds against a correct server.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{captured.stationUuid}}"
+    expect_status: 200
+    expect_body:
+      data.stationState: "Operational"
+      data.stationStateReason: null
+
+  # ============================================================================
+  # LINK 5 — AND IT SELLS AGAIN.
+  # ============================================================================
+  # The same request that was refused 3002 four steps ago, on the same bay, now succeeds.
+  # Without this the file proves the badge changed colour; with it, the thing the badge is
+  # ABOUT changed too.
+  # BAY 1 TO Available, AND THIS STEP IS LOAD-BEARING RATHER THAN SETUP.
+  #
+  # `BootNotificationHandler::resetBaysToUnknown` sets every bay of the station to `unknown`
+  # on EVERY boot, and `ReservationTransitions` refuses `BayStatus::UNKNOWN` with
+  # **3002 BAY_NOT_READY** — the same code the §1.4 restriction uses. Without this step the
+  # refusal below is ambiguous: it would pass whether or not the restriction exists, which
+  # is a step that proves nothing while looking green. Measured exactly that way on the
+  # first run of this file.
+  #
+  # Re-sent after each boot because each boot wipes it again.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # The publish is acknowledged by the broker, not by the server's writer — a PUBACK is not
+  # the effect. Small settle so the reservation below reads the status this step set.
+  - action: delay
+    ms: 750
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
+    capture:
+      # From the HTTP body, not from the ReserveBay command's `payload.reservationId` the
+      # way reserve-cancel.yaml does it: the station in this file never answers that
+      # command, so there is no inbound message to read the id out of. Same value either
+      # way — both are `reservations.reservation_id`.
+      reservationId: "data.id"
+
+  # HAND THE BAY BACK. The reservation above is real and holds bay 1 for five minutes; the
+  # station never answers the ReserveBay command, so nothing else would clear it inside this
+  # run. A pooled run reuses this station for other scenarios immediately, and a held bay is
+  # exactly the cross-scenario pollution ScenarioRunner.ts:919 warns about — the allocator
+  # is mutual exclusion, not a reset.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}/cancel"
+    expect_status: 200
