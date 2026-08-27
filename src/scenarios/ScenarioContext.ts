@@ -1,6 +1,7 @@
 import type { OsppEnvelope } from '@ospp/protocol';
 import { StationPool } from './stations/StationPool.js';
 import { ScenarioResourceLedger } from './bootstrap/ScenarioResources.js';
+import { CookieJar } from './CookieJar.js';
 
 /**
  * Provisioning artifact for the primary station. Populated either by
@@ -114,6 +115,12 @@ export interface ScenarioContext {
    */
   backgroundCalls: Promise<void>[];
   backgroundFailures: string[];
+  /**
+   * Cookies collected by `api_call` steps that opted in with `cookies: true`, scoped per
+   * origin. Empty and unused for every scenario that does not ask for it — see
+   * {@link CookieJar} for why it is opt-in and for the RFC 6265 behaviour it does NOT have.
+   */
+  cookies: CookieJar;
 }
 
 export interface StepResult {
@@ -138,5 +145,6 @@ export function createContext(): ScenarioContext {
     created: new ScenarioResourceLedger(),
     backgroundCalls: [],
     backgroundFailures: [],
+    cookies: new CookieJar(),
   };
 }

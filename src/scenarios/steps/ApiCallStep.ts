@@ -765,6 +765,17 @@ function requiresOrgHeader(url: string): boolean {
   return /\/api\/v1\/admin\//.test(url);
 }
 
+/**
+ * The `Cookie` header for this call, or `{}` when the jar has nothing for the origin.
+ * Spread into `fetchHeaders`, so an explicit `headers: { Cookie: … }` in the scenario still
+ * wins — a file that wants to send a cookie the jar never saw is stating something, and the
+ * jar should not overrule it.
+ */
+function cookieHeaderFor(context: ScenarioContext, url: string): Record<string, string> {
+  const value = context.cookies.header(url);
+  return value === undefined ? {} : { Cookie: value };
+}
+
 export class ApiCallStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -804,12 +815,34 @@ export class ApiCallStep implements Step {
       autoOrgId = await ensureOrgId(context, token);
     }
 
+    // ------------------------------------------------------------------
+    // Two switches that change the SHAPE of the request, both defaulting to the
+    // behaviour all 145 existing files already get.
+    //
+    // `cookies: true` — join the scenario's cookie jar for this call. Needed by
+    // exactly one surface: Laravel's `web` middleware group, where the CSRF token
+    // a page hands out is validated against the session cookie the same client is
+    // expected to send back. See CookieJar for why this is per-step and not global.
+    //
+    // `follow_redirects: false` — hand back the 3xx instead of chasing it. The
+    // default `fetch` behaviour is to follow, which on `POST /w/{slug}/process`
+    // would make the runner issue a real request to the payment processor's hosted
+    // form and then hold THAT page's status. Both outcomes of that POST are 302s
+    // and the discrimination is entirely in `Location`: away to the processor is
+    // the armed path, back to `payment.error?reason=…` names the precondition that
+    // is missing. Following the redirect erases the difference — the error page
+    // answers 200 and the reason survives only as a query string nobody read.
+    // ------------------------------------------------------------------
+    const useCookies = definition.cookies === true;
+    const followRedirects = definition.follow_redirects !== false;
+
     const fetchHeaders: Record<string, string> = {
       Accept: 'application/json',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(autoOrgId ? { 'X-Organization-Id': autoOrgId } : {}),
       ...(methodRequiresIdempotencyKey(method) ? { 'Idempotency-Key': randomUUID() } : {}),
+      ...(useCookies ? cookieHeaderFor(context, url) : {}),
       ...headers,
     };
 
@@ -874,6 +907,22 @@ export class ApiCallStep implements Step {
             '(response not awaited — use a foreground call to assert on the body)',
         );
       }
+      // The two capture forms added for the webpay landing flow, refused here for the
+      // reason `capture` already is: the response is never awaited, so there is nothing
+      // to read. Listing them explicitly matters more than it looks — the check above is
+      // on `definition.capture`, and a new capture key that is not named here would be
+      // accepted, silently capture nothing, and surface as a substitution error in a
+      // later step that had no part in it.
+      if (definition.capture_text !== undefined) {
+        throw new Error(
+          'ApiCallStep: "capture_text" is not supported with "background: true" (response not awaited)',
+        );
+      }
+      if (definition.capture_header !== undefined) {
+        throw new Error(
+          'ApiCallStep: "capture_header" is not supported with "background: true" (response not awaited)',
+        );
+      }
       // HOW A BACKGROUND FAILURE PRESENTS ITSELF — read this before attributing one.
       //
       // The step is green the moment the fetch is FIRED, so a refusal still shows up
@@ -894,7 +943,11 @@ export class ApiCallStep implements Step {
       // it is what makes the failure legible LIVE, mid-run, next to the timeout it
       // causes; the recorded failure is what makes the scenario red.
       context.backgroundCalls.push(
-        fetchWithThrottleRetry(url, { method, headers: fetchHeaders, body }, retryOpts)
+        fetchWithThrottleRetry(
+          url,
+          { method, headers: fetchHeaders, body, redirect: followRedirects ? 'follow' : 'manual' },
+          retryOpts,
+        )
           .then(async (response) => {
             if (definition.expect_status === undefined) return;
             const expectedStatus = definition.expect_status as number;
@@ -919,9 +972,14 @@ export class ApiCallStep implements Step {
 
     let response = await fetchWithThrottleRetry(
       url,
-      { method, headers: fetchHeaders, body },
+      { method, headers: fetchHeaders, body, redirect: followRedirects ? 'follow' : 'manual' },
       retryOpts,
     );
+    // Absorbed BEFORE any assertion can throw, and absorbed again after the re-auth
+    // retry below. A session cookie that arrives alongside an unexpected status is
+    // still the session the server just opened, and a jar that only filled on the
+    // happy path would make the NEXT step fail for a reason belonging to this one.
+    if (useCookies) context.cookies.absorb(url, response.headers);
 
     // ONE re-auth retry on 401 — see reauthenticate() for why a 900s token was a
     // ceiling on the corpus rather than a nuisance.
@@ -971,9 +1029,10 @@ export class ApiCallStep implements Step {
         };
         response = await fetchWithThrottleRetry(
           url,
-          { method, headers: retryHeaders, body },
+          { method, headers: retryHeaders, body, redirect: followRedirects ? 'follow' : 'manual' },
           retryOpts,
         );
+        if (useCookies) context.cookies.absorb(url, response.headers);
       }
     }
 
@@ -984,6 +1043,50 @@ export class ApiCallStep implements Step {
         throw new Error(
           `ApiCallStep: expected status ${expectedStatus}, got ${response.status} — ${responseBody}`,
         );
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // capture_header — the response METADATA a scenario has to carry forward.
+    //
+    // Above every body branch on purpose: a header costs nothing to read and is
+    // available in all of them, including the `follow_redirects: false` case where
+    // there is no body worth parsing at all. A 302's entire content is its
+    // `Location`.
+    //
+    // AN ABSENT HEADER IS A FAILURE, not an `undefined` capture. The alternative
+    // was weighed and rejected for the reason the rest of this file already gives:
+    // a capture that quietly resolves to undefined does not fail HERE, it fails
+    // several steps later inside a request built from it, and the error names the
+    // wrong step. `{{captured.x}}` substitution does throw on a missing key — but
+    // only if something references it, so a captured-and-unused header would go
+    // unnoticed entirely.
+    // ------------------------------------------------------------------
+    if (definition.capture_header !== undefined) {
+      const spec = definition.capture_header;
+      if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+        throw new Error(
+          `ApiCallStep: "capture_header" must be a map of varName -> header name, got ` +
+            `${JSON.stringify(spec)}`,
+        );
+      }
+      for (const [varName, headerName] of Object.entries(spec as Record<string, unknown>)) {
+        if (typeof headerName !== 'string' || headerName.length === 0) {
+          throw new Error(
+            `ApiCallStep: "capture_header.${varName}" must be a non-empty header name, got ` +
+              `${JSON.stringify(headerName)}`,
+          );
+        }
+        const value = response.headers.get(headerName);
+        if (value === null) {
+          throw new Error(
+            `ApiCallStep: "capture_header.${varName}" — response carries no "${headerName}" ` +
+              `header (status ${response.status}; headers present: ` +
+              `${[...response.headers.keys()].join(', ')}). Nothing was captured, and a step ` +
+              `downstream would have failed on a variable this one never set.`,
+          );
+        }
+        context.captured.set(varName, value);
       }
     }
 
@@ -1005,13 +1108,19 @@ export class ApiCallStep implements Step {
     // response's own Content-Type, not on a guess from the URL, so it cannot be
     // dodged by pointing at a JSON endpoint that happens to be undeclared.
     // ------------------------------------------------------------------
-    if (definition.expect_body_text !== undefined) {
+    if (definition.expect_body_text !== undefined || definition.capture_text !== undefined) {
+      const textForm = definition.expect_body_text === undefined
+        ? 'capture_text'
+        : definition.capture_text === undefined
+          ? 'expect_body_text'
+          : 'expect_body_text/capture_text';
+
       if (definition.expect_body !== undefined || definition.capture !== undefined ||
           definition.expect_body_absent !== undefined ||
           definition.creates !== undefined ||
           typeof definition.set_auth_token === 'string') {
         throw new Error(
-          'ApiCallStep: "expect_body_text" cannot be combined with expect_body, ' +
+          `ApiCallStep: "${textForm}" cannot be combined with expect_body, ` +
             'expect_body_absent, capture, creates or set_auth_token — the body is consumed ' +
             'once, and those five require it parsed as JSON',
         );
@@ -1020,17 +1129,23 @@ export class ApiCallStep implements Step {
       const contentType = response.headers.get('content-type') ?? '';
       if (/\bjson\b/i.test(contentType)) {
         throw new Error(
-          `ApiCallStep: "expect_body_text" refused for a JSON response ` +
+          `ApiCallStep: "${textForm}" refused for a JSON response ` +
             `(content-type: ${contentType}). A substring match on JSON passes when the ` +
             `value appears anywhere in the body rather than at a path — use "expect_body", ` +
             `which resolves a path, or "expect_body_absent" to assert a field is missing.`,
         );
       }
 
+      // ONE read, shared by both forms — `response.text()` is not replayable. A file
+      // that both asserts the page is the page it expected AND lifts a token out of it
+      // has to get them from the same string, and that is also the only ordering in
+      // which the assertion can guard the capture.
       const text = await response.text();
-      const patterns = Array.isArray(definition.expect_body_text)
-        ? (definition.expect_body_text as unknown[])
-        : [definition.expect_body_text];
+      const patterns = definition.expect_body_text === undefined
+        ? []
+        : Array.isArray(definition.expect_body_text)
+          ? (definition.expect_body_text as unknown[])
+          : [definition.expect_body_text];
 
       for (const raw of patterns) {
         if (typeof raw !== 'string') {
@@ -1055,6 +1170,90 @@ export class ApiCallStep implements Step {
           );
         }
       }
+
+      // ----------------------------------------------------------------
+      // capture_text — lift a value out of a body that is not JSON.
+      //
+      // Built for one thing the corpus could not do at all: the CSRF token on a
+      // Laravel `web` page. `@csrf` renders it as a hidden input in HTML, and
+      // `capture` reads `response.json()`, so there was no path at all from the
+      // page that mints the token to the request that has to carry it.
+      //
+      // ALWAYS A REGEX, and always with a capture group. `expect_body_text` can
+      // afford a literal default because a literal is a whole answer there; here a
+      // literal has nothing to return. So the value is capture group 1, and a
+      // pattern without one is refused at the step rather than stored as undefined.
+      //
+      // THE THREE WAYS IT REFUSES — this is the mechanism, not decoration:
+      //   - no capture group  the pattern cannot produce a value, so say so here
+      //   - no match          the page was not the page this file assumed
+      //   - group 1 empty     matched and produced nothing; posting an empty token
+      //                       reads as a WRONG token rather than as a missing read
+      //
+      // Each of those is a failure a silent capture would defer to a later step,
+      // where the request built from the empty value answers 419 and the report
+      // blames CSRF instead of blaming this read.
+      // ----------------------------------------------------------------
+      if (definition.capture_text !== undefined) {
+        const spec = definition.capture_text;
+        if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+          throw new Error(
+            `ApiCallStep: "capture_text" must be a map of varName -> regex pattern, got ` +
+              `${JSON.stringify(spec)}`,
+          );
+        }
+        for (const [varName, raw] of Object.entries(spec as Record<string, unknown>)) {
+          if (typeof raw !== 'string' || raw.length === 0) {
+            throw new Error(
+              `ApiCallStep: "capture_text.${varName}" must be a non-empty regex pattern string, ` +
+                `got ${JSON.stringify(raw)}`,
+            );
+          }
+          // `/…/` delimiters are accepted so the form reads like expect_body_text's
+          // regex case, and they are optional — unlike there, a bare string here was
+          // never going to mean "literal", so allowing both steals nothing.
+          const source = raw.length > 1 && raw.startsWith('/') && raw.endsWith('/')
+            ? raw.slice(1, -1)
+            : raw;
+
+          let re: RegExp;
+          try {
+            re = new RegExp(source);
+          } catch (err) {
+            throw new Error(
+              `ApiCallStep: "capture_text.${varName}" is not a valid regular expression ` +
+                `(${JSON.stringify(source)}): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+
+          const match = re.exec(text);
+          if (match === null) {
+            throw new Error(
+              `ApiCallStep: "capture_text.${varName}" — pattern ${JSON.stringify(source)} did not ` +
+                `match the response body (content-type: ${contentType}, ${text.length} bytes). ` +
+                `First 400 bytes: ${text.slice(0, 400)}`,
+            );
+          }
+          if (match.length < 2) {
+            throw new Error(
+              `ApiCallStep: "capture_text.${varName}" — pattern ${JSON.stringify(source)} has no ` +
+                `capture group, so it has no value to capture. Wrap the part to lift in ` +
+                `parentheses.`,
+            );
+          }
+          const value = match[1];
+          if (typeof value !== 'string' || value.length === 0) {
+            throw new Error(
+              `ApiCallStep: "capture_text.${varName}" — pattern ${JSON.stringify(source)} matched, ` +
+                `but capture group 1 is empty. An empty capture is indistinguishable downstream ` +
+                `from a wrong value; widen the group or fix the pattern. Matched: ` +
+                `${JSON.stringify(match[0].slice(0, 200))}`,
+            );
+          }
+          context.captured.set(varName, value);
+        }
+      }
+
       return;
     }
 

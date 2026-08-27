@@ -9,6 +9,12 @@ import type { LintIssue, LintCheck, ParsedScenario } from '../types.js';
 const PROVISION_ACTION = 'provision';
 const PROVISION_POOL_ACTION = 'provision_station_pool';
 
+/**
+ * Every step key whose OWN map declares `{{captured.*}}` names. Exported so the check's
+ * test can assert this set against ApiCallStep's, rather than restating it.
+ */
+export const CAPTURE_MAP_KEYS = ['capture', 'capture_text', 'capture_header'] as const;
+
 export class CapturedVarsCheck implements LintCheck {
   name = 'captured-vars';
 
@@ -19,10 +25,22 @@ export class CapturedVarsCheck implements LintCheck {
     for (let i = 0; i < scenario.steps.length; i++) {
       const step = scenario.steps[i];
 
-      // Collect captures defined by this step's own `capture:` map.
-      if (step.capture && typeof step.capture === 'object') {
-        for (const key of Object.keys(step.capture as Record<string, unknown>)) {
-          capturedVars.add(key);
+      // Collect captures defined by this step's own capture maps. All three write into
+      // the SAME `context.captured` namespace and differ only in where they read from —
+      // `capture` a JSON path, `capture_text` a regex over a non-JSON body, and
+      // `capture_header` a response header.
+      //
+      // Listing them individually rather than matching `capture*` is deliberate: a
+      // future key that merely STARTS with `capture` would be granted the namespace by
+      // accident, and this check's only value is that an unbacked `{{captured.x}}` is
+      // caught before a run. A new capture form must be added here, and the test that
+      // pins the set is what makes the omission visible.
+      for (const mapKey of CAPTURE_MAP_KEYS) {
+        const map = step[mapKey];
+        if (map && typeof map === 'object' && !Array.isArray(map)) {
+          for (const key of Object.keys(map as Record<string, unknown>)) {
+            capturedVars.add(key);
+          }
         }
       }
 
