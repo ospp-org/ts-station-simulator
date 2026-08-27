@@ -310,7 +310,18 @@ program
         // the same reason: this is where the loaded scenarios and the pool builder meet.
         // Counting skipped files too, for the same asymmetry — an unused capacity costs a
         // column value, a missing one costs the run.
+        //
+        // AND UNLIKE the balances above, this one EXCLUDES scenarios that will not run.
+        // The asymmetry is real and it runs the other way: an unused identity is one row
+        // teardown sweeps, while an unused catalog entry is a FIFTH SERVICE on every pool
+        // station — visible to every other scenario in the run, and to
+        // `device-management/service-catalog-update.yaml`, which asserts `serviceCount: 4`
+        // against the publish endpoint. A file that is skipped needs no fixture, and
+        // seeding one on its behalf would redden a file that has nothing to do with it.
+        // The predicate is the preflight's own, so "will not run" means the same thing in
+        // both places.
         const declaredUnitCounts = loadedScenarios
+          .filter((s) => !s.skip && !(s.skip_when_pooled && opts.bootstrapPool))
           .map((s) => s.requires_multiunit_service)
           .filter((n): n is number => typeof n === 'number');
         const multiUnitCapacity = declaredUnitCounts.length > 0

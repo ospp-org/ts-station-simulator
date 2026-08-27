@@ -1,50 +1,87 @@
 name: "Multi-Unit Jam Drive (unit 1 delivered, unit 2 jams)"
 description: "Boot single-bay station, report Available, then answer 2 server-pushed StartService rounds: unit 1 TimerExpired (delivered), unit 2 Fault (jam → batch stops, unit 3 never started → tail refund of the undelivered units)."
-# BLOCKED ON THE CARD LEG — the server-side batch driver EXISTS.
+# BLOCKED ON A SETTLEABLE PROCESSOR — everything else this file needed now exists.
 #
-# This file is REACTIVE by design (see the wire model above): it waits for the
-# SERVER to push StartService, one round per unit.
+# WIRE MODEL: in a multi-unit batch the SERVER pushes StartService to the station, one
+# round per unit. This file used to be PURELY REACTIVE — it waited for rounds nothing in
+# it had asked for — so even with a working card leg it would have timed out. The steps
+# that BUY the batch are now here: GET the pay page, lift its CSRF token, POST the
+# purchase, and only then wait.
 #
-# CORRECTION, 2026-08-10. This header previously said "nothing in the server can
-# start this batch" and told the next reader to un-skip "when a batch driver
-# exists". That was wrong, and wrong in a way worth recording: the search behind it
-# was scoped to `routes/api/v1`, and the entry point lives in `routes/web.php`,
-# because webpay is the card-landing flow rather than an API flow. Verified on
-# csms-server master:
+# CORRECTION, 2026-08-10, KEPT — the server-side batch driver EXISTS. This header once
+# said "nothing in the server can start this batch" and told the next reader to un-skip
+# "when a batch driver exists". That was wrong, and wrong in a way worth recording: the
+# search behind it was scoped to `routes/api/v1`, and the entry lives in `routes/web.php`,
+# because webpay is the card-landing flow rather than an API flow.
 #
 #   - THE ENTRY EXISTS: POST /w/{slug}/process (routes/web.php:29,
-#     PaymentLandingController::process) takes `unit_count: N`
-#     (WebPaymentRequest:27), charges N x the per-unit quote, and stamps
-#     metadata.unit_count only when N > 1 (PaymentLandingController:167,:179,:226).
-#   - THE DRIVER EXISTS: on capture, WebPaymentOrchestrator:82-90 branches on
-#     unit_count > 1 into initiateUnitBatch, inserts the batch (:167) and drives
-#     unit 1 (:196); UnitBatchCoordinator:239 drives units 2..N, with
-#     `units:resume-stalled` as the crash backstop.
-#   - IT IS TESTED: csms-server tests/Feature/Web/WebPaymentMultiUnitTest.php:65
-#     posts unit_count: 3 and asserts amount_cents 600 = 3 x 200.
-#   - Also corrected: a batch is N SEQUENTIAL UNITS ON ONE BAY, not a fan-out
-#     across bays — unit_batches.bay_id is a single NOT NULL column, and bay
-#     exclusivity is enforced twice (PaymentLandingController:119,
-#     StartSessionAction:106).
+#     PaymentLandingController::process) takes `unit_count: N` (WebPaymentRequest:19-51),
+#     charges N x the per-unit quote, and stamps metadata.unit_count only when N > 1.
+#   - THE DRIVER EXISTS: on capture, WebPaymentOrchestrator:82-93 branches on
+#     unit_count > 1 into initiateUnitBatch, inserts the batch (:167) and drives unit 1;
+#     UnitBatchCoordinator drives units 2..N, with `units:resume-stalled` as the backstop.
+#   - A batch is N SEQUENTIAL UNITS ON ONE BAY, not a fan-out across bays —
+#     unit_batches.bay_id is a single NOT NULL column, and bay exclusivity is enforced twice.
 #
-# WHAT ACTUALLY BLOCKS THIS FILE is the payment leg, not a missing driver. Reaching
-# unit_count means completing a real BT iPay round-trip: register.do, the hosted
-# form, and a settled capture. The unit test above only gets past it with
-# Http::fake, which a live scenario run cannot do. So the batch never starts, the
-# reactive wait_for times out at 60s, and an assertion added here would sit behind
-# a step that never completes.
+# CORRECTION, 2026-08-27 — a claim this header made was FALSE, and it is withdrawn. It
+# said "a webpay card round-trip recipe already exists in this programme, so this is
+# affordance, not absence". There was no such recipe: measured over all 145 files, nothing
+# outside these two mentioned /w/, unit_count, a CSRF token or the pay page at all. The
+# recipe below is the first one.
 #
-# skip_when_pooled turns that timeout into a transparent skip in the mode the
-# corpus is actually validated in, rather than a failure that reads like a defect.
-# It is NOT a claim the file is pooled-specific — it cannot run unattended in any
-# mode without a card leg. UN-SKIP WHEN THE HARNESS CAN SETTLE A CARD PAYMENT and
-# drive POST /w/{slug}/process with unit_count=N; a webpay card round-trip recipe
-# already exists in this programme, so this is affordance, not absence.
+# WHAT THE SKIP REASON ALSO GOT WRONG. It said the flow needs "a settled BT iPay
+# round-trip", which is true of the DESTINATION and not of where the request dies. On UAT
+# today it dies at isWebpayReady (PaymentLandingController:131-133) — a credential check
+# several guards BEFORE anything reaches BT — and answers 302 to
+# payment.error?reason=payment_unavailable. Three fixtures had to exist before BT was even
+# the question, and two of them were not the card leg at all:
 #
-# Rewriting it to drive N units via repeated POST /sessions/start would make it
-# pass and would destroy its subject: client-initiated starts are the opposite of
-# the server-pushed batch rounds this file exists to prove.
-skip_when_pooled: "Blocked on the CARD LEG, not on a missing driver — the earlier reason here was wrong. The batch entry is POST /w/{slug}/process with unit_count=N (routes/web.php:29; the old search was scoped to routes/api/v1), and WebPaymentOrchestrator drives the units. Reaching it needs a settled BT iPay round-trip, which a live scenario run cannot fake. Times out at wait_for in every unattended mode. Un-skip when the harness can settle a card payment."
+#   1. THE SLUG. /w/{slug} is bays.public_slug, and NO API returns it — not the admin
+#      station read, not the dashboard, not any Resource, and the one action that would
+#      have published it has no route and no caller. It reaches this file as
+#      {{baySlug_1}}, read at bootstrap over the privileged channel and written into the
+#      same bays.json the runner already hydrates {{bayId_1}} from.
+#   2. THE CAPACITY. unit_count > 1 needs service_kind=MultiUnit AND
+#      max_unit_quantity >= N on the station service. The pool seeds four PerMinute
+#      services with both columns NULL, so every purchase was capped at ONE unit and no
+#      batch could be bought on any run. `requires_multiunit_service: 2` below is what
+#      seeds it.
+#   3. THE RUNNER. `capture` reads response.json(), and a CSRF token is a hidden input in
+#      HTML. There was no path from the page that mints the token to the request that
+#      carries it, and no cookie between two calls to carry the session it is checked
+#      against. capture_text + cookies + follow_redirects + capture_header are that path.
+#
+# WHAT IS STILL MISSING, and it is now exactly one thing: a processor that can be made to
+# report PAID. BT's sandbox is real and reachable and the integration is already evidenced
+# — UAT holds six succeeded bt_ipay intents from 2026-07 with payment_url pointing at
+# ecclients-sandbox.btrl.ro — but settling one means a card typed into BT's hosted form,
+# and a scenario cannot drive a browser. `tools/bt-ipay-double/` in csms-server is the
+# answer (register.do, getOrderStatusExtended.do, refund.do, plus a /__control plane that
+# sets the next order_status), and it is a docker-network interception: a service alias
+# for ecclients-sandbox.btrl.ro plus CURL_CA_BUNDLE on app/mqtt-consumer/horizon. It has
+# never been stood up.
+#
+# UN-SKIP WHEN THAT DOUBLE IS RUNNING AND THE STATION CAN BE TOLD THE ORDER IS PAID —
+# and un-skip in the same commit as the run that proves it, not before.
+#
+# A NOTE ON THE HOST, because it is the one way this file can go red for a reason that is
+# not its own. PaymentUrl::to() roots every webpay route at WEBPAY_URL when that is set,
+# and csms-server's money-e2e compose sets it DELIBERATELY to a different host so the
+# cookie-domain split is reachable. A Laravel session cookie is host-scoped, so the GET and
+# the POST must be the SAME origin or the POST is 419. {{webpay_url}} names that host once;
+# point it with --var webpay_url=... on a deployment that splits them.
+#
+# WHAT THIS FILE PROVES THAT NOTHING HAS EVER PROVED. `unit_batches` has ZERO rows on UAT.
+# The batch branch — WebPaymentOrchestrator's unit_count > 1 fork, the per-unit
+# StartService rounds, the jam at unit 2 and the tail refund of the undelivered unit — has
+# never executed against a real server anywhere. Both multiunit files buy a batch, so this
+# is true of the three-unit one as well; it is not a property of only one of them.
+#
+# Rewriting it to drive N units via repeated POST /sessions/start would make it pass and
+# would destroy its subject: client-initiated starts are the opposite of the server-pushed
+# batch rounds this file exists to prove.
+requires_multiunit_service: 2
+skip_when_pooled: "Blocked on a SETTLEABLE PROCESSOR, and on nothing else — the earlier reason named BT, but the request dies at isWebpayReady (a credential check, PaymentLandingController:131-133) long before BT, and the three fixtures that were actually missing (the bay slug, the MultiUnit capacity, a CSRF capture in the runner) now exist. BT's sandbox cannot be settled without a card typed into its hosted form, which a scenario cannot do; csms-server's tools/bt-ipay-double/ can be told the order is paid and has never been stood up. Un-skip in the same commit as the run that proves it."
 station:
   stationId: "{{stationId}}"
   bayCount: 1
@@ -96,6 +133,74 @@ steps:
       programs:
         - programNumber: 1
           available: true
+  # =========================================================================
+  # BUY THE BATCH. Everything below this block was already here and waits for
+  # rounds; nothing here asked for them. These four steps are the ask.
+  #
+  # The order matters and is not arbitrary: process() refuses `bay_unavailable`
+  # unless the bay reads `available`, and `station_offline` unless the station is
+  # online. Both are true only after the boot above and the Available report just
+  # above this — which is why the purchase is here and not at the top of the file.
+  # =========================================================================
+
+  # The pay page a customer would scan into. Asserting the form is present before
+  # lifting the token out of it is what makes the capture a proof rather than a
+  # regex that happened to match: every refusal path here answers 302 to
+  # payment.error, and following it silently would hand back a 200 HTML page with
+  # no token in it and no _token to find.
+  - action: api_call
+    method: GET
+    url: "{{webpay_url}}/w/{{baySlug_1}}"
+    cookies: true
+    follow_redirects: false
+    expect_status: 200
+    expect_body_text:
+      - '<form method="POST"'
+      - 'name="unit_count"'
+    capture_text:
+      csrf: 'name="_token"\s+value="([^"]+)"'
+
+  # unit_count: 2 — the whole subject. Against the pool's default catalog this is
+  # `invalid_quantity`, because effectiveMax collapses to 1 for any service that is
+  # not MultiUnit with a capacity; `requires_multiunit_service: 2` in the header is
+  # what makes 2 legal.
+  #
+  # duration_seconds is REQUIRED by WebPaymentRequest (min 60) and then IGNORED for
+  # this kind: getServicePricing replaces it with the service's own
+  # fixed_duration_seconds preset, so the number that reaches StartService is the
+  # 5-second pulse the catalog carries, not the 60 posted here. Sending a value the
+  # server discards is not sloppiness — omitting it is a 422.
+  #
+  # NOT FOLLOWING THE REDIRECT is what makes this step able to fail honestly. Both
+  # outcomes are 302: away to the processor's hosted form is the armed path, back to
+  # payment.error?reason=... is a precondition that did not hold. Followed, the error
+  # page answers 200 and the reason survives only as a query string nobody read —
+  # and the armed path would issue a real request to the payment host.
+  - action: api_call
+    method: POST
+    url: "{{webpay_url}}/w/{{baySlug_1}}/process"
+    cookies: true
+    follow_redirects: false
+    body:
+      _token: "{{captured.csrf}}"
+      service_id: "{{serviceId_multiunit}}"
+      duration_seconds: 60
+      unit_count: 2
+    expect_status: 302
+    # THE ASSERTION `expect_status` CANNOT MAKE. Both outcomes here are 302, so the
+    # code alone proves the request was accepted and nothing more. Naming the host
+    # makes the refusal path — 302 to payment.error?reason=... — fail AT THIS STEP,
+    # reporting the reason it carries, instead of sixty seconds later as a wait_for
+    # timeout blaming a StartService that was never going to be sent.
+    #
+    # The host is the same whether BT's real sandbox answers or the double does:
+    # the double is a DNS+TLS interception of exactly this name, which is why one
+    # assertion covers both and why it is not written as "not payment.error".
+    expect_header:
+      location: "ecclients-sandbox.btrl.ro"
+    capture_header:
+      payUrl: "location"
+
   # UNIT 1 — TimerExpired (delivered)
   - action: wait_for
     message: StartService

@@ -923,6 +923,12 @@ export class ApiCallStep implements Step {
           'ApiCallStep: "capture_header" is not supported with "background: true" (response not awaited)',
         );
       }
+      if (definition.expect_header !== undefined) {
+        throw new Error(
+          'ApiCallStep: "expect_header" is not supported with "background: true" ' +
+            '(response not awaited — use a foreground call to assert on the response)',
+        );
+      }
       // HOW A BACKGROUND FAILURE PRESENTS ITSELF — read this before attributing one.
       //
       // The step is green the moment the fetch is FIRED, so a refusal still shows up
@@ -1043,6 +1049,60 @@ export class ApiCallStep implements Step {
         throw new Error(
           `ApiCallStep: expected status ${expectedStatus}, got ${response.status} — ${responseBody}`,
         );
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // expect_header — the assertion `expect_status` cannot make.
+    //
+    // BUILT FOR A CASE WHERE THE STATUS DECIDES NOTHING. `POST /w/{slug}/process`
+    // answers 302 on success AND on every refusal: away to the payment host when
+    // the purchase was accepted, back to `payment.error?reason=…` when a
+    // precondition did not hold. A file asserting only the code passes on either,
+    // which is the same defect `expect_body` exists to fix one layer down — and
+    // here there is no body to resolve a path in, only a `Location`.
+    //
+    // Literal substring by default, `/…/` for a regex, exactly as expect_body_text
+    // decides it and for the same reason: a URL is full of `.` and `?`, so
+    // defaulting to regex would silently change what most callers meant.
+    //
+    // The failure prints the WHOLE header value, because on the refusal path that
+    // value carries the reason — a step that says "expected the payment host" and
+    // then shows `payment.error?reason=payment_unavailable` has named the missing
+    // precondition at the step that met it.
+    // ------------------------------------------------------------------
+    if (definition.expect_header !== undefined) {
+      const spec = definition.expect_header;
+      if (spec === null || typeof spec !== 'object' || Array.isArray(spec)) {
+        throw new Error(
+          `ApiCallStep: "expect_header" must be a map of header name -> expected value, got ` +
+            `${JSON.stringify(spec)}`,
+        );
+      }
+      for (const [headerName, want] of Object.entries(spec as Record<string, unknown>)) {
+        if (typeof want !== 'string' || want.length === 0) {
+          throw new Error(
+            `ApiCallStep: "expect_header.${headerName}" must be a non-empty string (a literal ` +
+              `substring, or /regex/), got ${JSON.stringify(want)}`,
+          );
+        }
+        const actual = response.headers.get(headerName);
+        if (actual === null) {
+          throw new Error(
+            `ApiCallStep: "expect_header.${headerName}" — response carries no "${headerName}" ` +
+              `header (status ${response.status}; headers present: ` +
+              `${[...response.headers.keys()].join(', ')})`,
+          );
+        }
+        const isRegex = want.length > 1 && want.startsWith('/') && want.endsWith('/');
+        const hit = isRegex ? new RegExp(want.slice(1, -1)).test(actual) : actual.includes(want);
+        if (!hit) {
+          throw new Error(
+            `ApiCallStep: expected header "${headerName}" to ` +
+              `${isRegex ? 'match' : 'contain'} ${JSON.stringify(want)}, but it is ` +
+              `${JSON.stringify(actual)} (status ${response.status})`,
+          );
+        }
       }
     }
 

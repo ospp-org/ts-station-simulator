@@ -823,6 +823,18 @@ export function generateVariables(
   vars.set('stationId', stationId);
   vars.set('serialNumber', generateSerialNumber());
   vars.set('target_url', target.apiBaseUrl ?? target.mqttUrl);
+  // The customer pay page can live on its OWN host. `PaymentUrl::to()` roots every webpay
+  // route at `config('onestoppay.webpay_url')` when that is set, and the money-path E2E
+  // compose file sets it DELIBERATELY (`WEBPAY_URL: http://webpay.money-e2e.local:8080`)
+  // precisely so the cookie-domain split is reachable end to end.
+  //
+  // That split is why this is a variable rather than `{{target_url}}` reused. A Laravel
+  // session cookie is host-scoped, so `GET /w/{slug}` on one host and `POST /w/{slug}/process`
+  // on another are two sessions and the POST answers 419 — and the runner's cookie jar is
+  // per-ORIGIN, so it will decline to carry one across, exactly as a browser would. Naming
+  // the host once means a scenario cannot straddle the split by accident, and `--var
+  // webpay_url=…` points it at the right host when the deployment has one.
+  vars.set('webpay_url', target.apiBaseUrl ?? target.mqttUrl);
 
   // Fresh per run, so a scenario reconciling an offline transaction never hardcodes an
   // offlineTxId. The server dedups on it permanently, so a literal is reconcilable exactly

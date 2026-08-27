@@ -247,6 +247,79 @@ describe('ApiCallStep — the Laravel web-form chain', () => {
   });
 
   // -------------------------------------------------------------------------
+  // expect_header — the assertion expect_status cannot make
+  // -------------------------------------------------------------------------
+  describe('expect_header', () => {
+    const redirect = (location: string) =>
+      new Response(null, { status: 302, headers: { Location: location } });
+
+    const ARMED = 'https://ecclients-sandbox.btrl.ro/payment/merchants/x/payment_en.html?mdOrder=abc';
+    const REFUSED = 'https://pay.test.local/pay/error?reason=payment_unavailable';
+
+    const post = (def: Record<string, unknown>, location: string) =>
+      run({ method: 'POST', follow_redirects: false, expect_status: 302, ...def }, redirect(location));
+
+    it('passes on the armed path', async () => {
+      await expect(
+        post({ expect_header: { location: 'ecclients-sandbox.btrl.ro' } }, ARMED),
+      ).resolves.toBeUndefined();
+    });
+
+    /**
+     * THE WHOLE POINT. `expect_status: 302` passes on BOTH of these, so a file asserting
+     * only the code cannot tell an accepted purchase from a refused one — and the refusal
+     * would surface sixty seconds later as a wait_for timeout naming a message the server
+     * was never going to send.
+     */
+    it('FAILS on the refusal path, which carries the same 302, and prints the reason', async () => {
+      await expect(
+        post({ expect_header: { location: 'ecclients-sandbox.btrl.ro' } }, REFUSED),
+      ).rejects.toThrow(/expected header "location" to contain.*payment_unavailable/s);
+    });
+
+    it('the status alone would have passed on both — stated, not assumed', async () => {
+      await expect(post({}, ARMED)).resolves.toBeUndefined();
+      await expect(post({}, REFUSED)).resolves.toBeUndefined();
+    });
+
+    it('treats /…/ as a regex and a bare string as a literal', async () => {
+      await expect(
+        post({ expect_header: { location: '/^https:\\/\\/ecclients-sandbox\\.btrl\\.ro\\//' } }, ARMED),
+      ).resolves.toBeUndefined();
+      // A URL is full of regex metacharacters, so the literal form must NOT match by luck.
+      await expect(
+        post({ expect_header: { location: '^https://ecclients-sandbox' } }, ARMED),
+      ).rejects.toThrow(/expected header "location" to contain/);
+    });
+
+    it('FAILS when the header is absent rather than passing vacuously', async () => {
+      await expect(
+        run({ expect_header: { location: 'anything' } }, html(LANDING_HTML)),
+      ).rejects.toThrow(/carries no "location" header/);
+    });
+
+    it('composes with capture_header on the same response', async () => {
+      const ctx = createContext();
+      await run(
+        {
+          method: 'POST', follow_redirects: false, expect_status: 302,
+          expect_header: { location: 'btrl.ro' },
+          capture_header: { payUrl: 'location' },
+        },
+        redirect(ARMED),
+        ctx,
+      );
+      expect(ctx.captured.get('payUrl')).toBe(ARMED);
+    });
+
+    it('is REFUSED in background mode', async () => {
+      await expect(
+        run({ background: true, expect_header: { location: 'x' } }, html(LANDING_HTML)),
+      ).rejects.toThrow(/"expect_header" is not supported with "background: true"/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cookies + follow_redirects — the request shape
   // -------------------------------------------------------------------------
   describe('cookies', () => {
