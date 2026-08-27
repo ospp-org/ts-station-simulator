@@ -175,8 +175,21 @@ steps:
   # `withheld: []` is the assertion `expect_status: 202` cannot make. Publish does not refuse
   # a catalog over an unbound service — it ships what is sellable and NAMES the rest — so a
   # bootstrap that stopped writing bindings would still answer 202 here with every service
-  # withheld and dispatch a catalog of nothing. `serviceCount: 4` catches the other direction,
-  # a service that stopped being seeded at all.
+  # withheld and dispatch a catalog of nothing.
+  #
+  # THE OTHER DIRECTION — a service that stopped being seeded at all — WAS `serviceCount: 4`,
+  # AND THAT SHAPE IS WITHDRAWN. A total is a claim about the whole world, so it makes this
+  # file fail whenever ANY other file causes an extra service to exist. That is not a
+  # hypothetical: `svc_multiunit` is seeded when a scenario declares
+  # `requires_multiunit_service`, and `uatPrivileged.ts` reasons that keeping it out of
+  # DEFAULT_SEED_SERVICES leaves "the default world at four services". Under `--all` there is
+  # no default world — something always declares it — and this file reddened on 2026-08-27
+  # with `expected 4, got 5` for a fixture reason, naming a catalog defect that did not exist.
+  #
+  # Replaced by ASSERTION 3 below: each service this file depends on is named INDIVIDUALLY on
+  # the wire. That keeps exactly the property the count was protecting — a service silently
+  # dropped from the seed still fails — while being indifferent to services other scenarios
+  # asked for, which this file has no business ruling on.
   #
   # ASSERTION 1 — the version is SERVER-GENERATED, and that is established rather than
   # assumed. UpdateServiceCatalogAction:80-83:
@@ -201,7 +214,6 @@ steps:
     expect_status: 202
     expect_body:
       catalogVersion: "2"
-      serviceCount: 4
       withheld: []
 
   - action: wait_for
@@ -219,6 +231,38 @@ steps:
   - action: assert
     field: "payload.catalogVersion"
     equals: "2"
+
+  # ASSERTION 3 — the seeded services are on the wire, BY NAME AND NOT BY COUNT.
+  #
+  # Each entry is selected out of `payload.services` by its own `serviceId`, so the assertion
+  # is blind to how many other services the array carries and to what order the server put
+  # them in. A missing service resolves to `undefined` and fails naming itself; an extra one
+  # (`svc_multiunit`, or whatever a later scenario needs) changes nothing here.
+  #
+  # `pricingType` rather than a restatement of the id: matching on `serviceId` and then
+  # asserting `serviceId` would pass on anything the selector found, which is only the
+  # selector agreeing with itself. `PerMinute` is what the bootstrap seeds
+  # (DEFAULT_SEED_SERVICES, all four at 100 credits/minute), so this fails both when a
+  # service stops being seeded and when it is seeded with the wrong shape.
+  #
+  # The array selector reaches `assert` because AssertStep now shares ApiCallStep's resolver;
+  # its own copy split on `.` and could only index arrays by POSITION, which for an unordered
+  # collection pins whichever element the database returned first.
+  - action: assert
+    field: "payload.services[serviceId=svc_wash_basic].pricingType"
+    equals: "PerMinute"
+
+  - action: assert
+    field: "payload.services[serviceId=svc_wash_premium].pricingType"
+    equals: "PerMinute"
+
+  - action: assert
+    field: "payload.services[serviceId=svc_dry].pricingType"
+    equals: "PerMinute"
+
+  - action: assert
+    field: "payload.services[serviceId=svc_vacuum].pricingType"
+    equals: "PerMinute"
 
   # `correlationId` is what makes this a ROUND TRIP rather than a message shouted at a server
   # that will drop it. UpdateServiceCatalogResponseHandler:32 resolves the pending command by
