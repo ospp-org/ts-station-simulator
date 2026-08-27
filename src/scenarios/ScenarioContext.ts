@@ -29,6 +29,16 @@ export interface ProvisioningArtifact {
    * `bays` when the bay NUMBER matters.
    */
   bayIds: string[];
+  /**
+   * The bays' `public_slug` values, INDEX-ALIGNED with {@link bayIds} — both are sorted by
+   * bayNumber, so `baySlugs[i]` is the pay page of the bay `bayIds[i]` names.
+   *
+   * Present only on an artifact the pool bootstrap wrote, because the slug reaches the disk
+   * by a privileged DB read and by no other route: no API response carries it, on any
+   * endpoint. Absent means "this artifact predates the read, or the read did not run" —
+   * never "this bay has no slug", since the column is NOT NULL for every bay that exists.
+   */
+  baySlugs?: string[];
   certPath?: string;
   keyPath?: string;
   chainPath?: string;

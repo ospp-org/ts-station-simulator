@@ -8,6 +8,7 @@ import { EnumValuesCheck } from './checks/EnumValuesCheck.js';
 import { WaitForCompletenessCheck } from './checks/WaitForCompletenessCheck.js';
 import { PayloadSchemaCheck } from './checks/PayloadSchemaCheck.js';
 import { PreEmptDiscriminatorCheck } from './checks/PreEmptDiscriminatorCheck.js';
+import { MultiUnitDeclaredCheck } from './checks/MultiUnitDeclaredCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -20,12 +21,13 @@ export class ScenarioLinter {
       new WaitForCompletenessCheck(),
       new PayloadSchemaCheck(),
       new PreEmptDiscriminatorCheck(),
+      new MultiUnitDeclaredCheck(),
     ];
   }
 
   async lintFile(filePath: string): Promise<LintIssue[]> {
     const content = await fs.readFile(filePath, 'utf-8');
-    const parsed = parseYaml(content) as { name?: string; steps?: unknown[] };
+    const parsed = parseYaml(content) as { name?: string; steps?: unknown[] } & Record<string, unknown>;
 
     if (!parsed || !Array.isArray(parsed.steps)) {
       return [{
@@ -36,10 +38,12 @@ export class ScenarioLinter {
       }];
     }
 
+    const { steps: _steps, ...declarations } = parsed;
     const scenario: ParsedScenario = {
       filePath,
       name: parsed.name ?? path.basename(filePath),
       steps: parsed.steps as Record<string, unknown>[],
+      declarations,
     };
 
     const issues: LintIssue[] = [];

@@ -198,10 +198,19 @@ describe('buildSeedCatalogSql', () => {
     expect(sql).toContain('INSERT INTO service_definitions');
     expect(sql).toContain('ON CONFLICT (organization_id, service_id) DO NOTHING;');
     // station_services: DO UPDATE (Laravel updateOrInsert)
-    expect(sql).toContain('INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, available)');
+    expect(sql).toContain('INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, price_credits_fixed, fixed_duration_seconds, max_unit_quantity, available)');
     expect(sql).toContain('ON CONFLICT (station_id, service_definition_id) DO UPDATE SET');
     expect(sql).toContain('price_credits_per_minute = EXCLUDED.price_credits_per_minute');
     expect(sql).toContain('updated_at = NOW();');
+    // The values are JOINED per service_id, not emitted as one literal for every row. This
+    // used to be a cross join with a hardcoded `100`, which was true of the four PerMinute
+    // services and of nothing else — a Fixed service seeded that way lands with
+    // price_credits_fixed NULL, and getServicePricing quotes a Fixed service from exactly
+    // that column, so the card would have been asked to charge 0.
+    expect(sql).toContain('WITH seed(service_id, ppm, pcf, fds, muq) AS (VALUES');
+    expect(sql).toContain('SELECT s.id, sd.id, seed.ppm, seed.pcf, seed.fds, seed.muq, true');
+    expect(sql).toContain('AND sd.service_id = seed.service_id');
+    expect(sql).not.toMatch(/SELECT s\.id, sd\.id, \d+, true/);
   });
 
   it('seeds bay_services, and takes program_number from bay_programs rather than assuming one', () => {

@@ -25,6 +25,7 @@ import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
 import { FundWalletStep } from './steps/FundWalletStep.js';
+import { MULTIUNIT_SERVICE_ID } from './bootstrap/uatPrivileged.js';
 import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
 import { FaultStep } from './steps/FaultStep.js';
 import { ProvisionStep } from './steps/ProvisionStep.js';
@@ -279,6 +280,28 @@ export interface ScenarioDefinition {
    * does not own, which is the same failure the identity pool exists to prevent.
    */
   wallet_balance?: number;
+  /**
+   * The number of units this scenario's batch drives. Set it and the pool bootstrap seeds
+   * ONE extra catalog entry — a `MultiUnit` service with `max_unit_quantity` at least this —
+   * on every pool station, and publishes its id as `{{serviceId_multiunit}}`.
+   *
+   * It exists because BOTH halves of the capacity gate are per-service DB state a scenario
+   * cannot create for itself. `PaymentLandingController::process` computes
+   * `effectiveMax = (service_kind === MultiUnit && max_unit_quantity >= 1) ? max : 1` and
+   * refuses `invalid_quantity` outside `1..effectiveMax` — so against the four services the
+   * pool seeds by default, every purchase is capped at one unit and no batch can be bought
+   * at all. That is not a server defect and not a scenario bug; it is a fixture the corpus
+   * never had.
+   *
+   * A declaration rather than a fifth default service, for the reason
+   * `PoolBootstrapOptions.multiUnitCapacity` gives: an unconditional fifth entry reddens
+   * `device-management/service-catalog-update.yaml`, which asserts `serviceCount: 4`.
+   *
+   * Read at BOOTSTRAP time, like `wallet_balance:` — the CLI takes the MAXIMUM across the
+   * selected scenarios and the builder seeds that capacity once. A capacity of N satisfies
+   * every file asking for N or fewer, so unlike an identity there is nothing to run out of.
+   */
+  requires_multiunit_service?: number;
   /**
    * When true, the runner skips the automatic `station.connect()` call so
    * that scenarios can run pre-provisioning API steps (signup, org, station
@@ -834,12 +857,20 @@ export function generateVariables(
   const bayCount = scenarioDef.station.bayCount;
   for (let i = 1; i <= bayCount; i++) {
     vars.set(`bayId_${i}`, generateBayId());
+    // A SENTINEL, never a plausible slug — see UNHYDRATED_BAY_SLUG.
+    vars.set(`baySlug_${i}`, UNHYDRATED_BAY_SLUG);
   }
 
   const defaultServices = ['wash_basic', 'wash_premium', 'dry', 'vacuum'];
   for (let i = 0; i < defaultServices.length; i++) {
     vars.set(`serviceId_${i + 1}`, generateServiceId(defaultServices[i]));
   }
+  // The multi-unit service's id is a CONSTANT, so it resolves whether or not the row was
+  // seeded — the row's existence is the business of `requires_multiunit_service:`, and
+  // MultiUnitServiceDeclaredCheck is what stops a file referencing this without declaring
+  // it. Publishing it as a variable rather than letting files write the literal keeps one
+  // owner for the string, which is the same reason serviceId_1..4 are not literals either.
+  vars.set('serviceId_multiunit', MULTIUNIT_SERVICE_ID);
 
   // CLI --var overrides win over auto-generated values (last-write semantics).
   if (userVars) {
@@ -899,6 +930,27 @@ function collectTemplateTokens(node: unknown, out: Set<string>): void {
  * does not exist yet, so they are out of scope here by construction — this answers only
  * "was a plain variable never supplied?".
  */
+/**
+ * What `{{baySlug_N}}` resolves to when nothing hydrated it.
+ *
+ * WHY A SENTINEL AND NOT "NO DEFAULT". A variable with no default is reported by
+ * {@link unsatisfiedVariables}, and the CLI's preflight then transparently SKIPS every file
+ * referencing it — including in `--bootstrap-pool`, the one mode where the value does
+ * arrive, because preflight runs before hydration. So "no default" would mean the pay-page
+ * scenarios never run anywhere. `{{bayId_N}}` has the same shape and is handled the same
+ * way: a placeholder at generate time, the real value at hydrate time.
+ *
+ * WHY IT IS THIS STRING AND NOT A RANDOM ONE. A random 10-character slug is exactly what a
+ * real one looks like (`Str::random(10)`), so an un-hydrated run would send a plausible slug
+ * to `/w/{slug}`, collect a 404, and read as a server fault — the V4 Finding #1 failure, in
+ * a new place. This cannot be mistaken for a real slug in a URL, a log line or a report, and
+ * it is what a reader sees before they see the 404.
+ *
+ * A file that needs the real value declares `requires_pool:` — the slug exists only in a
+ * bootstrapped run — so the sentinel is the belt, not the trousers.
+ */
+export const UNHYDRATED_BAY_SLUG = 'NO-POOL-NO-SLUG';
+
 export function unsatisfiedVariables(
   scenario: ScenarioDefinition,
   target: TargetConfig,
@@ -926,6 +978,7 @@ export function unsatisfiedVariables(
 interface BaysJsonShape {
   stationId?: string;
   bayIds?: string[];
+  baySlugs?: string[];
 }
 
 /**
@@ -985,6 +1038,13 @@ async function hydrateProvisioningFromDisk(
         return {
           stationId: parsed.stationId,
           bayIds: [...parsed.bayIds],
+          // Carried only when the file actually has it, and only when it is the same
+          // LENGTH as bayIds — the two are index-aligned by contract, and a shorter list
+          // would silently pair a slug with the wrong bay rather than fail.
+          baySlugs:
+            Array.isArray(parsed.baySlugs) && parsed.baySlugs.length === parsed.bayIds.length
+              ? [...parsed.baySlugs]
+              : undefined,
           certPath: resolvedKey?.replace(/-key\.pem$/, '.pem'),
           keyPath: resolvedKey,
           chainPath: resolvedKey?.replace(/-key\.pem$/, '-chain.pem'),
@@ -1829,6 +1889,13 @@ export class ScenarioRunner {
         }
         for (let i = 0; i < hydrated.bayIds.length; i++) {
           variables.set(`bayId_${i + 1}`, hydrated.bayIds[i]);
+        }
+        // The pay-page identity of each bay, overwriting the sentinel generateVariables
+        // seeded. See UNHYDRATED_BAY_SLUG for why the sentinel exists at all.
+        if (hydrated.baySlugs) {
+          for (let i = 0; i < hydrated.baySlugs.length; i++) {
+            variables.set(`baySlug_${i + 1}`, hydrated.baySlugs[i]);
+          }
         }
         if (userVars) {
           for (const [k, v] of userVars) {

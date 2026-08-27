@@ -239,7 +239,34 @@ export interface SeededService {
   pricingType: SeededPricingType;
   priceCreditsPerMinute?: number | null;
   priceCreditsFixed?: number | null;
+  /**
+   * `service_definitions.service_kind` — the Postgres ENUM (`UserDuration` |
+   * `FixedDuration` | `MultiUnit`). Omitted means the column stays NULL, which the server
+   * resolves to `UserDuration` (`StationQueryService::getServicePricing` — `ServiceKind::
+   * tryFrom($service->service_kind ?? '') ?? ServiceKind::UserDuration`). Every service this
+   * corpus has ever seeded is that, so omission keeps the existing world byte-identical.
+   */
+  serviceKind?: SeededServiceKind;
+  /**
+   * `station_services.fixed_duration_seconds` — REQUIRED for a kind whose duration is a
+   * property of the service rather than of the request. `getServicePricing` FAILS CLOSED
+   * (throws `ServicePricingUnavailableException`, page `payment_unavailable`) when a
+   * FixedDuration/MultiUnit entry has no preset, so seeding the kind without this produces
+   * a service the landing page refuses to quote.
+   */
+  fixedDurationSeconds?: number | null;
+  /**
+   * `station_services.max_unit_quantity` — the capacity gate on `unit_count`. Postgres
+   * CHECK: NULL or >= 1. `PaymentLandingController::process` computes
+   * `effectiveMax = (kind === MultiUnit && is_int(max) && max >= 1) ? max : 1` and refuses
+   * `invalid_quantity` outside `1..effectiveMax`, so BOTH this and `serviceKind: 'MultiUnit'`
+   * are needed before any batch can be bought — either alone caps the purchase at one unit.
+   */
+  maxUnitQuantity?: number | null;
 }
+
+/** The `service_kind` Postgres ENUM, as the server spells it (`App\\Shared\\Enums\\ServiceKind`). */
+export type SeededServiceKind = 'UserDuration' | 'FixedDuration' | 'MultiUnit';
 
 /**
  * Canonical default service set used by the per-run pool bootstrap. Matches the runner's
@@ -254,6 +281,62 @@ export const DEFAULT_SEED_SERVICES: ReadonlyArray<SeededService> = [
   { serviceId: 'svc_dry',          serviceName: 'Dry',          pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
   { serviceId: 'svc_vacuum',       serviceName: 'Vacuum',       pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
 ];
+
+/**
+ * The service id the multi-unit seed uses, and the template name it is published under.
+ * Distinct from the four in {@link DEFAULT_SEED_SERVICES} on purpose: this one is seeded
+ * ONLY when a selected scenario asks for it, so the default world stays four services and
+ * `device-management/service-catalog-update.yaml`'s `serviceCount: 4` keeps meaning what it
+ * says. A fifth default service would have reddened that file for a fixture reason.
+ */
+export const MULTIUNIT_SERVICE_ID = 'svc_multiunit';
+
+/**
+ * Per-unit price, in credits, of the seeded multi-unit service.
+ *
+ * DELIBERATELY BELOW {@link DEFAULT_IDENTITY_WALLET_CREDITS}. `deriveRequiredWalletCredits`
+ * takes the MAXIMUM over the seeded catalog, so a per-unit price above 1000 would silently
+ * raise every bootstrapped identity's wallet — a change to the money fixture of all 145
+ * files, made by adding a service none of them use. 200 also matches the server's own
+ * `WebPaymentMultiUnitTest` (3 x 200 = 600), so a batch quote is readable against it.
+ */
+export const MULTIUNIT_UNIT_PRICE_CREDITS = 200;
+
+/**
+ * The actuation pulse, in seconds, the server quotes and later bills for ONE unit.
+ * `getServicePricing` reads it from `station_services.fixed_duration_seconds` and REPLACES
+ * the client's requested duration with it, so this — not the value posted on the form — is
+ * what arrives as `StartService.payload.durationSeconds` on every unit of the batch.
+ */
+export const MULTIUNIT_PULSE_SECONDS = 5;
+
+/**
+ * Build the multi-unit catalog entry for a run that needs one, at the capacity the
+ * scenarios selected for THAT run declared.
+ *
+ * `Fixed` pricing rather than per-minute, and that is not cosmetic: `getServicePricing`
+ * quotes `price_credits_fixed` for a Fixed service and `ceil(seconds/60 * rate)` otherwise.
+ * A dispenser priced per minute against a 5-second pulse quotes `ceil(0.083 * rate)`, which
+ * is a number nobody chose — and if it rounds to 0 the quote chokepoint refuses to charge
+ * and the page answers `payment_unavailable`.
+ */
+export function multiUnitSeedService(maxUnitQuantity: number): SeededService {
+  if (!Number.isInteger(maxUnitQuantity) || maxUnitQuantity < 1) {
+    throw new Error(
+      `multiUnitSeedService: maxUnitQuantity must be an integer >= 1 (Postgres CHECK ` +
+        `chk_station_services_max_unit_quantity), got ${JSON.stringify(maxUnitQuantity)}`,
+    );
+  }
+  return {
+    serviceId: MULTIUNIT_SERVICE_ID,
+    serviceName: 'Multi-Unit Dispenser',
+    pricingType: 'Fixed',
+    priceCreditsFixed: MULTIUNIT_UNIT_PRICE_CREDITS,
+    serviceKind: 'MultiUnit',
+    fixedDurationSeconds: MULTIUNIT_PULSE_SECONDS,
+    maxUnitQuantity,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Identity funding — how much is "enough"
@@ -534,27 +617,60 @@ export function buildSeedCatalogSql(
         s.pricingType === 'Fixed' && s.priceCreditsFixed != null
           ? String(s.priceCreditsFixed)
           : 'NULL';
-      return `(${orgLit}, ${sqlLiteral(s.serviceId)}, ${sqlLiteral(s.serviceName)}, ${sqlLiteral(s.pricingType)}, ${ppm}, ${pcf})`;
+      const kind = s.serviceKind != null ? `${sqlLiteral(s.serviceKind)}::service_kind` : 'NULL::service_kind';
+      return `(${orgLit}, ${sqlLiteral(s.serviceId)}, ${sqlLiteral(s.serviceName)}, ${sqlLiteral(s.pricingType)}, ${ppm}, ${pcf}, ${kind})`;
     })
     .join(',\n  ');
+
+  // Per-service station_services columns, joined by service_id rather than assumed.
+  //
+  // This USED to be a cross join emitting a literal `100` for every row, which was true of
+  // the four PerMinute services and of nothing else. A Fixed service seeded that way lands
+  // with `price_credits_fixed` NULL, and `getServicePricing` quotes a Fixed service from
+  // exactly that column — so the card would have been asked to charge 0, which the quote
+  // chokepoint refuses (`payment_unavailable`). The four existing services produce the
+  // identical rows they did before; the columns only start carrying values when a service
+  // declares them.
+  const perServiceRows = services
+    .map((s) => {
+      const ppm =
+        s.pricingType === 'PerMinute' && s.priceCreditsPerMinute != null
+          ? String(s.priceCreditsPerMinute)
+          : 'NULL';
+      const pcf =
+        s.pricingType === 'Fixed' && s.priceCreditsFixed != null
+          ? String(s.priceCreditsFixed)
+          : 'NULL';
+      const fds = s.fixedDurationSeconds != null ? String(s.fixedDurationSeconds) : 'NULL';
+      const muq = s.maxUnitQuantity != null ? String(s.maxUnitQuantity) : 'NULL';
+      return `(${sqlLiteral(s.serviceId)}, ${ppm}::int, ${pcf}::int, ${fds}::int, ${muq}::int)`;
+    })
+    .join(',\n    ');
 
   return [
     'BEGIN;',
     // 1. service_definitions: ON CONFLICT DO NOTHING (mirrors resolveOrCreateDefinition).
-    'INSERT INTO service_definitions (organization_id, service_id, service_name, pricing_type, recommended_price_credits_per_minute, recommended_price_credits_fixed)',
+    'INSERT INTO service_definitions (organization_id, service_id, service_name, pricing_type, recommended_price_credits_per_minute, recommended_price_credits_fixed, service_kind)',
     'VALUES',
     `  ${defRows}`,
     'ON CONFLICT (organization_id, service_id) DO NOTHING;',
     // 2. station_services: UPSERT (mirrors updateOrInsert). Cross-join the bootstrapped
     //    stations × the seeded definitions, filtered to the seed's org + svc_* set.
-    'INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, available)',
-    'SELECT s.id, sd.id, 100, true',
-    'FROM stations s, service_definitions sd',
+    'WITH seed(service_id, ppm, pcf, fds, muq) AS (VALUES',
+    `    ${perServiceRows}`,
+    ')',
+    'INSERT INTO station_services (station_id, service_definition_id, price_credits_per_minute, price_credits_fixed, fixed_duration_seconds, max_unit_quantity, available)',
+    'SELECT s.id, sd.id, seed.ppm, seed.pcf, seed.fds, seed.muq, true',
+    'FROM stations s, service_definitions sd, seed',
     `WHERE s.station_id = ANY(${stationArr})`,
     `  AND sd.organization_id = ${orgLit}`,
+    '  AND sd.service_id = seed.service_id',
     `  AND sd.service_id = ANY(${svcArr})`,
     'ON CONFLICT (station_id, service_definition_id) DO UPDATE SET',
     '  price_credits_per_minute = EXCLUDED.price_credits_per_minute,',
+    '  price_credits_fixed = EXCLUDED.price_credits_fixed,',
+    '  fixed_duration_seconds = EXCLUDED.fixed_duration_seconds,',
+    '  max_unit_quantity = EXCLUDED.max_unit_quantity,',
     '  available = EXCLUDED.available,',
     '  updated_at = NOW();',
     // 3. bay_services: the service->program binding. Scoped exactly like step 2, and joined
@@ -608,6 +724,148 @@ export async function seedServiceCatalog(
 ): Promise<void> {
   if (stationIds.length === 0 || services.length === 0) return;
   await runUatSql(buildSeedCatalogSql(orgId, stationIds, services), cfg);
+}
+
+/**
+ * Read the `bays.public_slug` of every bay on the given stations.
+ *
+ * WHY THIS HAS TO BE A DB READ. The slug is the customer-facing identity of a bay — the
+ * whole of `/w/{slug}`, the pay page — and **no API returns it.** Measured over the server
+ * tree: the admin station read, the dashboard station read and every `app/Http/Resources`
+ * projection emit `{id, bayId, bayNumber, status}` and nothing else, and the one place that
+ * would have published it (`GenerateQrCodeAction`) has no route and no caller. It is minted
+ * at registration (`Bay::generateUniqueSlug`) and consumed by `resolveBayIdBySlug`, and in
+ * between it never leaves the database.
+ *
+ * So a scenario that has to drive the pay page cannot discover its own bay's slug from the
+ * wire, on any run, by any means. This is the same privileged channel the offline flag and
+ * the service catalog already use, and it is the only one there is.
+ *
+ * `COPY … TO STDOUT` rather than a SELECT for the reason {@link readStationCatalogServices}
+ * gives: {@link runUatSql} runs psql without `-t -A`, so a SELECT arrives wrapped in an
+ * aligned table with a header and a row count.
+ *
+ * @returns stationId (the `stn_*` string) -> slugs, SORTED BY bayNumber so index N-1 is the
+ *          same bay as `bayIds[N-1]` in the provisioning artifact. Stations with no bays are
+ *          absent from the map rather than present-and-empty.
+ */
+export async function readBaySlugs(
+  stationIds: string[],
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<Map<string, string[]>> {
+  if (stationIds.length === 0) return new Map();
+  const stationArr = `ARRAY[${stationIds.map(sqlLiteral).join(', ')}]::text[]`;
+  const sql =
+    `COPY (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (` +
+    `SELECT s.station_id AS "stationId", ` +
+    `array_agg(b.public_slug ORDER BY b.bay_number) AS "slugs" ` +
+    `FROM bays b JOIN stations s ON s.id = b.station_id ` +
+    `WHERE s.station_id = ANY(${stationArr}) ` +
+    `GROUP BY s.station_id` +
+    `) t) TO STDOUT;`;
+
+  const out = (await runUatSql(sql, cfg)).trim();
+  if (out === '') return new Map();
+  const parsed: unknown = JSON.parse(out);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`readBaySlugs: expected a JSON array, got ${out.slice(0, 200)}`);
+  }
+  const result = new Map<string, string[]>();
+  for (const row of parsed as Array<{ stationId?: unknown; slugs?: unknown }>) {
+    if (typeof row.stationId !== 'string' || !Array.isArray(row.slugs)) continue;
+    const slugs = row.slugs.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    if (slugs.length > 0) result.set(row.stationId, slugs);
+  }
+  return result;
+}
+
+/**
+ * Read back what the multi-unit seed actually landed, and THROW if it is not what was asked
+ * for.
+ *
+ * THIS IS NOT BELT-AND-BRACES; it closes a real hole in the seed above. The
+ * `service_definitions` insert is `ON CONFLICT … DO NOTHING`, deliberately — the server's
+ * own `resolveOrCreateDefinition` preserves an existing row and the seed must not diverge
+ * from it. The consequence is that the seed CANNOT correct a definition already present
+ * under the same `(organization_id, service_id)`. The bootstrap reuses the owner's standing
+ * organisation, and the teardown's orphan sweep only fires when no `station_services` row
+ * still references the definition — so a run whose teardown did not complete leaves one
+ * behind, and the next run's `service_kind` is silently whatever that older row said.
+ *
+ * The failure that produces is the quiet kind: `service_kind` NULL resolves to
+ * `UserDuration`, `effectiveMax` collapses to 1, and `POST /w/{slug}/process` answers
+ * `invalid_quantity` for a `unit_count` the fixture believed it had provisioned. No batch,
+ * no `unit_batches` row, and a scenario that times out at a `wait_for` several steps later
+ * naming a message the server was never going to send.
+ *
+ * Reading the two columns that DECIDE — the definition's kind and the station service's
+ * capacity — turns that into a bootstrap error that names the row.
+ */
+export async function verifyMultiUnitSeed(
+  orgId: string,
+  stationIds: string[],
+  requiredUnits: number,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<void> {
+  if (stationIds.length === 0) return;
+  const stationArr = `ARRAY[${stationIds.map(sqlLiteral).join(', ')}]::text[]`;
+  const sql =
+    `COPY (SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (` +
+    `SELECT s.station_id AS "stationId", sd.service_kind::text AS "kind", ` +
+    `ss.max_unit_quantity AS "maxUnits", ss.fixed_duration_seconds AS "pulse", ` +
+    `ss.price_credits_fixed AS "priceFixed" ` +
+    `FROM station_services ss ` +
+    `JOIN service_definitions sd ON sd.id = ss.service_definition_id ` +
+    `JOIN stations s ON s.id = ss.station_id ` +
+    `WHERE s.station_id = ANY(${stationArr}) ` +
+    `  AND sd.organization_id = ${sqlLiteral(orgId)} ` +
+    `  AND sd.service_id = ${sqlLiteral(MULTIUNIT_SERVICE_ID)}` +
+    `) t) TO STDOUT;`;
+
+  const out = (await runUatSql(sql, cfg)).trim();
+  const parsed: unknown = out === '' ? [] : JSON.parse(out);
+  const rows = Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
+
+  const problems: string[] = [];
+  for (const stationId of stationIds) {
+    const row = rows.find((r) => r.stationId === stationId);
+    if (row === undefined) {
+      problems.push(`${stationId}: no ${MULTIUNIT_SERVICE_ID} station_services row at all`);
+      continue;
+    }
+    if (row.kind !== 'MultiUnit') {
+      problems.push(
+        `${stationId}: service_kind is ${JSON.stringify(row.kind)}, not "MultiUnit" — a ` +
+          `pre-existing service_definitions row survived ON CONFLICT DO NOTHING`,
+      );
+    }
+    const maxUnits = typeof row.maxUnits === 'number' ? row.maxUnits : null;
+    if (maxUnits === null || maxUnits < requiredUnits) {
+      problems.push(
+        `${stationId}: max_unit_quantity is ${JSON.stringify(row.maxUnits)}, needs >= ${requiredUnits}`,
+      );
+    }
+    if (typeof row.pulse !== 'number' || row.pulse < 1) {
+      problems.push(
+        `${stationId}: fixed_duration_seconds is ${JSON.stringify(row.pulse)} — a MultiUnit ` +
+          `service with no preset makes getServicePricing throw and the page answer ` +
+          `payment_unavailable`,
+      );
+    }
+    if (typeof row.priceFixed !== 'number' || row.priceFixed < 1) {
+      problems.push(
+        `${stationId}: price_credits_fixed is ${JSON.stringify(row.priceFixed)} — a Fixed ` +
+          `service is quoted from this column, and a 0 quote is refused rather than charged`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `verifyMultiUnitSeed: the multi-unit catalog seed did not land as declared, so no ` +
+        `unit_count > 1 purchase can succeed:\n  - ${problems.join('\n  - ')}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

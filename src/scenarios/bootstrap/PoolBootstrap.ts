@@ -22,6 +22,10 @@ import {
   buildTeardownTestUsersSql,
   DEFAULT_IDENTITY_WALLET_CREDITS,
   DEFAULT_SEED_SERVICES,
+  MULTIUNIT_SERVICE_ID,
+  multiUnitSeedService,
+  readBaySlugs,
+  verifyMultiUnitSeed,
   runUatSql,
   sqlLiteral,
   uatDbConfigFromEnv,
@@ -70,6 +74,68 @@ import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js'
  */
 export const DEFAULT_POOL_BAYS = 2;
 
+/**
+ * Read every pool station's bay slugs and merge them into the `<stationId>-bays.json` the
+ * runner already hydrates from.
+ *
+ * MERGED RATHER THAN WRITTEN FRESH. The file was written during provisioning and carries
+ * `bays` (the {bayId, bayNumber} pairs) and `bayIds`; re-serialising from what this function
+ * knows would drop both. It re-reads and adds one key.
+ *
+ * NON-FATAL BY DESIGN, and that is a real decision rather than laziness. Every scenario in
+ * the corpus except the pay-page ones is completely indifferent to the slug, so a read that
+ * fails — a psql hiccup, a station row not yet visible — must not take down a bootstrap the
+ * other 145 files depend on. The cost of being wrong in this direction is bounded and
+ * visible: `{{baySlug_N}}` keeps the un-hydrated sentinel, `/w/<sentinel>` answers 404, and
+ * the scenario fails at the step that asked for it. The cost of the other direction is a
+ * whole run lost to a fixture nothing in it needed.
+ *
+ * A count is printed either way, because a silent zero and a silent success look identical.
+ */
+async function hydrateBaySlugsIntoArtifacts(
+  handle: PoolBootstrapHandle,
+  target: TargetConfig,
+  dbConfig: UatDbConfig,
+): Promise<void> {
+  let slugsByStation: Map<string, string[]>;
+  try {
+    slugsByStation = await readBaySlugs(handle.stationIds, dbConfig);
+  } catch (err) {
+    console.warn(
+      `[bootstrap] bay slugs NOT read (${err instanceof Error ? err.message : String(err)}) — ` +
+      `any scenario using {{baySlug_N}} will fail at its first pay-page call; every other ` +
+      `scenario is unaffected`,
+    );
+    return;
+  }
+
+  let patched = 0;
+  for (const stationId of handle.stationIds) {
+    const slugs = slugsByStation.get(stationId);
+    if (slugs === undefined || slugs.length === 0) continue;
+    const paths = certPathsFor(target, stationId);
+    try {
+      const raw = await fs.readFile(paths.baysJsonPath, 'utf-8');
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== 'object') continue;
+      await fs.writeFile(
+        paths.baysJsonPath,
+        JSON.stringify({ ...(parsed as Record<string, unknown>), baySlugs: slugs }, null, 2),
+      );
+      patched++;
+    } catch (err) {
+      console.warn(
+        `[bootstrap] bay slugs for ${stationId} not persisted ` +
+        `(${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
+  console.log(
+    `[bootstrap] bay slugs: ${patched}/${handle.stationIds.length} station artifact(s) carry ` +
+    `{{baySlug_N}}${patched === 0 ? ' — NOTHING was hydrated; treat a 404 on /w/ as this, not as the server' : ''}`,
+  );
+}
+
 export interface PoolBootstrapOptions {
   /** Number of stations to provision into the pool. */
   poolSize: number;
@@ -96,6 +162,22 @@ export interface PoolBootstrapOptions {
    * single-use: two scenarios both wanting a balance of 0 need two of them.
    */
   declaredWalletBalances?: number[];
+  /**
+   * The largest `requires_multiunit_service:` any SELECTED scenario declared, or undefined
+   * when none did. Set, the bootstrap seeds ONE extra catalog entry — a `MultiUnit` service
+   * with `max_unit_quantity` at least this — on every pool station.
+   *
+   * A MAXIMUM rather than a list, unlike `declaredWalletBalances`: a wallet is consumed by
+   * the one identity that holds it, while a catalog entry is shared and a capacity of N
+   * satisfies every scenario asking for N or fewer. There is nothing to run out of.
+   *
+   * WHY IT IS NOT A FIFTH DEFAULT SERVICE. `device-management/service-catalog-update.yaml`
+   * asserts `serviceCount: 4` against the publish endpoint, which counts `station_services`.
+   * A fifth service seeded unconditionally reddens that file for a fixture reason — the
+   * exact class of failure this bootstrap exists to keep out of the summary. Off unless a
+   * file asks, so the world all 145 scenarios run in is unchanged by construction.
+   */
+  multiUnitCapacity?: number;
   /** Explicit org UUID; when absent, discovered from the caller's memberships. */
   orgId?: string;
   /** UAT DB access config for privileged steps; defaults from env. */
@@ -643,12 +725,41 @@ export async function bootstrapPool(
     //    every sessions/start 404s INVALID_SERVICE (validated in GATE 1). Rows are
     //    operationally indistinguishable from what UpdateServiceCatalogResponseHandler
     //    would write for a real MQTT roundtrip (see buildSeedCatalogSql doc + design note).
-    await seedServiceCatalog(handle.orgId, handle.stationIds, DEFAULT_SEED_SERVICES, dbConfig);
-    handle.seededServiceIds = DEFAULT_SEED_SERVICES.map((s) => s.serviceId);
+    //
+    //    The multi-unit entry rides along only when a selected scenario declared
+    //    `requires_multiunit_service:` — see PoolBootstrapOptions.multiUnitCapacity for why
+    //    it is not simply a fifth default.
+    const seedServices = options.multiUnitCapacity !== undefined
+      ? [...DEFAULT_SEED_SERVICES, multiUnitSeedService(options.multiUnitCapacity)]
+      : DEFAULT_SEED_SERVICES;
+    await seedServiceCatalog(handle.orgId, handle.stationIds, seedServices, dbConfig);
+    handle.seededServiceIds = seedServices.map((s) => s.serviceId);
     console.log(
       `[bootstrap] seeded service catalog (${handle.seededServiceIds.length} service(s) × ` +
       `${handle.stationIds.length} station(s)): ${handle.seededServiceIds.join(', ')}`,
     );
+
+    // READ BACK the two columns that decide whether a batch can be bought at all. The
+    // definition insert is ON CONFLICT DO NOTHING by design, so it cannot correct a row a
+    // previous run left behind — and the failure that produces is silent (unit_count capped
+    // at 1, `invalid_quantity`, no batch, a wait_for that times out blaming a message the
+    // server was never going to send). See verifyMultiUnitSeed.
+    if (options.multiUnitCapacity !== undefined) {
+      await verifyMultiUnitSeed(
+        handle.orgId, handle.stationIds, options.multiUnitCapacity, dbConfig,
+      );
+      console.log(
+        `[bootstrap] verified ${MULTIUNIT_SERVICE_ID}: MultiUnit, max_unit_quantity >= ` +
+        `${options.multiUnitCapacity}, on ${handle.stationIds.length} station(s)`,
+      );
+    }
+
+    // 5b. The bay slugs. NOT available from any API — the pay page's whole identity
+    //     (`/w/{slug}`) is minted at registration and never serialised into a response, so
+    //     this privileged read is the only way a scenario can address its own bay's pay
+    //     page. Written into the same `<stationId>-bays.json` the runner already hydrates
+    //     from, so `{{baySlug_N}}` arrives by the path `{{bayId_N}}` already travels.
+    await hydrateBaySlugsIntoArtifacts(handle, target, dbConfig);
 
     // 6. Per-scenario identity pool (tenant_operator users sharing UAT_PASSWORD via
     //    password_hash copy). Single-use FIFO at the runner — every scenario gets a

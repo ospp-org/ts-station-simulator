@@ -303,12 +303,29 @@ program
         const declaredWalletBalances = loadedScenarios
           .map((s) => s.wallet_balance)
           .filter((b): b is number => b !== undefined);
+
+        // `requires_multiunit_service:` — the MAXIMUM, not one per declaration. A wallet is
+        // consumed by the identity holding it; a catalog entry is shared, and a capacity of
+        // N satisfies every file asking for N or fewer. Collected at the same point and for
+        // the same reason: this is where the loaded scenarios and the pool builder meet.
+        // Counting skipped files too, for the same asymmetry — an unused capacity costs a
+        // column value, a missing one costs the run.
+        const declaredUnitCounts = loadedScenarios
+          .map((s) => s.requires_multiunit_service)
+          .filter((n): n is number => typeof n === 'number');
+        const multiUnitCapacity = declaredUnitCounts.length > 0
+          ? Math.max(...declaredUnitCounts)
+          : undefined;
         console.log(chalk.blue(
           `Bootstrapping per-run pool: ${poolSize} station(s), ${bayCount} bay(s) each, ` +
           `${identityPoolSize} identity(ies) (per-scenario, single-use), ` +
           (declaredWalletBalances.length > 0
             ? `${declaredWalletBalances.length} declared-balance identity(ies) ` +
               `[${declaredWalletBalances.join(', ')}], `
+            : '') +
+          (multiUnitCapacity !== undefined
+            ? `multi-unit service at capacity ${multiUnitCapacity} ` +
+              `(declared by ${declaredUnitCounts.length} scenario(s)), `
             : '') +
           `offline-enable=${opts.offlineEnable !== false}`,
         ));
@@ -319,6 +336,7 @@ program
             enableOffline: opts.offlineEnable !== false,
             identityPoolSize,
             declaredWalletBalances,
+            multiUnitCapacity,
             orgId: runnerTarget.orgId,
           });
         } catch (err) {
