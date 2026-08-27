@@ -108,7 +108,17 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 #   [7] GET /api/v1/admin/payments    the intent found by referenceId = the bay
 #   [8] GET /pay/callback?intent=     200, settled synchronously; the double's ledger records
 #                                     register_calls and the captured amount
-#   [9] wait_for StartService         TIMES OUT at 60s  <-- the whole remaining gap
+#   [9] GET /api/v1/admin/payments    the intent reached `succeeded` — the assertion the
+#                                     callback's constant 200 cannot make for itself
+#  [10] wait_for StartService         TIMES OUT at 60s  <-- the whole remaining gap
+#
+# ON UAT, WHERE THERE IS NO DOUBLE, the run now stops at [9] instead of [10]. Measured
+# 2026-08-27: `ecclients-sandbox.btrl.ro` resolves inside csms-app-uat to 23.212.59.179
+# (Akamai) with CURL_CA_BUNDLE unset and no interception container — so the purchase reaches
+# the REAL acquirer, which correctly reports an order nobody paid. Step [9] says
+# `expected "succeeded", but got "pending"` in under three seconds and names the intent;
+# [10] used to say "Timeout waiting for StartService Request after 60000ms", which points at
+# the station and the MQTT path, three steps and one subsystem from the cause.
 #
 # AND THE BATCH BRANCH EXECUTED. `unit_batches` had ZERO rows in this programme, ever. The
 # settle wrote one: n_total 2, unit_price 200, service_kind MultiUnit, duration_seconds 5,
@@ -346,6 +356,45 @@ steps:
     method: GET
     url: "{{webpay_url}}/pay/callback?intent={{captured.intentId}}"
     expect_status: 200
+
+  # DID THE PAYMENT ACTUALLY SETTLE — asked HERE, where the answer is, instead of inferred
+  # sixty seconds later from a StartService that never comes.
+  #
+  # THE CALLBACK'S 200 PROVES NOTHING, and that is a property of the handler rather than a
+  # suspicion: `PaymentLandingController::callback` returns the SAME view with the SAME
+  # literal `'status' => 'processing'` on every path. It calls `settleIntent`, which
+  # "swallows its own errors and is idempotent", and then renders that constant regardless.
+  # There is no header and no body field on that response that differs between a settled
+  # payment and an unsettled one, so no assertion on step [8] can discriminate — the read
+  # has to be of the INTENT, not of the page.
+  #
+  # `settleIntent` asks the processor: `$processor->getStatus($merchant, $transactionId)`.
+  # Nothing in this scenario can make a real acquirer report a paid order — settling one
+  # means a card typed into BT's hosted form — so until `tools/bt-ipay-double/` is stood up
+  # this step is where the run stops, naming the payment.
+  #
+  # WHAT IT COSTS TODAY AND WHY IT IS STILL RIGHT: the file already failed, at [9], with
+  # "Timeout waiting for StartService Request after 60000ms" — a message pointing at the
+  # station and the MQTT path, three steps and one subsystem from the intent that never
+  # left `pending`. Measured 2026-08-27: `unit_batches` held ZERO rows and the newest
+  # `payment_intents` row on UAT was from 2026-07-02. This fails in 100ms and says so.
+  # THE LIST AND NOT `GET /admin/payments/{id}`, MEASURED: the single-payment show answers
+  # 403 to the per-scenario `tenant_operator` this file runs as, while the index — the same
+  # route prefix, the same middleware — answers 200, because it scopes by organisation
+  # rather than authorising the row. Step [7] above already proves the identity can read
+  # this door. Asking the wrong one would have turned a payment assertion into a
+  # permissions one.
+  #
+  # NO `status=` FILTER, deliberately. Filtering to `succeeded` and finding nothing reports
+  # `undefined`, which says only that the row is not in a list it may never have been in.
+  # Reading the row and asserting its status reports "expected succeeded, but got pending" —
+  # the actual state of the actual intent, which is the sentence worth having.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/payments?method=bt_ipay&per_page=50"
+    expect_status: 200
+    expect_body:
+      data[id={{captured.intentId}}].status: "succeeded"
 
   # UNIT 1 — TimerExpired (delivered)
   - action: wait_for
