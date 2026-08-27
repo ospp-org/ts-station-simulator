@@ -1,0 +1,152 @@
+# WHY THIS FILE EXISTS — a wire change that nothing in this corpus could see.
+#
+# csms-server `3a3d41d2` renamed seven refusals that answered `3005 BAY_NOT_FOUND` while
+# carrying the message "Station {id} not found" — the code said bay, the message said station,
+# and a reader who looked the code up went looking at bays. All seven now answer
+# `2001 STATION_NOT_REGISTERED`, matching four sibling files in the same directory that
+# already did.
+#
+# FIVE of the seven are dead behind StationManagementController::findStationByOsppIdOrFail,
+# so nothing observable moved. TWO ARE NOT: `installCertificate` and
+# `triggerCertificateRenewal` never call it, and neither route carries the
+# `->where('stationId', 'stn_[0-9a-f]+')` constraint that the revoke route below them has
+# (whose comment says it exists precisely "so a malformed id 404s rather than reaching the
+# action"). So on these two the refusal genuinely moved:
+#
+#     3005 BAY_NOT_FOUND / HTTP 404   ->   2001 STATION_NOT_REGISTERED / HTTP 422
+#
+# The full UAT suite went 128/0/16 across that change — unchanged from baseline, and NOT
+# because it was covered. No file exercised station-not-found on either route. A green run
+# proved the change broke nothing; it could not prove the change was right, and those are
+# different claims.
+#
+# AND THE REASON IT LOOKED UNPROVABLE WAS A FALSE PREMISE. The refusal document records these
+# two exits as "ACCEPTED AS UNPROVEN", reasoning that no identity a scenario can authenticate
+# as reaches the route, and that closing it would mean "seeding the most privileged role in the
+# system for the sake of two refusal assertions".
+#
+# That identity already exists and this corpus already uses it. `certificate-install.yaml`,
+# `certificate-install-rejected.yaml` and `trigger-cert-renewal.yaml` all authenticate as the
+# PERSISTENT platform admin with `omit_org_header: true` and receive 202 from these very
+# routes — all three green on UAT on 2026-08-27. Nothing new is seeded here; this file
+# borrows the identity three of its neighbours already hold, and the cost the document
+# weighed against two assertions was never going to be paid.
+#
+# WHAT IS NOT ASSERTED. The other exit on both actions (station offline -> 6003) still is not,
+# because reaching it needs a REGISTERED station that is OFFLINE, and a pooled run's stations
+# are online by construction. That one stays unproven and is named here rather than left to be
+# rediscovered.
+name: "Cert Lifecycle Refused — the station is not registered (2001)"
+description: "POST install-certificate and trigger-cert-renewal naming a well-formed stationId nothing owns. Server answers 422 + error.ospp_code 2001 STATION_NOT_REGISTERED on both. The same call on this file's REAL station is 202, which is what attributes the refusal to the station id rather than to the identity, the route or the body."
+
+# Platform-managed cert lifecycle — platform admin + omit_org_header (NULL team).
+# See certificate-install.yaml for the full rationale.
+auth:
+  email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+  password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, so the CONTROL below has a station the server will actually dispatch to.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- ARM 1 — install-certificate on a station nothing owns.
+  #
+  # `stn_ffffffffff` is well-formed for the route (no constraint) and for anything downstream,
+  # so the request passes the middleware and the FormRequest and reaches
+  # InstallCertificateAction's own lookup. A malformed id would be refused earlier and prove
+  # nothing about the branch this file is here for.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/stn_ffffffffff/install-certificate"
+    omit_org_header: true
+    body:
+      certificateType: "StationCertificate"
+      certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"
+    expect_status: 422
+    expect_body:
+      error.ospp_code: 2001
+      error.code: "STATION_NOT_REGISTERED"
+
+  # --- ARM 2 — the same condition on the sibling route, which is a SEPARATE action with its
+  # own copy of the lookup (TriggerCertificateRenewalAction:39). One arm would leave the other
+  # asserted by assumption, and these two were renamed as two edits, not one.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/stn_ffffffffff/trigger-cert-renewal"
+    omit_org_header: true
+    body:
+      certificateType: "StationCertificate"
+    expect_status: 422
+    expect_body:
+      error.ospp_code: 2001
+      error.code: "STATION_NOT_REGISTERED"
+
+  # --- THE CONTROL, and it is the point of the file rather than decoration.
+  #
+  # Without it a 422 proves only that the endpoint answers 422 to something: a revoked
+  # identity, a wrong base URL, a body the FormRequest rejects and a retired route all produce
+  # a refusal too, and three of those four would produce it on EVERY call including this one.
+  # This call differs from arm 1 in exactly ONE field — the station id — and must be accepted.
+  #
+  # Placed AFTER the refusals so a reader cannot mistake it for setup. It also re-proves, on
+  # this run's own identity, the 202 that establishes the route is reachable at all — which is
+  # the fact the "ACCEPTED AS UNPROVEN" decision got wrong.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/install-certificate"
+    omit_org_header: true
+    body:
+      certificateType: "StationCertificate"
+      certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"
+    expect_status: 202
+
+  # And the dispatch really happened — a 202 on its own is an ACK of acceptance, not of the
+  # push. Consuming the Request also leaves the station's inbox clean for the pooled run.
+  - action: wait_for
+    message: CertificateInstall
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: CertificateInstall
+    messageType: Response
+    payload:
+      status: "Accepted"
