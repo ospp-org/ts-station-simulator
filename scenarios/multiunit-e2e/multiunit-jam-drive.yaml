@@ -61,8 +61,45 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 # for ecclients-sandbox.btrl.ro plus CURL_CA_BUNDLE on app/mqtt-consumer/horizon. It has
 # never been stood up.
 #
-# UN-SKIP WHEN THAT DOUBLE IS RUNNING AND THE STATION CAN BE TOLD THE ORDER IS PAID —
-# and un-skip in the same commit as the run that proves it, not before.
+# WHAT WAS MEASURED, 2026-08-27, on the local stack — and what it did NOT settle.
+#
+# The double was stood up and csms-app was made to reach it: `curl` from inside the app
+# container to https://ecclients-sandbox.btrl.ro/payment/rest/register.do answers 200 from
+# the double, over genuine TLS. The bootstrap seeded and READ BACK the MultiUnit service,
+# and hydrated the bay slug. All of that is proven.
+#
+# The scenario still could not run, and NOT for a reason in this file: the local stack does
+# not answer BootNotification at all. `service-catalog-update.yaml` — which ran 7/7 green on
+# the same recipe on 2026-08-25 — fails identically at the same step today. A control that
+# is not this file, failing the same way, is what makes that attribution rather than a
+# guess. mTLS from the host to :8883 completes (TLS 1.3, verify OK), so it is not transport;
+# csms-emqx logs `unrecoverable_resource_error` posting to `internal/mqtt/webhook`, which
+# `routes/internal.php` does not define — it declares only `internal/simulate-mqtt`.
+#
+# TWO DEFECTS IN docker-compose.money-e2e.yml, MEASURED, in the file that has never been
+# stood up end to end. Both were found by standing it up:
+#
+#   1. WRONG NETWORK. Every service in docker-compose.yml joins the named network
+#      `csms-network`; the money-e2e override puts the double on `default`. Measured: the
+#      double landed on `csms-server_default`, which csms-app is not on, so its
+#      `ecclients-sandbox.btrl.ro` alias was invisible to the app. And the consequence is
+#      worse than "cannot reach the double" — with the alias unreachable, csms-app resolved
+#      that name through PUBLIC DNS to 23.212.59.163 (akamaiedge), i.e. it would have
+#      silently talked to the REAL BT sandbox while the operator believed it was driving a
+#      controllable double. Working around it needs one command and no recreate:
+#      `docker network connect --alias ecclients-sandbox.btrl.ro csms-server_csms-network
+#      csms-bt-ipay-double`.
+#   2. extra_hosts POINTS THE APP AT ITSELF. The override sets
+#      `extra_hosts: ["ecclients-sandbox.btrl.ro:127.0.0.1"]` on `app`, with a comment
+#      saying it is "resolved via the network alias above at connect time". /etc/hosts is
+#      not resolved that way: csms-app's nsswitch is `hosts: files dns`, so the file wins
+#      over Docker's embedded DNS and the name would resolve to the app container itself.
+#      Not applied here — the CA was added to the app's system trust store instead, which
+#      is additive rather than the CURL_CA_BUNDLE replacement the override uses, and so
+#      does not take every other outbound HTTPS down with it.
+#
+# UN-SKIP WHEN THE LOCAL STACK ANSWERS BootNotification AGAIN AND THE DOUBLE IS ON
+# csms-network — and un-skip in the same commit as the run that proves it, not before.
 #
 # A NOTE ON THE HOST, because it is the one way this file can go red for a reason that is
 # not its own. PaymentUrl::to() roots every webpay route at WEBPAY_URL when that is set,
@@ -81,7 +118,25 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 # would destroy its subject: client-initiated starts are the opposite of the server-pushed
 # batch rounds this file exists to prove.
 requires_multiunit_service: 2
-skip_when_pooled: "Blocked on a SETTLEABLE PROCESSOR, and on nothing else — the earlier reason named BT, but the request dies at isWebpayReady (a credential check, PaymentLandingController:131-133) long before BT, and the three fixtures that were actually missing (the bay slug, the MultiUnit capacity, a CSRF capture in the runner) now exist. BT's sandbox cannot be settled without a card typed into its hosted form, which a scenario cannot do; csms-server's tools/bt-ipay-double/ can be told the order is paid and has never been stood up. Un-skip in the same commit as the run that proves it."
+# The gate, and it is ONE LINE so that lifting it is a deliberate act.
+#
+# NOT `skip_when_pooled` any more: this file now needs a BOOTSTRAPPED pool, because that is
+# where the bay slug and the MultiUnit catalog entry come from, and a key that skips it in
+# exactly that mode would mean it can never run at all.
+#
+# NOT `requires_pool` either, and the corpus gate that says so is right. That key means "this
+# file authenticates as the run's ephemeral tenant_owner" — an IDENTITY the bootstrap mints
+# and destroys — and `ScenarioRunner.requiresPool.test.ts` enforces the pairing with an
+# `auth:` block naming SIM_POOL_OWNER_*. What this file needs from a pool is FIXTURES, not
+# that identity, and borrowing the key would have made the gate mean less for the four files
+# that do use it correctly. The precondition is stated here and in the skip reason instead.
+#
+# `not-applicable` rather than `inconclusive` leaves the UAT run's exit code exactly where it
+# is. The honest kind is arguable — the thing this file exists to prove IS unavailable — but
+# moving it changes what --require-conclusive reports, and that is a separate decision.
+skip: true
+skip_kind: not-applicable
+skip_reason: "The purchase chain is built and the fixtures exist; what is missing is an environment. Needs (a) a processor that can be told the order is PAID — csms-server tools/bt-ipay-double/, which must be on the csms-network, not the `default` its compose file puts it on — and (b) a stack that answers BootNotification: measured 2026-08-27, the local stack answers none, and a control that ran 7/7 green on 2026-08-25 fails identically today."
 station:
   stationId: "{{stationId}}"
   bayCount: 1
@@ -200,6 +255,47 @@ steps:
       location: "ecclients-sandbox.btrl.ro"
     capture_header:
       payUrl: "location"
+
+  # FIND THE INTENT THIS PURCHASE CREATED. It is not observable from the purchase:
+  # the 302 above goes to the processor's hosted form, which carries the PROCESSOR's
+  # order id, not ours. It is discovered instead through the ordinary operator read
+  # — the same list the dashboard's Payments page renders — matched on reference_id,
+  # which for a session payment IS the bay.
+  #
+  # `data[referenceId=...]` selects by FIELD rather than by index because this
+  # collection has no ORDER BY the scenario can rely on, and "the most recent row"
+  # is the assertion that passes on someone else's.
+  #
+  # The expect_body is not decoration: `capture` on a selector that matches nothing
+  # stores undefined SILENTLY, and the failure would then surface one step later as
+  # a substitution error naming a variable rather than naming the intent that was
+  # never created.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/payments?status=pending&method=bt_ipay&per_page=50"
+    expect_status: 200
+    expect_body:
+      "data[referenceId={{bayId_1}}].referenceType": "session_payment"
+    capture:
+      intentId: "data[referenceId={{bayId_1}}].id"
+
+  # SETTLE IT. This is the door the customer's browser lands on coming back from the
+  # processor — unauthenticated by design — and it calls settleIntent() IN THE
+  # REQUEST: no queue, no callback wait, no webhook. BT iPay has no webhook channel
+  # at all (BtIpayProcessor::verifyWebhook always throws), so redirect-and-poll is
+  # the whole settlement design, and this is its synchronous half.
+  #
+  # WHY THE SYNCHRONOUS HALF IS THE ONLY ONE AVAILABLE HERE, and it is worth knowing
+  # before attributing a failure: the async half is `payment:poll-webpay`, scheduled
+  # everyMinute — and csms-server's compose defines NO scheduler service, so on this
+  # stack that command never runs. Even if it did, `pollPending` reads
+  # `findStalePending(webpay_poll_threshold_minutes)`, which is 2 by default, so the
+  # earliest it could settle this order is two minutes after it was bought. Every
+  # wait_for below is 60s. The net is not there, and it would be too slow if it were.
+  - action: api_call
+    method: GET
+    url: "{{webpay_url}}/pay/callback?intent={{captured.intentId}}"
+    expect_status: 200
 
   # UNIT 1 — TimerExpired (delivered)
   - action: wait_for
