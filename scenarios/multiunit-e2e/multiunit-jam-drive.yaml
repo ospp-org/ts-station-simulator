@@ -2,6 +2,65 @@ name: "Multi-Unit Jam Drive (unit 1 delivered, unit 2 jams)"
 description: "Boot single-bay station, report Available, then answer 2 server-pushed StartService rounds: unit 1 TimerExpired (delivered), unit 2 Fault (jam → batch stops, unit 3 never started → tail refund of the undelivered units)."
 # BLOCKED ON A SETTLEABLE PROCESSOR — everything else this file needed now exists.
 #
+# ==========================================================================================
+# RED ON UAT BY DESIGN, AND DELIBERATELY NOT MARKED SKIPPED. READ THIS BEFORE "FIXING" IT.
+# ==========================================================================================
+#
+# THE CAUSE, MEASURED 2026-08-27 rather than inferred from the failure:
+#
+#   - no interception container runs on the UAT host (`docker ps` names none)
+#   - inside csms-app-uat, `ecclients-sandbox.btrl.ro` resolves to 23.212.59.179, an Akamai
+#     address — i.e. public DNS, the REAL acquirer
+#   - `CURL_CA_BUNDLE` is unset in that container, so the default trust store is in use
+#
+# So the purchase reaches BT's genuine sandbox. `WebPaymentPoller::settleIntent` asks it
+# `getStatus(...)`, and it correctly answers that nobody paid — settling a real order means a
+# card typed into BT's hosted form, and a scenario cannot drive a browser. `unit_batches`
+# held ZERO rows and the newest `payment_intents` row on UAT was from 2026-07-02.
+#
+# WHY THIS CANNOT BE ARRANGED ON UAT. `tools/bt-ipay-double/` is local BY DECISION. Making
+# UAT reach it means a docker-network alias for `ecclients-sandbox.btrl.ro` plus
+# `CURL_CA_BUNDLE` pointing at the double's CA — and CURL_CA_BUNDLE REPLACES the trust store
+# rather than adding to it, so it applies to every outbound HTTPS call the container makes,
+# not just this one. The interception has a wider blast radius than the scenario it would
+# serve. That is an environment decision, not a defect in this file.
+#
+# WHY IT IS NOT `skip:`. A bare `skip:` would take the file out of the LOCAL runs too, where
+# the double exists and steps 0-9 pass — it would hide the only place this file works.
+#
+# WHY THERE IS NO TARGET-SCOPED SKIP. No skip key the runner understands reads the target:
+# `skip`/`skip_reason` are unconditional, `skip_when_pooled` and `requires_pool` read the run
+# MODE, `requires_files` reads the local filesystem — and ScenarioRunner.ts:1314 already says
+# in as many words that "a target has no equivalent". Adding one would take:
+#
+#   1. a `name` on TargetConfig, which BOTH declarations of it lack (cli/config.ts:7 and
+#      ScenarioRunner.ts:434), set in `loadTarget`
+#   2. a `skip_when_target` key on ScenarioDefinition, decided beside the `skip_when_pooled`
+#      branch at ScenarioRunner.ts:1760
+#   3. the two CLI pre-filters that size the identity pool (cli/index.ts:252 and :325)
+#   4. an entry in `SKIP_KEYS` (skipAge.ts:100), or the skip becomes invisible to the age
+#      report — the one instrument that stops a skip from going stale unnoticed
+#
+# AND IT WOULD STILL BE THE WRONG GUARD, which is the actual reason it is not built here.
+# `resolveTarget` (cli/index.ts:513-519) returns a config with NO NAME AT ALL when
+# `--csms-url` or `--mqtt-url` is passed — it never reaches `loadTarget`. So
+# `skip_when_target: uat` would not fire on `--csms-url https://api-uat.onestoppay.ro`,
+# a run against the very same server. The key would name a LABEL an operator can step around
+# rather than the CONDITION that matters, which is whether a processor reachable from the
+# server can be made to report PAID. A guard satisfied by a label is the shape this corpus
+# has repeatedly recorded as a defect, and it is not worth adding one more.
+#
+# WHAT WOULD MAKE THE SKIP HONEST: a probe of the CONDITION — the runner asking the server
+# side whether the double answers — which needs a channel the runner does not have (it runs
+# on the operator's machine; the DNS view that matters is the app container's). Until that
+# exists, a red with a measured reason is more honest than a green that was never run.
+#
+# WHERE IT FAILS NOW, and this part was repaired: step [9] asserts the intent reached
+# `succeeded` and fails in under three seconds with `expected "succeeded", but got "pending"`,
+# naming the intent. It used to run on to [10] and fail at 60s with "Timeout waiting for
+# StartService Request", which pointed at the station and the MQTT path — three steps and one
+# subsystem from the cause.
+#
 # WIRE MODEL: in a multi-unit batch the SERVER pushes StartService to the station, one
 # round per unit. This file used to be PURELY REACTIVE — it waited for rounds nothing in
 # it had asked for — so even with a working card leg it would have timed out. The steps
