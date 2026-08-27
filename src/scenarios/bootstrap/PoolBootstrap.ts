@@ -1063,6 +1063,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})`;
   const bays = `SELECT id FROM bays WHERE station_id IN (${sids})`;
   const sess = `SELECT id FROM sessions WHERE bay_id IN (${bays})`;
+  // The BUSINESS ids of this run's bays (`bay_<hex>`), distinct from the UUIDs above.
+  // `unit_batches.bay_id` and `payment_intents.reference_id` both carry the OSPP string, and
+  // scoping the money sweep by them is what keeps it strictly inside rows this run created —
+  // the organisation is sometimes REUSED rather than minted, so an org-scoped delete could
+  // reach another run's intents.
+  const bayBizIds = `SELECT bay_id FROM bays WHERE station_id IN (${sids})`;
+  const runIntents = `SELECT id FROM payment_intents WHERE reference_id IN (${bayBizIds})`;
 
   // Topological delete order over the AUTHORITATIVE FK graph (pg_constraint,
   // verified — not assumed; an earlier hand-guessed order shipped a bug that
@@ -1081,7 +1088,27 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // an empty pool is a no-op and a re-run deletes nothing (idempotent).
   const lines = [
     'BEGIN;',
-    `DELETE FROM refunds WHERE session_id IN (${sess});`,
+    // ── The money path. Added 2026-08-27, when a scenario first reached SETTLEMENT.
+    //
+    // None of these five tables was swept before, and none needed to be: no scenario had
+    // ever completed a card payment, so no run produced an intent, a refund or a ledger row.
+    // `multiunit-jam-drive` now does — it buys a two-unit batch, jams the second unit and
+    // takes the tail refund — and the first pooled run of it failed teardown on
+    // `payment_ledger_refund_id_fkey`, leaving an org, a station, a batch, intents, refunds
+    // and ledger rows behind with a warning.
+    //
+    // Order is over the real FK graph, read from pg_constraint rather than guessed:
+    //   payment_ledger, platform_settlement_ledger  → payment_intents AND refunds
+    //   refunds                                     → payment_intents
+    //   sessions                                    → unit_batches   (swept below)
+    //   unit_batches                                → payment_intents
+    // so the two ledgers go first, refunds next, and unit_batches + payment_intents only
+    // after the `sessions` delete further down.
+    `DELETE FROM payment_ledger WHERE payment_intent_id IN (${runIntents}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}));`,
+    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${runIntents}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}));`,
+    // Widened from session_id alone: a BATCH tail refund is raised against the intent for
+    // units that never started, so it has no session to be found by.
+    `DELETE FROM refunds WHERE session_id IN (${sess}) OR payment_intent_id IN (${runIntents});`,
     `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations, stations,
     // sessions (reconciled_session_id) — no ON DELETE CASCADE. Scoped by station_id (run-
@@ -1091,6 +1118,9 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // both the station- and user-scoped teardowns).
     `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
     `DELETE FROM sessions WHERE bay_id IN (${bays});`,
+    // After sessions (which reference it) and before payment_intents (which it references).
+    `DELETE FROM unit_batches WHERE bay_id IN (${bayBizIds});`,
+    `DELETE FROM payment_intents WHERE reference_id IN (${bayBizIds});`,
     `DELETE FROM reservations WHERE bay_id IN (${bays});`,
     `DELETE FROM service_catalogs WHERE station_id IN (${sids});`,
     `DELETE FROM station_configurations WHERE station_id IN (${sids});`,
@@ -1173,6 +1203,11 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   if (handle.createdOrgId) {
     const createdOrgLit = sqlLiteral(handle.createdOrgId);
     lines.push(
+      // Symmetric with seedBtCredentialForOrg: the bootstrap writes this row, so the
+      // teardown owns removing it. Without it the org delete FK-blocks and the whole
+      // per-run world — org, stations, bays, batch, intents — is left behind with a
+      // warning, which is how the FIRST settling run ended.
+      `DELETE FROM tenant_payment_credentials WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organization_members WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM corporate_policies WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM invitations WHERE organization_id = ${createdOrgLit};`,
