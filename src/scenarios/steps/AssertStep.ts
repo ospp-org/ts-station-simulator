@@ -1,21 +1,25 @@
+import { getNestedValue } from './ApiCallStep.js';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
 
-function getNestedValue(obj: unknown, path: string): unknown {
-  const parts = path.split('.');
-  let current: unknown = obj;
-  for (const part of parts) {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    if (typeof current !== 'object') {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
+/**
+ * `getNestedValue` is IMPORTED rather than kept local, and the difference is a capability,
+ * not a tidy-up.
+ *
+ * This file carried its own copy: `path.split('.')` and plain key indexing, with no array
+ * selector. So an `assert` could only reach into an array BY POSITION — `payload.services.0`
+ * — which pins whichever element the server happened to order first. The api_call side had
+ * already learned that lesson the expensive way (see the comment on ARRAY_SELECTOR_RE: three
+ * consecutive reads of `data.bays` came back [2,3,4,1], [2,3,4,1], [3,4,1,2]) and grew
+ * `name[field=value]` plus a splitter that does not tear a selector apart on a dotted VALUE.
+ *
+ * Two resolvers for one path syntax meant an assertion's power depended on which step it was
+ * written in, which nothing in the YAML makes visible. The imported one is a strict superset
+ * — identical null/non-object guards, identical plain-key indexing — so every existing
+ * `field:` keeps resolving exactly as before, and `field: payload.services[serviceId=svc_dry]`
+ * now resolves at all.
+ */
 
 /** Fields under this prefix read off the live connection, not a received message — see below. */
 const CONNECTION_FIELD_PREFIX = 'connection.';
