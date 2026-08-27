@@ -24,10 +24,21 @@ description: "On a station this file registers, provisions and connects: publish
 # not per station, and `owns_station` puts this file's station in the same org as the pool's.
 # So the id below is derived from the station id, which is fresh per scenario.
 #
-# ONE SERVICE, NOT FOUR, DELIBERATELY. `details.withheld` is a list, and this corpus pinned an
-# unordered list once already this week and got a red for it (4015's `driftedKeyKinds`). With
-# exactly one withheld service the order cannot vary, so `withheld.0` is a stable address
-# rather than whichever row the query happened to return first.
+# ONE SERVICE, NOT FOUR, DELIBERATELY. `details.withheld` is a list built from a query with
+# no `ORDER BY`, so `withheld.1` would be whichever row Postgres happened to return second.
+# With exactly one withheld service the order cannot vary and `withheld.0` is a stable address.
+#
+# THE PRECEDENT THIS USED TO CITE WAS WRONG, and the correction is left here rather than
+# deleted because the wrong version is what a reader would otherwise reconstruct. This comment
+# said the corpus "pinned an unordered list once already this week and got a red for it
+# (4015's `driftedKeyKinds`)". That red was real but misdiagnosed: `driftedKeyKinds` is sorted
+# before it is emitted and has been since 2026-07-27, so the list was stable and the
+# EXPECTATION was pinned to the wrong order. That assertion is now restored, in sorted order,
+# in provision-rejected-key-and-topology-rungs.yaml.
+#
+# The caution below stands on its own evidence — an un-ORDERed query is genuinely unordered —
+# and does not need the borrowed precedent. Which is the lesson: one file's red should not
+# become another file's rule until the red has been explained.
 #
 # ── WHY IT NEEDS A STATION OF ITS OWN, measured rather than assumed ────────────────────────
 # Neither arm is reachable on a pool station. `seedServiceCatalog` gives every pool station

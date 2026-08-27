@@ -240,25 +240,29 @@ steps:
       errorCode: 4015
       errorText: "PROVISIONING_KEY_MISMATCH"
       details.reason: "key_drift"
-      # `recoverable: false` is asserted and the drifted-key LIST is not, and the second half
-      # is the deliberate one.
+      # THE LIST IS ASSERTED, AND IN THIS ORDER, BECAUSE THE ORDER IS DETERMINISTIC.
       #
-      # MEASURED 2026-08-26, on the first run of this file: the assertion here WAS
-      # `details.driftedKeyKinds: ["tls", "receipt"]` and the server answered
-      # `["receipt", "tls"]`. Everything else in this rung — 409, 4015, the errorText, the
-      # reason — was exactly right. The order is not a contract: the list is built from
+      # This assertion was removed on 2026-08-26 after a red — it read
+      # `["tls", "receipt"]` and the server answered `["receipt", "tls"]` — and the removal
+      # was reasoned from the accumulation site: `$drifted` is built from
       # `array_unique([...array_keys($bound), ...array_keys($presented)])` where `$bound` is a
-      # `pluck` off `provisioning_bound_keys` with NO `ORDER BY`
-      # (CertificateManager.php:1238-1294), so it is whatever Postgres returns for those two
-      # rows. Flipping this assertion to match what one run produced would pin a coincidence
-      # and turn the file into a flake with a schedule.
+      # `pluck` off `provisioning_bound_keys` with no `ORDER BY`, so it looked like Postgres
+      # row order leaking onto the wire.
       #
-      # So do not "strengthen" this by adding the list back. Proving WHICH kinds drifted needs
-      # either an order-insensitive matcher, or a drift of exactly ONE kind — which would be a
-      # better test anyway, since it would show the comparison is per-kind rather than
-      # all-or-nothing, and neither exists yet. The instability is recorded as a server finding
-      # in docs/MEASURED-server-refusal-defects-*.md: `errorDescription` interpolates the same
-      # list, so its prose varies run to run too.
+      # It is not. `ProvisioningKeyMismatchException::keyDrift()` calls `sort($driftedKinds)`
+      # as its FIRST statement, before both the stored array and the prose that interpolates
+      # it — since `12a648d9` (2026-07-27), a month before that run and an ancestor of the
+      # commit it was measured against. `"receipt" < "tls"`, so the answer we got WAS the
+      # sorted one and the expectation was simply pinned to the wrong order.
+      #
+      # A single disagreement cannot tell "the server varies" from "we asserted the wrong
+      # order", and reading it as the former cost this file its only per-kind assertion. The
+      # server side is pinned by `DriftedKeyKindsAreOrderedTest`, which also proves the
+      # exception has exactly ONE public factory, so no instance can reach the wire unsorted.
+      #
+      # Still worth having a one-kind drift eventually: it would show the comparison is
+      # per-kind rather than all-or-nothing, which two-kind drift cannot.
+      details.driftedKeyKinds: ["receipt", "tls"]
       #
       # `recoverable: false` is worth pinning on its own: spec/04-flows.md:369 seats 4015 last
       # in the chain BECAUSE its recovery is the most expensive of the eight, and a server that

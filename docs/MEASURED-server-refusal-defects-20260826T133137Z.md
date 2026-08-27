@@ -7,55 +7,53 @@ opened and read in `csms-server` at **`c5878a3d`**; nothing in that repo was mod
 **Who this is for.** A session working in `csms-server`. Each finding names the file:line, what
 is there today, what an integrator observes, and what the decision actually is — because three
 of the five are **deliberate**, with the rationale written in the code, and the thing to decide
-is not "is this a bug" but "who pays for it". Findings 4 and 5 are not: they are plain defects.
+is not "is this a bug" but "who pays for it". Finding 4 is not: it is a plain defect. Finding 5
+was withdrawn on 2026-08-27 — it was not a defect at all; see the entry, which is kept as a
+tombstone so the claim is not rediscovered and repaired.
 
 **READ IN THE ORDER PRINTED; THE NUMBERS ARE IDENTIFIERS, NOT RANKING.** Findings 15-17 open
 Part Two because each one changes what can be DONE about it: 15 cannot be fixed in this repo at
 all (the repair was tried and it broke the wire), 16 is a two-line fix with a spec-facing
-consequence, and 17 is a product decision wearing the shape of a harness gap. Finding 5 is first
-because it is the cheapest to fix — one `->orderBy` — and because it is the only one that makes
-the prose a HUMAN reads vary between runs of the same code on the same input. It is also the
-only one of the five not found by reading: a scenario went red on it. The numbers were assigned
+consequence, and 17 is a product decision wearing the shape of a harness gap. Finding 5 still
+sits first, now as a WITHDRAWAL rather than a finding — it was the only one of the five not
+found by reading (a scenario went red on it), and it is the only one that turned out not to be
+a defect at all, which is worth meeting before the four that are. The numbers were assigned
 when the file was written and are left alone, so the commit that introduced it — which says
 "the silent one is first", true of the order it shipped in — stays reconcilable with this file.
 
-**Why they are grouped.** All four share one consequence: **a firmware author who makes a
-mistake cannot tell from the wire what he did wrong.** Individually each is defensible.
+**Why they are grouped.** The remaining four share one consequence: **a firmware author who
+makes a mistake cannot tell from the wire what he did wrong.** Individually each is defensible.
 Together they are the reason an integration week becomes an integration month.
 
 ---
 
-## 5. `4015`'s `driftedKeyKinds` has no stable order, and its prose interpolates it
+## 5. WITHDRAWN 2026-08-27 — NOT A DEFECT. Do not re-open; there is nothing to repair.
 
-**Where.** `app/Shared/Crypto/CertificateManager.php:1290-1294`:
-```php
-foreach (array_unique([...array_keys($bound), ...array_keys($presented)]) as $kind) {
-    if (($bound[$kind] ?? null) !== ($presented[$kind] ?? null)) { $drifted[] = $kind; }
-}
-```
-`$bound` comes from `DB::table('provisioning_bound_keys')->…->pluck('spki_der_b64', 'key_kind')`
-(`:1238-1241`) with **no `ORDER BY`**, so the list's order is whatever Postgres returns for
-those rows.
+**The finding that stood here claimed `4015`'s `driftedKeyKinds` had no stable order and cost
+"one `->orderBy`". It was wrong.** The body has been removed rather than annotated, because a
+finding that still reads as a finding gets repaired again by the next person; what is left is
+only enough to stop that.
 
-**How it was found.** Not by reading — by a scenario going red on it. A retry with both keys
-regenerated asserted `details.driftedKeyKinds: ["tls","receipt"]` and the server answered
-`["receipt","tls"]`. Everything else in that response was exactly right: `409`, `4015`,
-`PROVISIONING_KEY_MISMATCH`, `details.reason: "key_drift"`.
+`ProvisioningKeyMismatchException::keyDrift()` calls `sort($driftedKinds)` as its **first
+statement**, before both the stored array and the prose that interpolates it. Introduced in
+`12a648d9` (2026-07-27) — a month before this document was written, and an ancestor of
+`c5878a3d`, the commit this document says it read.
 
-**Why it reaches the integrator.** `errorDescription` interpolates the same list — the
-measured body reads *"bound to a different public key for: receipt, tls"* — so the prose a
-human reads and the array a machine matches on both vary between runs of the same code
-against the same input. `4015` is `recoverable: false`, which means this is the message a
-firmware author reads at the one moment the spec tells him to stop retrying and call an
-operator.
+**The observation was real; the inference was not.** The scenario asserted `["tls","receipt"]`
+and the server answered `["receipt","tls"]`. `"receipt" < "tls"` — the server's answer IS the
+sorted one. A single disagreement cannot distinguish "the server varies between runs" from "the
+expectation is pinned to the wrong order", and it was the latter. Reading it as instability
+also cost `provision-rejected-key-and-topology-rungs.yaml` its only per-kind assertion, which
+has now been restored in sorted order.
 
-**Cost of the fix.** One `->orderBy('key_kind')`, or sorting `$drifted` before it is thrown.
-Whether the ORDER is part of the contract is a spec question; whether it should be
-*deterministic* is not.
+The upstream reasoning was correct as far as it went — `$bound` really is a `pluck` with no
+`ORDER BY`, and `$drifted` really is accumulated in Postgres row order. What it missed is that
+the array is sorted before anything reads it. **Tracing an accumulation site is not tracing the
+value to the wire.**
 
-**What the scenario does meanwhile.** `provision-rejected-key-and-topology-rungs.yaml` pins
-`errorCode`, `errorText`, `details.reason` and `recoverable`, and deliberately does NOT pin
-the list — with a comment saying why, so it is not "strengthened" back into a flake.
+Pinned on the server side by `DriftedKeyKindsAreOrderedTest`, which also establishes by
+reflection that the exception has exactly ONE public factory and a private constructor, so no
+instance can reach the wire unsorted.
 
 ---
 

@@ -5,29 +5,36 @@ description: "POST /api/v1/sessions/start naming a well-formed bay_id no station
 # appeared NOWHERE in the corpus: `grep '3005\|BAY_NOT_FOUND'` over all scenarios
 # returned nothing. The server's most-emitted refusal had zero proof.
 #
-# THREE THINGS MEASURED WHILE WRITING IT, all of them server findings and none of
-# them fixable here (csms-server is another repo):
+# THREE THINGS WERE MEASURED WHILE WRITING IT. Two are now FIXED in csms-server
+# (`3a3d41d2`) and are kept here only as history, because the assertion below is
+# unaffected by that fix and a reader needs to know why it did not move:
 #
-#   1. SEVEN OF THE FIFTEEN SITES DO NOT MEAN "BAY". Every DeviceManagement action
-#      that cannot find a STATION throws 3005 with the text "Station {id} not
-#      found" — TriggerMessageAction:37, ResetStationAction:40,
-#      InstallCertificateAction:37, SendDataTransferAction:37,
-#      TriggerCertificateRenewalAction:39, SetMaintenanceModeAction:39,
-#      UpdateServiceCatalogAction:236. An integrator who looks up 3005 reads "bay"
-#      and goes looking at his bays.
+#   1. FIXED. Seven of the fifteen sites did not mean "bay": every DeviceManagement
+#      action that could not find a STATION threw 3005 with the text "Station {id}
+#      not found". All seven now answer 2001 STATION_NOT_REGISTERED, aligning with
+#      four sibling files in the same directory that already did. THIS FILE'S 3005
+#      IS NOT ONE OF THEM — SessionController's is a genuine bay lookup, which is
+#      exactly why this door was chosen for it.
 #
-#   2. AND THOSE SEVEN ARE UNREACHABLE ANYWAY. Every one of them sits behind
-#      StationManagementController::findStationByOsppIdOrFail (:277-288), which
-#      returns `{"message": "Station not found", "station_id": ...}` with HTTP 404
-#      and NO ospp code at all, before the action runs. So the branch that carries
-#      the wrong noun is dead, and what an operator actually receives on that door
-#      carries no machine-readable code whatsoever.
+#   2. WRONG WHEN WRITTEN, and worth keeping as a caution. This said all seven were
+#      unreachable behind StationManagementController::findStationByOsppIdOrFail.
+#      Five are. TWO ARE NOT: `installCertificate` and `triggerCertificateRenewal`
+#      never call it, so they reach the action with an unresolved id — which means
+#      the rename in (1) MOVED THE WIRE on those two routes, 3005/404 -> 2001/422.
+#      The claim was reasoned from "every caller resolves the station first" without
+#      enumerating the callers, and enumerating them is what found the exception.
 #
-#   3. AN EIGHTH SITE HAS NO CALLER. GenerateQrCodeAction:52 emits 3005 and
-#      `grep -rn 'GenerateQrCodeAction' app/ routes/` finds only its own class
-#      declaration.
+#      No scenario in this corpus asserted the old value, because none exercises
+#      station-not-found on those two routes at all — they are the exits recorded as
+#      ACCEPTED AS UNPROVEN in the refusal document. So nothing here went red, and
+#      that silence is a coverage fact, not a clean bill of health.
 #
-# So of fifteen emission sites, this file can reach the class the code is actually
+#   3. STILL TRUE. An eighth site has no caller: GenerateQrCodeAction:52 emits 3005
+#      and `grep -rn 'GenerateQrCodeAction' app/ routes/` finds only its own class
+#      declaration. It is a real bay lookup ("Bay '{id}' not found"), so the rename
+#      in (1) correctly left it alone.
+#
+# So of the fifteen emission sites, this file reaches the class the code is actually
 # NAMED for, and it reaches it through the door an integrator uses first.
 #
 # WHY THIS DOOR AND NOT /api/v1/reservations, which also emits 3005 for a missing
