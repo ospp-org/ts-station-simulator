@@ -888,6 +888,30 @@ export async function verifyMultiUnitSeed(
 }
 
 /**
+ * POSIX single-quote a string so a REMOTE shell passes it through verbatim.
+ *
+ * WHY THIS EXISTS RATHER THAN `JSON.stringify`. ssh concatenates its command arguments and
+ * hands them to the login shell on the far side, so whatever `runAppPhp` builds is re-parsed
+ * over there. `JSON.stringify` produces a DOUBLE-quoted word, and a POSIX shell still expands
+ * `$name` inside double quotes. The only caller's snippet opens with `$a = require ...`, so
+ * the far-side shell substituted `$a` with the empty string and php received ` = require ...`
+ * — "PHP Parse error: syntax error, unexpected token \"=\", expecting end of file". The
+ * bootstrap died there AFTER provisioning five stations and seeding the catalog, and the
+ * message named php, not the shell that had already eaten the variable.
+ *
+ * Single quotes suppress every expansion; `'\''` is the standard way to carry a literal
+ * single quote through them (close, escaped quote, reopen).
+ *
+ * THE LOCAL BRANCH NEVER HAD THIS BUG, which is why it went unnoticed: `spawn` passes argv
+ * directly with no shell between. Only a run against UAT — i.e. every pooled run — took the
+ * ssh path. Proven two-armed against csms-app-uat: the double-quoted form reproduces the
+ * parse error byte for byte, the single-quoted form returns the ciphertext.
+ */
+export function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Run a PHP snippet inside the APPLICATION container, with the framework booted, and return
  * its stdout.
  *
@@ -911,7 +935,7 @@ export function runAppPhp(code: string, cfg: UatDbConfig = uatDbConfigFromEnv())
         '-o', 'ConnectTimeout=15',
         '-o', 'BatchMode=yes',
         cfg.sshHost,
-        `docker exec -i ${cfg.appContainer} php -r ${JSON.stringify(code)}`,
+        `docker exec -i ${cfg.appContainer} php -r ${shellSingleQuote(code)}`,
       ];
 
   return new Promise<string>((resolve, reject) => {
