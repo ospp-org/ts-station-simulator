@@ -285,13 +285,19 @@ steps:
   # at all (BtIpayProcessor::verifyWebhook always throws), so redirect-and-poll is
   # the whole settlement design, and this is its synchronous half.
   #
-  # WHY THE SYNCHRONOUS HALF IS THE ONLY ONE AVAILABLE HERE, and it is worth knowing
-  # before attributing a failure: the async half is `payment:poll-webpay`, scheduled
-  # everyMinute — and csms-server's compose defines NO scheduler service, so on this
-  # stack that command never runs. Even if it did, `pollPending` reads
-  # `findStalePending(webpay_poll_threshold_minutes)`, which is 2 by default, so the
-  # earliest it could settle this order is two minutes after it was bought. Every
-  # wait_for below is 60s. The net is not there, and it would be too slow if it were.
+  # WHY THE SYNCHRONOUS HALF AND NOT THE ASYNC ONE — and the first version of this
+  # comment got the reason wrong, so both are recorded. It claimed the async half
+  # does not exist on this stack because csms-server's compose defines no scheduler
+  # service. The compose half of that is true and the conclusion is FALSE: the app
+  # IMAGE runs one. Measured in the running container — `php artisan schedule:work`
+  # is PID 24 under supervisord — so `payment:poll-webpay` does fire every minute.
+  #
+  # The real reason is the THRESHOLD, and it survives the correction. `pollPending`
+  # reads `findStalePending(config('payment.intent.webpay_poll_threshold_minutes'))`,
+  # which is 2, so the poller does not look at an order until two minutes after it
+  # was bought. Every wait_for below is 60s. The net is there; it is slower than the
+  # thing it would be catching, and a scenario that waited for it would be asserting
+  # on a timeout rather than on a settlement.
   - action: api_call
     method: GET
     url: "{{webpay_url}}/pay/callback?intent={{captured.intentId}}"
