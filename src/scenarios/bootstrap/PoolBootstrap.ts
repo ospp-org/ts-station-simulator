@@ -25,6 +25,7 @@ import {
   MULTIUNIT_SERVICE_ID,
   multiUnitSeedService,
   readBaySlugs,
+  seedBtCredentialForOrg,
   verifyMultiUnitSeed,
   runUatSql,
   sqlLiteral,
@@ -752,6 +753,17 @@ export async function bootstrapPool(
         `[bootstrap] verified ${MULTIUNIT_SERVICE_ID}: MultiUnit, max_unit_quantity >= ` +
         `${options.multiUnitCapacity}, on ${handle.stationIds.length} station(s)`,
       );
+    }
+
+    // 5a. BT iPay credentials for THIS run's organisation. Gated on the same declaration as
+    //     the multi-unit service, because they are halves of one precondition: a scenario
+    //     that buys a batch buys it with a card, and `isWebpayReady()` refuses the pay page
+    //     outright when the settling org has no active credential. The org is minted by this
+    //     bootstrap, so no seeder run beforehand could ever have covered it — see
+    //     seedBtCredentialForOrg for why SQL alone cannot write the row.
+    if (options.multiUnitCapacity !== undefined) {
+      await seedBtCredentialForOrg(handle.orgId, dbConfig);
+      console.log(`[bootstrap] seeded + verified BT iPay credentials for org ${handle.orgId}`);
     }
 
     // 5b. The bay slugs. NOT available from any API — the pay page's whole identity

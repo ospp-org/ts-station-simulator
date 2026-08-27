@@ -36,6 +36,7 @@ import { StatusNotificationHandler } from '../handlers/StatusNotificationHandler
 import { MeterValuesHandler } from '../handlers/MeterValuesHandler.js';
 import { SecurityEventHandler } from '../handlers/SecurityEventHandler.js';
 import chalk from 'chalk';
+import { collectSkipAges, formatSkipAgeReport } from '../scenarios/skipAge.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { X509Certificate } from 'node:crypto';
@@ -638,6 +639,32 @@ function printConsoleReport(results: ScenarioResult[]): void {
     }
   }
   console.log(`  Duration: ${totalDuration}ms`);
+
+  // THE AGE OF EVERY SKIP, oldest first. A skip is the only claim in this corpus that
+  // nothing ever checks — every other assertion is evaluated on every run, while "this file
+  // cannot run because X" is evaluated never. The cost is drift: a file nobody runs keeps
+  // compiling and keeps linting while the system moves under it, and `Skipped: 16` reads as
+  // harmless whether the oldest is a week or five months.
+  //
+  // REPORT ONLY, no threshold, no failure — and that is the decision, not a first step
+  // someone forgot to finish. A gate that fails past an age is satisfied by REWRITING THE
+  // REASON, which costs the reason the only thing that makes it worth reading. The two
+  // stronger forms (a dated re-attestation ceiling, which fails on a stale DATE that prose
+  // cannot fix; and periodically RUNNING the skipped files to check they fail for the reason
+  // they declare) are arguments these numbers can now settle instead of intuition.
+  //
+  // Reads the CORPUS, not this run's selection: what has stopped being exercised does not
+  // depend on which subset was invoked.
+  try {
+    const report = formatSkipAgeReport(collectSkipAges('scenarios'));
+    if (report.length > 0) {
+      console.log();
+      console.log(chalk.gray(report[0]));
+      for (const line of report.slice(1)) console.log(chalk.gray(line));
+    }
+  } catch {
+    // Never let a reporting aid take down a run — see skipAge.ts on the git fallback.
+  }
 
   // THE DENOMINATOR, always printed. "0 non-conformant" is a measurement only
   // next to the number of messages actually judged; on its own it is equally

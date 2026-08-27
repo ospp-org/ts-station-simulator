@@ -25,6 +25,17 @@ export interface UatDbConfig {
   container: string;
   dbUser: string;
   dbName: string;
+  /**
+   * The APPLICATION container, distinct from the database one above.
+   *
+   * Needed for exactly one thing, and only because SQL cannot do it:
+   * `tenant_payment_credentials.password` is an `encrypted` Eloquent cast, so the column
+   * holds Laravel ciphertext keyed by APP_KEY. A row written with a plaintext password is
+   * not a credential — it throws `MerchantCredentialUnreadableException` on read, which the
+   * poller treats as a PERMANENT error and pages an operator. So the ciphertext has to be
+   * produced by the application itself.
+   */
+  appContainer: string;
 }
 
 export function uatDbConfigFromEnv(): UatDbConfig {
@@ -37,6 +48,14 @@ export function uatDbConfigFromEnv(): UatDbConfig {
     container: process.env.UAT_DB_CONTAINER ?? 'csms-postgres-uat',
     dbUser: process.env.UAT_DB_USER ?? 'csms_uat',
     dbName: process.env.UAT_DB_NAME ?? 'csms_uat',
+    // Defaulted off the DB container's own naming rather than hardcoded: a run pointed at
+    // the local stack (`UAT_DB_CONTAINER=csms-postgres`) wants `csms-app`, and the UAT one
+    // (`csms-postgres-uat`) wants `csms-app-uat`. One override, `UAT_APP_CONTAINER`.
+    appContainer:
+      process.env.UAT_APP_CONTAINER ??
+      ((process.env.UAT_DB_CONTAINER ?? 'csms-postgres-uat').endsWith('-uat')
+        ? 'csms-app-uat'
+        : 'csms-app'),
   };
 }
 
@@ -864,6 +883,136 @@ export async function verifyMultiUnitSeed(
     throw new Error(
       `verifyMultiUnitSeed: the multi-unit catalog seed did not land as declared, so no ` +
         `unit_count > 1 purchase can succeed:\n  - ${problems.join('\n  - ')}`,
+    );
+  }
+}
+
+/**
+ * Run a PHP snippet inside the APPLICATION container, with the framework booted, and return
+ * its stdout.
+ *
+ * THE ONLY CALLER IS {@link seedBtCredentialForOrg}, and the narrowness is the point. This is
+ * a strictly wider privilege than {@link runUatSql} — that one can only reach the database,
+ * this one runs application code — so it exists for the single case where SQL is structurally
+ * incapable: producing Laravel ciphertext for an `encrypted` cast.
+ *
+ * NOT `artisan db:seed --class=BtSandboxCredentialSeeder`, which was the obvious move and is
+ * the wrong one: that seeder walks EVERY `type=tenant` organisation. On UAT that is fourteen
+ * organisations and twenty-eight rows, none of which the run owns, all of them left behind.
+ * This produces one string, and the row it becomes is written by the SQL channel, scoped to
+ * the organisation this run created.
+ */
+export function runAppPhp(code: string, cfg: UatDbConfig = uatDbConfigFromEnv()): Promise<string> {
+  const local = isLocalDbHost(cfg);
+  const args = local
+    ? ['exec', '-i', cfg.appContainer, 'php', '-r', code]
+    : [
+        ...sshIdentityArgs(cfg),
+        '-o', 'ConnectTimeout=15',
+        '-o', 'BatchMode=yes',
+        cfg.sshHost,
+        `docker exec -i ${cfg.appContainer} php -r ${JSON.stringify(code)}`,
+      ];
+
+  return new Promise<string>((resolve, reject) => {
+    const child = local ? spawn('docker', args) : spawn('ssh', args);
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += String(d); });
+    child.stderr.on('data', (d) => { err += String(d); });
+    child.on('error', reject);
+    child.on('close', (code2) => {
+      if (code2 === 0) resolve(out.trim());
+      else reject(new Error(`runAppPhp exited ${code2}: ${err.trim() || out.trim()}`));
+    });
+  });
+}
+
+/** The BT iPay sandbox account, as `database/seeders/BtSandboxCredentialSeeder.php` carries it. */
+const BT_SANDBOX_USERNAME = 'test_iPay3_api';
+const BT_SANDBOX_PASSWORD = 'test_iPay3_ap!e4r';
+
+/**
+ * Give ONE organisation an active BT iPay credential, so the webpay landing page will serve
+ * it instead of redirecting to `payment.error?reason=payment_unavailable`.
+ *
+ * WHY THE BOOTSTRAP HAS TO DO THIS AT ALL. `isWebpayReady()` requires an active row on the
+ * SETTLING organisation, and `organizations.payment_mode` defaults to `tenant` — so the
+ * settling org is the operational one, not the platform. `--bootstrap-pool` mints a FRESH
+ * organisation on every run. There is therefore no moment at which a credential row could
+ * pre-exist for it: not a seeder run beforehand, not a fixture, not a manual insert. Either
+ * the bootstrap writes it or no pooled run can ever reach the pay page.
+ *
+ * WHY IT IS AN UPSERT ON (organization_id, environment). That pair is UNIQUE at the schema
+ * level, and a re-run against a kept pool must be a no-op rather than a constraint violation.
+ *
+ * BOTH ENVIRONMENTS. `isWebpayReady` is NOT filtered by `payment.env` — any active row
+ * satisfies it — but `resolveActiveForTenant`, which the charge actually uses, IS. Writing
+ * only `sandbox` would pass the admission check and then fail at the charge on a server
+ * configured for production, which is the shape of failure this seeds against.
+ */
+export async function seedBtCredentialForOrg(
+  orgId: string,
+  cfg: UatDbConfig = uatDbConfigFromEnv(),
+): Promise<void> {
+  const cipher = await runAppPhp(
+    'require "/var/www/html/vendor/autoload.php";' +
+      '$a = require "/var/www/html/bootstrap/app.php";' +
+      '$a->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();' +
+      `echo Illuminate\\Support\\Facades\\Crypt::encryptString(${JSON.stringify(BT_SANDBOX_PASSWORD)});`,
+    cfg,
+  );
+
+  // A Laravel `encrypted` payload is base64 of a JSON object carrying iv/value/mac. Checking
+  // the shape here is not decoration: a `php -r` that failed to boot prints a PHP warning to
+  // stdout and exits 0, and that string would be INSERTed as if it were a credential — a row
+  // that looks present to isWebpayReady and throws on the first real charge.
+  if (!/^[A-Za-z0-9+/=]{40,}$/.test(cipher)) {
+    throw new Error(
+      `seedBtCredentialForOrg: the app container did not return a Laravel ciphertext ` +
+        `(got ${JSON.stringify(cipher.slice(0, 120))}). A malformed value here becomes a row ` +
+        `that passes isWebpayReady and then throws MerchantCredentialUnreadableException at ` +
+        `the charge, which the poller treats as permanent and pages on.`,
+    );
+  }
+
+  const rows = ['sandbox', 'production']
+    .map(
+      (env) =>
+        `(gen_random_uuid(), ${sqlLiteral(orgId)}, ${sqlLiteral(env)}, ` +
+        `${sqlLiteral(BT_SANDBOX_USERNAME)}, ${sqlLiteral(cipher)}, true, NOW(), NOW())`,
+    )
+    .join(',\n  ');
+
+  await runUatSql(
+    [
+      'BEGIN;',
+      'INSERT INTO tenant_payment_credentials (id, organization_id, environment, username, password, is_active, created_at, updated_at)',
+      'VALUES',
+      `  ${rows}`,
+      'ON CONFLICT (organization_id, environment) DO UPDATE SET',
+      '  username = EXCLUDED.username,',
+      '  password = EXCLUDED.password,',
+      '  is_active = true,',
+      '  updated_at = NOW();',
+      'COMMIT;',
+    ].join('\n'),
+    cfg,
+  );
+
+  // Read back the two facts isWebpayReady actually consults. A silent zero here is the
+  // difference between "the pay page serves" and "302 payment_unavailable at step one".
+  const out = (
+    await runUatSql(
+      `COPY (SELECT count(*) FROM tenant_payment_credentials ` +
+        `WHERE organization_id = ${sqlLiteral(orgId)} AND is_active = true) TO STDOUT;`,
+      cfg,
+    )
+  ).trim();
+  if (out !== '2') {
+    throw new Error(
+      `seedBtCredentialForOrg: expected 2 active credential rows for ${orgId}, found ` +
+        `${JSON.stringify(out)} — the pay page would answer payment_unavailable.`,
     );
   }
 }

@@ -157,9 +157,6 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 # would destroy its subject: client-initiated starts are the opposite of the server-pushed
 # batch rounds this file exists to prove.
 requires_multiunit_service: 2
-skip: true
-skip_kind: not-applicable
-skip_reason: "Steps 0-8 pass on the local stack with the BT double and the batch branch DID execute — unit_batches got its first row ever (n_total 2, MultiUnit, in_progress). Step 9 times out: the server publishes StartService ~22s after creating the batch and the station does not observe it. Also needs, and neither is expressible here: BT credentials for the run's fresh org (encrypted cast, seeder-only, and --bootstrap-pool mints a new org each run) and an org-member identity for the admin payments read."
 # The gate, and it is ONE LINE so that lifting it is a deliberate act.
 #
 # NOT `skip_when_pooled` any more: this file now needs a BOOTSTRAPPED pool, because that is
