@@ -11,6 +11,26 @@ description: "A bay number already in use, and a bay number that does not exist:
 # the station. A 422 would send an operator to re-read their JSON, which is exactly the wrong
 # place to look when the JSON is fine and the bay number is taken.
 #
+# AND 409 IS NOT ENOUGH, WHICH IS WHY `details.reason` IS PINNED BELOW (added 2026-08-30).
+# This file's own description has said "with the reason named" since it was written, and until
+# now nothing here asserted a reason — the refusal body was `{"message": "<prose>"}`, one field
+# for seven reachable causes, so there was nothing to assert. csms-server `a3014a4b` added the
+# machine-readable slug: `{"message": "<same prose, unchanged, still first>",
+# "details": {"reason": "<slug>"}}`, still 409, additive
+# (StationManagementController::bayEditRefusal:1119-1125).
+#
+# It is worth pinning because NEITHER of these routes has one 409. `AddBayAction` throws three
+# (`programs_required`, `bay_number_taken`/`bay_number_taken_retired`, `bay_ceiling_reached`)
+# and `RetireBayAction` five (`bay_not_found`, `bay_already_retired`, `live_session`,
+# `unit_batch_in_progress`, `bay_reserved`). A bare 409 on step 2 passes if bay 97 exists and
+# is reserved, or exists and has a live session — states this file does not create and cannot
+# see. The slug is what makes each step name the cause it was written for.
+#
+# NOTE THE PATH: `details.reason`, not `error.details.reason`. These three doors answer with a
+# bare `{message, details}` envelope rather than the OSPP `{error: {...}, meta: {...}}` one the
+# reservation and session doors use — deliberately, so the SPA's existing prose matching keeps
+# working. Two envelopes, one spelling of the field; the prefix is the difference.
+#
 # NOTHING HERE MUTATES. Both calls are refused before any write, so this file can run on a
 # shared pool station in any order relative to any other scenario. That is deliberate:
 # retirement has no inverse at the API, so a refusal file that accidentally succeeded would
@@ -49,6 +69,13 @@ steps:
         - programNumber: 1
           label: "Basic Wash"
     expect_status: 409
+    # `bay_number_taken` and NOT `bay_number_taken_retired`: one cause, two slugs, and the
+    # branch is `$existing->isRetired()` (AddBayAction:94). Bay 1 is in service on every pool
+    # station, so the live form is the one this step must meet — and if it ever reads the
+    # retired form, a previous scenario retired bay 1 and left the pool station short, which is
+    # a far more useful thing to learn here than "something answered 409".
+    expect_body:
+      details.reason: "bay_number_taken"
 
   # A BAY THAT DOES NOT EXIST. 97 is inside the route's `[0-9]+` constraint and inside the
   # request-validation ceiling, so this reaches the ACTION and is refused there — which is
@@ -57,6 +84,12 @@ steps:
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/bays/97/retire"
     expect_status: 409
+    # THE FIRST of RetireBayAction's five refusals, and the only one reachable without state.
+    # The other four (`bay_already_retired`, `live_session`, `unit_batch_in_progress`,
+    # `bay_reserved`) all require a bay that EXISTS, so pinning this slug is what says the
+    # route was refused for absence rather than for something this file left behind.
+    expect_body:
+      details.reason: "bay_not_found"
 
   # AND THE STATION IS UNTOUCHED. Two refusals, and the bay set is exactly what it was:
   # bays 1 and 2, both in service, and no bay 97. Without this the file proves the server
