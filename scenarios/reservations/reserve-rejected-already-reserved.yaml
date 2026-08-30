@@ -122,22 +122,44 @@ steps:
     # and BAY_RESERVED. So a bare 409 passes whether the bay is Reserved,
     # Occupied, Faulted, Finishing, in maintenance, or simply never reported.
     #
-    # That last one is the live hazard here, not a hypothetical. There is NO
-    # "does this bay already have a reservation row?" guard in this path:
-    # ReservationRepository::findActiveOnBay() exists and is never called, and
-    # the reservations table has no unique constraint on bay_id. "Already
-    # reserved" is represented ONLY as bay.status = RESERVED
-    # (ReserveBayAction.php:56-66 -> ReservationTransitions.php:54). The bay
-    # column defaults to 'unknown' (create_bays_table:18), and UNKNOWN maps to
-    # 3002 BAY_NOT_READY — also 409.
+    # That last one is the live hazard here, not a hypothetical: the bay column
+    # defaults to 'unknown' (create_bays_table:18), and UNKNOWN maps to 3002
+    # BAY_NOT_READY — also 409. If the `Reserved` StatusNotification above were
+    # schema-rejected, a bare-409 assertion would still pass, from a bay the
+    # server has no status for, and would prove nothing about double-reservation.
     #
-    # So if the `Reserved` StatusNotification above were schema-rejected, this
-    # scenario would still get its 409, from a bay the server has no status for,
-    # and would prove nothing about double-reservation. 3014 is reachable ONLY
-    # from RESERVED, so pinning it proves the report landed AND that the prior
-    # reservation is what refused this one.
+    # ── AND 3014 IS NO LONGER ENOUGH EITHER, 2026-08-30 ────────────────────────
+    # This comment used to close with "3014 is reachable ONLY from RESERVED", on
+    # the premise that "there is NO 'does this bay already have a reservation
+    # row?' guard in this path: ReservationRepository::findActiveOnBay() exists
+    # and is never called, and the reservations table has no unique constraint on
+    # bay_id."
+    #
+    # BOTH HALVES OF THAT PREMISE ARE NOW FALSE, and neither died in the change
+    # this file was last read for:
+    #
+    #   - `findActiveOnBay()` IS called — inside createClaimingBay's transaction,
+    #     under a `lockForUpdate()` on the bay row (ReservationRepository:99-107),
+    #     answering 3014 with `details.reason: live_reservation_row`;
+    #   - the unique constraint EXISTS — `idx_reservations_one_live_per_bay`,
+    #     migration 2026_08_12_000001 — and its 23505 is caught and re-answered as
+    #     the same 3014 (ReservationRepository:143-149).
+    #
+    # So 3014 now has THREE emission sites and TWO meanings, and the ordering is
+    # what decides which one this step meets: the `bays.status` branch runs first
+    # (ReserveBayAction:117-133), so the `Reserved` report above still answers.
+    # That is precisely the shape that makes a proof go VACUOUS rather than red —
+    # the report could stop landing and the 409/3014 would arrive anyway, from the
+    # reservations table, with nothing to say so.
+    #
+    # `bay_already_reserved` is written at exactly one site
+    # (ReservationStateMachine::REFUSAL_REASONS['reserved']) and is reached only
+    # from `bays.status`. Pinning it beside the code proves the report landed AND
+    # that the STATION'S REPORT is what refused this one — which is what this
+    # file's name claims and what the code alone stopped being able to show.
     expect_body:
       error.ospp_code: 3014
+      error.details.reason: "bay_already_reserved"
   # Per C-011: server returns 409 (resource state conflict) pre-MQTT-dispatch;
   # no ReserveBay Request is published. The 409 above is the final ASSERTION.
   #

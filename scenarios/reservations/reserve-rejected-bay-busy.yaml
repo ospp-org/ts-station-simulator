@@ -1,11 +1,11 @@
 # Placeholders overridable via --var KEY=VALUE on `simulator run`:
-#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{bayId_2}}, {{serviceId_1}}
 # Example — bind to real CSMS state for Phase 3/4 coverage:
 #   simulator run --scenario scenarios/reservations/reserve-rejected-bay-busy.yaml --target uat \
 #     --station stn_realstation \
-#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
-name: "Reserve Rejected - Bay Busy"
-description: "Attempt to reserve an occupied bay: the SERVER refuses the REST request with 409 + error.ospp_code 3001 BAY_BUSY. Despite what this description used to claim, no ReserveBay is put on the wire and the STATION is never asked."
+#     --var bayId_1=bay_realbay001 --var bayId_2=bay_realbay002 --var serviceId_1=svc_wash_basic
+name: "Reserve Rejected - Bay Busy (both producers of 3001)"
+description: "Two bays, both busy, both refused 409 + error.ospp_code 3001 BAY_BUSY — and the SAME code for two different reasons. Bay 1 reported Occupied: error.details.reason is bay_reported_occupied. Bay 2 carries a live session and was never reported Occupied: error.details.reason is live_session_row. No ReserveBay is put on the wire for either and the STATION is never asked."
 # THE ACTOR NAMED HERE WAS WRONG UNTIL 2026-08-26, and the correction is the point of this
 # comment rather than a tidy-up. The description said "verifies the STATION rejects with
 # errorCode NNNN". It does not: what is asserted is the SERVER refusing a REST request, and
@@ -17,9 +17,53 @@ description: "Attempt to reserve an occupied bay: the SERVER refuses the REST re
 # "the station rejects" made that empty area look covered, and `SCENARIOS.md` propagated it
 # by listing `reserve-rejected-*` under `ReserveBay | Server->Station`.
 #
-# The scenarios themselves are good and are unchanged. Only the sentence describing them is,
-# and the precedent is in this same directory: `reserve-cancel.yaml` was rewritten the same
+# The precedent is in this same directory: `reserve-cancel.yaml` was rewritten the same
 # way — "despite what this description used to claim, the bay side is not verified here".
+#
+# ── 2026-08-30: THE UNIQUENESS CLAIM THAT WENT FALSE, AND WHAT REPLACED IT ─────────────────
+#
+# This file used to carry ONE arm and this rationale beside its assertion:
+#
+#     "3001 is reachable ONLY from BayStatus::OCCUPIED (ReservationTransitions.php:55), so it
+#      proves the StartService round trip completed AND that occupancy is what refused the
+#      reservation."
+#
+# That premise died in csms-server `b77f9eeb`. `POST /v1/reservations` now has TWO producers
+# of 3001, and the second one is reached by this very file's own setup:
+#
+#   bays.status = occupied      ReserveBayAction:117-133 -> ReservationStateMachine
+#                               ::validateBayForReservation   -> 3001, reason bay_reported_occupied
+#   a live `sessions` row       ReservationRepository::createClaimingBay:128-134
+#                               (inside the bay-row lock)      -> 3001, reason live_session_row
+#
+# The status branch runs FIRST and the ordering is pinned server-side with `shouldNotReceive`
+# (`ReservationDoorReadsTheSessionsTableTest`), so the single-arm file did not go RED. It went
+# VACUOUS — the strictly worse outcome, because nothing says so. Its `Occupied` report could
+# have failed to land and the 409/3001 would have arrived anyway, from the sessions table, and
+# this file would have kept passing while the report it exists to prove stopped mattering.
+#
+# SO THE ASSERTION IS NOW ON `error.details.reason`, AND THERE ARE TWO ARMS. `reason` is the
+# only field that separates them; `error.ospp_code` is 3001 on both, by design and not by
+# accident (`ReservationTransitions.php:55` is the only 3001 in the SDK table, and the sessions
+# refusal is the same fact read off a different table).
+#
+# THE TWO ARMS ARE THE CONTROL FOR EACH OTHER, and that is why they live in one file rather
+# than two. Their setups differ in EXACTLY ONE step — bay 1 gets a `StatusNotification`
+# reporting `Occupied`, bay 2 does not. Everything else is byte-identical: same station, same
+# boot, same service, same duration, same reservation body. So:
+#
+#   - if the `Occupied` report stops landing, arm A reads `live_session_row` and goes RED;
+#   - if the sessions-table guard is reverted, arm B reads 201 and goes RED;
+#   - if the two branches are ever re-ordered, arm A reads `live_session_row` and goes RED;
+#   - if `details.reason` is dropped, BOTH go RED.
+#
+# A single-arm file could not report any of those four. That is the difference between passing
+# by ASSERTION and passing by CONSTRUCTION, and it is the whole point of the second arm.
+#
+# `error.details.bayStatus` is deliberately NOT asserted on arm A. It is derived from the same
+# `$bayStatus->value` lookup that produces the slug (ReservationStateMachine:97-104), so it is
+# implied by the assertion above it and cannot fail independently. An assertion implied by
+# another is not a control.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -62,6 +106,9 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # ══════════════════════════════════════════════════════════════════════════════════════════
+  # ARM A — THE STATION'S REPORT REFUSES.  bays.status = occupied  ->  bay_reported_occupied
+  # ══════════════════════════════════════════════════════════════════════════════════════════
   - action: send
     message: StatusNotification
     messageType: Event
@@ -97,6 +144,7 @@ steps:
     payload:
       status: "Accepted"
 
+  # THE ONE STEP THAT SEPARATES THE TWO ARMS. Bay 2 below never gets this.
   - action: send
     message: StatusNotification
     messageType: Event
@@ -107,8 +155,15 @@ steps:
       programs:
         - programNumber: 1
           available: false
+
+  # The publish is acknowledged by the BROKER, not by the server's writer — a PUBACK is not
+  # the effect. Arm A now asserts WHICH predicate refused, so a reservation that outran the
+  # status write would read `live_session_row` and red this file for a race rather than for a
+  # defect. Same settle, same reason, as bay-edit-releases-a-blocked-station.yaml:277-279.
+  - action: delay
+    ms: 750
+
   # Trigger ReserveBay on the same occupied bay - should be rejected.
-  # Server propagates the station's Rejected MQTT Response as HTTP 422.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/reservations"
@@ -120,19 +175,100 @@ steps:
     # The 409 alone cannot tell "the bay is busy" from "the bay never reported".
     # Four codes share 409 on this endpoint (ErrorCodeRegistry.php:107-111), and
     # the bay column defaults to 'unknown' (create_bays_table:18), which maps to
-    # 3002 BAY_NOT_READY — also 409. This scenario's whole precondition is the
-    # `Occupied` report above; without pinning the code, that report could fail
-    # to land and the scenario would still pass.
+    # 3002 BAY_NOT_READY — also 409.
     #
-    # 3001 is reachable ONLY from BayStatus::OCCUPIED
-    # (ReservationTransitions.php:55), so it proves the StartService round trip
-    # completed AND that occupancy is what refused the reservation.
+    # And 3001 alone no longer says which of the two producers answered — see the
+    # header. `reason` does: `bay_reported_occupied` is written at exactly one site,
+    # ReservationStateMachine::REFUSAL_REASONS['occupied'], reached only from
+    # `bays.status`. So this pair proves the StartService round trip completed AND
+    # that the STATION'S REPORT is what refused, not our own sessions table.
     expect_body:
       error.ospp_code: 3001
+      error.details.reason: "bay_reported_occupied"
   # Per C-012: server returns 409 (resource state conflict) pre-MQTT-dispatch;
-  # no ReserveBay Request is published. The 409 is the final assertion.
+  # no ReserveBay Request is published.
 
-  # --- Pool-hygiene teardown: end the session this scenario started so the reused
+  # ══════════════════════════════════════════════════════════════════════════════════════════
+  # ARM B — OUR OWN TABLE REFUSES.  a live `sessions` row  ->  live_session_row
+  #
+  # Same station, same service, same reservation body. Bay 2 is reported Available and then
+  # NEVER reported Occupied, so `bays.status` stays `available` and the state-machine branch
+  # that answered arm A is passed cleanly. What refuses here is the row `POST /sessions/start`
+  # wrote — read inside createClaimingBay's transaction, under the bay-row lock it already
+  # took, AFTER the status and reservation checks.
+  #
+  # WHY THE STATE IT NEEDS IS REACHABLE AT ALL: a session start writes `sessions` and NEVER
+  # writes `bays.status`. The only writers in the whole server are BayRepository (creation,
+  # boot reset) and StatusNotificationHandler, and the latter only on an inbound station
+  # report. Until csms-server `b77f9eeb` this door read only the column, so this arm returned
+  # 201 — see sessions/session-start-ack-timeout-and-the-bay-it-half-claims.yaml, which is the
+  # file that measured that gap while it was open.
+  # ══════════════════════════════════════════════════════════════════════════════════════════
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_2}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId2: "payload.sessionId"
+      bayId2: "payload.bayId"
+
+  # ANSWERED, so the start settles 201 rather than timing out 504 — but the session row is
+  # live either way: StartSessionAction writes it BEFORE publishing StartService, and both
+  # `pending` and `active` are in StatusValues::liveSessions(). The answer is here so the
+  # backgrounded `expect_status: 201` above is a real assertion, not so the arm works.
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  # NO StatusNotification("Occupied") FOR BAY 2. The omission IS the stimulus — it is the
+  # single difference from arm A, and deleting this comment is not the same as deleting a
+  # step. There is nothing here on purpose.
+
+  - action: delay
+    ms: 750
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_2}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 409
+    # SAME CODE AS ARM A, DIFFERENT REASON — which is the discrimination this file exists to
+    # prove. `live_session_row` is written at exactly one site
+    # (ReservationRepository::createClaimingBay:132) and says the server's own table refused,
+    # not the station's report. If this ever reads `bay_reported_occupied`, something moved
+    # `bays.status` without the station saying so; if it reads 201, the sessions-table guard
+    # is gone.
+    expect_body:
+      error.ospp_code: 3001
+      error.details.reason: "live_session_row"
+
+  # --- Pool-hygiene teardown: end BOTH sessions this scenario started so the reused
   #     pooled station is returned clean. Appended after all assertions — does not
   #     change what the scenario tests. (Class: session-leak.)
   - action: send
@@ -155,3 +291,18 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # Bay 2 needs the session ended for the same reason bay 1 does. It does NOT need a status
+  # reset: it was never reported Occupied, so `bays.status` is still `available` and the
+  # station has nothing to correct. Reporting one anyway would be a step that looks like
+  # cleanup and is really a no-op — and it would make this file's own precondition harder to
+  # read for whoever changes it next.
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId2}}"
+      bayId: "{{captured.bayId2}}"
+      reason: "Local"
+      actualDurationSeconds: 1
+      creditsCharged: 0

@@ -1,5 +1,5 @@
-name: "Session Start ACK Timeout — 504/6002, and the bay it claims against one door only"
-description: "Start a session and never answer the StartService. The caller gets 504 + ospp_code 6002 ACK_TIMEOUT. While the row sits Pending: a second start on the SAME bay is refused 409/3001, and a reservation on the SAME bay is ACCEPTED 201 — the two doors do not share a lock. Then the sweep reaps it (failed, fail_error_code 1010) and a start on that bay succeeds, so the bay is proven free rather than presumed."
+name: "Session Start ACK Timeout — 504/6002, and the bay both doors now claim"
+description: "Start a session and never answer the StartService. The caller gets 504 + ospp_code 6002 ACK_TIMEOUT. While the row sits Pending, BOTH doors refuse the SAME bay 409/3001 and both name the sessions table: /sessions/start and /reservations, the latter with error.details.reason live_session_row. Then the sweep reaps it (failed, fail_error_code 1010) and a start on that bay succeeds, so the bay is proven free rather than presumed."
 # WHAT THIS FILE IS FOR, AND WHY IT IS ONE FILE AND NOT THREE.
 # `ACK_TIMEOUT` is the refusal a firmware integrator meets first and most often — his station
 # is slow, or wedged, or answering on the wrong topic — and the corpus has never once observed
@@ -11,7 +11,7 @@ description: "Start a session and never answer the StartService. The caller gets
 #      mean "never dispatched", which is a different defect with a different repair;
 #   2. the caller is answered 504 / 6002 after `ospp.start_session_timeout_ms` (10s);
 #   3. the bay is claimed against `/sessions/start` — 409 / 3001;
-#   4. and NOT claimed against `/reservations` — 201;
+#   4. and claimed against `/reservations` TOO — 409 / 3001 / `live_session_row`;
 #   5. a sweep reaps the row: `failed`, `fail_error_code 1010`;
 #   6. and a start on that same bay now succeeds.
 #
@@ -25,27 +25,55 @@ description: "Start a session and never answer the StartService. The caller gets
 # ── STEPS 3 AND 4 ARE THE SUBJECT, NOT COLOUR ──────────────────────────────────────────────
 # A session start writes `sessions` and NEVER writes `bays.status` — the only writers in the
 # whole server are BayRepository (creation, boot reset) and StatusNotificationHandler, and the
-# latter only on an inbound station report. So the bay ends up behind two disjoint locks:
+# latter only on an inbound station report. The bay therefore used to sit behind two DISJOINT
+# locks, and this file was written to measure exactly that:
 #
 #   POST /sessions/start   reads the SESSIONS table   (SessionRepository:39-46,
 #                          findActiveByBayId over {pending,authorized,active,stopping})  -> 3001
-#   POST /reservations     reads `bays.status`        (ReserveBayAction:55-65)           -> 201
+#   POST /reservations     read `bays.status` ONLY    (ReserveBayAction, pre-b77f9eeb)   -> 201
 #   POST .../maintenance   reads `bays.status`        (SetMaintenanceModeAction:153-194) -> 202
 #
-# An integrator who sees `BAY_BUSY` concludes the bay is occupied, and occupied means occupied:
-# he reserves it, or takes it out of service. Both succeed, and he is now in a state the
+# An integrator who saw `BAY_BUSY` concluded the bay was occupied, and occupied means occupied:
+# he reserved it, or took it out of service. Both succeeded, and he was now in a state the
 # server's own model says cannot exist — with every call having returned success, so the only
-# explanation left to him is that he misunderstood something.
+# explanation left to him was that he misunderstood something.
 #
-# THE SERVER KNOWS. ReserveBayAction:91-97 — "KNOWN GAP, deliberately not closed here … today a
-# reservation on an occupied bay is accepted whenever the station has not reported Occupied."
-# So step 4 is not a discovery; it is a recorded debt, and this file is what turns it from
-# reasoned into measured. IF STEP 4 EVER GOES RED, the gap was closed and this file is the
-# thing that says so — read it that way before assuming a flake.
+# ── THE PREDICTION FIRED, 2026-08-30. STEP 4 WENT RED AND THE RED WAS THE REPAIR ────────────
 #
-# The maintenance door shares the mechanism and is deliberately NOT probed here: it would take
-# the bay out of service mid-file and the teardown would have to put it back, adding a failure
-# mode to a file whose subject is elsewhere. Same lock, same evidence, one probe.
+# This block used to end: *"IF STEP 4 EVER GOES RED, the gap was closed and this file is the
+# thing that says so — read it that way before assuming a flake."* That is what happened.
+# csms-server `b77f9eeb` put `hasActiveSessionsForBays()` inside
+# `ReservationRepository::createClaimingBay:128-134` — in the transaction it already had, under
+# the bay-row lock it already took — and `/reservations` now answers the same 409 / 3001 that
+# `/sessions/start` does, on the same bay in the same state.
+#
+# So step 4 INVERTS rather than disappears. It used to be evidence that the doors disagreed;
+# it is now the control that they agree, and it is still the only place in the corpus that
+# reaches this state from a STUCK `pending` row rather than from an accepted one. That
+# distinction is worth keeping: `reservations/reserve-rejected-bay-busy.yaml` proves the same
+# refusal from a LIVE `active` session, and between them the two files show the guard reads
+# `StatusValues::liveSessions()` and not merely "started successfully".
+#
+# `error.details.reason: live_session_row` is asserted, not just the 409. Without it this step
+# could take its 409 from `bays.status` instead — the very column whose stillness the file
+# depends on — and pass while proving the opposite of what it says. Nothing here reports
+# `Occupied`, so if that slug ever reads `bay_reported_occupied` something moved the column
+# without the station saying so, and step 6 below was never a fair test.
+#
+# THE THIRD DOOR WAS CLOSED TOO, and it is still deliberately NOT probed here — probing it
+# would take the bay out of service mid-file and the teardown would have to put it back,
+# adding a failure mode to a file whose subject is elsewhere. Recorded rather than measured,
+# because the reason it is worth knowing has changed:
+# `SetMaintenanceModeAction::validateBayForMaintenance` now asks `hasActiveSessionsForBays()`
+# at :216, after its `bays.status` branch at :180 and pinned in that order by
+# `MaintenanceReadsTheTableThatOwnsOccupancyTest`. So all three doors agree.
+#
+# What that door does NOT have is a discriminator. Both of its producers throw `BAY_BUSY` with
+# the SAME message — "Bay {id} has an active session and cannot enter maintenance mode",
+# :181-184 and :217-220 — and neither carries `details`. On `/reservations` the same pair of
+# producers is separable (`bay_reported_occupied` vs `live_session_row`); on the maintenance
+# door it is not, by any field on the wire. A scenario written against it today could only
+# pass by construction, which is why this file still probes the reservation door instead.
 #
 # ── WHAT IS ASSERTED ABOUT THE REAPING, AND WHAT IS NOT ────────────────────────────────────
 # `data.status: failed` and `data.fail_error_code: 1010` are pinned. `data.fail_reason` is NOT,
@@ -202,8 +230,14 @@ steps:
       error.ospp_code: 3001
       error.code: "BAY_BUSY"
 
-  # --- [4] THE LOCK THAT DOES NOT. Same bay, seconds later, a different door — and it is
-  # ACCEPTED, because this one reads `bays.status`, which the start never wrote.
+  # --- [4] THE LOCK THAT NOW HOLDS TOO. Same bay, seconds later, a different door — and it is
+  # REFUSED, on the same code as [3], because this one now asks the sessions table as well.
+  #
+  # `bays.status` is still `Available` at this instant: nothing in this file has reported
+  # anything else, and the start never wrote the column. So the ONLY thing that can produce
+  # this 409 is the `sessions` row [1] left behind — which is what `live_session_row` says and
+  # what `bay_reported_occupied` would deny. Pinning the slug is what makes this step evidence
+  # about the sessions table rather than evidence that the server refused something.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/reservations"
@@ -211,42 +245,20 @@ steps:
       bay_id: "{{bayId_1}}"
       duration_minutes: 5
       session_source: "MobileApp"
-    expect_status: 201
+    expect_status: 409
+    expect_body:
+      error.ospp_code: 3001
+      error.details.reason: "live_session_row"
 
-  - action: wait_for
-    message: ReserveBay
-    messageType: Request
-    timeout_ms: 15000
-    capture:
-      probeReservationId: "payload.reservationId"
-
-  - action: send
-    message: ReserveBay
-    messageType: Response
-    payload:
-      status: "Accepted"
-
-  # NO StatusNotification("Reserved") — unlike reserve-cancel.yaml, and deliberately. Reporting
-  # it would move `bays.status`, which is the very column whose stillness let step 4 through;
-  # leaving it Available keeps the file's own evidence intact and keeps step 6 reachable.
-
-  # --- CANCEL THE PROBE. It has done its job, and a live reservation would refuse step 6 for a
-  # reason that has nothing to do with what this file measures.
-  - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/reservations/{{captured.probeReservationId}}/cancel"
-    expect_status: 200
-
-  - action: wait_for
-    message: CancelReservation
-    messageType: Request
-    timeout_ms: 15000
-
-  - action: send
-    message: CancelReservation
-    messageType: Response
-    payload:
-      status: "Accepted"
+  # NO ReserveBay ROUND TRIP, AND NO CANCEL. Both used to be here and both are gone with the
+  # 201 that required them: the refusal happens pre-MQTT-dispatch, so no ReserveBay Request is
+  # published and there is no reservation row to cancel. Removing them costs the corpus
+  # nothing — `reserve-cancel.yaml` and `reserve-rejected-already-reserved.yaml` both drive the
+  # CancelReservation round trip, and neither depends on this state.
+  #
+  # It also removes a hazard this file used to carry: the probe reservation held bay 1 for five
+  # minutes and step 6 was only reachable because the cancel arc succeeded. Now nothing is
+  # held, so step 6 tests the sweep and only the sweep.
 
   # --- [5] WAIT FOR THE SWEEP. Eligible at T+10s; both sweeps run everyMinute().
   - action: delay
