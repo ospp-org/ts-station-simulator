@@ -188,10 +188,33 @@ describe('the corpus uses the pair consistently', () => {
     expect(both, 'a file declaring both can never run in any invocation').toEqual([]);
   });
 
-  // The key is only meaningful for a file that actually reaches for the run identity. A file
-  // declaring it without an `auth:` block pointing at the published pair is claiming a
-  // dependency it does not have, and would be skipped outside a pool for no reason.
-  it('every file declaring requires_pool authenticates as the run owner', () => {
+  // The key is only meaningful for a file that actually reaches for an identity the BOOTSTRAP
+  // mints, and the bootstrap mints TWO of them. The gate used to demand the first and only the
+  // first — "every file declaring requires_pool authenticates as the run owner" — which was
+  // true of the corpus on the day it was written and stopped being true on 2026-08-27.
+  //
+  //   OWNER   `auth: SIM_POOL_OWNER_*` — the ephemeral `tenant_owner`, the only identity
+  //           holding `stations.manage_provisioning_tokens`, `catalog.manage`, `bays.update`.
+  //   DEFAULT no `auth:` block at all — the per-scenario `tenant_operator` the bootstrap hands
+  //           a file that overrides nothing. Just as pool-only: outside a pooled run the
+  //           identity is whatever UAT_EMAIL names, which is a different tier.
+  //
+  // `bay-edit-requires-the-topology-tier.yaml` is the second kind, and the old gate's own
+  // stated reasoning — "claiming a dependency it does not have" — is false about it. Its
+  // subject IS the default tier being refused 403 on `bays.update`. Giving it the `auth:`
+  // block the gate demanded would have authenticated it as the owner, who HOLDS that
+  // permission: both refusals become 201/200, the file goes red, and on the way it writes a
+  // bay to a shared pool station. The demanded repair was worse than the defect.
+  //
+  // SO THE GATE IS TWO-ARMED, and the third shape — an `auth:` block naming SOME OTHER env
+  // pair — is still refused. That was the defect worth catching all along: a file claiming a
+  // pool dependency while authenticating as an account the pool does not mint would be
+  // skipped outside a pool for no reason, and inside one would measure the wrong identity.
+  const POOL_DEFAULT_IDENTITY_FILES = [
+    'device-management/bay-edit-requires-the-topology-tier.yaml',
+  ];
+
+  it('every file declaring requires_pool authenticates as an identity the bootstrap mints', () => {
     const mismatched: string[] = [];
     for (const f of yamlFiles(SCENARIOS_DIR)) {
       const doc = YAML.parse(readFileSync(f, 'utf-8')) as {
@@ -199,17 +222,43 @@ describe('the corpus uses the pair consistently', () => {
         auth?: { email_env?: string; password_env?: string };
       } | null;
       if (!doc?.requires_pool) continue;
+
+      // Arm 2: no override at all — the run's default per-scenario tenant_operator.
+      if (doc.auth === undefined) continue;
+
+      // Arm 1: the published owner pair, both halves.
       if (
-        doc.auth?.email_env !== POOL_OWNER_EMAIL_ENV ||
-        doc.auth?.password_env !== POOL_OWNER_PASSWORD_ENV
+        doc.auth.email_env !== POOL_OWNER_EMAIL_ENV ||
+        doc.auth.password_env !== POOL_OWNER_PASSWORD_ENV
       ) {
         mismatched.push(f.slice(SCENARIOS_DIR.length + 1));
       }
     }
     expect(
       mismatched,
-      `these declare requires_pool without an auth: block naming ${POOL_OWNER_EMAIL_ENV} / ` +
-        `${POOL_OWNER_PASSWORD_ENV}, so the dependency they declare is not the one they have`,
+      `these declare requires_pool with an auth: block naming neither ${POOL_OWNER_EMAIL_ENV} / ` +
+        `${POOL_OWNER_PASSWORD_ENV} nor nothing at all, so the identity they authenticate as ` +
+        'is not one a bootstrapped run mints',
     ).toEqual([]);
+  });
+
+  // THE DENOMINATOR FOR ARM 2, pinned the way scenarioTimeout.test.ts pins its override list.
+  // Arm 2 is an ABSENCE, so without this the widened gate would let a file that simply forgot
+  // its `auth:` block pass as though it had chosen the default tier on purpose. Relying on the
+  // default is a real decision and should have to be made once, in writing, here.
+  it('and the files relying on the pool DEFAULT identity are exactly the ones argued for', () => {
+    const usingDefault = yamlFiles(SCENARIOS_DIR)
+      .filter((f) => {
+        const doc = YAML.parse(readFileSync(f, 'utf-8')) as {
+          requires_pool?: string;
+          auth?: unknown;
+        } | null;
+
+        return Boolean(doc?.requires_pool) && doc?.auth === undefined;
+      })
+      .map((f) => f.slice(SCENARIOS_DIR.length + 1))
+      .sort();
+
+    expect(usingDefault).toEqual(POOL_DEFAULT_IDENTITY_FILES);
   });
 });
