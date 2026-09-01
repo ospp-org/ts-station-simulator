@@ -8,29 +8,56 @@ description: "Present a real server-signed pass three ways a station gets it wro
 #   `authorize-offline-pass-response.schema.json` is `additionalProperties: false` and its
 #   properties are exactly `status`, `sessionId`, `durationSeconds`, `creditsAuthorized`,
 #   `reason`. There is no `errorCode` field in the schema, and
-#   `AuthorizeOfflinePassResponseDto` (app/Modules/Offline/DTOs/…:22-28,63-86) does not even
-#   declare the property.
+#   `AuthorizeOfflinePassResponseDto` (app/Modules/Offline/DTOs/…) does not even declare the
+#   property. `reason` is the only member this action can carry a refusal in.
 #
-# The server DOES compute a code for each of these — `PassValidator` assigns 2002, 2005, 4002
-# to the three below — and then discards it before the wire. Two of thirteen validator
-# rejections reach the audit trail as a SecurityEvent carrying the code; the station never sees
-# one for any of them.
+# THAT is why we match text: the protocol gives us nothing else on this path. Not laziness, and
+# not a code we neglected to look up — there is no field to put one in.
 #
-# THE CONSEQUENCE FOR THIS FILE, stated so nobody mistakes it for rigour we do not have:
+# ── WHAT CHANGED 2026-09-01: THE TOKEN IS NOW ON THE WIRE, INSIDE `reason` ──────────────────
 #
-#   * The assertions below are STRING EQUALITY on server prose. They discriminate today because
-#     all thirteen `PassValidator` reason strings are textually distinct — verified by reading
-#     the file, not assumed.
-#   * If someone rewords one of those sentences, THIS FILE GOES RED AND THE SERVER IS FINE.
-#     That is not a behavioural regression and must not be read as one: the scenario is
-#     updated, not the server. A red here means "the text moved", and the only way to tell that
-#     from a real regression is to check whether `status` is still `Rejected` — it will be.
-#   * We accept that maintenance cost knowingly, because the alternative is asserting
-#     `status: Rejected` alone, which passes on all twenty of this action's refusal paths and
-#     would prove nothing about which one fired.
+# The sentence is no longer bare. `WireRefusalReason::format()` (csms-server
+# app/Modules/Offline/Services/WireRefusalReason.php:66) is applied once at the boundary in
+# `AuthorizeOfflinePassHandler` and prefixes every §6.1 check failure with that check's own
+# registry NAME — `"<ERRORTEXT>: <sentence>"` — bounded to 256 code points (`MAX_LENGTH`; a bare
+# `mb_substr`, no ellipsis, the HEAD survives and the tail is cut). `OsppErrorCode::errorText()`
+# returns `$this->name`, so the token is the enum name verbatim.
 #
-# The repair is a SPEC change, not a server one, and it was already attempted the other way and
-# withdrawn — see finding 15 in docs/MEASURED-server-refusal-defects-*.md.
+# The sentence in this header that used to stand here — "the server computes a code and then
+# discards it before the wire" — is now HALF wrong, and is corrected rather than deleted: the
+# NUMBER is still discarded, but the NAME travels. A registry identifier is not prose, and it is
+# what these assertions are now anchored on.
+#
+#   arm 1   check 4   OFFLINE_PASS_INVALID     2002    PassValidator.php:200-215
+#   arm 2   check 9   OFFLINE_RATE_LIMITED     4003    PassValidator.php:305-327
+#   arm 3   check 6   OFFLINE_LIMIT_EXCEEDED   4002    PassValidator.php:256-269
+#
+# The middle row read 2005 here until today. 2005 is OFFLINE_COUNTER_REPLAY — the check this arm
+# was ORIGINALLY written against. The first UAT run corrected the PROSE below and left the code
+# column uncorrected; the wire says 4003. Verified in the server source, not copied from a report.
+#
+# ── HOW EACH ARM ASSERTS, AND WHAT A RED MEANS ──────────────────────────────────────────────
+#
+# Each arm asserts twice, in this order:
+#
+#   PRIMARY    `contains: "<ERRORTEXT>: "` — the structured discriminator. It names WHICH of the
+#              thirteen validator checks fired, and survives any rewording of the sentence.
+#   SECONDARY  `equals: "<ERRORTEXT>: <sentence>"` — the exact bytes, documentary and knowingly
+#              fragile.
+#
+# SECONDARY RED + PRIMARY GREEN ⇒ THE SERVER IS FINE AND THIS FILE IS STALE. Someone reworded a
+# `PassValidator` literal; the check that fired did not change. Update the sentence HERE. Do not
+# change the server, and do not file it as a behavioural regression.
+#
+# PRIMARY RED ⇒ real. Either a different check fired, or the boundary stopped prefixing. Both
+# are server-side and both matter.
+#
+# Asserting `status: Rejected` alone remains no option: it passes on all twenty of this action's
+# refusal paths and would prove nothing about which one fired.
+#
+# The full repair is still a SPEC change — an `errorCode` member on the response schema — and it
+# was attempted the other way and withdrawn; see finding 15 in
+# docs/MEASURED-server-refusal-defects-*.md. The boundary prefix is what exists in the meantime.
 #
 # ── WHY THESE THREE ─────────────────────────────────────────────────────────────────────────
 # They are what a station meets in integration, in the order it meets them: a pass issued for a
@@ -40,7 +67,7 @@ description: "Present a real server-signed pass three ways a station gets it wro
 # ARM 2 WAS WRITTEN AS THE REPLAY CHECK AND THE FIRST UAT RUN CORRECTED IT — kept here because
 # the correction is the more useful fact. Re-presenting the identical counter answered
 # `Minimum interval between uses not yet elapsed`, not the replay message: check 9
-# (PassValidator:266-283) runs BEFORE check 10 (:302-308), and `min_interval_seconds` is 60 by
+# (PassValidator.php:305-327) runs BEFORE check 10 (:331-353), and `min_interval_seconds` is 60 by
 # default (OfflinePass.php:127, the migration default, and config/ospp.php:677) and is NOT
 # settable through the issue API — `IssueOfflinePassRequest` has no field for it.
 #
@@ -159,9 +186,14 @@ steps:
     field: "payload.status"
     equals: "Rejected"
 
+  # PRIMARY — the structured discriminator: which of the thirteen checks fired.
   - action: assert
     field: "payload.reason"
-    equals: "Device ID does not match the pass binding"
+    contains: "OFFLINE_PASS_INVALID: "
+  # SECONDARY — the exact bytes. A reword reds THIS line and the server is fine; see header.
+  - action: assert
+    field: "payload.reason"
+    equals: "OFFLINE_PASS_INVALID: Device ID does not match the pass binding"
 
   # --- THE CONTROL, and the first use. One field changes: the device is the bound one.
   - action: send
@@ -233,9 +265,14 @@ steps:
     field: "payload.status"
     equals: "Rejected"
 
+  # PRIMARY — the structured discriminator: which of the thirteen checks fired.
   - action: assert
     field: "payload.reason"
-    equals: "Minimum interval between uses not yet elapsed"
+    contains: "OFFLINE_RATE_LIMITED: "
+  # SECONDARY — the exact bytes. A reword reds THIS line and the server is fine; see header.
+  - action: assert
+    field: "payload.reason"
+    equals: "OFFLINE_RATE_LIMITED: Minimum interval between uses not yet elapsed"
 
   # --- PASS B — exactly one use, so its second presentation is the exhausted case rather than
   # a replay. A second pass is needed because pass A still has nine uses left.
@@ -323,6 +360,11 @@ steps:
     field: "payload.status"
     equals: "Rejected"
 
+  # PRIMARY — the structured discriminator: which of the thirteen checks fired.
   - action: assert
     field: "payload.reason"
-    equals: "Offline pass usage limit exceeded"
+    contains: "OFFLINE_LIMIT_EXCEEDED: "
+  # SECONDARY — the exact bytes. A reword reds THIS line and the server is fine; see header.
+  - action: assert
+    field: "payload.reason"
+    equals: "OFFLINE_LIMIT_EXCEEDED: Offline pass usage limit exceeded"

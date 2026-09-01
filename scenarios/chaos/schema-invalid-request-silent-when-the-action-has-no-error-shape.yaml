@@ -8,18 +8,42 @@ description: "Publish a Heartbeat Request carrying a property its schema forbids
 # gets silence, and every hour he spends looking for a bug in his own retry logic
 # is spent on the wrong side of the wire.
 #
-# WHERE THE SPLIT LIVES, MEASURED. MessageDispatcher::buildRejectionPayload
-# (:415-432) is a five-arm `match` over the ACTION, and it is the only thing that
-# decides whether a message-layer refusal reaches the station:
+# WHERE THE SPLIT LIVES, RE-MEASURED 2026-09-01 — AND THE MECHANISM MOVED UNDER IT.
+# MessageDispatcher::buildRejectionPayload (:508-531) is a `match` over the ACTION,
+# and it is still the only thing that decides whether a message-layer refusal
+# reaches the station:
 #     BootNotification                    -> full Boot Response, errorCode + errorText
 #     SignCertificate                     -> {status, errorCode, errorText}
-#     TransactionEvent, AuthorizeOfflinePass -> {status, reason}   (prose, NO code)
+#     TransactionEvent, AuthorizeOfflinePass -> {status, reason}
 #     DataTransfer                        -> {status}             (no code, no text)
-#     everything else                     -> null  => nothing is sent
-# `null` is the branch this file exercises. Heartbeat is in "everything else", so
-# `buildErrorResponseFromRawJson` returns null and `dispatch()` returns null at
-# :133-151: nothing published, connection untouched, the worker records the
-# delivery as handled.
+#     default                             -> buildGenericRejectionPayload (:578-600)
+#
+# TWO OF THOSE ROWS ARE NOT WHAT THEY WERE WHEN THIS FILE WAS WRITTEN:
+#
+#   * The last arm used to read `everything else -> null`, and that `null` is the
+#     branch this file was built to exercise. It now ASKS the vendored schema
+#     whether the action's RESPONSE can carry {status, errorCode, errorText}, and
+#     answers 1006 UNKNOWN_ACTION when it can — 11 of the 14 actions with no
+#     inbound handler.
+#   * The `{status, reason}` arm is no longer "prose, NO code". WireRefusalReason::
+#     format prefixes the sentence with the failed check's registry NAME
+#     (`OFFLINE_RATE_LIMITED: <sentence>`, bounded at 256 code points), so a
+#     machine-readable token DOES travel — inside the string rather than in a field
+#     of its own. See security/offline-pass-refused-the-three-a-station-meets.yaml.
+#
+# THIS FILE'S VERDICT IS UNCHANGED AND ITS REASON IS NEW, which is worth stating
+# because a reader checking the old mechanism will not find it. Heartbeat is still
+# silent, but no longer because it falls off the end of a match: it now ENTERS the
+# generic arm and is refused there. heartbeat-response.schema.json is {serverTime},
+# REQUIRED, additionalProperties:false, so the candidate payload fails validation and
+# the builder returns null. csms-server pins this as a named control
+# (tests/Feature/Protocol/RefusalReachesTheStationTest.php — "Heartbeat is still
+# SILENT, because its response cannot say no") citing spec v0.26.0 07-errors.md:492,
+# "a server MUST NOT answer a Heartbeat with anything but serverTime". The silence
+# this file asserts is now NORMATIVE rather than incidental — a stronger subject than
+# the one it was written for, not a weaker one.
+#
+# Nothing published, connection untouched, the worker records the delivery as handled.
 #
 # THE SAME LAYER, THE SAME CODE, THE OTHER OUTCOME:
 # security/sign-certificate-empty-csr-rejected-correlated.yaml sends `csr: ""`,
