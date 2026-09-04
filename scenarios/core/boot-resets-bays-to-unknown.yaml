@@ -1,5 +1,5 @@
-name: "Boot Resets Bays To Unknown"
-description: "Drive both bays to `available`, then Boot and read them back as `unknown` — twice, once on PowerOn and once on Reconnect. Proves the server's boot-time bay reset FIRES, rather than that bays happen to start unknown."
+name: "Boot Resets Bays To Unknown — On A Restart, Not On A Reconnect"
+description: "Drive both bays to `available`, then Boot twice from the same state: a PowerOn reads them back `unknown`, a Reconnect reads them back `available`. Proves the server's boot-time bay reset FIRES (rather than that bays happen to start unknown) AND that it fires only on a genuine restart — the two Boots differ in `bootReason` alone."
 # WHY THIS FILE EXISTS. `unknown` is the one bay state the whole corpus names and
 # nothing asserts. Sixteen bay-status assertions cover `available`, `reserved`,
 # `faulted` and `unavailable`; fourteen files mention `unknown` in a comment, and
@@ -23,19 +23,25 @@ description: "Drive both bays to `available`, then Boot and read them back as `u
 #
 # HOW IT IS MADE FALSIFIABLE. Each proof is preceded by an ARM step that drives the
 # bays away from `unknown` and asserts they got there. Without the arm, the proof
-# read is vacuous; with it, `unknown` can only be the server's own write. Delete
-# line 396 of BootNotificationHandler and both proofs go red at the read. Move it
-# inside the `else` at :393 — the plausible refactor, "a reconnect did not reboot
-# anything, so leave the bays alone" — and PROOF 2 goes red on its own while PROOF 1
-# still passes, which is the discrimination this file is for.
+# read is vacuous; with it, the value read back can only be the server's own doing.
+# Delete the status wipe from BootNotificationHandler::resetBaysToUnknown() and
+# PROOF 1 goes red at the read. Take the `if (! $isReconnect)` guard back off it and
+# PROOF 2 goes red on its own while PROOF 1 still passes — that pair, in that
+# asymmetry, is the discrimination this file is for.
 #
-# THE SERVER BIT IS NAMED HERE, NOT MOVED — SAY SO RATHER THAN LET THE FILE IMPLY
-# OTHERWISE. Neither mutation above has been executed against a running server. What
-# WAS measured on UAT (2026-08-14) is the scenario-side mutation: PROOF 2's expected
-# value changed from `unknown` to `available` gives rc=1 at step [18] alone,
-# "expected available, got unknown", with steps 0-17 untouched. That proves the read
-# returns `unknown`. It does not, by itself, prove the server's write is what put it
-# there.
+# THE SERVER BIT WAS NAMED HERE, THEN MOVED — AND THE FILE SAID SO BOTH TIMES. This
+# block used to close: "Neither mutation above has been executed against a running
+# server." One of them since has: csms-server f8f3af2b put the wipe under
+# `if (! $isReconnect)`, which is precisely the mutation named two paragraphs up as
+# the one that reds PROOF 2 alone. PROOF 2 is inverted to match, and the prediction
+# held — PROOF 1 was untouched by it.
+#
+# What WAS measured on UAT (2026-08-14), before that change, is the scenario-side
+# mutation: PROOF 2's expected value changed from `unknown` to `available` gave rc=1
+# at step [18] alone, "expected available, got unknown", with steps 0-17 untouched.
+# That measurement is kept deliberately, because it is now the RECORD OF THE OLD
+# BEHAVIOUR: the same read that returned `unknown` under the old server is asserted
+# to return `available` under the new one, and the two are one commit apart.
 #
 # WHAT CARRIES THAT SECOND HALF IS THE SCHEMA, AND IT CARRIES IT BY CONSTRUCTION.
 # bay-status.schema.json enumerates six values and states in its own description that
@@ -47,20 +53,31 @@ description: "Drive both bays to `available`, then Boot and read them back as `u
 # the server. So the discrimination is real without the code mutation; executing it
 # would confirm the argument, not create it.
 #
-# WHAT IS STILL ONLY READ, NOT MEASURED: that the reset is UNCONDITIONAL. PROOF 2
-# distinguishes "fires on a reboot" from "fires on every Boot" only if :396 really
-# does sit outside the branch at :387-395 — which is read off the source, not
-# demonstrated by a run. Moving the line is the only thing that would demonstrate it,
-# and that has not been done.
+# THE EXPERIMENT THIS FILE ASKED FOR HAS NOW BEEN PERFORMED — BY THE SERVER.
+# Until 2026-09-03 this block read: "WHAT IS STILL ONLY READ, NOT MEASURED: that the
+# reset is UNCONDITIONAL ... Moving the line is the only thing that would demonstrate
+# it, and that has not been done." It has been done. csms-server f8f3af2b moved
+# `'status' => 'unknown'` inside `if (! $isReconnect)` in resetBaysToUnknown(), and
+# PROOF 2 is inverted here to match — the mutation this file named as its own
+# discriminator, executed, with PROOF 1 still passing exactly as predicted.
 #
-# WHY PROOF 2 PINS `Reconnect` AND IS NOT OVERREACH. The unconditional placement is
-# a real decision and it agrees with the spec's own words: the server enters
-# `unknown` ON CONNECTION LOSS, and a `Reconnect` Boot follows a connection loss by
-# definition — §5.2 defines it as "the only member that does not name a boot", sent
-# when the station re-establishes MQTT without having restarted. The server's
-# knowledge of the bays is stale across that gap even though the hardware never
-# stopped. A future decision to reset only on a genuine reboot would be a behaviour
-# change, and this file going red is the correct report of one.
+# The paragraph that stood here also said: "A future decision to reset only on a
+# genuine reboot would be a behaviour change, and this file going red is the correct
+# report of one." That is what happened, and this edit is the report — not a repair
+# of a broken scenario. The old expectation was true of the old server.
+#
+# WHY THE NEW EXPECTATION IS THE RIGHT ONE. §5.2 defines `Reconnect` as "the only
+# member that does not name a boot", sent when the station re-establishes MQTT
+# WITHOUT having restarted. A station that never restarted did not lose its bays, so
+# the server's knowledge of them is no staler after the reconnect than before it —
+# and `unknown` is not cosmetic, it refuses money with 3002 BAY_NOT_READY. The three
+# sweeps beside the reset (failStuckSessions, failStuckFirmwareUpdates,
+# failStuckDiagnosticsUploads) all preserve on this branch; the bay wipe was the
+# fourth call and the only one that did not, which is what f8f3af2b closed.
+#
+# WHAT WOULD MAKE THIS FILE GO RED AGAIN, IN EITHER DIRECTION. PROOF 1 red = the
+# reset stopped firing at all. PROOF 2 red = the wipe escaped the guard and a
+# reconnect is wiping bays again. Both are real reports; neither is a flake.
 #
 # NO SETTLE DELAY AFTER A BOOT, AND ONE AFTER EVERY StatusNotification. Asymmetric
 # on purpose. resetBaysToUnknown() runs at :396, before `return $response` at :400,
@@ -239,12 +256,21 @@ steps:
       data.bays[bayNumber=1].status: "available"
       data.bays[bayNumber=2].status: "available"
 
-  # --- PROOF 2: a Reconnect Boot resets them too — the reset is unconditional.
+  # --- PROOF 2: a Reconnect Boot does NOT reset them — the reset is a RESTART's.
   # uptimeSeconds is ~25h and the reason is `Reconnect`: the station is telling the
   # server it never restarted, only re-established MQTT. That is the branch at
-  # BootNotificationHandler.php:387 which PRESERVES in-flight sessions — and the bay
-  # reset at :396 sits outside it. This step is what distinguishes "the reset fires
-  # on a reboot" from "the reset fires on every Boot".
+  # BootNotificationHandler.php:387 which PRESERVES in-flight sessions — and as of
+  # csms-server f8f3af2b the status wipe is INSIDE that preservation, so the bays
+  # survive. This step is what distinguishes "the reset fires on a reboot" from "the
+  # reset fires on every Boot", and it now reads the FIRST of those.
+  #
+  # INVERTED, NOT DELETED, AND THE ARM IS WHY IT IS STILL A PROOF. Reading a value
+  # that was already there proves nothing — which is the trap this file was built to
+  # avoid, and the reason ARM 2 exists. ARM 2 drove both bays to `available` and
+  # asserted they got there; PROOF 1 proved a PowerOn Boot wipes that same value
+  # two steps earlier, in this same run, on this same station. So `available` here
+  # is not "nothing happened": it is the server declining a write it demonstrably
+  # performs on the other branch, with the branch selector as the only variable.
   - action: send
     message: BootNotification
     payload:
@@ -283,5 +309,5 @@ steps:
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
     expect_status: 200
     expect_body:
-      data.bays[bayNumber=1].status: "unknown"
-      data.bays[bayNumber=2].status: "unknown"
+      data.bays[bayNumber=1].status: "available"
+      data.bays[bayNumber=2].status: "available"
