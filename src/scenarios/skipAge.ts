@@ -97,8 +97,24 @@ export function formatSkipAgeReport(entries: ReadonlyArray<SkipAge>, maxReason =
   return lines;
 }
 
-/** The declaration keys that take a file out of a run, and the value that is its reason. */
-const SKIP_KEYS = ['skip_reason', 'skip_when_pooled'] as const;
+/**
+ * The declaration keys that take a file out of a run, and the value that is each one's reason.
+ *
+ * `requires_pool` JOINED ON 2026-09-05, and its absence was the exact failure this module was
+ * built to prevent. It is the INVERSE skip — it removes a file from every unattended run that
+ * is not pooled — and `service-catalog-update.yaml` adopted it as a straight REPLACEMENT for
+ * `skip: true` + `skip_kind: inconclusive`. The file went on not running, its age reset to
+ * nothing, and it left this report entirely. Six files are in that state.
+ * `multiunit-jam-drive.yaml:41` had even written the requirement down — "an entry in
+ * `SKIP_KEYS` (skipAge.ts:100), or the skip becomes invisible to the age report" — as step 4
+ * of a change nobody made. Audit A9-40 then read one of those six as an uncovered action.
+ *
+ * ONE ROW PER DECLARED KEY, not per file. The loop used to stop at the first match, so a file
+ * declaring two restrictions reported one and hid the other — the same invisibility one level
+ * down. No file declares two today (measured: 0 of 148); this makes that a fact the report
+ * would show rather than one it depends on.
+ */
+const SKIP_KEYS = ['skip_reason', 'skip_when_pooled', 'requires_pool'] as const;
 
 /**
  * Walk the corpus and collect every file that declares a skip, with its reason and age.
@@ -108,9 +124,10 @@ const SKIP_KEYS = ['skip_reason', 'skip_when_pooled'] as const;
  * particular invocation selected. A `--scenario one-file.yaml` run should still print the
  * whole picture, because the picture is the point.
  *
- * The reason is taken from `skip_reason:` or `skip_when_pooled:` — the two keys that carry
- * prose. A bare `skip: true` with no `skip_reason` is reported with an empty reason rather
- * than omitted, because a skip that does not say why is the worst case, not an absent one.
+ * The reason is taken from `skip_reason:`, `skip_when_pooled:` or `requires_pool:` — the three
+ * keys that carry prose. A bare `skip: true` with no `skip_reason` is reported with an empty
+ * reason rather than omitted, because a skip that does not say why is the worst case, not an
+ * absent one.
  */
 export function collectSkipAges(dir: string, cwd = process.cwd()): SkipAge[] {
   const out: SkipAge[] = [];
@@ -139,27 +156,24 @@ export function collectSkipAges(dir: string, cwd = process.cwd()): SkipAge[] {
       // Top-level keys only — anchored to column 0 so a `skip_reason:` nested inside a step
       // or quoted in a comment block cannot be mistaken for a declaration.
       const unconditional = /^skip:\s*true\s*$/m.test(text);
-      let key: string | undefined;
-      let reason = '';
+      const declared: Array<{ key: string; reason: string }> = [];
       for (const k of SKIP_KEYS) {
         const m = new RegExp(`^${k}:\\s*(.*)$`, 'm').exec(text);
-        if (m) {
-          key = k === 'skip_reason' ? 'skip' : k;
-          reason = readScalar(text, m);
-          break;
-        }
+        if (m) declared.push({ key: k === 'skip_reason' ? 'skip' : k, reason: readScalar(text, m) });
       }
-      if (key === undefined && unconditional) key = 'skip';
-      if (key === undefined) continue;
+      if (declared.length === 0 && unconditional) declared.push({ key: 'skip', reason: '' });
+      if (declared.length === 0) continue;
 
-      const since = skipIntroducedAt(full, key === 'skip' ? 'skip' : key, cwd);
-      out.push({
-        file: path.relative(dir, full),
-        key,
-        reason,
-        since,
-        ageDays: ageInDays(since),
-      });
+      for (const { key, reason } of declared) {
+        const since = skipIntroducedAt(full, key, cwd);
+        out.push({
+          file: path.relative(dir, full),
+          key,
+          reason,
+          since,
+          ageDays: ageInDays(since),
+        });
+      }
     }
   };
   walk(dir);

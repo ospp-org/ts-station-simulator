@@ -82,6 +82,6 @@ steps:
     # 3011 is reachable ONLY from UNAVAILABLE, so pinning it proves the report
     # landed AND that maintenance is what refused the start.
     expect_body:
-      error.ospp_code: 3011
+      errorCode: 3011
   # Per C-008: server returns 409 BAY_MAINTENANCE pre-MQTT-dispatch; no
   # StartService Request is published.

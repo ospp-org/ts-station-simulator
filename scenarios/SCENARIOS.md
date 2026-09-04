@@ -1,22 +1,28 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 113** across 10 categories, counted on disk
+**Total scenarios: 148** across 11 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
-> The header said 116 from the moment it was written until 2026-08-11. It was
-> true when written and false three commits later: `5219baa` deleted
-> `reset-rejected-active-sessions` and `session-seqno-monotonic`, and `57063cc`
-> deleted `session-final-seqno-terminal` — each for a stated reason, none of
-> which reached back to this line. A count is a claim with an expiry date, and
-> this one is the only claim on the page a reader would take as current.
+> The header said 116 from the moment it was written until 2026-08-11, then 113
+> until 2026-09-05. It was true when written and false three commits later:
+> `5219baa` deleted `reset-rejected-active-sessions` and `session-seqno-monotonic`,
+> and `57063cc` deleted `session-final-seqno-terminal` — each for a stated reason,
+> none of which reached back to this line. A count is a claim with an expiry date,
+> and this one is the only claim on the page a reader would take as current.
+> **The 113 rotted the same way and by a wider margin: 35 files.** The number is now
+> pinned by `ScenarioCoverageClaims.test.ts`, so it fails rather than drifts.
 
 > **The per-category tables below this line are STALE and are left as-is
 > deliberately.** They describe 88 scenarios across 7 categories — the
-> `e2e`, `multiunit-e2e` and `tls-floor` directories are missing entirely, and
-> every count is low. Correcting them is a sweep of its own.
-> Measured counts on disk: chaos 7, core 18, device-management 22, e2e 3,
-> fleet 3, multiunit-e2e 3, reservations 6, security 24, sessions 21,
-> tls-floor 6.
+> `e2e`, `multiunit-e2e`, `provisioning` and `tls-floor` directories are missing
+> entirely, and every count is low. Correcting them is a sweep of its own.
+> Measured on disk 2026-09-05: chaos 8, core 24, device-management 38, e2e 3,
+> fleet 3, multiunit-e2e 3, provisioning 2, reservations 6, security 26,
+> sessions 25, tls-floor 10.
+> (The previous edition of this very note was itself stale — it read chaos 7,
+> core 18, device-management 22, security 24, sessions 21, tls-floor 6 and omitted
+> `provisioning` altogether. A note recording that the numbers below are wrong is
+> not exempt from being wrong.)
 
 ## The firmware family — added 2026-08-17, measured on the wire
 
@@ -98,7 +104,8 @@ position, never a substring of the file's own prose, which inflates the count by
 |---|---|
 | Carry a server-state assertion | 82 |
 | Carry an explicit ceiling label with file:line evidence | 20 |
-| Skip transparently (`skip` / `skip_when_pooled`) | 11 |
+| Skip transparently (`skip` / `skip_when_pooled`) | 14 |
+| Are pool-only (`requires_pool` — invisible to the skip-age report) | 6 |
 
 ## Branch-targeted variations
 
@@ -304,7 +311,33 @@ branch that `core/happy-boot.yaml` does not.
 
 ## Spec Coverage
 
-All 26 MQTT actions are covered by at least one scenario:
+All **27** MQTT actions are covered by at least one scenario.
+
+> **The number was 26 and the table under it had 27 rows** — audit A9-40. The
+> denominator is `OsppAction`, which carries 27 members in the pinned
+> `@ospp/protocol` (`dist/actions/OsppAction.d.ts`); the header was never
+> re-derived from it. `ScenarioCoverageClaims.test.ts` now reads the enum, the
+> table and the corpus and requires all three to agree, so this line cannot
+> drift from the thing it counts.
+
+> **A9-40's two named gaps have both closed, and neither closed by being fixed —
+> they closed by being outgrown, which is why nothing propagated back here.**
+> The row said `UpdateServiceCatalog` had "a single `requires_pool` scenario":
+> **five** files name it today (`service-catalog-update` and
+> `catalog-publish-refused-two-ways-under-one-code` are `requires_pool`; the three
+> `e2e/*` files are `skip_when_pooled`), so it is exercised in BOTH run modes —
+> the two pool-only files in a pooled run, the three e2e files standalone. The row
+> also said the `AuthorizeOfflinePass` refusal branch was `skip: true`: it is not
+> any more. `offline-pass-refused-the-three-a-station-meets.yaml` drives three
+> refusals and is unskipped. `offline-pass-rejected.yaml` is still `skip: true`,
+> but it is no longer the only refusal on that action.
+
+**Read the scenario names below as a guide, not an index.** They are file stems
+without paths and some are prefixes of several real files; `boot-rejected` is no
+longer any file's stem at all (it is `boot-rejected-station-id-spoof` and
+`boot-rejected-malformed-payload`). What is machine-checked is the ACTION column
+against the enum, and coverage against the corpus — not these stems.
+
 
 | Action | Direction | Scenarios |
 |--------|-----------|-----------|
@@ -330,12 +363,38 @@ All 26 MQTT actions are covered by at least one scenario:
 | GetDiagnostics | Server→Station | diagnostics-upload, diagnostics-failure |
 | DiagnosticsNotification | Station→Server | diagnostics-upload, diagnostics-failure |
 | SetMaintenanceMode | Server→Station | maintenance-mode-on, -off, -all-bays |
-| UpdateServiceCatalog | Server→Station | service-catalog-update |
+| UpdateServiceCatalog | Server→Station | service-catalog-update, catalog-publish-refused-two-ways-under-one-code (both `requires_pool`), and the three `e2e/*` files (`skip_when_pooled`) — covered in both run modes, neither in both |
 | SignCertificate | Station→Server | trigger-cert-renewal |
 | CertificateInstall | Server→Station | certificate-install, certificate-install-rejected |
 | TriggerCertificateRenewal | Server→Station | trigger-cert-renewal |
-| AuthorizeOfflinePass | Station→Server | offline-pass-authorize, offline-pass-rejected |
+| AuthorizeOfflinePass | Station→Server | offline-pass-authorize, offline-pass-refused-the-three-a-station-meets (three refusals, runnable), offline-pass-rejected (**`skip: true`** — 163d, see the skip-age report) |
 
 ### Uncovered Spec Areas
 
 BLE messages (13 messages) are not covered — they use GATT characteristics, not MQTT, and are outside scope of this MQTT-based simulator.
+
+### What spec `v0.31.0` moved, and what this corpus can reach — measured 2026-09-05
+
+Four wire changes landed on csms-server between the last pooled run and today. **None of
+them breaks a scenario**, and the reason is worth stating precisely, because "no failures"
+and "covered" are different findings and only one of them is true here.
+
+| what moved | scenarios asserting the OLD form | what this corpus can do about it |
+|---|---|---|
+| `SessionEndReason` gained **`Inactivity`** (6 → 7 values) | 0 — `Inactivity` appears in no scenario and no source file | **BLOCKED on the SDK pin.** The corpus sends `Local`, `TimerExpired`, `Fault`, `Deauthorized`, `LocalOutOfCredit`, `OperatorStopped`; the seventh does not exist at `@ospp/protocol` `0.26.0` |
+| `boot-notification-request` gained OPTIONAL **`messageSigningMode`** | 0 — absent from every boot payload | **BLOCKED on the SDK pin, and hard-blocked:** the pinned boot schema is `additionalProperties: false`, so adding the field fails `lint:scenarios` before it reaches a broker |
+| **`3003 SERVICE_UNAVAILABLE` moved `503` → `409`** on `/sessions/start`, `/sessions/offline-auth` and ReserveBay, and now carries a REQUIRED `details.cause` (`station-reported` \| `disabled`) | 0 — **`3003` is asserted nowhere**, in either shape, and no step expects a `503` | Uncovered rather than stale. The corpus asserts 23 distinct REST codes and 4 wire codes; this is not one of them |
+| **`1007` is boot-only.** Version divergence on any other message is accepted and journalled instead of refused | 0 assertions — but two source docblocks described the old consequence and are corrected (`src/mqtt/protocolVersion.ts`, `MqttConnection.willProtocolVersion.test.ts`) | The LWT test stands: the dead letter was the symptom, a will that lies about its version is the defect, and the fix removed the signal that used to find it |
+
+A fifth change is not a wire change but lands on this corpus harder than any of them: the
+five `OsppErrorSurface`-marked routes now answer the **flat** OSPP Error Object.
+**Twelve api_call steps across eleven files read `error.ospp_code` off those routes and
+were green the whole time**, because UAT was behind. They are migrated, and
+`MarkedRouteErrorShape.test.ts` now checks both directions on every step in the corpus —
+it found a THIRD envelope on its first run. See `src/protocol/errorShape.ts`.
+
+**The pin is the blocker for the first two rows, and it cannot move by itself:**
+`@ospp/protocol` is pinned `^0.26.0`, which is minor-locked on `0.x`, so it can never
+resolve past `0.26.x` — three minors short of the published `0.29.0`. `npm run check:sdk-pin`
+reports this. Bumping it is its own change: it moves 172 schemas, and a tightening lands as
+new `lint:scenarios` failures rather than as an install error.

@@ -139,8 +139,8 @@ steps:
       duration_seconds: 300
     expect_status: 502
     expect_body:
-      error.ospp_code: 6003
-      error.message: "Station is disabled"
+      errorCode: 6003
+      errorDescription: "Station is disabled"
 
   # ---- Re-enable ----
   - action: api_call

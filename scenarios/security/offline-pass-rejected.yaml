@@ -10,11 +10,25 @@ skip_reason: >-
   reading it — that needs deleting the skip and running, which is a decision for whoever owns the
   offline profile, not a side effect of a docs audit.
   Two things to fix BEFORE un-skipping, or its green will not mean anything.
-  (1) THE ASSERTION IS TOO WEAK TO CARRY ITS OWN NAME. It asserts only `status == Rejected`. The
-  pass also carries `signature: "test_sig"`, which is not an ECDSA-P256 signature, so a refusal for
-  the bad signature produces exactly the same green as a refusal for expiry — and this file is
-  named for expiry. It needs an errorCode assertion naming the expiry refusal before a pass proves
-  the thing the file claims to test.
+  (1) THE ASSERTION IS TOO WEAK TO CARRY ITS OWN NAME — still true — BUT THE REMEDY THIS REASON
+  NAMED IS IMPOSSIBLE, corrected 2026-09-05. It asserts only `status == Rejected`. The pass also
+  carries `signature: "test_sig"`, which is not an ECDSA-P256 signature, so a refusal for the bad
+  signature produces exactly the same green as a refusal for expiry — and this file is named for
+  expiry. That half stands. What does not is the fix it asked for: "an errorCode assertion naming
+  the expiry refusal". THERE IS NO SUCH FIELD. `authorize-offline-pass-response.schema.json` is
+  `additionalProperties: false` and its properties are exactly `status`, `sessionId`,
+  `durationSeconds`, `creditsAuthorized`, `reason` — measured identical at the pinned
+  `@ospp/protocol` 0.26.0 AND at the 0.29.0 the server vendors, so this was never true and no
+  version bump makes it true. csms-server `089fa56a` reached the same conclusion from the other
+  side, excluding AuthorizeOfflinePassHandler from 3003's new `details.cause` requirement
+  "by construction: it answers on a wire response with no Error Object at all".
+  THE ACHIEVABLE FIX IS `reason`, and a sibling already does it:
+  `offline-pass-refused-the-three-a-station-meets.yaml` discriminates three refusals on that one
+  field, and since csms-server `WireRefusalReason::format()` the sentence carries a machine
+  token in front of it. Assert the token here, not a code.
+  A REASON THAT NAMES AN IMPOSSIBLE REMEDY IS WORSE THAN A BARE ONE: it reads as a small
+  well-understood task and is unstartable, which is a good way to spend 163 days skipped. The
+  age report is what surfaced it (audit A9-40, 2026-09-05).
   (2) ITS RUNTIME DEPENDENCIES ARE UNRESOLVED HERE. It takes {{bayId_1}} and {{serviceId_1}} from
   pool hydration, and AuthorizeOfflinePass may additionally require the identity to have offline
   enabled — pooled runs are commonly launched with --no-offline-enable. Neither is determinable

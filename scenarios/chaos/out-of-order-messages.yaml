@@ -93,4 +93,4 @@ steps:
     url: "{{target_url}}/api/v1/sessions/sess_deadbeef"
     expect_status: 404
     expect_body:
-      error.ospp_code: 3006
+      errorCode: 3006

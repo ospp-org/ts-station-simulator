@@ -118,7 +118,7 @@ steps:
     # holds the bay — not that some unrelated 409 came back. Without it the bay
     # could have been `unknown` (3002) and the scenario would still have passed.
     expect_body:
-      error.ospp_code: 3001
+      errorCode: 3001
   # Per C-005: server returns 409 BAY_BUSY pre-MQTT-dispatch; no StartService
   # Request is published.
 

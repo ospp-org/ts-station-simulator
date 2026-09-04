@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { assertedErrorCode } from '../../protocol/errorShape.js';
 
 /**
  * THE GATE THAT REFUSES A COMMAND SENT TO A BAY NOBODY HAS REPORTED.
@@ -164,12 +165,16 @@ export function unarmedCommandsIn(doc: unknown, label: string): Offender[] {
     // 3002 joined 3005 on 2026-08-26 for a DIFFERENT reason — see DELIBERATE_BAY_REFUSALS.
     // Excusing it does not weaken the rule: a file that hits 3002 by ACCIDENT is asserting
     // something else, and is still flagged.
+    //
+    // READ THROUGH `assertedErrorCode`, NOT off one spelling. `/sessions/start` answers the
+    // FLAT Error Object (`errorCode`) since csms-server `dd090cf0`; the reservation and admin
+    // doors still answer the wrapped one (`error.ospp_code`). A regex on `ospp_code` alone
+    // stops recognising the excuse the moment a file migrates — and it fails in the DANGEROUS
+    // direction, demanding that a scenario report a bay it deliberately invented.
     const expectBody = step.expect_body as Record<string, unknown> | undefined;
-    const expectsDeliberateRefusal = expectBody !== undefined
-      && Object.entries(expectBody).some(
-        ([path, want]) => /(^|\.)ospp_code$/.test(path)
-          && typeof want === 'number' && DELIBERATE_BAY_REFUSALS.has(want),
-      );
+    const asserted = expectBody === undefined ? undefined : assertedErrorCode(expectBody);
+    const expectsDeliberateRefusal =
+      asserted !== undefined && DELIBERATE_BAY_REFUSALS.has(asserted);
     if (expectsDeliberateRefusal) return;
 
     const body = step.body as Record<string, unknown> | undefined;

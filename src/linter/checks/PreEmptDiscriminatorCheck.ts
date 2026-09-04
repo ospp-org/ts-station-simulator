@@ -1,3 +1,4 @@
+import { assertedErrorCode } from '../../protocol/errorShape.js';
 import type { LintCheck, LintIssue, ParsedScenario } from '../types.js';
 
 /**
@@ -35,10 +36,12 @@ export class PreEmptDiscriminatorCheck implements LintCheck {
       const expectBody = step.expect_body;
       if (!expectBody || typeof expectBody !== 'object') return;
 
+      // Both spellings: `errorCode` on the five `OsppErrorSurface`-marked routes, and
+      // `error.ospp_code` everywhere else. A check that reads one of them silently stops
+      // firing on files written against the other, which is indistinguishable from a corpus
+      // that has no 6008 in it.
       const asserted = expectBody as Record<string, unknown>;
-      const assertsPreEmpt = Object.entries(asserted).some(
-        ([path, want]) => /(^|\.)ospp_code$/.test(path) && want === PRE_EMPT_CODE,
-      );
+      const assertsPreEmpt = assertedErrorCode(asserted) === PRE_EMPT_CODE;
       if (!assertsPreEmpt) return;
 
       const assertsDiscriminator = Object.keys(asserted).some((path) =>

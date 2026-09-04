@@ -80,6 +80,6 @@ steps:
     # StartSessionAction raises for an unresolvable serviceId, so this cannot be
     # satisfied by an unrelated 404 (wrong route, missing bay).
     expect_body:
-      error.ospp_code: 3004
+      errorCode: 3004
   # Per C-007: server returns 404 INVALID_SERVICE pre-MQTT-dispatch; no
   # StartService Request is published.

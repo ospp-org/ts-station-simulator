@@ -47,9 +47,15 @@ const SPEC_WIRE_VERSION = '0.3.0';
  *
  * Consequence, measured on UAT: 11 wills dead-lettered with
  * `Unsupported version: 0.2.1` against a server whose supported set was
- * `["0.3.0"]`. Negotiation is exact match, so the will is refused 1007 and
+ * `["0.3.0"]`. Negotiation is exact match, so the will was refused 1007 and
  * hard-failed — and ConnectionLost is the only trigger for orphaned-session
- * recovery, so the server never learns the station vanished.
+ * recovery, so the server never learned the station vanished.
+ *
+ * PAST TENSE SINCE csms-server `089fa56a`: `1007` is boot-only now, and a divergent
+ * will is accepted and journalled instead of dead-lettered. This test is UNCHANGED and
+ * still earns its place — the dead letter was the symptom, a will that lies about its
+ * version is the defect, and the fix removed the only signal that would have found it
+ * again. See src/mqtt/protocolVersion.ts.
  */
 function willEnvelope(): Record<string, unknown> {
   const will = connectCalls[0]?.opts.will as { payload: string } | undefined;

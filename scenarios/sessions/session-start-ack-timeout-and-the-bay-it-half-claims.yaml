@@ -201,8 +201,8 @@ steps:
       duration_seconds: 300
     expect_status: 504
     expect_body:
-      error.ospp_code: 6002
-      error.code: "ACK_TIMEOUT"
+      errorCode: 6002
+      errorText: "ACK_TIMEOUT"
 
   # --- [2] IT REACHED THE STATION. Two jobs: it is the proof that the 504 means "no answer"
   # rather than "never sent", and it is where the session id comes from — the REST call is
@@ -227,8 +227,8 @@ steps:
       duration_seconds: 300
     expect_status: 409
     expect_body:
-      error.ospp_code: 3001
-      error.code: "BAY_BUSY"
+      errorCode: 3001
+      errorText: "BAY_BUSY"
 
   # --- [4] THE LOCK THAT NOW HOLDS TOO. Same bay, seconds later, a different door — and it is
   # REFUSED, on the same code as [3], because this one now asks the sessions table as well.

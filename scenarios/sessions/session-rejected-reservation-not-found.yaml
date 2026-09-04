@@ -1,5 +1,5 @@
 name: "Session Rejected — the reservation does not exist (3012)"
-description: "Start a session on an Available bay naming a well-formed reservation id nothing owns: 404 + error.ospp_code 3012 RESERVATION_NOT_FOUND, and no StartService on the wire. The identical body without reservation_id is accepted — which is what attributes the refusal to that one field."
+description: "Start a session on an Available bay naming a well-formed reservation id nothing owns: 404 + errorCode 3012 RESERVATION_NOT_FOUND, and no StartService on the wire. The identical body without reservation_id is accepted — which is what attributes the refusal to that one field."
 # WHY THIS ONE, OUT OF THE ELEVEN REACHABLE START REFUSALS. It is the only one that needs
 # NOTHING to be true beforehand: no wallet balance to tune, no catalog row to misconfigure, no
 # bay to drive into a particular state, no second identity. `rsv_ffffffff` satisfies
@@ -95,8 +95,8 @@ steps:
       reservation_id: "rsv_ffffffff"
     expect_status: 404
     expect_body:
-      error.ospp_code: 3012
-      error.code: "RESERVATION_NOT_FOUND"
+      errorCode: 3012
+      errorText: "RESERVATION_NOT_FOUND"
 
   # NOTHING REACHED THE STATION. The refusal is raised before the StartService publish, so a
   # command arriving here would mean the server committed to a session it then refused —

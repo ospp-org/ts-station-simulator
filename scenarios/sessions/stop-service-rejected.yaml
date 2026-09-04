@@ -92,4 +92,4 @@ steps:
     # assertable here (there is no "no message arrived" step); it is a documented
     # consequence, not a proof.
     expect_body:
-      error.ospp_code: 3006
+      errorCode: 3006

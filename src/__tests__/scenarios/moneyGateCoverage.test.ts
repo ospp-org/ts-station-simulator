@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { ScenarioDefinition } from '../../scenarios/ScenarioRunner.js';
 import { DEFAULT_IDENTITY_WALLET_CREDITS } from '../../scenarios/bootstrap/uatPrivileged.js';
+import { assertsErrorCode } from '../../protocol/errorShape.js';
 
 /**
  * The money gate (`StartSessionAction.php:241-250` — 402 INSUFFICIENT_BALANCE / ospp_code
@@ -58,8 +59,16 @@ function expectBodies(scenario: ScenarioDefinition): Array<Record<string, unknow
     .filter((b): b is Record<string, unknown> => !!b && typeof b === 'object');
 }
 
+/**
+ * SHAPE-AGNOSTIC ON PURPOSE. `/sessions/start` is one of the five routes csms-server marks
+ * with `OsppErrorSurface`, so its refusal body is the flat Error Object (`errorCode`) rather
+ * than the wrapped envelope (`error.ospp_code`) — and it changed under this file, at
+ * csms-server `dd090cf0`. Reading only one spelling is how a coverage gate goes QUIET instead
+ * of red: "no scenario asserts 4001" and "this corpus has no money proof" are the same
+ * sentence to a gate that cannot see half the corpus. `assertsErrorCode` reads both.
+ */
 function assertsInsufficientBalance(scenario: ScenarioDefinition): boolean {
-  return expectBodies(scenario).some((b) => b['error.ospp_code'] === 4001);
+  return expectBodies(scenario).some((b) => assertsErrorCode(b, 4001));
 }
 
 const corpus = loadCorpus();
@@ -74,7 +83,7 @@ describe('money gate — the corpus proves the refusal it made everyone pay for'
     const provers = corpus.filter(({ scenario }) => assertsInsufficientBalance(scenario));
     expect(
       provers.map((p) => p.file),
-      'No scenario asserts error.ospp_code 4001. The server refuses card-free starts that ' +
+      'No scenario asserts OSPP code 4001 (errorCode / error.ospp_code). The server refuses card-free starts that ' +
       'cannot pay (StartSessionAction.php:241-250) and nothing in this corpus checks it — ' +
       'funding the fixtures removed the failures AND the coverage.',
     ).not.toEqual([]);
@@ -89,7 +98,7 @@ describe('money gate — the corpus proves the refusal it made everyone pay for'
       if (!assertsInsufficientBalance(scenario)) continue;
       expect(
         scenario.wallet_balance,
-        `${file} asserts error.ospp_code 4001 but does not declare "wallet_balance: 0". ` +
+        `${file} asserts OSPP code 4001 but does not declare "wallet_balance: 0". ` +
         `Its identity would be funded at ${DEFAULT_IDENTITY_WALLET_CREDITS} credits and the ` +
         `start would be accepted.`,
       ).toBe(0);
@@ -104,7 +113,7 @@ describe('money gate — the corpus proves the refusal it made everyone pay for'
       if (scenario.wallet_balance !== 0) continue;
       expect(
         assertsInsufficientBalance(scenario),
-        `${file} declares "wallet_balance: 0" but never asserts error.ospp_code 4001. An ` +
+        `${file} declares "wallet_balance: 0" but never asserts OSPP code 4001. An ` +
         `unfunded identity refuses every card-free start with a 402 that surfaces as a ` +
         `wait_for timeout three steps later — declare the balance only where the refusal ` +
         `is the subject.`,
@@ -116,10 +125,7 @@ describe('money gate — the corpus proves the refusal it made everyone pay for'
     for (const { file, scenario } of corpus) {
       if (!assertsInsufficientBalance(scenario)) continue;
       const steps = (scenario.steps ?? []) as Array<Record<string, unknown>>;
-      const refusal = steps.find(
-        (s) => !!s.expect_body &&
-          (s.expect_body as Record<string, unknown>)['error.ospp_code'] === 4001,
-      );
+      const refusal = steps.find((s) => assertsErrorCode(s.expect_body, 4001));
       expect(refusal?.expect_status, `${file}: the 4001 step must pin its HTTP status`).toBe(402);
     }
   });
@@ -131,10 +137,7 @@ describe('money gate — the corpus proves the refusal it made everyone pay for'
     for (const { file, scenario } of corpus) {
       if (!assertsInsufficientBalance(scenario)) continue;
       const steps = (scenario.steps ?? []) as Array<Record<string, unknown>>;
-      const refusal = steps.find(
-        (s) => !!s.expect_body &&
-          (s.expect_body as Record<string, unknown>)['error.ospp_code'] === 4001,
-      );
+      const refusal = steps.find((s) => assertsErrorCode(s.expect_body, 4001));
       expect(refusal?.background, `${file}: the 4001 step must not be background`).toBeFalsy();
     }
   });

@@ -85,6 +85,6 @@ steps:
     # Closing that gap needs either a code the server does not currently
     # distinguish, or an out-of-band read of bays.status. Recorded, not invented.
     expect_body:
-      error.ospp_code: 3002
+      errorCode: 3002
   # Per C-006: server returns 409 BAY_NOT_READY pre-MQTT-dispatch; no
   # StartService Request is published.

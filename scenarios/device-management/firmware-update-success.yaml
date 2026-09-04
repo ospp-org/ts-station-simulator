@@ -22,8 +22,30 @@
 #   station's own payload (`$updates['error_text'] = $errorText ?? 'Unknown error'`, :135).
 #   Asserting it proves the report round-tripped and persisted — real, but persistence, not
 #   server judgement. It is the same category as the security-event severity assertions.
+# ── THE CEILING: EVERY FIRMWARE FAILURE HERE IS REPORTED, NEVER DISCOVERED ─────────────────
+# This file's description claimed a "Full firmware update lifecycle". Read as a claim about
+# the STATION it is false, and it was read that way (audit A1-133). Each phase below is a
+# `send` step this file scripts.
+# Nothing in this repo fetches an image, computes a hash, verifies an ECDSA image signature,
+# or writes a partition — and the ceiling is STRUCTURAL, in two independent places:
+#
+#   1. `src/handlers/UpdateFirmwareHandler.ts`, the only code that could stage anything,
+#      imports `@ospp/protocol` and `./Handler.js` and nothing else — zero `fetch`, zero
+#      `node:fs`, zero `node:crypto`. It answers Accepted and emits the four phases off a
+#      `setTimeout(1000)` loop. 1 of the 20 handlers imports any I/O at all and it is
+#      TriggerMessageHandler, not this one.
+#   2. THAT HANDLER IS NOT IN THIS LOOP EITHER, which is the half A1-133 named the wrong site
+#      for. Scenario mode registers exactly ONE handler — `BootNotificationHandler(false)`,
+#      for the sessionKey (`ScenarioRunner.ts:1226-1241`) — against the 20 the interactive
+#      `connect` command registers (`cli/index.ts:848`). Even the timer is absent here.
+#
+# WHAT IS STILL PROVEN is on the SERVER side and is worth the file: that the command reaches
+# the wire, that the reports round-trip, and that the row the server derives from them says
+# what it should. `FirmwareIntegrityCeiling.test.ts` pins both facts above, so this note goes
+# RED if it ever becomes an understatement.
+#
 name: "Firmware Update Success"
-description: "Full firmware update lifecycle: download, install, and report Installed status"
+description: "The station REPORTS the four firmware phases — Downloading, Downloaded, Installing, Installed — and the server derives `rebooting` from the last of them. Nothing is downloaded, hashed or verified: see the ceiling above."
 station:
   stationId: "{{stationId}}"
   bayCount: 2

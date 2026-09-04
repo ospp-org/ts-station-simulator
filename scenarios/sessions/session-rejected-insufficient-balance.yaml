@@ -117,14 +117,14 @@ steps:
       # status alone could not supply. Pinned anyway: the status map is the server's, and a
       # file that asserts only what today's mapping happens to make unique goes quiet the
       # day a second code joins 402.
-      error.ospp_code: 4001
+      errorCode: 4001
       # THE HALF THIS SCENARIO SENDS NOTHING TO PRODUCE. `500` is not in the request — the
       # request carries `duration_seconds: 300`, and the server derived 500 from it by
       # `ceil(300 / 60 * 100)` against the seeded price of `svc_wash_basic`
       # (StartSessionAction.php:205-209). So this line proves the gate COMPUTED the
       # requirement and compared against it, where `ospp_code: 4001` alone would only prove
       # that something on the money path said no. `0` is the seeded balance, echoed back.
-      error.message: "Wallet balance 0 does not cover 500 credits"
+      errorDescription: "Wallet balance 0 does not cover 500 credits"
 
   # NO wait_for. The absence is the assertion the corpus can afford to make here: this file
   # ends the moment the refusal is confirmed, because a StartService that never gets built

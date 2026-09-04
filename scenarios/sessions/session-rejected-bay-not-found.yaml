@@ -1,5 +1,5 @@
 name: "Session Rejected — the bay does not exist (3005)"
-description: "POST /api/v1/sessions/start naming a well-formed bay_id no station owns. Server answers 404 + error.ospp_code 3005 BAY_NOT_FOUND. A start on the station's REAL bay, same body otherwise, is accepted — which is what attributes the 404 to the bay id."
+description: "POST /api/v1/sessions/start naming a well-formed bay_id no station owns. Server answers 404 + errorCode 3005 BAY_NOT_FOUND. A start on the station's REAL bay, same body otherwise, is accepted — which is what attributes the 404 to the bay id."
 # WHY THIS FILE EXISTS. 3005 BAY_NOT_FOUND is the code csms-server constructs from
 # more sites than any other — fifteen, across six modules — and until this file it
 # appeared NOWHERE in the corpus: `grep '3005\|BAY_NOT_FOUND'` over all scenarios
@@ -51,7 +51,7 @@ description: "POST /api/v1/sessions/start naming a well-formed bay_id no station
 # ordering is also why this file is excused from the corpus's "every bay-gated
 # command is issued to a bay the scenario has reported" gate: the bay does not
 # exist, so reporting it is impossible, and the state that gate is about is never
-# reached. The excuse is keyed on this file's own `error.ospp_code: 3005`
+# reached. The excuse is keyed on this file's own `errorCode: 3005`
 # assertion — see BayGatedCommandsAreArmed.test.ts.
 #
 # THE CONTROL IS THE SECOND CALL. Without it a 404 proves only that the endpoint
@@ -133,8 +133,8 @@ steps:
       duration_seconds: 300
     expect_status: 404
     expect_body:
-      error.ospp_code: 3005
-      error.code: "BAY_NOT_FOUND"
+      errorCode: 3005
+      errorText: "BAY_NOT_FOUND"
 
   # --- THE CONTROL. Same body, real bay. `background: true` because the endpoint
   # blocks on the station's StartService Response, which the steps below supply —

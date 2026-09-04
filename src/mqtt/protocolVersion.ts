@@ -10,6 +10,20 @@
  * vanished, and ConnectionLost is the only trigger for orphaned-session recovery
  * (`spec/03-messages.md` §5.5, `06-security.md:831-835`).
  *
+ * THAT CONSEQUENCE IS NOW HISTORY, AND THE FUNCTION IS NOT. csms-server `089fa56a`
+ * (spec `v0.31.0`, M9) made `1007` reachable ONLY from BootNotification — the
+ * negotiation step used to run on every message, which broke `02-transport.md:159`'s
+ * MUST NOT in one direction and `07-errors.md:284`'s "reachable only from
+ * BootNotification" in the other. A will carrying a divergent version is now ACCEPTED
+ * and the divergence JOURNALLED, so the DLQ half of the paragraph above describes a
+ * server that no longer exists.
+ *
+ * It is corrected rather than deleted because the paragraph is the EVIDENCE for the
+ * one-resolver rule, and the rule did not move: a divergent will is still wrong on the
+ * wire, still silent, and now silent in a way that produces no dead letter to find it
+ * by. The failure got quieter, which is an argument for this function rather than
+ * against it — and BOOT is the one message where 1007 still bites, which is exactly the
+ * message a station sends first.
  * THAT is why this function still exists, and it is the part that does not expire:
  * both publishers must reach the wire through ONE place, or they drift again. The
  * first fix routed the will through here and was still inert, because the resolver
