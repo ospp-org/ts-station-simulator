@@ -104,8 +104,7 @@ position, never a substring of the file's own prose, which inflates the count by
 |---|---|
 | Carry a server-state assertion | 82 |
 | Carry an explicit ceiling label with file:line evidence | 20 |
-| Skip transparently (`skip` / `skip_when_pooled`) | 14 |
-| Are pool-only (`requires_pool` — invisible to the skip-age report) | 6 |
+| Declare an exclusion the skip-age report can see (`skip` / `skip_when_pooled` / `requires_pool` / `requires_files`) | 26 rows across 21 files (3 `skip` · 11 `skip_when_pooled` · 6 `requires_pool` · 6 `requires_files`; five files declare two) |
 
 ## Branch-targeted variations
 
@@ -373,28 +372,56 @@ against the enum, and coverage against the corpus — not these stems.
 
 BLE messages (13 messages) are not covered — they use GATT characteristics, not MQTT, and are outside scope of this MQTT-based simulator.
 
-### What spec `v0.31.0` moved, and what this corpus can reach — measured 2026-09-05
+### What spec `v0.31.0` moved, and what this corpus reaches — measured 2026-09-05
 
-Four wire changes landed on csms-server between the last pooled run and today. **None of
-them breaks a scenario**, and the reason is worth stating precisely, because "no failures"
-and "covered" are different findings and only one of them is true here.
+`@ospp/protocol` was pinned `^0.26.0`, minor-locked on `0.x`, so it could never resolve past
+`0.26.x` — three minors short of the published `0.29.0`, and `npm update` could not move it.
+**Not a delay, a floor.** The pin is now `^0.29.0`.
 
-| what moved | scenarios asserting the OLD form | what this corpus can do about it |
+**What actually moved, measured by diffing the two published tarballs rather than read from
+release notes.** `npm pack @ospp/protocol@0.26.0` and `@0.29.0`, extracted and compared:
+
+| | |
+|---|---|
+| schema files | **3 of 86** changed, 0 added, 0 removed |
+| test vectors | **0** — and vacuously: the npm package ships **none at all**, at either version. The 334 live in the spec repo, not here |
+| compiled code | 13 files (`.map`s aside): `ConfigKey`, `SessionEndReason`, `OsppErrorCode`, `index`, the boot payload type, the 3 schemas, and one **new** enum |
+
+> **An earlier note in this file said 172 schemas. That was a double count** — the package
+> ships the same 86 under `src/schemas/` and `dist/schemas/`. 86 is the number, and it is the
+> same denominator csms-server measures against ("3 schemas of 86").
+
+**Two things moved that a summary of "an enum, a field and a description" does not cover:**
+
+1. **`RecommendedAction` is a NEW enum**, with two new top-level exports (`recommendedAction`,
+   `RECOMMENDED_ACTION`) and a changed `OsppErrorCode` body behind them. This is the SDK half
+   of the server's per-code registry work; nothing here consumes it yet.
+2. **`bootReason`'s `Reconnect` was WIDENED — in prose, not in the enum.** It now also covers a
+   BootNotification the server asked for by TriggerMessage, "where nothing restarted and the
+   session is not new either". The schema says its definition "was narrowed to the first case
+   until 0.31.0, which left a triggered Boot with no truthful member at all". The member list
+   is unchanged; the meaning is not.
+
+And the third schema's "description" is not cosmetic either: `provisioning-response`'s
+`keepAlive` text used to say Chapter 02's 30 seconds is "the value to use when this field is
+ABSENT", **contradicting the `required` array three lines above it**. Corrected.
+
+**Nothing failed. `lint:scenarios` 148 OK / 0 errors, `tsc` 0, and that is expected rather than
+lucky:** all three schema changes are WIDENINGS — an added enum member, an added OPTIONAL
+property, and description text. A widening cannot invalidate a payload that was already valid.
+An earlier edition of this section predicted "new lint failures"; it was hedging, and wrong.
+
+| what moved | scenarios on the old form | state |
 |---|---|---|
-| `SessionEndReason` gained **`Inactivity`** (6 → 7 values) | 0 — `Inactivity` appears in no scenario and no source file | **BLOCKED on the SDK pin.** The corpus sends `Local`, `TimerExpired`, `Fault`, `Deauthorized`, `LocalOutOfCredit`, `OperatorStopped`; the seventh does not exist at `@ospp/protocol` `0.26.0` |
-| `boot-notification-request` gained OPTIONAL **`messageSigningMode`** | 0 — absent from every boot payload | **BLOCKED on the SDK pin, and hard-blocked:** the pinned boot schema is `additionalProperties: false`, so adding the field fails `lint:scenarios` before it reaches a broker |
-| **`3003 SERVICE_UNAVAILABLE` moved `503` → `409`** on `/sessions/start`, `/sessions/offline-auth` and ReserveBay, and now carries a REQUIRED `details.cause` (`station-reported` \| `disabled`) | 0 — **`3003` is asserted nowhere**, in either shape, and no step expects a `503` | Uncovered rather than stale. The corpus asserts 23 distinct REST codes and 4 wire codes; this is not one of them |
-| **`1007` is boot-only.** Version divergence on any other message is accepted and journalled instead of refused | 0 assertions — but two source docblocks described the old consequence and are corrected (`src/mqtt/protocolVersion.ts`, `MqttConnection.willProtocolVersion.test.ts`) | The LWT test stands: the dead letter was the symptom, a will that lies about its version is the defect, and the fix removed the signal that used to find it |
+| `SessionEndReason` gained **`Inactivity`** (6 → 7) | 0 | Reachable now. Still unexercised — no scenario ends a session on the idle timer |
+| `boot-notification-request` gained OPTIONAL **`messageSigningMode`** | 0 | **Sent.** The station DERIVES it from `MessageSender.currentSigningMode`, the third derived field beside `uptimeSeconds` and `bootReason`. No scenario declares it and none should |
+| **`3003` moved `503` → `409`** on `/sessions/start`, `/sessions/offline-auth` and ReserveBay, and gained a REQUIRED `details.cause` | 0 — `3003` is asserted **nowhere**, in either shape | Uncovered, not stale. The corpus asserts 23 distinct REST codes and 4 wire codes; this is not one |
+| **`1007` is boot-only** — divergence elsewhere is accepted and journalled | 0 assertions; two source docblocks described the old dead-letter consequence and are corrected | The LWT test stands: the dead letter was the symptom, a lying will is the defect, and the fix removed the signal that found it |
+| `ConfigKey` **28 → 29** (`STATION_IDENTITY_CERTIFICATE`) | n/a | No scenario names a config key by enum |
 
-A fifth change is not a wire change but lands on this corpus harder than any of them: the
-five `OsppErrorSurface`-marked routes now answer the **flat** OSPP Error Object.
-**Twelve api_call steps across eleven files read `error.ospp_code` off those routes and
-were green the whole time**, because UAT was behind. They are migrated, and
-`MarkedRouteErrorShape.test.ts` now checks both directions on every step in the corpus —
-it found a THIRD envelope on its first run. See `src/protocol/errorShape.ts`.
-
-**The pin is the blocker for the first two rows, and it cannot move by itself:**
-`@ospp/protocol` is pinned `^0.26.0`, which is minor-locked on `0.x`, so it can never
-resolve past `0.26.x` — three minors short of the published `0.29.0`. `npm run check:sdk-pin`
-reports this. Bumping it is its own change: it moves 172 schemas, and a tightening lands as
-new `lint:scenarios` failures rather than as an install error.
+A fifth change is not a wire change but landed harder than any of them: the five
+`OsppErrorSurface`-marked routes now answer the **flat** OSPP Error Object. **Twelve api_call
+steps across eleven files read `error.ospp_code` off those routes and were green the whole
+time**, because UAT was behind. They are migrated, and `MarkedRouteErrorShape.test.ts` checks
+both directions on every step — it found a THIRD envelope on its first run. See
+`src/protocol/errorShape.ts`.

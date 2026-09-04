@@ -104,6 +104,19 @@ export class MessageSender {
     this.protocolVersion = protocolVersion;
   }
 
+  /**
+   * The mode this sender is ACTUALLY signing in — the value BootNotification reports.
+   *
+   * Exposed because `messageSigningMode` became a boot field at spec 0.31.0 and the station
+   * is the only thing that knows the answer. It is read here rather than taken from config
+   * for the same reason `uptimeSeconds` is computed rather than written: the boot payload
+   * reports what the station IS DOING, and a second copy of that fact is a second thing to
+   * keep in step. See Station's boot payload builder.
+   */
+  get currentSigningMode(): MessageSigningMode {
+    return this.signingMode;
+  }
+
   async send<T>(
     action: OsppAction,
     messageType: MessageType,

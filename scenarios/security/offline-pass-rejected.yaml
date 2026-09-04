@@ -9,30 +9,41 @@ skip_reason: >-
   LEFT SKIPPED AND MARKED, deliberately, because whether it would pass cannot be settled by
   reading it — that needs deleting the skip and running, which is a decision for whoever owns the
   offline profile, not a side effect of a docs audit.
-  Two things to fix BEFORE un-skipping, or its green will not mean anything.
-  (1) THE ASSERTION IS TOO WEAK TO CARRY ITS OWN NAME — still true — BUT THE REMEDY THIS REASON
-  NAMED IS IMPOSSIBLE, corrected 2026-09-05. It asserts only `status == Rejected`. The pass also
-  carries `signature: "test_sig"`, which is not an ECDSA-P256 signature, so a refusal for the bad
-  signature produces exactly the same green as a refusal for expiry — and this file is named for
-  expiry. That half stands. What does not is the fix it asked for: "an errorCode assertion naming
-  the expiry refusal". THERE IS NO SUCH FIELD. `authorize-offline-pass-response.schema.json` is
-  `additionalProperties: false` and its properties are exactly `status`, `sessionId`,
-  `durationSeconds`, `creditsAuthorized`, `reason` — measured identical at the pinned
-  `@ospp/protocol` 0.26.0 AND at the 0.29.0 the server vendors, so this was never true and no
-  version bump makes it true. csms-server `089fa56a` reached the same conclusion from the other
-  side, excluding AuthorizeOfflinePassHandler from 3003's new `details.cause` requirement
-  "by construction: it answers on a wire response with no Error Object at all".
-  THE ACHIEVABLE FIX IS `reason`, and a sibling already does it:
-  `offline-pass-refused-the-three-a-station-meets.yaml` discriminates three refusals on that one
-  field, and since csms-server `WireRefusalReason::format()` the sentence carries a machine
-  token in front of it. Assert the token here, not a code.
-  A REASON THAT NAMES AN IMPOSSIBLE REMEDY IS WORSE THAN A BARE ONE: it reads as a small
-  well-understood task and is unstartable, which is a good way to spend 163 days skipped. The
-  age report is what surfaced it (audit A9-40, 2026-09-05).
-  (2) ITS RUNTIME DEPENDENCIES ARE UNRESOLVED HERE. It takes {{bayId_1}} and {{serviceId_1}} from
-  pool hydration, and AuthorizeOfflinePass may additionally require the identity to have offline
-  enabled — pooled runs are commonly launched with --no-offline-enable. Neither is determinable
-  from this file; both must be confirmed against the target before the skip comes off.
+  MEASURED 2026-09-05 AGAINST THE SERVER, and the answer is worse than "too weak": THIS FILE
+  CANNOT PROVE WHAT IT IS NAMED FOR, and no assertion fixes that.
+  (1) THE EXPIRY BRANCH IS UNREACHABLE FROM THIS FIXTURE. PassValidator.php runs ECDSA
+  signature verification as CHECK 1 (:60-118) and expiry as CHECK 2 (:124-148). This file's
+  pass carries `signature: "test_sig"`, which is not an ECDSA-P256 signature, so it refuses at
+  check 1 with OFFLINE_PASS_INVALID and never reaches the expiry test. The `expiresAt
+  2024-06-01` literal is inert.
+  (2) NOR CAN THE FIXTURE BE FIXED HERE. Reaching check 2 needs a pass SERVER-SIGNED over a
+  past expiry, and nothing mints one: POST /api/v1/offline/passes derives
+  `expiresAt = issuedAt + durationHours` (PassIssuer.php:71-74) and the request bounds
+  durationHours to `min:1, max:24` (IssueOfflinePassRequest.php:66-71), so the earliest
+  obtainable expiry is ONE HOUR IN THE FUTURE. The signing key is the server's. A scenario
+  would have to wait out a real hour; the corpus's longest file runs ~16 minutes.
+  (3) THE PREVIOUS REASON ASKED FOR SOMETHING THAT CANNOT EXIST — corrected here. It said the
+  file "needs an errorCode assertion naming the expiry refusal".
+  `authorize-offline-pass-response.schema.json` is `additionalProperties: false` with exactly
+  status / sessionId / durationSeconds / creditsAuthorized / reason — measured identical at
+  the pinned 0.29.0 and at 0.26.0 before it, so no bump makes it true. csms-server `089fa56a`
+  reached the same conclusion from the other side, excluding AuthorizeOfflinePassHandler from
+  3003's new `details.cause` "by construction: it answers on a wire response with no Error
+  Object at all". A reason naming an impossible remedy reads as a small task and is
+  unstartable; that is how this file spent 163 days.
+  WHAT IS BUILDABLE, and it is the only thing that is: assert the `reason` TOKEN and RENAME the
+  file to what it actually exercises — a SIGNATURE refusal. `payload.reason` would read
+  `OFFLINE_PASS_INVALID: Offline pass signature verification failed`, matched the way
+  offline-pass-refused-the-three-a-station-meets.yaml matches its three (token prefix primary,
+  exact bytes secondary). That is a real proof of a real branch.
+  NOT DONE HERE, deliberately: that sibling already covers OFFLINE_PASS_INVALID via device
+  binding, so a fourth signature file buys one arm of check 1 and costs the corpus a file whose
+  name has meant "expiry" since it was written. Whoever owns the offline profile should decide
+  between renaming this one and deleting it. WHAT IT MUST NOT BECOME is a file that asserts
+  `status == Rejected` and is called an expiry test.
+  (4) RUNTIME DEPENDENCIES, unchanged and still unresolved: it takes {{bayId_1}} and
+  {{serviceId_1}} from pool hydration, and AuthorizeOfflinePass may require the identity to have
+  offline enabled — pooled runs are commonly launched with --no-offline-enable.
 station:
   stationId: "{{stationId}}"
   bayCount: 2

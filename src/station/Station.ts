@@ -310,15 +310,34 @@ export class Station extends EventEmitter {
   /**
    * The bootReason a station reports on a reconnect that was NOT a power-cycle.
    *
-   * OSPP's BootReason enum (spec 03-messages.md §1.1) has no "Reconnect" or
-   * "CertificateRenewal" member — the six values are PowerOn, Watchdog,
-   * FirmwareUpdate, ManualReset, ScheduledReset and ErrorRecovery — so this is
-   * the closest correct value, not an exact one. The spec itself designates it
-   * for exactly this case: in examples/flows/10-error-recovery.md a station that
-   * merely re-established its link sends `bootReason: "ErrorRecovery"` with a
-   * truthful non-zero uptime, and the flow states the server "recognizes this as
-   * a reconnection (not a cold boot) based on bootReason: ErrorRecovery ... It
-   * does not reset session state."
+   * THE PREMISE UNDER THIS CHOICE IS FALSE, MEASURED 2026-09-05. It said OSPP's BootReason
+   * enum "has no `Reconnect` ... member — the SIX values are PowerOn, Watchdog,
+   * FirmwareUpdate, ManualReset, ScheduledReset and ErrorRecovery", and picked ErrorRecovery
+   * as "the closest correct value, not an exact one". The enum has EIGHT members and
+   * `Reconnect` is one of them — counted on the tarballs of BOTH @ospp/protocol 0.26.0 and
+   * 0.29.0, so this was already wrong at the version pinned when it was written, not broken
+   * by a bump. It also omitted `RemoteReset`. The exact value existed the whole time.
+   *
+   * AND 0.31.0 SHARPENS IT AGAINST US. boot-notification-request.schema.json now reads
+   * "SEVEN of the eight name an actual boot; `Reconnect` names the case where NONE occurred",
+   * and widens `Reconnect` to cover a Boot the server asked for by TriggerMessage. By this
+   * docblock's OWN rejection test — "FirmwareUpdate and Watchdog assert events that did not
+   * happen" — ErrorRecovery now fails it too: it is in the seven that assert a boot.
+   *
+   * NOT CHANGED IN THIS COMMIT, and that is a decision rather than an omission. csms-server
+   * accepts BOTH: its preserve arm is `[BootReason::RECONNECT, BootReason::ERROR_RECOVERY]`
+   * (BootNotificationHandler:653) and its own comment says ErrorRecovery is "KEPT alongside
+   * it, not replaced. A fleet mid-upgrade emits both." So nothing is broken today. But the
+   * firmware sweep keys on ErrorRecovery SPECIFICALLY — "ErrorRecovery on the old version ->
+   * rollback_detected" (:943, :988) — so flipping this constant changes how a
+   * certificate-renewal reconnect DURING a firmware update is classified. That is a
+   * cross-repo behavioural call, not a cascade consequence, and it belongs to whoever owns
+   * the firmware arc. What is fixed here is the false count that justified the choice.
+   *
+   * The supporting citation still stands on its own: examples/flows/10-error-recovery.md has
+   * a station that merely re-established its link send `bootReason: "ErrorRecovery"` with a
+   * truthful non-zero uptime, and the flow states the server "recognizes this as a
+   * reconnection (not a cold boot) ... It does not reset session state."
    *
    * Rejected alternatives: PowerOn is the defect being fixed; FirmwareUpdate and
    * Watchdog assert hardware/firmware events that did not happen; ManualReset and
@@ -615,6 +634,20 @@ export class Station extends EventEmitter {
       pendingOfflineTransactions: 0,
       timezone: this.config.timezone,
       bootReason: this.currentBootReason,
+      // OPTIONAL since spec 0.31.0, and DERIVED — the third field in this payload that is
+      // read from live state rather than written down, for the same reason as the other two.
+      //
+      // WHY IT MATTERS THAT THE SIMULATOR SENDS IT AT ALL. BootNotification REQUEST is one of
+      // three structural exemptions from message signing (06-security.md §5.6); the other 44
+      // types are signed. So when a station and the server disagree about the mode, this is
+      // the ONLY message that still arrives, and this field is the only place the station can
+      // state which mode it is in. Without it that state is not undiagnosed, it is
+      // inexpressible — csms-server carries the reading half as an open item (M83) and cannot
+      // be exercised against a station that never says.
+      //
+      // NOT in `capabilities`: that object is four booleans about what the station SUPPORTS.
+      // This is configuration state — what it is DOING.
+      messageSigningMode: this.sender.currentSigningMode,
       capabilities: {
         bleSupported: false,
         offlineModeSupported: false,
