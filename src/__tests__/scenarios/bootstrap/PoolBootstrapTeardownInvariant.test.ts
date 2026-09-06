@@ -53,14 +53,28 @@ describe('teardown invariant — ephemeral owner+org swept, platform admin + pre
     expect(orgAt).toBeGreaterThan(ownerAt);
   });
 
-  it('(a) deletes the org NO-ACTION children (organization_members, corporate_policies, invitations) BEFORE the org', () => {
+  it('(a) deletes the org NO-ACTION children (organization_members, invitations) BEFORE the org', () => {
     const sql = buildTeardownSql(ephemeralHandle());
     const orgAt = sql.indexOf('DELETE FROM organizations WHERE id');
-    for (const child of ['organization_members', 'corporate_policies', 'invitations']) {
+    for (const child of ['organization_members', 'invitations']) {
       const at = sql.indexOf(`DELETE FROM ${child}`);
       expect(at, `${child} delete present`).toBeGreaterThanOrEqual(0);
       expect(at, `${child} must precede organizations`).toBeLessThan(orgAt);
     }
+  });
+
+  // Named explicitly, not merely covered by the child-list tests above: this statement was
+  // emitted for months and its table was dropped underneath it by csms-server ADR-0012
+  // (2026_09_04_000003_drop_corporate_policies_table). Because buildTeardownSql emits ONE
+  // transaction, the missing relation aborted it and `DELETE FROM organizations` never ran, so
+  // every pooled run against a deployed server silently leaked its whole per-run world — org,
+  // stations, bays, users. Measured on UAT 2026-09-06 before the fix: 3 orphaned Sim Pool orgs,
+  // 7 orphaned stations. This asserts on the FULL handle (not the createdOrgId-unset path, which
+  // emits no org-scoped SQL at all and would pass vacuously).
+  it('never emits DELETE FROM corporate_policies — the table is dropped, and one bad statement aborts the whole teardown', () => {
+    const sql = buildTeardownSql(ephemeralHandle());
+    expect(sql).toContain('DELETE FROM organizations WHERE id');
+    expect(sql).not.toMatch(/corporate_policies/);
   });
 
   // (b) platform admin intact — protected guard active
@@ -106,7 +120,7 @@ describe('teardown invariant — ephemeral owner+org swept, platform admin + pre
 
   it('(c) org-scoped child deletes target createdOrgId (the org we made), not a bare/wildcard scope', () => {
     const sql = buildTeardownSql(ephemeralHandle());
-    for (const child of ['organization_members', 'corporate_policies', 'invitations']) {
+    for (const child of ['organization_members', 'invitations']) {
       const line = sql.split('\n').find((l) => l.includes(`DELETE FROM ${child} WHERE organization_id`));
       expect(line, `${child} org-scoped delete present`).toBeDefined();
       expect(line).toContain(`organization_id = '${EPH_ORG}'`);

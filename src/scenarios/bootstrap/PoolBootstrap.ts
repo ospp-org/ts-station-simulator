@@ -1191,8 +1191,17 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
   //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
   //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
-  //   - The org's NO-ACTION children (organization_members, corporate_policies, invitations)
-  //     are deleted before the org (FK-safe; pg_constraint-verified 2026-06-15). `locations` +
+  //   - The org's NO-ACTION children (organization_members, invitations) are deleted before
+  //     the org (FK-safe; pg_constraint-verified 2026-06-15). `corporate_policies` WAS in this
+  //     list and is gone: csms-server ADR-0012 retired the surface and
+  //     2026_09_04_000003_drop_corporate_policies_table DROPPED the table, so the DELETE
+  //     referenced a relation that no longer exists. Because the whole teardown is one
+  //     transaction, that single statement aborted it and `DELETE FROM organizations` never
+  //     ran — leaving exactly the "whole per-run world behind" this function warns about two
+  //     paragraphs down. Measured on UAT 2026-09-06: 3 orphaned Sim Pool orgs and 7 orphaned
+  //     stations from three runs. Dropping the statement is safe rather than merely necessary:
+  //     the bootstrap never creates a corporate policy, so on an environment that still has the
+  //     table there is no row for this org to FK-block on. `locations` +
   //     `sessions` (also NO-ACTION → organizations) were already removed by the station/location
   //     path above. DELETE FROM organizations then CASCADE-removes the per-org cloned `roles`
   //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
@@ -1209,7 +1218,6 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
       // warning, which is how the FIRST settling run ended.
       `DELETE FROM tenant_payment_credentials WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organization_members WHERE organization_id = ${createdOrgLit};`,
-      `DELETE FROM corporate_policies WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM invitations WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organizations WHERE id = ${createdOrgLit};`,
     );

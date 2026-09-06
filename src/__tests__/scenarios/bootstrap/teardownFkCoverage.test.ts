@@ -106,10 +106,13 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     // cascade-removes station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
-  // organizations: 11 FKs (10 captured 2026-06-15 via pg_constraint + offline_auth_grants,
+  // organizations: 10 FKs. `corporate_policies` was an 11th until csms-server
+  // 2026_09_04_000003_drop_corporate_policies_table DROPPED the table (ADR-0012) — the FK went
+  // with it, so it is removed here rather than left as a NO ACTION child that cannot block.
+  // (10 captured 2026-06-15 via pg_constraint + offline_auth_grants,
   // table added 0.6.2/B1 after that capture — exactly the "regenerate" case in the top docstring).
   // The 5 CASCADE children are auto-removed by the org delete (stations, offline_passes, roles,
-  // model_has_roles, service_definitions); the 6 NO ACTION children must be deleted first or the
+  // model_has_roles, service_definitions); the 5 NO ACTION children must be deleted first or the
   // org delete FK-blocks. The ephemeral-org teardown (Direction B) deletes the org last.
   organizations: [
     { child: 'offline_auth_grants',  column: 'organization_id', onDelete: 'NO ACTION' },
@@ -119,7 +122,6 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'model_has_roles',      column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'service_definitions',  column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'organization_members', column: 'organization_id', onDelete: 'NO ACTION' },
-    { child: 'corporate_policies',   column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'locations',            column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'sessions',             column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'invitations',          column: 'organization_id', onDelete: 'NO ACTION' },
