@@ -25,7 +25,7 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-83 YAML-driven test scenarios across 7 categories:
+148 YAML-driven test scenarios across 11 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
@@ -157,12 +157,21 @@ npm run certs:sync       # Download sandbox certificates
 - **SDK** — All protocol types from `@ospp/protocol` (never redefined locally)
 - **MQTT 5.0** — Two topics per station (`to-server`/`to-station`), action in envelope
 - **Scenarios** — YAML-driven with template variables and captured values
-- **Linter** — 5 checks: captured vars, message direction, enum values, wait_for completeness, payload schema
+- **Linter** — 7 checks: captured vars, message direction, enum values, wait_for completeness, payload schema, multi-unit declaration, pre-empt discriminator
 - **Parallel execution** — Semaphore-based, station pool allocation for sandbox
 
 ## Protocol Conformance
 
-Tested against OSPP spec v0.2.5 (wire version 0.2.1). All 26 MQTT actions covered.
+Built against `@ospp/protocol` (see `package.json`; the spec revision it implements is that
+SDK's own `.spec-ref`, which is the only artefact that answers "which spec?"). Emits
+**wire version 0.3.0**. All 27 MQTT actions covered.
+
+> **That wire version said `0.2.1` until 2026-09-06, and it is the number that costs a day.**
+> `0.2.1` is exactly what this server refuses with `1007 PROTOCOL_VERSION_MISMATCH`, and a
+> `Rejected` station accepts no commands — so there is no remote way back from believing it.
+> The emitter had already been repaired (`src/mqtt/protocolVersion.ts` returns the SDK's
+> constant); only this line still said the old value. Every number in this section is now
+> derived by `npm run check:doc-claims`.
 
 ## License
 
