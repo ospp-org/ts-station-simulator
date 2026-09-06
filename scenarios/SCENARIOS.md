@@ -338,6 +338,39 @@ longer any file's stem at all (it is `boot-rejected-station-id-spoof` and
 against the enum, and coverage against the corpus — not these stems.
 
 
+**AND READ THE TABLE AS SERVER-SIDE COVERAGE, BECAUSE THAT IS WHAT IT IS.** Measured
+2026-09-06 at `00bf5be`: `src/handlers/` holds **20** handlers; `src/cli/index.ts:836-846`
+registers **20** of them; `src/scenarios/ScenarioRunner.ts:1238-1241` registers **1** —
+`BootNotificationHandler`, and nothing else. Every other action's RESPONSE in a scenario is
+written out by hand in the YAML, e.g. `device-management/change-configuration-reboot-required.yaml`
+sends `results[].status: RebootRequired` as a literal `action: send` step.
+
+So for 19 of the 20 actions these files exercise **the server's handling of a reply**, never
+the station's decision to give it. That is a legitimate and deliberate design — the discriminator
+comments in the files say so plainly, e.g. *"THE DISCRIMINATOR — the server's own persisted
+record, not the response this file sent"* — but the table above does not say it, and a reader
+who takes the Action column as station-side coverage is reading something that does not exist.
+The gap is not hypothetical: a real transcription defect lives in
+`ChangeConfigurationHandler.ts:16`, which compares the config key as `'revocationEpoch'` while
+the wire and the pinned SDK both name it `RevocationEpoch`
+(`@ospp/protocol` `dist/enums/ConfigKey.d.ts:82`). No scenario can reach it, and its own unit
+test sends the same lowercase literal in all four cases — a transcription checked against a
+second transcription.
+
+**WHAT REAL STATION-SIDE COVERAGE WOULD REQUIRE**, in the order the cost rises:
+1. Register the full handler set in scenario mode, as `cli/index.ts` already does — one call
+   site, and it is the only change that makes the other three possible.
+2. Delete the hand-written `action: send` response steps for those actions, so the handler is
+   what answers. Every scenario that scripts a reply needs re-reading, not just re-running:
+   a scripted reply that disagrees with its handler is a scenario that will start failing, and
+   each of those disagreements is a finding in itself.
+3. Derive key and enum comparisons from the pinned SDK instead of string literals, so a spec
+   rename fails the build rather than silently missing a branch.
+4. Only then does the Action column above mean what it appears to mean.
+
+Until (1) lands, the honest reading of this table is: *these scenarios drive the server through
+each action; the station half is a fixture.*
+
 | Action | Direction | Scenarios |
 |--------|-----------|-----------|
 | BootNotification | Station→Server | happy-boot, boot-rejected, boot-pending-retry, boot-watchdog, boot-firmware-update, boot-manual-reset, boot-scheduled-reset, boot-error-recovery, trigger-message-boot |
