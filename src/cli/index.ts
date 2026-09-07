@@ -14,6 +14,7 @@ import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
 import { OsppAction } from '@ospp/protocol';
 import { inboundSchemaStats, resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
+import { heartbeatStats } from '../station/heartbeatStats.js';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
@@ -683,6 +684,30 @@ function printConsoleReport(results: ScenarioResult[]): void {
     console.log(chalk.yellow(schemaLine));
   } else {
     console.log(chalk.green(schemaLine));
+  }
+
+  // THE SAME DENOMINATOR, for the heartbeat default. A run in which every booted station
+  // beat and a run in which the default silently stopped working print identical scenario
+  // results, because most files finish inside one 30s interval — so the numbers are printed
+  // rather than inferred. See station/heartbeatStats.ts.
+  const hb = heartbeatStats();
+  const hbLine =
+    `  Heartbeat (default on): ${hb.armed} arm(s), ${hb.published} pulse(s) published, ` +
+    `${hb.failed} failed, ${hb.suppressed} file(s) declared silent`;
+  if (hb.armed === 0) {
+    console.log(chalk.yellow(`${hbLine} — NOTHING ARMED; treat 0 as unmeasured, not as clean.`));
+  } else if (hb.published === 0) {
+    console.log(
+      chalk.gray(
+        `${hbLine} — no scenario outlived one interval, which is expected on a short selection.`,
+      ),
+    );
+  } else if (hb.failed > 0) {
+    // Correct and expected after `fault: sever` (the client is nulled and every publish
+    // rejects); anything else is worth reading the station error lines for.
+    console.log(chalk.yellow(hbLine));
+  } else {
+    console.log(chalk.green(hbLine));
   }
 }
 

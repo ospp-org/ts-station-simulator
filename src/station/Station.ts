@@ -2,6 +2,11 @@ import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SequenceCounter } from './SequenceCounter.js';
+import {
+  recordHeartbeatArmed,
+  recordHeartbeatFailed,
+  recordHeartbeatPublished,
+} from './heartbeatStats.js';
 import { TopologyStore, type DeclaredBay } from './TopologyStore.js';
 import type {
   OsppEnvelope,
@@ -455,10 +460,17 @@ export class Station extends EventEmitter {
 
   startHeartbeat(intervalSec: number): void {
     this.stopHeartbeat();
+    // Counted, because the default's correct behaviour and its total absence print the same
+    // thing on a corpus whose files mostly finish inside one interval. See heartbeatStats.ts.
+    recordHeartbeatArmed();
     this.heartbeatTimer = setInterval(() => {
       this.sender
         .send(OsppAction.HEARTBEAT, MessageType.REQUEST, {})
+        .then(() => {
+          recordHeartbeatPublished();
+        })
         .catch((err: unknown) => {
+          recordHeartbeatFailed();
           this.emit('error', err instanceof Error ? err : new Error(String(err)));
         });
     }, intervalSec * 1000);

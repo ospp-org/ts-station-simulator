@@ -8,6 +8,7 @@ import {
   type TargetConfig,
 } from '../../scenarios/ScenarioRunner.js';
 import { BootNotificationHandler } from '../../handlers/BootNotificationHandler.js';
+import { heartbeatStats, resetHeartbeatStats } from '../../station/heartbeatStats.js';
 import {
   OsppAction,
   MessageType,
@@ -261,6 +262,40 @@ describe('heartbeat is the scenario default — what it must not break', () => {
 
     expect(started).toBe(45);
     expect(captured.filter((a) => a === OsppAction.STATUS_NOTIFICATION)).toHaveLength(2);
+  });
+});
+
+/**
+ * THE COUNTER IS SUBJECT TO ITS OWN RULE. It exists so that a run can distinguish "every
+ * station beat" from "the default silently stopped working", and a counter that never
+ * increments would report the second as the first — the exact failure it was built to catch.
+ */
+describe('heartbeat is the scenario default — the run counts what happened', () => {
+  it('counts arms, pulses and declared silence, and a zero is only a zero next to them', async () => {
+    resetHeartbeatStats();
+    await pulsesWithin(scenarioDef(), 4 * 30_000, { intervalSec: 30 });
+    const loud = heartbeatStats();
+    expect(loud.armed).toBe(1);
+    expect(loud.published).toBe(4);
+    expect(loud.failed).toBe(0);
+    expect(loud.suppressed).toBe(0);
+
+    resetHeartbeatStats();
+    await pulsesWithin(
+      scenarioDef({ suppress_heartbeat: 'test' } as Partial<ScenarioDefinition>),
+      4 * 30_000,
+    );
+    const quiet = heartbeatStats();
+    // `armed: 0` is what the summary calls out as UNMEASURED, and `suppressed: 1` is what
+    // makes this particular zero a decision rather than a broken default.
+    expect([quiet.armed, quiet.published, quiet.suppressed]).toEqual([0, 0, 1]);
+  });
+
+  it('a failed publish is counted as failed, not as published', async () => {
+    resetHeartbeatStats();
+    await pulsesWithin(scenarioDef(), 3 * 30_000, { sendRejects: true });
+    const s = heartbeatStats();
+    expect([s.armed, s.published, s.failed]).toEqual([1, 0, 3]);
   });
 });
 

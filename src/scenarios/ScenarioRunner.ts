@@ -34,6 +34,7 @@ import { ConnectMqttStep } from './steps/ConnectMqttStep.js';
 import type { Step } from './steps/Step.js';
 import { teardownScenarioResources } from './bootstrap/ScenarioResources.js';
 import type { StationPool, PoolEntry } from './stations/StationPool.js';
+import { recordHeartbeatSuppressed } from '../station/heartbeatStats.js';
 
 /**
  * How long a scenario waits, at its end, for its backgrounded api_calls to
@@ -1316,12 +1317,11 @@ function createStationFromScenario(
   // Cast: handlers implement the StationContext-based Handler; registerHandler
   // expects the Station-based Handler (same SessionInfo-divergence cast the
   // `connect` command uses — see cli/index.ts).
+  const autoHeartbeat = scenarioDef.suppress_heartbeat === undefined;
+  if (!autoHeartbeat) recordHeartbeatSuppressed();
   station.registerHandler(
     OsppAction.BOOT_NOTIFICATION,
-    new BootNotificationHandler(
-      false,
-      scenarioDef.suppress_heartbeat === undefined,
-    ) as unknown as Handler,
+    new BootNotificationHandler(false, autoHeartbeat) as unknown as Handler,
   );
 
   return station;
