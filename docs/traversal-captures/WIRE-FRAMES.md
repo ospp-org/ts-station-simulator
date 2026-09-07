@@ -1,5 +1,14 @@
 # Wire frames, verbatim
 
+> **STILL CURRENT AS A RECORD OF UAT, 2026-09-07 — and one stage has since been
+> re-measured elsewhere.** Dead end #2 (the boot command that arrives before the key)
+> was repaired on 2026-09-08 and re-captured against the **local** stack, because the
+> instruction that cycle was not to deploy and UAT still runs the old image. Nothing
+> below is edited or withdrawn: it is what UAT did, and what UAT still does. See
+> [`RERUN-2026-09-08.md`](RERUN-2026-09-08.md) for the before/after pair and for what
+> the re-run found that the repair had missed.
+
+
 Every MQTT packet the station sent or received, in order, as captured by
 `scripts/traversal-capture.ts` (mqtt.js `packetsend` / `packetreceive`).
 `sessionKey` values are redacted; nothing else is edited.

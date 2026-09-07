@@ -1,5 +1,14 @@
 # Traversal captures — material for the integrator guide
 
+> **STILL CURRENT AS A RECORD OF UAT, 2026-09-07 — and one stage has since been
+> re-measured elsewhere.** Dead end #2 (the boot command that arrives before the key)
+> was repaired on 2026-09-08 and re-captured against the **local** stack, because the
+> instruction that cycle was not to deploy and UAT still runs the old image. Nothing
+> below is edited or withdrawn: it is what UAT did, and what UAT still does. See
+> [`RERUN-2026-09-08.md`](RERUN-2026-09-08.md) for the before/after pair and for what
+> the re-run found that the repair had missed.
+
+
 One pass through the whole flow against **UAT**, on **2026-09-07**, recording what
 actually crossed the wire. Nothing here is written from code or from the spec: every
 frame and every HTTP exchange in this directory was captured live. Where I read code
