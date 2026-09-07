@@ -1,0 +1,38 @@
+### REQUEST
+PUT /api/v1/offline/preference HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+
+{"enabled":true}
+
+### RESPONSE
+HTTP/2 200 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:28:33 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 120
+x-ratelimit-remaining: 118
+x-request-id: 01a07c0e-668b-72ee-9512-9c4393804799
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "enabled": true,
+    "blocked": false,
+    "blocked_reason": null
+  }
+}

@@ -1,0 +1,60 @@
+### REQUEST
+POST /api/v1/stations/provision HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+
+{"provisioningToken":"<redacted-provisioning-token>","serialNumber":"SIM-1788786916","bays":[{"bayNumber":1,"programs":[{"programNumber":1,"label":"Basic Wash"}]},{"bayNumber":2,"programs":[{"programNumber":1,"label":"Basic Wash"}]}],"tlsCsr":"-----BEGIN CERTIFICATE REQUEST-----\nMIHQMHkCAQAwFzEVMBMGA1UEAwwMc3RuXzEyOGI2M2YxMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAE4ryIBKitRDJXwsYBYoDXgNdwGAjIUYqKaxevPnu/Kk2YYOaE\nj3ZpP2YfnICpKPGj5hc0usawAvQw81QuiyEKdKAAMAoGCCqGSM49BAMCA0cAMEQC\nIHSbr8eQa/YPWpY4RkjsHeBcvVfiLAtnTrqKor17x0wTAiBN4iG1v7HZ2aziqIc6\nWgFJ0yX+5U19uen8xOzj7/z9Eg==\n-----END CERTIFICATE REQUEST-----","receiptSigningPublicKey":"-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwWGlBGa1KStecpmFNImgKNUtoHf6\n7Xzr2saq7I5hz3tVg9tcmK9LY5neB8E+waZFTK0+hO/GqufqBM8HcF/KiQ==\n-----END PUBLIC KEY-----"}
+
+### RESPONSE
+HTTP/2 200 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:15:17 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 30
+x-ratelimit-remaining: 29
+x-request-id: 01a07c02-3e32-725c-9161-8e231eb65d76
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "stationId": "stn_128b63f1",
+  "clientCert": "-----BEGIN CERTIFICATE-----\nMIIB7DCCAZGgAwIBAgICA7wwCgYIKoZIzj0EAwIwVzEeMBwGA1UEAwwVT25lU3Rv\ncFBheSBTdGF0aW9uIENBMRMwEQYDVQQKDApPbmVTdG9wUGF5MQswCQYDVQQGEwJS\nTzETMBEGA1UECAwKU29tZS1TdGF0ZTAeFw0yNjA5MDcxMzE1MTZaFw0yNzA5MDcx\nMzE1MTZaMBcxFTATBgNVBAMMDHN0bl8xMjhiNjNmMTBZMBMGByqGSM49AgEGCCqG\nSM49AwEHA0IABOK8iASorUQyV8LGAWKA14DXcBgIyFGKimsXrz57vypNmGDmhI92\naT9mH5yAqSjxo+YXNLrGsAL0MPNULoshCnSjgYwwgYkwCQYDVR0TBAIwADALBgNV\nHQ8EBAMCBeAwEwYDVR0lBAwwCgYIKwYBBQUHAwIwFwYDVR0RBBAwDoIMc3RuXzEy\nOGI2M2YxMEEGA1UdHwQ6MDgwNqA0oDKGMGh0dHBzOi8vYXBpLXVhdC5vbmVzdG9w\ncGF5LnJvL3BraS9zdGF0aW9uLWNhLmNybDAKBggqhkjOPQQDAgNJADBGAiEA7wPD\ntozZZUbKDxG+TgRNsFhwIhSfvc3XyzsHSeZHtt8CIQDO8y2R9SirXx3Yv24frRoK\nsXDDXfFu6rZaHlp84UNRiw==\n-----END CERTIFICATE-----\n",
+  "stationCaChain": "-----BEGIN CERTIFICATE-----\nMIICDDCCAZOgAwIBAgIBAjAKBggqhkjOPQQDAjBUMRswGQYDVQQDDBJPbmVTdG9w\nUGF5IFJvb3QgQ0ExEzARBgNVBAoMCk9uZVN0b3BQYXkxCzAJBgNVBAYTAlJPMRMw\nEQYDVQQIDApTb21lLVN0YXRlMB4XDTI2MDQyODEyMDUzOVoXDTMxMDQyNzEyMDUz\nOVowVzEeMBwGA1UEAwwVT25lU3RvcFBheSBTdGF0aW9uIENBMRMwEQYDVQQKDApP\nbmVTdG9wUGF5MQswCQYDVQQGEwJSTzETMBEGA1UECAwKU29tZS1TdGF0ZTBZMBMG\nByqGSM49AgEGCCqGSM49AwEHA0IABKfFWU7qg7c6AvYVJVptiMw1/ckHn4r5yaiz\nPmuDqq+y11wqissMNoEWBjzdk4aCRsBD7wSNE0rjlFfdwehKk6WjUzBRMB0GA1Ud\nDgQWBBT95ffIgdW+D4jpHXPlgsh99y27YTAfBgNVHSMEGDAWgBR8zbs0z1fROzbc\nDS1RI2FOGm8/vzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA2cAMGQCMGYH\na3G56kFmKo58mQtmIcaNQ30XnpGuWgqgTnbrFMqqi5a5xrBhqdYkc/F8K2kI0AIw\nBTwjzfeIeXSh6ZsR+1w2r3t9JfQHJ7njDIZmw4G28QPmfZ+N+MdZQanNTG/4gUuA\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nMIICJjCCAa2gAwIBAgIBATAKBggqhkjOPQQDAzBUMRswGQYDVQQDDBJPbmVTdG9w\nUGF5IFJvb3QgQ0ExEzARBgNVBAoMCk9uZVN0b3BQYXkxCzAJBgNVBAYTAlJPMRMw\nEQYDVQQIDApTb21lLVN0YXRlMB4XDTI2MDQyODEyMDQyOVoXDTQ2MDQyMzEyMDQy\nOVowVDEbMBkGA1UEAwwST25lU3RvcFBheSBSb290IENBMRMwEQYDVQQKDApPbmVT\ndG9wUGF5MQswCQYDVQQGEwJSTzETMBEGA1UECAwKU29tZS1TdGF0ZTB2MBAGByqG\nSM49AgEGBSuBBAAiA2IABD7jrSazsQtfxAvZus3ehOmSkPSKgxqj9M9muzdNk7W6\nAsJQoqyp/gkmJYb8SZhjy2z4fnRyD3ZJY1f4u/xlQVfZ6bQ1jUXNVeCXZgN9Zhg/\n11KjmDuX6+vCIs21vE9In6NTMFEwHQYDVR0OBBYEFHzNuzTPV9E7NtwNLVEjYU4a\nbz+/MB8GA1UdIwQYMBaAFHzNuzTPV9E7NtwNLVEjYU4abz+/MA8GA1UdEwEB/wQF\nMAMBAf8wCgYIKoZIzj0EAwMDZwAwZAIwZGB+zHKrrMn9EQDo3+EWPaeWFP11uWRT\nY8AleKGCdl/1SLGS/YmTGt7kFkSeYi2nAjAdkPwUnBc6xbmhl7CidtbH3dcv7SVk\nOFBSF+43g7vc2/OMPfaXv/fZUY4Q34pi+bg=\n-----END CERTIFICATE-----\n",
+  "rootCaThumbprint": "sha256:b6ec67bcded1d48fd92f5147948bbc6f0ab36b2076ef16442845a5135419b95c",
+  "bays": [
+    {
+      "bayId": "bay_dad554b98823f7f82ece181e0105a6ba",
+      "bayNumber": 1
+    },
+    {
+      "bayId": "bay_70ecda0b84fb2b558526a68afc5b066d",
+      "bayNumber": 2
+    }
+  ],
+  "serverVerifyKey": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8SXhYc1U7Zd8xBiY8cYXlsBA+/dw\nP0oYIgmZXsFSizE/pkXcIIXeBRw2HSAXmIwcxpjSLapRW0uXG63meKyiGg==\n-----END PUBLIC KEY-----\n",
+  "mqttConfig": {
+    "brokerHost": "mqtt-uat.onestoppay.ro",
+    "brokerPort": 8883,
+    "brokerUri": "mqtts://mqtt-uat.onestoppay.ro:8883",
+    "clientIdTemplate": "{stationId}",
+    "topicPrefix": "ospp/v1",
+    "qosLevel": 1,
+    "keepAliveSeconds": 30,
+    "cleanStart": false,
+    "sessionExpirySeconds": 3600,
+    "tlsVersion": "1.2",
+    "mqttVersion": "5.0"
+  }
+}

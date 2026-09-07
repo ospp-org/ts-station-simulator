@@ -1,0 +1,79 @@
+### REQUEST
+POST /api/v1/sessions/sess_2a0cfa897ba4fd88fba51756/stop HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: 4351e914-5ebc-493c-9cfe-004813fa7897
+
+{}
+
+### RESPONSE
+HTTP/2 200 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:24:03 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-idempotent-replayed: false
+idempotency-key: 4351e914-5ebc-493c-9cfe-004813fa7897
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 9
+x-request-id: 01a07c0a-453d-7074-8b0f-008b3fd6aa09
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "id": "sess_2a0cfa897ba4fd88fba51756",
+    "status": "stopping",
+    "bay": {
+      "id": "bay_dad554b98823f7f82ece181e0105a6ba",
+      "bay_number": 1,
+      "station_id": "stn_128b63f1"
+    },
+    "service": {
+      "id": "svc_5e021db385f39100",
+      "name": "Basic Wash",
+      "pricing_type": "PerMinute",
+      "price_credits_per_minute": 100
+    },
+    "user_id": "01a07c01-2e4a-7361-a90e-f3dfb2fe3e8f",
+    "duration_requested": 120,
+    "duration_actual": null,
+    "credits_authorized": 200,
+    "credits_charged": 0,
+    "refund_amount": 200,
+    "reservation_id": null,
+    "source": "MobileApp",
+    "started_at": "2026-09-07T13:22:41.000000Z",
+    "stopped_at": null,
+    "created_at": "2026-09-07T13:22:40.000000Z",
+    "meter_values": [
+      {
+        "sampled_at": "2026-09-07T13:23:21.000Z",
+        "water_ml": 500,
+        "chemical_ml": null,
+        "energy_wh": 100
+      },
+      {
+        "sampled_at": "2026-09-07T13:23:24.000Z",
+        "water_ml": 1200,
+        "chemical_ml": null,
+        "energy_wh": 250
+      }
+    ]
+  },
+  "meta": {
+    "timestamp": "2026-09-07T13:24:03.179692Z"
+  }
+}

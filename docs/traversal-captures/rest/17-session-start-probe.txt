@@ -1,0 +1,55 @@
+### REQUEST
+POST /api/v1/sessions/start HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: e3fb8424-5cd1-46ca-9da4-0065758bf5a2
+
+{}
+
+### RESPONSE
+HTTP/2 400 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:21:37 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-idempotent-replayed: false
+idempotency-key: e3fb8424-5cd1-46ca-9da4-0065758bf5a2
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 8
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c08-0e47-7261-9f88-b33bf05cbe05
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "errorCode": 6004,
+  "errorText": "VALIDATION_ERROR",
+  "errorDescription": "The bay id field is required.",
+  "severity": "Error",
+  "recoverable": false,
+  "recommendedAction": "Fix the request body per the API schema. The `details` field contains per-field validation errors.",
+  "timestamp": "2026-09-07T13:21:37.893Z",
+  "details": {
+    "fields": {
+      "bay_id": [
+        "The bay id field is required."
+      ],
+      "service_id": [
+        "The service id field is required."
+      ],
+      "duration_seconds": [
+        "The duration seconds field is required."
+      ]
+    }
+  }
+}

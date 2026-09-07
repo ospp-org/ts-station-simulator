@@ -1,0 +1,32 @@
+### REQUEST
+DELETE /api/v1/organizations/01a07c01-4a95-7274-8280-bcc794544c87 HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Authorization: Bearer <redacted-jwt>
+
+
+### RESPONSE
+HTTP/2 403 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:32:59 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-ratelimit-limit: 120
+x-ratelimit-remaining: 119
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c12-73b0-7087-8d44-f7955b625e6d
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "message": "This action is unauthorized."
+}

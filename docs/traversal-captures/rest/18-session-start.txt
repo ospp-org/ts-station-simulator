@@ -1,0 +1,42 @@
+### REQUEST
+POST /api/v1/sessions/start HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: 952e2861-cc4c-46c4-b10e-6cb6f99e10c5
+
+{"bay_id":"bay_dad554b98823f7f82ece181e0105a6ba","service_id":"svc_5e021db385f39100","duration_seconds":120}
+
+### RESPONSE
+HTTP/2 402 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:21:52 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-idempotent-replayed: false
+idempotency-key: 952e2861-cc4c-46c4-b10e-6cb6f99e10c5
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 7
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c08-469d-730e-b13c-69604e94fc51
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "errorCode": 4001,
+  "errorText": "INSUFFICIENT_BALANCE",
+  "errorDescription": "Wallet balance 0 does not cover 200 credits",
+  "severity": "Warning",
+  "recoverable": true,
+  "recommendedAction": "App: show top-up prompt. Web: redirect to payment page. The user must purchase more credits before starting a session.",
+  "timestamp": "2026-09-07T13:21:52.374Z"
+}

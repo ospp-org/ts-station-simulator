@@ -1,0 +1,55 @@
+### REQUEST
+POST /api/v1/admin/offline-passes HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+X-Organization-Id: 01a07c01-4a95-7274-8280-bcc794544c87
+
+{"user_id":"01a07c01-2e4a-7361-a90e-f3dfb2fe3e8f","max_uses":3,"duration_hours":24}
+
+### RESPONSE
+HTTP/2 201 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:28:43 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c0e-89fe-70e6-a917-49e9e2b95a33
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "passId": "opass_3e6c38dc811408a92ed0e485",
+    "sub": "sub_01a07c012e4a7361a90ef3dfb2fe3e8f",
+    "deviceId": "admin-issued-7b722c1b-2643-4664-98c9-64001bb60fcf",
+    "issuedAt": "2026-09-07T13:28:42.811Z",
+    "expiresAt": "2026-09-08T13:28:42.811Z",
+    "policyVersion": 1,
+    "revocationEpoch": 0,
+    "offlineAllowance": {
+      "maxTotalCredits": 5000,
+      "maxUses": 3,
+      "maxCreditsPerTx": 1000,
+      "allowedServiceTypes": [
+        "svc_5e021db385f39100"
+      ]
+    },
+    "constraints": {
+      "minIntervalSec": 60,
+      "stationOfflineWindowHours": 24,
+      "stationMaxOfflineTx": 50
+    },
+    "signatureAlgorithm": "ECDSA-P256-SHA256",
+    "signature": "MEQCIGilPrTtOFlEowf62OtSZOXByxX6Cn73YZTRwFhLVIm7AiA4nGsWBNueXW1kDzb3dN91RL5rraskxO0kHpqvVCWxmg=="
+  }
+}

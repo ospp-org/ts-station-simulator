@@ -1,0 +1,44 @@
+### REQUEST
+POST /api/v1/sessions/offline-auth HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: c34e7464-8471-47c8-87f8-afe4682557e0
+
+{"stationId":"stn_128b63f1","bayId":"bay_dad554b98823f7f82ece181e0105a6ba","serviceId":"svc_5e021db385f39100","requestedDurationSeconds":60,"appNonce":"PSwM2iW+YP/CUXZCEIqNlUMMCjjWZR+ccgIVeiK8Bcc=","deviceId":"admin-issued-7b722c1b-2643-4664-98c9-64001bb60fcf"}
+
+### RESPONSE
+HTTP/2 403 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:29:15 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-idempotent-replayed: false
+idempotency-key: c34e7464-8471-47c8-87f8-afe4682557e0
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 7
+x-request-id: 01a07c0f-0b64-73df-8abb-6e57dcf5576e
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "error": {
+    "code": "ACTION_NOT_PERMITTED",
+    "ospp_code": 2008,
+    "message": "Station does not support offline operation"
+  },
+  "meta": {
+    "timestamp": "2026-09-07T13:29:15.923003Z"
+  }
+}

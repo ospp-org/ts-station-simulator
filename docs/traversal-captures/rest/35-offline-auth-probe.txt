@@ -1,0 +1,64 @@
+### REQUEST
+POST /api/v1/sessions/offline-auth HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: e46e9943-2445-4e24-9c52-e62eeed3f436
+
+{}
+
+### RESPONSE
+HTTP/2 400 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:28:55 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-idempotent-replayed: false
+idempotency-key: e46e9943-2445-4e24-9c52-e62eeed3f436
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 9
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c0e-ba01-7201-8d78-d6b2f3731d2f
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "errorCode": 6004,
+  "errorText": "VALIDATION_ERROR",
+  "errorDescription": "The station id field is required.",
+  "severity": "Error",
+  "recoverable": false,
+  "recommendedAction": "Fix the request body per the API schema. The `details` field contains per-field validation errors.",
+  "timestamp": "2026-09-07T13:28:55.084Z",
+  "details": {
+    "fields": {
+      "stationId": [
+        "The station id field is required."
+      ],
+      "bayId": [
+        "The bay id field is required."
+      ],
+      "serviceId": [
+        "The service id field is required."
+      ],
+      "requestedDurationSeconds": [
+        "The requested duration seconds field is required."
+      ],
+      "appNonce": [
+        "The app nonce field is required."
+      ],
+      "deviceId": [
+        "The device id field is required."
+      ]
+    }
+  }
+}

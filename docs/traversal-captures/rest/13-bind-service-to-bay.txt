@@ -1,0 +1,40 @@
+### REQUEST
+POST /api/v1/admin/stations/stn_128b63f1/services/5fcc08b1-fec8-4d8c-9f2a-b3b487903d69/binding HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+X-Organization-Id: 01a07c01-4a95-7274-8280-bcc794544c87
+
+{"bayId":"bay_dad554b98823f7f82ece181e0105a6ba","programNumber":1}
+
+### RESPONSE
+HTTP/2 201 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:20:20 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 300
+x-ratelimit-remaining: 294
+x-request-id: 01a07c06-e11a-7323-803c-be0339f55ae3
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "success": true,
+  "binding": {
+    "bayId": "bay_dad554b98823f7f82ece181e0105a6ba",
+    "bayNumber": 1,
+    "stationServiceId": "5fcc08b1-fec8-4d8c-9f2a-b3b487903d69",
+    "programNumber": 1
+  }
+}

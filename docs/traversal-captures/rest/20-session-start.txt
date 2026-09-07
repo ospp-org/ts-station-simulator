@@ -1,0 +1,65 @@
+### REQUEST
+POST /api/v1/sessions/start HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+Idempotency-Key: 34732be9-eefd-4aa0-9642-e458f2ff1b1e
+
+{"bay_id":"bay_dad554b98823f7f82ece181e0105a6ba","service_id":"svc_5e021db385f39100","duration_seconds":120}
+
+### RESPONSE
+HTTP/2 201 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:22:41 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-idempotent-replayed: false
+idempotency-key: 34732be9-eefd-4aa0-9642-e458f2ff1b1e
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 9
+x-request-id: 01a07c09-0467-7034-afa5-f1505e57cc9e
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "id": "sess_2a0cfa897ba4fd88fba51756",
+    "status": "active",
+    "bay": {
+      "id": "bay_dad554b98823f7f82ece181e0105a6ba",
+      "bay_number": 1,
+      "station_id": "stn_128b63f1"
+    },
+    "service": {
+      "id": "svc_5e021db385f39100",
+      "name": "Basic Wash",
+      "pricing_type": "PerMinute",
+      "price_credits_per_minute": 100
+    },
+    "user_id": "01a07c01-2e4a-7361-a90e-f3dfb2fe3e8f",
+    "duration_requested": 120,
+    "duration_actual": null,
+    "credits_authorized": 200,
+    "credits_charged": 0,
+    "refund_amount": 200,
+    "reservation_id": null,
+    "source": "MobileApp",
+    "started_at": "2026-09-07T13:22:41.000000Z",
+    "stopped_at": null,
+    "created_at": "2026-09-07T13:22:40.000000Z",
+    "meter_values": []
+  },
+  "meta": {
+    "timestamp": "2026-09-07T13:22:41.149749Z"
+  }
+}

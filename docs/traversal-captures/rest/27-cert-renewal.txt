@@ -1,0 +1,36 @@
+### REQUEST
+POST /api/v1/admin/stations/stn_128b63f1/trigger-cert-renewal HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+
+{"certificateType":"StationCertificate"}
+
+### RESPONSE
+HTTP/2 202 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:27:00 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 300
+x-ratelimit-remaining: 299
+x-request-id: 01a07c0c-fa16-71cc-b734-ff305984ed40
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "message": "Certificate renewal trigger sent",
+  "message_id": "cmd_b104c75d-8b06-40de-a223-7300aa6e3f84",
+  "station_id": "stn_128b63f1",
+  "certificate_type": "StationCertificate"
+}

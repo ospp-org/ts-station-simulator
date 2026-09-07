@@ -1,0 +1,46 @@
+### REQUEST
+POST /api/v1/auth/login HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+
+{"email":"e2e-platform-admin@onestoppay.ro","password":"<redacted>"}
+
+### RESPONSE
+HTTP/2 200 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:32:50 GMT
+content-type: application/json
+vary: Accept-Encoding
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 30
+x-ratelimit-remaining: 29
+x-request-id: 01a07c12-4f08-70f1-9a22-e40ed1230611
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "access_token": "<redacted-jwt>",
+    "refresh_token": "<redacted>",
+    "expires_in": 900,
+    "token_type": "Bearer"
+  },
+  "user": {
+    "id": "c31bd233-b7b7-4b3e-a578-feb86926b6aa",
+    "name": "E2E Platform Admin",
+    "email": "e2e-platform-admin@onestoppay.ro",
+    "phone": null,
+    "email_verified": true,
+    "created_at": "2026-06-11T09:18:41.000000Z"
+  }
+}

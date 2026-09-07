@@ -1,0 +1,45 @@
+### REQUEST
+POST /api/v1/locations HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+X-Organization-Id: 01a07c01-4a95-7274-8280-bcc794544c87
+
+{"name":"Traversal Site 786839","address":"Str. Traversarii 1","city":"Bucharest","country":"RO","postal_code":"010101","latitude":44.4268,"longitude":26.1025,"timezone":"Europe/Bucharest"}
+
+### RESPONSE
+HTTP/2 201 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:14:31 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+pragma: no-cache
+expires: -1
+x-ratelimit-limit: 120
+x-ratelimit-remaining: 119
+x-request-id: 01a07c01-8bbf-7207-a200-8289f2a0462b
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "id": "01a07c01-8c35-720c-aa15-7c51a3e9e8b3",
+    "name": "Traversal Site 786839",
+    "address": "Str. Traversarii 1",
+    "city": "Bucharest",
+    "country": "RO",
+    "coordinates": {
+      "latitude": "44.4268",
+      "longitude": "26.1025"
+    },
+    "image_url": null
+  }
+}

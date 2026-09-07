@@ -1,0 +1,38 @@
+### REQUEST
+POST /api/v1/admin/stations/stn_128b63f1/trigger-cert-renewal HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+
+{}
+
+### RESPONSE
+HTTP/2 422 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:26:27 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-ratelimit-limit: 300
+x-ratelimit-remaining: 298
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c0c-7850-72d6-bbbe-40c4cd2fb6a3
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "message": "The certificate type field is required.",
+  "errors": {
+    "certificateType": [
+      "The certificate type field is required."
+    ]
+  }
+}

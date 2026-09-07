@@ -1,0 +1,41 @@
+### REQUEST
+POST /api/v1/admin/stations/stn_128b63f1/provisioning-tokens HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+X-Organization-Id: 01a07c01-4a95-7274-8280-bcc794544c87
+
+{"note":"integrator-guide traversal"}
+
+### RESPONSE
+HTTP/2 201 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:14:46 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: no-store, private
+pragma: no-cache
+x-ratelimit-limit: 300
+x-ratelimit-remaining: 298
+x-request-id: 01a07c01-c60b-7109-a3fc-7585bd3a661c
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "data": {
+    "tokenId": "01a07c01-c647-7222-9630-02af99ac504e",
+    "rawToken": "<redacted-provisioning-token>",
+    "stationId": "stn_128b63f1",
+    "status": "active",
+    "expiresAt": "2026-09-08T13:14:46+00:00",
+    "createdAt": "2026-09-07T13:14:46+00:00",
+    "createdBy": "trav-owner-786839@onestoppay.dev"
+  }
+}

@@ -1,0 +1,48 @@
+### REQUEST
+POST /api/v1/admin/stations/stn_128b63f1/services HTTP/2
+Host: api-uat.onestoppay.ro
+Accept: application/json
+Content-Type: application/json
+Authorization: Bearer <redacted-jwt>
+X-Organization-Id: 01a07c01-4a95-7274-8280-bcc794544c87
+
+{}
+
+### RESPONSE
+HTTP/2 422 
+server: nginx/1.24.0 (Ubuntu)
+date: Mon, 07 Sep 2026 13:19:28 GMT
+content-type: application/json
+x-powered-by: PHP/8.3.33
+cache-control: private, must-revalidate
+x-ratelimit-limit: 300
+x-ratelimit-remaining: 298
+pragma: no-cache
+expires: -1
+x-request-id: 01a07c06-14cc-7296-b447-071e7de899b3
+access-control-allow-origin: https://app-uat.onestoppay.ro
+access-control-allow-credentials: true
+access-control-expose-headers: X-Request-Id, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+strict-transport-security: max-age=31536000; includeSubDomains
+x-frame-options: DENY
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+
+
+{
+  "message": "The service name field is required. (and 3 more errors)",
+  "errors": {
+    "serviceName": [
+      "The service name field is required."
+    ],
+    "serviceKind": [
+      "The service kind field is required."
+    ],
+    "pricingType": [
+      "The pricing type field is required."
+    ],
+    "fixedDurationSeconds": [
+      "The fixed duration seconds field is required unless service kind is in UserDuration."
+    ]
+  }
+}
