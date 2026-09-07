@@ -532,6 +532,7 @@ async function outputResults(results: ScenarioResult[], opts: RunCommandOptions)
       if (opts.outputFile) {
         await reporter.writeToFile(results, opts.outputFile);
         console.log(chalk.green(`JUnit report written to ${opts.outputFile}`));
+        printGateDenominators();
       } else {
         console.log(reporter.report(results));
       }
@@ -543,6 +544,7 @@ async function outputResults(results: ScenarioResult[], opts: RunCommandOptions)
       if (opts.outputFile) {
         await reporter.writeToFile(results, opts.outputFile);
         console.log(chalk.green(`JSON report written to ${opts.outputFile}`));
+        printGateDenominators();
       } else {
         console.log(reporter.report(results));
       }
@@ -667,6 +669,23 @@ function printConsoleReport(results: ScenarioResult[]): void {
     // Never let a reporting aid take down a run — see skipAge.ts on the git fallback.
   }
 
+  printGateDenominators();
+}
+
+/**
+ * THE TWO GATE DENOMINATORS, PRINTED FOR EVERY OUTPUT FORMAT THAT IS NOT STDOUT.
+ *
+ * These used to live inside `printConsoleReport`, which runs for `--output console` alone —
+ * so the one invocation that exists to be read by a machine, `--output json --output-file`,
+ * printed neither. The inbound-schema line's own comment says "always printed" and it was
+ * not: a CI run could not tell a clean corpus from a gate with no caller, which is the exact
+ * distinction the line was written to make. Measured 2026-09-07 on a full 148-scenario UAT
+ * run: the console log contained neither line.
+ *
+ * Not printed when a machine report goes to STDOUT (`--output json` with no `--output-file`),
+ * because there these lines would land inside the document a consumer is parsing.
+ */
+function printGateDenominators(): void {
   // THE DENOMINATOR, always printed. "0 non-conformant" is a measurement only
   // next to the number of messages actually judged; on its own it is equally
   // consistent with a gate that never ran. Printing `checked` makes the two
