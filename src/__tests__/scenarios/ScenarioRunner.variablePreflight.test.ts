@@ -99,17 +99,35 @@ describe('the corpus, as a standing survey', () => {
     expect(all.length).toBeGreaterThan(100);
   });
 
-  it('exactly these files require a --var, and every one is a known parameterized harness', () => {
+  it('exactly these files need a variable the run must supply, and every one is accounted for', () => {
     const needing = all
       .filter(({ def }) => unsatisfiedVariables(def, TARGET).length > 0)
       .map(({ rel }) => rel.replace(/\\/g, '/'))
       .sort();
 
+    // TWO KINDS, and the distinction matters when reading a run summary.
+    //
+    // The first five are parameterized harnesses: they need a `--var` describing state a
+    // human arranged out of band (an auth-form grant, two cross-wired stations, a batch
+    // reason), and nothing can generate it. They skip in every bulk run, always.
+    //
+    // The three `metrics` files are NOT that. They need `metricsScrapeToken`, which the
+    // runner defines ITSELF from OSPP_SIM_METRICS_SCRAPE_TOKEN whenever that is exported —
+    // so in a run that has the token they are not in this list at all and execute normally.
+    // They appear here because this survey runs with a bare environment. They joined on
+    // 2026-09-06, when csms-server 6c378e14 closed /metrics behind a bearer token and their
+    // `expect_status: 200` began answering 401; gating them on a variable turns three
+    // permanent reds into three honest skips, and a baseline carrying permanent reds stops
+    // saying anything. See the injection note in ScenarioRunner.generateVariables for where
+    // the value comes from and why it is set only when non-empty.
     expect(needing).toEqual([
       'multiunit-e2e/multiunit-batch-drive.yaml',
       'multiunit-e2e/single-session-drive.yaml',
+      'security/mac-missing-drops-request.yaml',
+      'security/mac-verification-failed-drops-request.yaml',
       'security/offline-auth-transaction-reconcile-hostile.yaml',
       'security/offline-auth-transaction-reconcile.yaml',
+      'security/offline-fraud-rapid-transactions.yaml',
       'sessions/session-rejected-invalid-service-cross-station.yaml',
     ]);
   });

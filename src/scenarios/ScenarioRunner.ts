@@ -836,6 +836,30 @@ export function generateVariables(
   // webpay_url=…` points it at the right host when the deployment has one.
   vars.set('webpay_url', target.apiBaseUrl ?? target.mqttUrl);
 
+  // `/metrics` stopped being open. csms-server 6c378e14 put MetricsAccessMiddleware in front
+  // of it (it "served the platform's credit float to anyone"), so an unauthenticated scrape is
+  // now 401 — measured against UAT on 2026-09-06, where it turned three scenarios that assert
+  // `expect_status: 200` on that route red at once.
+  //
+  // SET ONLY WHEN NON-EMPTY, and that is the whole design rather than an optimisation. An
+  // always-present variable would satisfy unsatisfiedVariables() with an empty string, the
+  // scenarios would run, send `Bearer `, and go red for a reason that reads like a server
+  // defect. Left ABSENT, the same scenarios are caught by the preflight and SKIP with a
+  // reason naming the variable — the corpus's existing answer for "this needs something only
+  // the environment can supply" (see the offlineTxId note above, which refuses a default for
+  // exactly this reason). Three honest skips beat three permanent reds, because a baseline
+  // carrying permanent reds stops saying anything.
+  //
+  // WHERE THE VALUE COMES FROM: the DEPLOYED server's own `METRICS_SCRAPE_TOKEN` — for UAT,
+  // `/opt/osp/csms-server/uat/.env` on the deploy host, the same value
+  // docker/prometheus/secrets/metrics_scrape_token holds and that
+  // scripts/preflight-metrics-scrape.sh refuses to deploy without. It is a secret and is
+  // NEVER stored in this repo; export it into the run:
+  //   export OSPP_SIM_METRICS_SCRAPE_TOKEN=$(ssh <deploy-host> \
+  //     "grep '^METRICS_SCRAPE_TOKEN=' /opt/osp/csms-server/uat/.env | cut -d= -f2-")
+  const metricsToken = (process.env.OSPP_SIM_METRICS_SCRAPE_TOKEN ?? '').trim();
+  if (metricsToken !== '') vars.set('metricsScrapeToken', metricsToken);
+
   // Fresh per run, so a scenario reconciling an offline transaction never hardcodes an
   // offlineTxId. The server dedups on it permanently, so a literal is reconcilable exactly
   // once per database and every later run gets `Duplicate` (see generateOfflineTxId).

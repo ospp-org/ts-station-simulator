@@ -324,6 +324,17 @@ steps:
   - action: api_call
     method: GET
     url: "{{target_url}}/metrics"
+    # /metrics is no longer open. csms-server 6c378e14 put MetricsAccessMiddleware in
+    # front of it — it "served the platform's credit float to anyone" — so this step
+    # answered 401 the moment that reached UAT (2026-09-06), asserting 200 against a
+    # route that now fails closed. The bearer token is the deployed server's own
+    # METRICS_SCRAPE_TOKEN, exported as OSPP_SIM_METRICS_SCRAPE_TOKEN; it is a secret
+    # and is never stored here. With it unset the runner does not define
+    # {{metricsScrapeToken}} at all and the preflight SKIPS this file by name, which is
+    # deliberate: an empty token would send `Bearer ` and go red as though the server
+    # were broken.
+    headers:
+      Authorization: "Bearer {{metricsScrapeToken}}"
     expect_status: 200
     expect_body_text:
       - /csms_fraud_score_distribution_count [1-9]/
