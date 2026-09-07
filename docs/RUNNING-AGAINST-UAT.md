@@ -771,3 +771,96 @@ A refused message is neither emitted nor buffered, so the `wait_for` expecting i
 timeout message names the schema errors and the payload rather than blaming the clock, and
 `expect_silence` FAILS on a refused matching message instead of passing vacuously — without that,
 arming the gate would have hollowed out all six silence controls in the corpus.
+
+---
+
+## 8. The heartbeat default — the measuring pair, 2026-09-07
+
+Same shape as §7, and for the same reason: the corpus was measured BEFORE and AFTER, on the
+same day against the same deployment, so the change could be attributed instead of assumed.
+
+```
+OSPP_PROTOCOL_VERSION=0.3.0 \
+node dist/cli/index.js run --all --bootstrap-pool --pool-size 5 --parallel --workers 5 \
+  --target uat --output json --output-file results/<label>.json
+```
+
+| | before (`efd4888^`) | after (`efd4888`) |
+|---|---|---|
+| scenarios | **129 passed / 1 failed / 18 skipped of 148** | **129 / 1 / 18** |
+| scenario NAMES | 148 | identical set |
+| statuses that MOVED | — | **0 of 148** |
+| STEP results that differ | — | **0 of 148** |
+| the one failure | `Multi-Unit Jam Drive`, payment `pending` ≠ `succeeded` | same file, same step |
+
+**A no-op on results is the expected outcome and is the point.** Only 7 of 148 files run
+longer than 30s, so on every other file a real station would not have sent a heartbeat either.
+The change removes an incapacity, not a wrong answer: before it, a file that grew past 105s
+discovered the offline sweep by failing, and each one bought its way out with its own
+`start_heartbeat` step.
+
+### Why this is 129/1/18 and not the 132/1/15 on record
+
+Three files, all named by the preflight: `security/mac-missing-drops-request`,
+`security/mac-verification-failed-drops-request`, `security/offline-fraud-rapid-transactions`.
+All three assert against `/metrics`, which `csms-server` `6c378e14` closed behind
+`MetricsAccessMiddleware`; without `OSPP_SIM_METRICS_SCRAPE_TOKEN` exported the runner does not
+define `{{metricsScrapeToken}}` and skips them by name. Nothing regressed — 132 − 3 = 129 and
+15 + 3 = 18.
+
+### The wire falsification, and why a suite that does not move is still evidence
+
+The same scenario, run twice, with and without its `suppress_heartbeat:` declaration:
+
+```
+declared    -> ✓ Heartbeat Silence Offline Sweep (178s)
+               Heartbeat (default on): 0 arm(s), 0 pulse(s) published, 0 failed, 1 declared silent
+undeclared  -> ✗ ApiCallStep: expected body "data.isOnline" to equal false, but got true
+               Heartbeat (default on): 1 arm(s), 5 pulse(s) published, 0 failed, 0 declared silent
+```
+
+Five pulses over the 175s wait at the server's advertised 30s, and the station's `lastSeenAt`
+**151s after its `lastBootAt`** — `stations.last_seen_at` moving under the sweep's
+`ceil(interval × 3.5)` threshold, which is the whole mechanism in one field.
+
+### `station_journal` is readable per station, and it counts the offline markings
+
+`GET /api/v1/admin/stations/{stn_*}/journal?kind=station_offline` (platform admin; the rows
+survive pool teardown through the orphan path, and `->take(100)` caps the page). Counted
+across each run's pool ids, which are minted fresh per run — the row window is the control
+that no id was reused:
+
+| cause | before | after |
+|---|---|---|
+| `broker_will` | 11 | **11** |
+| `heartbeat_timeout` | 6 | **5** |
+| `operator_disable` | 1 | 1 |
+| total | 18 | 17 |
+
+*(6 of 7 pool stations readable in each run; one 404s after teardown, so both columns are
+lower bounds by the same unknown amount.)*
+
+**`broker_will` cannot move and did not.** A will publishes on an unclean socket close
+whatever the station was sending a moment earlier.
+
+**`heartbeat_timeout` moved by one, and that is the honest result — the default did NOT close
+this.** One of the five is deliberate (the sweep file). Walking the journal around the other
+four gives the same shape every time:
+
+```
+   station_booted           the station booted
+>> station_offline          no heartbeat for 3.5x the interval; the socket may still be up
+```
+
+— a boot, then nothing, then the sweep. That is a POOL STATION BETWEEN LEASES, not a scenario
+going silent mid-run. The runner's `finally` calls `station.disconnect()`, which sends a clean
+DISCONNECT (so the broker publishes no will, so nothing marks the station offline) and calls
+`stopHeartbeat()` (so nothing keeps it alive either). The row then sits `is_online = true` and
+silent, owned by no scenario, until the next lease boots it or the sweep reaches it at 105s.
+On `stn_ddc25cfc` the last such row is at 11:16:02, after the run had finished with it.
+
+The heartbeat default cannot reach that window by construction, and nothing here should be
+read as having closed it. What would: keeping a pool station's heartbeat running for the
+lifetime of the LEASE rather than the scenario, or having the pool release a station by
+marking it offline explicitly. Neither is built, and the second changes what a pool station
+means to every file that borrows one.
