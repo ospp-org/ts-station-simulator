@@ -17,6 +17,7 @@ import type {
 import {
   EffectedBy,
   OsppAction,
+  type ConnectionLostPayload,
   MessageType,
   BayStatus,
   BayStateMachine,
@@ -261,18 +262,70 @@ export class Station extends EventEmitter {
   }
 
   /**
+   * Say goodbye: publish ConnectionLost with `reason: "PlannedShutdown"`.
+   *
+   * spec 0.36.0, connection-lost.md §4.3. Before that value existed this
+   * simulator had the same two options every real station had, and neither was
+   * correct:
+   *
+   *   stay silent      — a clean DISCONNECT discards the will (MQTT 5 §3.14.4)
+   *                      and stopHeartbeat() removes the only thing keeping the
+   *                      row alive, so `stations.is_online` stays true over a
+   *                      dead socket until the sweep DEDUCES the absence at
+   *                      ceil(interval x 3.5) = 105 s and writes cause
+   *                      `heartbeat_timeout`;
+   *   force the will   — `reasonCode 0x04` + `willDelayInterval: 0`, which is
+   *                      what this code used to do. It tells the server at the
+   *                      right moment, and what it tells it is FALSE: the will
+   *                      payload says `UnexpectedDisconnect` about a station
+   *                      that said goodbye. This file's own comment said so.
+   *
+   * Best-effort and bounded. A shutdown must not be blocked by an unreachable
+   * server (§4.3 rule 3), and the heartbeat timeout remains the backstop, so a
+   * failure here is logged and swallowed rather than propagated.
+   *
+   * Published LAST, after everything the station still owes (§4.3 rule 2) —
+   * this method is called from disconnect(), which every teardown funnels
+   * through after its own work is done.
+   */
+  async announcePlannedShutdown(): Promise<void> {
+    try {
+      await this.sender.send<ConnectionLostPayload>(
+        OsppAction.CONNECTION_LOST,
+        MessageType.EVENT,
+        { stationId: this.config.stationId as ConnectionLostPayload['stationId'], reason: 'PlannedShutdown' },
+      );
+    } catch (err) {
+      console.log(
+        '[Shutdown] station %s could not announce its planned shutdown (%s) — leaving on the heartbeat timeout instead',
+        this.config.stationId, err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
    * Stop beating and close the socket.
    *
-   * The two halves are why the release gap exists: stopHeartbeat() removes the
-   * only thing keeping `stations.is_online` true, and a plain DISCONNECT makes
-   * the broker discard the will, so nothing replaces it. `publishWill: true`
-   * asks the broker to publish the will on the way out, which is what tells the
-   * server the station is gone at the moment it goes. Passed by the runner for
-   * a pool-leased station; see MqttConnection.disconnect().
+   * `announceDeparture: true` publishes the §4.3 goodbye first and then closes
+   * with an ORDINARY clean DISCONNECT. It replaces `publishWill`, which asked
+   * the broker to fire the Last Will on the way out: that told the server at the
+   * right moment and told it the wrong thing, and now that a true value exists
+   * there is no reason to publish a false one. The two are mutually exclusive by
+   * construction — announcing and then forcing the will would put a
+   * `PlannedShutdown` and an `UnexpectedDisconnect` about the same departure on
+   * the wire, and the server would keep whichever landed second.
+   *
+   * Passed by the runner for a pool-leased station, whose id goes straight to
+   * another scenario, so a row left online is one that gets corrected inside
+   * somebody else's lease. NOT the default: `fault: disconnect` exists precisely
+   * to be the arm that says nothing (core/connection-lost-lwt.yaml).
    */
-  async disconnect(opts?: { publishWill?: boolean }): Promise<void> {
+  async disconnect(opts?: { announceDeparture?: boolean }): Promise<void> {
     this.stopHeartbeat();
-    await this.connection.disconnect(opts);
+    if (opts?.announceDeparture) {
+      await this.announcePlannedShutdown();
+    }
+    await this.connection.disconnect();
     this.lifecycle = StationLifecycle.OFFLINE;
     this.emit('disconnected');
   }

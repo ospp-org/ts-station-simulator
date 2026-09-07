@@ -2219,15 +2219,20 @@ export class ScenarioRunner {
     } finally {
       try {
         // A POOL STATION LEAVES THE STATE CLEAN RATHER THAN LEAVING IT TO THE
-        // SWEEP. Without the will the server is told nothing at all: the clean
-        // DISCONNECT discards it (MQTT 5 §3.14.4) and stopHeartbeat() removes the
-        // only thing keeping the row alive, so `is_online` stays true over a dead
-        // socket until CheckStationHeartbeatsCommand deduces the absence at 105s.
-        // Measured on UAT 2026-09-07: 144 boots against 17 offline markings in one
-        // run, four of them `station_booted` immediately followed by
-        // `station_offline / no heartbeat`, one landing after the run had finished
-        // with the station. See releaseWithWill above for the scope.
-        await station.disconnect({ publishWill: releaseWithWill });
+        // SWEEP. Told nothing, the server keeps `is_online` true over a dead
+        // socket until CheckStationHeartbeatsCommand deduces the absence at 105s:
+        // the clean DISCONNECT discards the will (MQTT 5 §3.14.4) and
+        // stopHeartbeat() removes the only thing keeping the row alive. Measured
+        // on UAT 2026-09-07: 144 boots against 17 offline markings in one run,
+        // four of them `station_booted` immediately followed by `station_offline /
+        // no heartbeat`, one landing after the run had finished with the station.
+        //
+        // This used to be closed by FORCING the will (reason code 0x04), which
+        // told the server at the right moment and told it `UnexpectedDisconnect`
+        // — false about a station that said goodbye. spec 0.36.0 gave the
+        // departure a true value, so the station announces PlannedShutdown and
+        // then closes ordinarily. See releaseWithWill above for the scope.
+        await station.disconnect({ announceDeparture: releaseWithWill });
       } catch {
         // Best-effort disconnect
       }

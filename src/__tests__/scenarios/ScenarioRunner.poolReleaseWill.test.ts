@@ -85,8 +85,8 @@ function def(name: string, extra: Partial<ScenarioDefinition> = {}): ScenarioDef
   };
 }
 
-/** Captured `publishWill` argument of every Station.disconnect() the run made. */
-let disconnectArgs: Array<{ publishWill?: boolean } | undefined>;
+/** Captured `announceDeparture` argument of every Station.disconnect() the run made. */
+let disconnectArgs: Array<{ announceDeparture?: boolean } | undefined>;
 
 beforeEach(() => {
   disconnectArgs = [];
@@ -96,7 +96,7 @@ beforeEach(() => {
   // still runs, which is the point of reaching it this way.
   vi.spyOn(Station.prototype, 'connect').mockRejectedValue(new Error('no broker in this test'));
   vi.spyOn(Station.prototype, 'disconnect').mockImplementation(
-    async function (this: Station, opts?: { publishWill?: boolean }) {
+    async function (this: Station, opts?: { announceDeparture?: boolean }) {
       disconnectArgs.push(opts);
     },
   );
@@ -106,8 +106,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('the runner releases a POOL station by asking the broker to publish its will', () => {
-  it('a scenario holding a pool lease is torn down with publishWill: true', async () => {
+// INVERTED at spec 0.36.0. This file used to pin the FORCED WILL as the release
+// exit — `publishWill: true`, reason code 0x04, `willDelayInterval: 0`. That told
+// the server at the right moment and told it `UnexpectedDisconnect`, which is
+// false about a station that said goodbye; MqttConnection.ts said so in its own
+// comment. connection-lost.md §4.3 gave the departure a true value, so the
+// assertions are turned around rather than deleted: the file still records that
+// the pool teardown must TELL the server, and now pins what it tells it.
+describe('the runner releases a POOL station by announcing a planned shutdown', () => {
+  it('a scenario holding a pool lease is torn down with announceDeparture: true', async () => {
     const runner = new ScenarioRunner();
     const result = await runner.runScenario(def('pooled'), {
       ...BASE_TARGET,
@@ -118,12 +125,12 @@ describe('the runner releases a POOL station by asking the broker to publish its
     // and it runs on the failure path — which is the path a real run needs it on.
     expect(result.status).toBe('failed');
     expect(disconnectArgs).toHaveLength(1);
-    expect(disconnectArgs[0]).toEqual({ publishWill: true });
+    expect(disconnectArgs[0]).toEqual({ announceDeparture: true });
   });
 
   it('the lease is returned to the allocator AFTER the disconnect, not before', async () => {
-    // Ordering is load-bearing and invisible from the argument alone. The will
-    // has to be on the wire before the id can be handed to the next scenario;
+    // Ordering is load-bearing and invisible from the argument alone. The
+    // goodbye has to be on the wire before the id can be handed to the next scenario;
     // releasing first would let an acquire, a connect and a boot start racing a
     // ConnectionLost that is about the PREVIOUS lease — reintroducing the
     // cross-scenario marking this change exists to remove, only faster.
@@ -152,19 +159,19 @@ describe('the runner releases a POOL station by asking the broker to publish its
 
 describe('a station the pool does not own is torn down as before', () => {
   /**
-   * THE CONTROL. Without it, an implementation that passed `publishWill: true`
-   * unconditionally would satisfy every assertion above while quietly arming the
-   * will on `owns_station` and on the 6 hardcoded-id files too.
+   * THE CONTROL. Without it, an implementation that passed `announceDeparture:
+   * true` unconditionally would satisfy every assertion above while quietly
+   * announcing on `owns_station` and on the 6 hardcoded-id files too.
    */
-  it('with no station pool configured at all, publishWill is false', async () => {
+  it('with no station pool configured at all, announceDeparture is false', async () => {
     const runner = new ScenarioRunner();
     await runner.runScenario(def('unpooled'), BASE_TARGET);
 
     expect(disconnectArgs).toHaveLength(1);
-    expect(disconnectArgs[0]).toEqual({ publishWill: false });
+    expect(disconnectArgs[0]).toEqual({ announceDeparture: false });
   });
 
-  it('owns_station takes no lease, so it is not released with a will either', async () => {
+  it('owns_station takes no lease, so it does not announce either', async () => {
     const runner = new ScenarioRunner();
     await runner.runScenario(def('owner', { owns_station: true }), {
       ...BASE_TARGET,
@@ -174,7 +181,7 @@ describe('a station the pool does not own is torn down as before', () => {
     // A pool is configured and was deliberately not drawn from — the same
     // condition the allocator itself uses to skip acquiring.
     expect(disconnectArgs).toHaveLength(1);
-    expect(disconnectArgs[0]).toEqual({ publishWill: false });
+    expect(disconnectArgs[0]).toEqual({ announceDeparture: false });
   });
 
   it('a hardcoded stationId takes no lease either', async () => {
@@ -192,26 +199,26 @@ describe('a station the pool does not own is torn down as before', () => {
     );
 
     expect(disconnectArgs).toHaveLength(1);
-    expect(disconnectArgs[0]).toEqual({ publishWill: false });
+    expect(disconnectArgs[0]).toEqual({ announceDeparture: false });
   });
 });
 
 
-describe('end to end through the runner: the will the broker is actually handed', () => {
+describe('end to end through the runner: the frames the broker is actually handed', () => {
   /**
-   * THE HALF THE ARGUMENT ASSERTIONS CANNOT SEE.
+   * THE HALF THE ARGUMENT ASSERTIONS CANNOT SEE, and the half that changed.
    *
-   * `publishWill` and `willDelayInterval` are decided together and take effect at
-   * opposite ends of the connection — the delay is armed in the CONNECT packet,
-   * the reason code is sent in the DISCONNECT. A test that only reads the
-   * disconnect argument would stay green if the delay half were dropped, and the
-   * change would then publish the will TEN SECONDS after the id was handed on,
-   * which is worse than the defect it replaces.
+   * This used to read `reasonCode: 4` off the DISCONNECT — the forced will. The
+   * goodbye is now a PUBLISH that precedes an ordinary clean DISCONNECT, so the
+   * red has to land on the frame and on its bytes, not on a packet option: a
+   * departure that announced nothing, or announced the wrong reason, or announced
+   * it AFTER the socket closed, are three different regressions and only the
+   * published payload separates them.
    *
    * So this one lets Station.connect() run for real against a fake client and
-   * reads both packets the runner produced.
+   * reads what was published and what was sent, in order.
    */
-  it('a pooled lease: CONNECT arms willDelayInterval 0 and DISCONNECT carries reason code 4', async () => {
+  it('a pooled lease: ConnectionLost/PlannedShutdown is published, then an ORDINARY clean DISCONNECT', async () => {
     vi.restoreAllMocks();
     const runner = new ScenarioRunner();
     await runner.runScenario(def('e2e-pooled'), { ...BASE_TARGET, stationPool: ['stn_poolrel5'] });
@@ -220,9 +227,25 @@ describe('end to end through the runner: the will the broker is actually handed'
     const will = connectCalls[0].will as { properties: { willDelayInterval: number } };
     expect(will.properties.willDelayInterval).toBe(0);
 
+    // THE GOODBYE, off the wire. Decoded from the published bytes rather than
+    // asserted on a spy's call count: what matters is the value in the payload.
+    const published = fakeClients[0].publish.mock.calls.map(
+      (c) => JSON.parse(String(c[1])) as { action: string; payload: { reason?: string } },
+    );
+    const goodbye = published.filter((m) => m.action === 'ConnectionLost');
+    expect(goodbye).toHaveLength(1);
+    expect(goodbye[0].payload.reason).toBe('PlannedShutdown');
+
+    // LAST, per §4.3 rule 2 — everything the station still owed goes first.
+    expect(published[published.length - 1].action).toBe('ConnectionLost');
+
+    // And the close is ordinary: no forced will riding behind the truth. Both
+    // halves matter — a reason code here would put an `UnexpectedDisconnect`
+    // about the same departure on the wire after the `PlannedShutdown`, and the
+    // server keeps whichever lands second.
     expect(fakeClients[0].endCalls).toHaveLength(1);
-    expect(fakeClients[0].endCalls[0]).toMatchObject({ reasonCode: 4 });
-    expect(fakeClients[0].endCalls[0]).not.toHaveProperty('properties');
+    expect(fakeClients[0].endCalls[0]).not.toHaveProperty('reasonCode');
+    expect(fakeClients[0].endCalls[0]).toMatchObject({ properties: { sessionExpiryInterval: 0 } });
   });
 
   it('clean_session:false keeps the armed delay AND takes no reason code', async () => {
