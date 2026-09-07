@@ -164,11 +164,18 @@ steps:
   # wait: the heartbeat sweep marks a silent station offline, and 130s of stillness is exactly
   # what that sweep exists to catch (core/heartbeat-silence-offline-sweep.yaml is the file that
   # proves it). So the scenario had extinguished its own precondition — every long file in the
-  # corpus calls `start_heartbeat` for this reason, and StartHeartbeatStep's docblock says
-  # short files omit it deliberately so an offline-detection test stays scriptable.
+  # corpus called `start_heartbeat` for this reason, while the short ones omitted it and got
+  # away with finishing first.
+  #
+  # SINCE 2026-09-07 THIS STEP IS REDUNDANT HERE, and is kept rather than deleted. An accepted
+  # boot now arms the heartbeat by default at the server's advertised interval, so this file
+  # would stay online without the line. What the line still carries is the measurement above:
+  # the first UAT run of this file failed at `6003 STATION_OFFLINE`, and that is the reason
+  # this file is allowed to be 130s long. Deleting the step would delete the note.
   #
   # 30s is the interval the boot Response advertises (`heartbeatIntervalSec`), so this is the
-  # station behaving as instructed rather than a number chosen to beat a sweep.
+  # station behaving as instructed rather than a number chosen to beat a sweep — and it is now
+  # the same number the default would have used anyway.
   - action: start_heartbeat
     interval_sec: 30
 

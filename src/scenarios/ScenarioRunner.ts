@@ -388,6 +388,42 @@ export interface ScenarioDefinition {
    */
   expect_refusal_reason?: RefusalReason;
   /**
+   * THIS FILE NEEDS THE STATION TO BE APPLICATION-SILENT. Set it to the reason, and the
+   * background Heartbeat an accepted boot otherwise arms is not started.
+   *
+   * The default is the other way round, because a real station beats. Scenario mode used to
+   * inherit its silence from `BootNotificationHandler(autoReact=false)`, which carried two
+   * unrelated decisions on one boolean — see that constructor. Measured on disk when this key
+   * landed: **8 of 148** files called `start_heartbeat`, so **140** booted and then went
+   * silent for their whole life, and the csms `station:check-heartbeats` sweep marks such a
+   * station offline at `3.5 x heartbeatIntervalSec` (105s against the deployed 30). The long
+   * files had each papered over that individually; the short ones simply finished first.
+   *
+   * A REASON, NOT A BOOLEAN, for the reason `owns_station` and `requires_pool` give: a bare
+   * `true` lets a future file acquire silence by copy-paste, and the next person cannot tell a
+   * decision from an inheritance. The reason is checked to be non-trivial by
+   * `heartbeatIsDefault.test.ts`.
+   *
+   * WHAT DOES **NOT** NEED IT, measured rather than assumed — the four candidate mechanisms
+   * and why three of them are not mechanisms at all:
+   *
+   *   - `expect_silence` on `Heartbeat/Response` (3 files). `pickExpectedMessageId` pins the
+   *     wait to the messageId of the file's OWN scripted Request, so a background pulse's
+   *     Response carries a different id and cannot satisfy it. Uncorrelated Heartbeat waits
+   *     in the corpus: **0**.
+   *   - proving a station went offline via the BROKER's will (`connection-lost-lwt`,
+   *     `reconnect-recovery`). `HeartbeatHandler` calls `updateLastSeen()`, and that writes
+   *     `last_seen_at` and nothing else (`StationRepository.php:108`) — a Heartbeat cannot
+   *     set `is_online` back to true. Only a BootNotification does.
+   *   - files that never send a BootNotification (13, mostly `tls-floor/*`): nothing arms.
+   *   - a pulse whose publish fails after `fault: sever` (9 files use `fault`). That is a
+   *     runner concern, not a per-file one, and it is handled where the station is built.
+   *
+   * The one mechanism that IS one: the sweep reads the Redis tracker key, and only a Heartbeat
+   * re-arms it. A file whose subject is that sweep has to be silent to have a subject.
+   */
+  suppress_heartbeat?: string;
+  /**
    * MQTT 5 Clean Start. Defaults to `true` for scenarios — test runs should
    * not inherit a queued message backlog from a previous run, which delays
    * (or drops) time-sensitive responses like Heartbeat. Set to `false` only
@@ -1249,19 +1285,43 @@ function createStationFromScenario(
     cleanSession,
   });
 
+  // A FAILED BACKGROUND HEARTBEAT MUST NOT KILL THE RUN.
+  //
+  // `Station.startHeartbeat` reports a send failure with `emit('error')`. EventEmitter THROWS
+  // on an unlistened 'error', and that emit happens inside a `.catch()` — so with no listener
+  // the throw becomes an unhandled rejection and, under Node's default, takes down the whole
+  // suite process, not just the scenario. Nothing listened before this line.
+  //
+  // That was latent while 8 files beat and none of them severed. It is live now that every
+  // booted station beats: `fault: sever` nulls the client (MqttConnection.severConnection),
+  // after which every publish rejects immediately — and 9 files in the corpus use `fault:`.
+  //
+  // Logged rather than failed: on a severed link a failed pulse is the CORRECT behaviour of
+  // firmware on a dead radio, and reddening `connection-lost-lwt` for it would be asserting
+  // the opposite of what that file proves. On a live link it is a real signal, which is why it
+  // is printed with the station id rather than swallowed.
+  station.on('error', (err: Error) => {
+    console.warn('[ScenarioRunner] station %s background error: %s', stationId, err.message);
+  });
+
   // Scenario mode runs zero auto-responder handlers (the scenario scripts every
   // outbound message). But the boot Response carries the sessionKey the station
   // needs to HMAC-sign critical messages, and only BootNotificationHandler
-  // captures it. Register it with autoReact=false so it ONLY captures the
-  // sessionKey (no auto heartbeat / StatusNotifications — those would duplicate
-  // the scenario's explicit ones and use the pre-provision bayIds). The router
-  // fans out (buffer + emit), so wait_for still sees the Response.
+  // captures it. `autoReact=false` suppresses the auto StatusNotifications —
+  // those would duplicate the scenario's explicit ones and use the pre-provision
+  // bayIds. The HEARTBEAT is a separate flag and defaults ON, because a real
+  // station beats; a file that needs application silence says so with
+  // `suppress_heartbeat:`. The router fans out (buffer + emit), so wait_for still
+  // sees the Response.
   // Cast: handlers implement the StationContext-based Handler; registerHandler
   // expects the Station-based Handler (same SessionInfo-divergence cast the
   // `connect` command uses — see cli/index.ts).
   station.registerHandler(
     OsppAction.BOOT_NOTIFICATION,
-    new BootNotificationHandler(false) as unknown as Handler,
+    new BootNotificationHandler(
+      false,
+      scenarioDef.suppress_heartbeat === undefined,
+    ) as unknown as Handler,
   );
 
   return station;

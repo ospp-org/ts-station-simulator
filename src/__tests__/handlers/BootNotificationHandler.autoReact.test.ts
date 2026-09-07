@@ -73,7 +73,20 @@ function acceptedBootResponse(sessionKey: string): OsppEnvelope {
   } as unknown as OsppEnvelope;
 }
 
-describe('BootNotificationHandler — autoReact gate', () => {
+/**
+ * THE FLAG SPLIT IN TWO ON 2026-09-07, AND THIS FILE IS WHERE THE OLD MEANING DIED.
+ *
+ * `autoReact=false` used to mean two things at once: "do not emit StatusNotifications for
+ * bayIds the scenario has not provisioned yet" (correct, unchanged) and "do not beat"
+ * (a non-conformance — 140 of 148 scenario files booted and then went application-silent).
+ * The heartbeat half moved to its own parameter, which DEFAULTS ON in both modes.
+ *
+ * The assertion below that used to read `heartbeatStarted === false` for scenario mode now
+ * reads `true`, and that inversion is the change, not a regression. The silent case still
+ * exists and is still tested — it is now the explicitly-declared one. See
+ * `scenarios/heartbeatIsDefault.test.ts` for the wire-level proof in both directions.
+ */
+describe('BootNotificationHandler — autoReact / autoHeartbeat gates', () => {
   it('captures sessionKey in BOTH modes (essential boot state)', async () => {
     for (const autoReact of [true, false]) {
       const { station } = makeMockStation();
@@ -91,12 +104,45 @@ describe('BootNotificationHandler — autoReact gate', () => {
     expect(captured.every(c => c.action === OsppAction.STATUS_NOTIFICATION)).toBe(true);
   });
 
-  it('autoReact=false (scenario mode): NO heartbeat, NO StatusNotifications — only sessionKey', async () => {
+  it('autoReact=false (scenario mode): NO StatusNotifications — but it still BEATS', async () => {
     const { station, captured, flags } = makeMockStation();
     await new BootNotificationHandler(false).handle(acceptedBootResponse('K2'), station);
 
     expect(station.sessionKey).toBe('K2');
+    expect(captured).toHaveLength(0); // the half that did not change
+    expect(flags.heartbeatStarted).toBe(true); // the half that did
+  });
+
+  it('autoHeartbeat=false: the declared-silence case, and the ONLY way to get silence now', async () => {
+    const { station, captured, flags } = makeMockStation();
+    await new BootNotificationHandler(false, false).handle(acceptedBootResponse('K3'), station);
+
+    expect(station.sessionKey).toBe('K3');
     expect(flags.heartbeatStarted).toBe(false);
     expect(captured).toHaveLength(0);
+  });
+
+  it('the two flags are independent — connect mode can be silent, scenario mode can beat', () => {
+    // Guards the split itself. If a later change re-ties them, one of these four combinations
+    // stops being reachable and the corpus loses either its silence declaration or its
+    // per-bay boot report.
+    const combos: Array<[boolean, boolean]> = [
+      [true, true],
+      [true, false],
+      [false, true],
+      [false, false],
+    ];
+    const seen = new Set<string>();
+    for (const [autoReact, autoHeartbeat] of combos) {
+      const { station, captured, flags } = makeMockStation();
+      // Synchronous enough for the flags; the sends are awaited inside but the mock resolves
+      // immediately, and the assertion is on the SHAPE of the combination, not on ordering.
+      void new BootNotificationHandler(autoReact, autoHeartbeat).handle(
+        acceptedBootResponse('K'),
+        station,
+      );
+      seen.add(`${flags.heartbeatStarted}/${captured.length > 0}`);
+    }
+    expect(seen.size, 'the two flags no longer produce four distinct outcomes').toBe(4);
   });
 });

@@ -3,15 +3,37 @@ import type { Handler, StationContext } from './Handler.js';
 
 export class BootNotificationHandler implements Handler {
   /**
-   * @param autoReact When true (default — `connect` mode), the station
-   *   auto-pilots after a successful boot: starts the heartbeat and emits a
-   *   StatusNotification per bay. Scenario mode passes `false`: scenarios drive
-   *   those messages explicitly (with the provisioned bayIds and empirically-
-   *   tuned timing), so the handler only captures the essential boot state
-   *   (sessionKey). Auto-firing in scenario mode would duplicate the scenario's
-   *   StatusNotifications and emit them for the pre-provision (wrong) bayIds.
+   * @param autoReact When true (default — `connect` mode), the station emits a
+   *   StatusNotification per bay after a successful boot. Scenario mode passes
+   *   `false`: scenarios drive those explicitly, with the PROVISIONED bayIds and
+   *   empirically-tuned timing, so auto-firing there would both duplicate the
+   *   scenario's own messages and send them for the pre-provision (wrong) bayIds.
+   *
+   * @param autoHeartbeat When true (the default in BOTH modes), an accepted boot
+   *   arms the background Heartbeat at the interval the SERVER declared in the
+   *   Response. Scenario mode passes `false` only for a file that declares
+   *   `suppress_heartbeat:`.
+   *
+   *   WHY THIS IS A SECOND PARAMETER RATHER THAN THE SAME ONE. It used to be the
+   *   same one, and that conflated two unrelated decisions. Not emitting
+   *   StatusNotifications for bayIds the scenario has not provisioned yet is
+   *   correct and still is. Not beating is a NON-CONFORMANCE: 02-transport.md §4.2
+   *   makes the Heartbeat the station's liveness signal, and the csms
+   *   `station:check-heartbeats` sweep marks a station offline after `3.5 x
+   *   heartbeatIntervalSec` of application silence — 105s against the deployed 30.
+   *   Measured on disk the day this split landed, **140 of 148** scenario files
+   *   booted and then never beat again, so the suite exercised a station no
+   *   integrator will ever operate, and the long files papered over it one at a
+   *   time with an explicit `start_heartbeat` step (8 of 148).
+   *
+   *   Only an ACCEPTED boot arms it. A Rejected or Pending station has no session
+   *   to keep alive, and firmware in either state is retrying its boot rather than
+   *   beating.
    */
-  constructor(private readonly autoReact: boolean = true) {}
+  constructor(
+    private readonly autoReact: boolean = true,
+    private readonly autoHeartbeat: boolean = true,
+  ) {}
 
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const response = envelope.payload as BootNotificationResponse;
@@ -27,12 +49,18 @@ export class BootNotificationHandler implements Handler {
         // HMAC-sign critical outbound messages (over the whole envelope).
         station.sessionKey = response.sessionKey ?? null;
 
-        // Connect-mode auto-pilot only (see constructor). Scenario mode drives
-        // heartbeat + StatusNotifications explicitly.
-        if (this.autoReact) {
-          // Start heartbeat at server-specified interval
+        // The station beats — in BOTH modes, at the interval the server just
+        // declared. This is the one thing real firmware always does after an
+        // accepted boot, so it is the default and a file that needs silence turns
+        // it off by name. See the constructor for what that cost while it was tied
+        // to `autoReact`.
+        if (this.autoHeartbeat) {
           station.startHeartbeat(response.heartbeatIntervalSec);
+        }
 
+        // Connect-mode auto-pilot only (see constructor). Scenario mode drives
+        // its StatusNotifications explicitly.
+        if (this.autoReact) {
           // Send StatusNotification for every bay (BOOT-012, SN-001).
           //
           // `previousStatus` is deliberately absent: this is the post-boot report,

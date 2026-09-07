@@ -3,33 +3,52 @@ description: "Boot, arm the liveness state, then go APPLICATION-silent for 175s 
 # THE ONE DETECTOR NOTHING EXERCISED. `station:check-heartbeats` marks a station
 # offline after 3.5 x heartbeatIntervalSec of OSPP silence — measured 30 on UAT, so
 # 105s — and converges on the same StationOfflineService::markOffline as the Last
-# Will. No scenario in the corpus ever asserted the result. Worse, the corpus is
-# arranged so it cannot fire: five long files call `start_heartbeat` for the express
-# purpose of keeping this sweep quiet, and StartHeartbeatStep's own docblock says
-# short files omit it because that "preserves the ability to script a
-# silence/offline-detection test (impossible if the sim always heartbeated)". The
-# capability was preserved and never used. This is that file.
+# Will. No scenario in the corpus ever asserted the result. Worse, the corpus was
+# arranged so it could not fire: the long files call `start_heartbeat` for the
+# express purpose of keeping this sweep quiet, and the short ones omitted it — which
+# StartHeartbeatStep's docblock used to justify as preserving "the ability to script
+# a silence/offline-detection test (impossible if the sim always heartbeated)". The
+# capability was preserved and never used. This is that file, and since 2026-09-07
+# it is the only one that still holds the capability.
 #
-# WHY THE SOCKET STAYS UP, AND WHY THAT IS THE POINT. Scenario-mode stations
-# register BootNotificationHandler(autoReact=false), so nothing beats in the
-# background; the only traffic during the silence is MQTT keepalive PINGREQ, which
-# is transport, not OSPP. So this file reproduces the exact condition the cause
-# enum describes — "no heartbeat for 3.5x the interval; THE SOCKET MAY STILL BE UP"
-# — and it is the one liveness case in the corpus where nothing is ever
-# disconnected.
+# WHY THE SOCKET STAYS UP, AND WHY THAT IS THE POINT. The only traffic during the
+# silence is MQTT keepalive PINGREQ, which is transport, not OSPP. So this file
+# reproduces the exact condition the cause enum describes — "no heartbeat for 3.5x
+# the interval; THE SOCKET MAY STILL BE UP" — and it is the one liveness case in
+# the corpus where nothing is ever disconnected.
 #
-# WHAT ARMS THE SWEEP. getTimedOutStations() SCANs `ospp:heartbeat:*` and only
-# considers stations that HAVE a key, so a station nothing ever recorded is
-# invisible to it. BootNotificationHandler.php:277 calls recordHeartbeat() on every
-# accepted Boot, so the Boot below both arms the tracker and starts its clock. No
-# explicit Heartbeat is needed, and deliberately none is sent: sending one would
-# only re-arm the same key.
+# THE SILENCE IS NOW DECLARED, NOT INHERITED — see `suppress_heartbeat:` below.
+# Until 2026-09-07 this file got its silence for free: scenario mode registered
+# BootNotificationHandler(autoReact=false) and nothing beat in the background, for
+# ANY file. That default was a non-conformance for the other 139 and has been
+# inverted, so an accepted boot now arms the Heartbeat at the server's interval.
+# This file is the ONE in 148 that must opt out, and the reason is mechanical
+# rather than stylistic: one background pulse at t+30 pushes the threshold out past
+# the 175s wait and the proof read below comes back isOnline: true. That is the same
+# failure the FALSIFICATION note further down describes reaching by hand — the
+# default would have reached it by itself, on every run, silently.
 #
-# WHY 175s. The key records lastSeen at the Boot and interval 30; the threshold is
-# 3.5 x 30 = 105s; the sweep runs every minute under `schedule:work`. So the
-# transition lands between t+105 and t+165 depending on where the Boot fell inside
-# the minute, and 175s covers the worst case with margin. It cannot be shortened
-# without making the file a coin toss, which is why it declares its own timeout —
+# WHAT ARMS THE SWEEP — RE-READ FROM THE SERVER 2026-09-07, AND THE PARAGRAPH THIS
+# REPLACES NAMED A MECHANISM THAT NO LONGER HAS A READER. It said the sweep SCANs
+# `ospp:heartbeat:*` and only considers stations that HAVE a key. csms-server changed
+# that on 2026-08-29: CheckStationHeartbeatsCommand now reads the DATABASE —
+# `StationRepository::findOnline()` for candidates and `stations.last_seen_at` for the
+# clock — precisely because a SCAN could not see a station whose key had been evicted
+# under `allkeys-lru`, and such a row stayed `is_online = true` for ever.
+# HeartbeatTracker's own docblock now reads "a write and a delete with no reader".
+#
+# NOTHING ABOUT THIS FILE CHANGES, and that is worth stating rather than assuming.
+# `last_seen_at` is written by BootNotificationHandler.php:275 on an accepted Boot
+# (so the Boot below still starts the clock) and by StationRepository::updateLastSeen,
+# whose ONE production caller is HeartbeatHandler.php:31 (so only a Heartbeat still
+# re-arms it — StatusNotification / MeterValues / SessionEnded do not, verified by
+# grep: 1 caller). Same two writers, same 3.5x threshold, different column.
+#
+# WHY 175s. The Boot writes last_seen_at and the station's configured interval is 30;
+# the threshold is ceil(30 x 3.5) = 105s; the sweep runs every minute under
+# `schedule:work`. So the transition lands between t+105 and t+165 depending on where
+# the Boot fell inside the minute, and 175s covers the worst case with margin. It cannot
+# be shortened without making the file a coin toss, which is why it declares its own timeout —
 # the default is 90s (ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS) and this is the
 # only legitimate reason to raise it.
 #
@@ -49,7 +68,7 @@ description: "Boot, arm the liveness state, then go APPLICATION-silent for 175s 
 #
 # WHAT MAKES IT FALSIFIABLE. Interleave Heartbeats through the silence — the arc8
 # pattern, `delay: 28000` plus `send Heartbeat`, which exists precisely to hold a
-# station alive past a server deadline. Each one re-arms the tracker key, the
+# station alive past a server deadline. Each one moves `last_seen_at` forward, the
 # threshold is never crossed, and the proof read fails with isOnline still true.
 # Measured, not assumed. The ARM read is what makes the proof non-vacuous in the
 # other direction: a fresh pool station is provisioned offline with bays `unknown`,
@@ -70,6 +89,13 @@ description: "Boot, arm the liveness state, then go APPLICATION-silent for 175s 
 # station is offline, so the guard at ResolveUnknownBaysCommand:64 skips it. Neither
 # state is reachable by that sweep.
 scenario_timeout_ms: 300000
+suppress_heartbeat: >-
+  THE SUBJECT IS APPLICATION SILENCE. CheckStationHeartbeatsCommand compares
+  `stations.last_seen_at` against ceil(interval x 3.5), and the ONE production writer of that
+  column outside Boot is HeartbeatHandler — so a single background pulse at the server's 30s
+  interval resets the 105s threshold and the 175s proof read below comes back isOnline: true.
+  This is the one file in the corpus whose property is the ABSENCE of the message the default
+  now sends; the header's own FALSIFICATION paragraph describes reaching that failure by hand.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -79,7 +105,7 @@ station:
     accept_rate: 1.0
     response_delay_ms: [100, 300]
 steps:
-  # --- Boot: brings the station online AND arms the heartbeat tracker key. -----
+  # --- Boot: brings the station online AND writes the `last_seen_at` the sweep reads. ---
   - action: send
     message: BootNotification
     payload:

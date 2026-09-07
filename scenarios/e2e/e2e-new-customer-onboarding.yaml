@@ -307,9 +307,10 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # Heartbeat keep-alive. Scenario-mode stations don't auto-heartbeat
-  # (BootNotificationHandler autoReact=false), but a real station running a live
-  # session would. This run measured 86s on 2026-07-31, ~19s under the csms
+  # Heartbeat keep-alive. REDUNDANT SINCE 2026-09-07 — an accepted boot arms this by
+  # default now, at the same 30s the server advertises. Until then scenario-mode stations
+  # did not beat at all (the heartbeat rode on BootNotificationHandler's autoReact flag),
+  # and a file this long had to ask. Kept for the measurement it carries. This run measured 86s on 2026-07-31, ~19s under the csms
   # 3.5x30=105s application-silence window — a margin the nine api_calls of the
   # new catalog sequence have since eaten into, and which was incidental to begin
   # with (only an actual Heartbeat refreshes the server's HeartbeatTracker;
