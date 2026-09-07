@@ -864,3 +864,137 @@ read as having closed it. What would: keeping a pool station's heartbeat running
 lifetime of the LEASE rather than the scenario, or having the pool release a station by
 marking it offline explicitly. Neither is built, and the second changes what a pool station
 means to every file that borrows one.
+
+---
+
+## 9. The release gap — what tells the server a pool station is leaving, 2026-09-07
+
+§8 measured the gap and named it without closing it: the runner's teardown sends a clean
+DISCONNECT (so the broker discards the will) and calls `stopHeartbeat()` (so nothing keeps the
+row alive), leaving `stations.is_online` true over a socket that is gone until the sweep
+deduces it at 105s and writes `heartbeat_timeout`. This section closes it. Getting there
+falsified two premises — one about the protocol, one of mine, on the wire.
+
+### The denominator §8 did not have
+
+Counting `station_booted` beside the offline markings, on the same six readable ids of the
+same run: **144 boots against 17 offline markings.** The four rows §8 walked are not the
+defect, they are its visible 3%. **127 leases a run ended with the row still marked online**;
+the sweep only ever reached the few whose id was not re-leased inside 105s.
+
+### What is available to say "leaving" — measured, not assumed
+
+Three candidates were named in §8. Two do not exist.
+
+**A departure message — NO.** `OsppAction` carries **27 MQTT actions** (30 with the 3
+API-only). Grepping all of them for `shut|offline|disconnect|lost|leav|good|bye|unavail|halt|stop|going`
+returns 3: `AuthorizeOfflinePass` and `StopService`, neither about the station, and
+`ConnectionLost` — whose schema is titled *"MQTT Last Will and Testament message published by
+the broker"* and whose `reason` is a **const**, `"UnexpectedDisconnect"`. The protocol has no
+graceful goodbye.
+
+**An explicit marking — NO, not for a client.** In `csms-server`, `is_online = false` is
+written in one place (`StationRepository::markOffline`), reached from two call sites:
+`ConnectionLostHandler` and `CheckStationHeartbeatsCommand`. **No REST route marks a station
+offline directly.** The two that do it indirectly (`PATCH /admin/stations/{id}/active`,
+`POST .../revoke-certificate`) kick the client off the broker and want `stations.maintenance`
+/ `certificates.revoke`. There is no station credential at the HTTP surface at all — mTLS
+terminates at EMQX. A pool is a client, not an operator.
+
+**A will preserved at the disconnect — YES**, and it is the only one.
+
+### What was deliberately NOT used, though it would have worked
+
+A station can publish `ConnectionLost` about itself and the server accepts it. Nothing
+distinguishes that from a broker's will: the will topic is byte-identical to the station's own
+`to-server` topic (`TopicResolver.php:92`), `ConnectionLost` is 1 of only 3 of 47 message
+types exempt from signing, `envelope.source` is never read for any decision, and the action is
+the sole member of the dedup-exemption allowlist. That is a server-side hole. Building 134
+teardowns a run on it would break the corpus the day the server closes it, and the message's
+own schema says the broker publishes it. **Worth filing against `csms-server` on its own.**
+
+### The wire falsified the obvious shape — six DISCONNECTs, one station
+
+The first implementation sent reason code `0x04` **together with** the
+`sessionExpiryInterval: 0` `disconnect()` already carried, reasoning that §3.14.4 needs the
+reason code and §3.1.3.2.2 ("the Will Delay Interval has passed **or the Session ends**,
+whichever is first") makes the zero expiry fire the will *sooner*. It publishes nothing.
+
+Each shape scored by whether a `broker_will` row appeared in `station_journal`:
+
+| DISCONNECT | `willDelayInterval` | will published |
+|---|---|---|
+| forced close, no DISCONNECT (`fault: sever`) | 10 | **+10s** — positive control |
+| `sessionExpiryInterval 0` — the old release | 10 | **none** — the defect, on demand |
+| `reasonCode 4` + `sessionExpiryInterval 0` | 10 | **none** |
+| `reasonCode 4` + `sessionExpiryInterval 0` | 0 | **none** |
+| `reasonCode 4` | 10 | +10s |
+| `reasonCode 4` | **0** | **immediate** |
+
+**The expiry override suppresses the will on EMQX 5.8, whatever the reason code says.** The
+broker logs `unclean_terminate` with `exception: error` from inside
+`emqx_channel:maybe_publish_will_msg/2`, where `is_durable_session/1` meets a session the zero
+expiry has already torn down. So the release sends the reason code *instead of* the expiry
+override, and arms `willDelayInterval: 0`. The zero delay is not a nicety: at the armed 10s
+the marking lands about seven seconds **into the next lease of the same id**.
+
+*(A control worth keeping: `docker logs` greps for `ConnectionLost` are **blind** here. Across
+60 minutes containing four provably-published wills they return 0, and the consumer writes
+nothing to stdout. The journal is the instrument; the Laravel log inside the container is the
+other one.)*
+
+### Scope
+
+`releaseWithWill = poolStationId !== null && scenario.clean_session !== false`, decided once
+because it acts at both ends of the connection (delay at CONNECT, reason code at DISCONNECT).
+
+- **A lease, and only a lease.** `owns_station` (1 file) and a hardcoded `station.stationId`
+  (6 of 148) are used once and never re-leased, so nothing they leave behind can land inside
+  another scenario.
+- **Not on a persistent session.** `clean_session: false` is exactly one file —
+  `core/connection-lost-lwt.yaml` — whose falsification arm rests on the will being
+  *suppressed* for a reconnect to that same session, which the zeroed delay would defeat.
+
+### The result: the markings by cause, same 6 readable ids, same 144 boots
+
+| | before (§8) | after |
+|---|---|---|
+| `station_booted` | 144 | **144** |
+| `broker_will` | 11 | **134** |
+| `heartbeat_timeout` | **5** | **1** |
+| `operator_disable` | 1 | 1 |
+| offline markings, total | 17 | **136** |
+
+**The four accidental rows are gone**, and the one `heartbeat_timeout` that remains is
+`core/heartbeat-silence-offline-sweep.yaml`'s own — the file that suppresses its heartbeat for
+175s on purpose. That is the control: a station that really does go silent is still swept, at
+the same threshold, and nothing about the sweep was touched.
+
+**`broker_will` rising from 11 to 134 is the point, not a side effect,** and it is where the
+predicted "the rest stays" does not survive measurement. A station that boots must eventually
+go offline; 144 boots against 17 markings was the imbalance that *named* the defect. After the
+change 144 boots produce 136 markings, each at its own lease boundary and attributed to the
+event that caused it, instead of 127 rows silently never written and a handful deduced late
+against the wrong scenario.
+
+### Suite: 148 files, one status moved, and it is not this change
+
+`129 / 1 / 18` → `128 / 2 / 18`; identical name set; **1 of 148 moved**:
+`Offline Pass Authorization Accepted: passed → failed` (`payload.status` Rejected, not
+Accepted). Not attributable to this change, on mechanism rather than on absence of evidence:
+
+- `AuthorizeOfflinePassHandler` and the offline actions/services read **no** station online
+  state — grep for `is_online|isOnline|markOffline` over them returns zero hits — and read no
+  bay status either. An offline marking is the only thing this change produces.
+- `resetBaysToUnknown` has one caller, `BootNotificationHandler`. Going offline does not touch
+  bays.
+- The run logged exactly **three** `AuthorizeOfflinePassHandler: validation failed` entries,
+  all three the deliberate ones from `offline-pass-refused-the-three-a-station-meets.yaml`
+  (checks 4, 9, 6). This refusal produced none, so it was refused *before* `PassValidator` —
+  which is where this file's own header records its standing failure (the server issues a pass
+  carrying `organization_id`, which the wire schema forbids).
+- The scenario passes in isolation with the change applied, and the whole `security` suite
+  re-run afterwards with the change, pooled and `--parallel --workers 5`, is **20 passed /
+  0 failed / 6 skipped of 26** — this file among the passes. It does not reproduce.
+
+The positive cause was not identified here and should not be recorded as if it were.

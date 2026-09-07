@@ -260,9 +260,19 @@ export class Station extends EventEmitter {
     });
   }
 
-  async disconnect(): Promise<void> {
+  /**
+   * Stop beating and close the socket.
+   *
+   * The two halves are why the release gap exists: stopHeartbeat() removes the
+   * only thing keeping `stations.is_online` true, and a plain DISCONNECT makes
+   * the broker discard the will, so nothing replaces it. `publishWill: true`
+   * asks the broker to publish the will on the way out, which is what tells the
+   * server the station is gone at the moment it goes. Passed by the runner for
+   * a pool-leased station; see MqttConnection.disconnect().
+   */
+  async disconnect(opts?: { publishWill?: boolean }): Promise<void> {
     this.stopHeartbeat();
-    await this.connection.disconnect();
+    await this.connection.disconnect(opts);
     this.lifecycle = StationLifecycle.OFFLINE;
     this.emit('disconnected');
   }

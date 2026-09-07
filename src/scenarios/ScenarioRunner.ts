@@ -1145,6 +1145,7 @@ function createStationFromScenario(
   variables: Map<string, string>,
   target: TargetConfig,
   provisioning?: ProvisioningArtifact,
+  releaseWithWill = false,
 ): Station {
   // Default to clean session for scenarios. Persistent sessions accumulate
   // server-published commands while the station is offline; on reconnect
@@ -1284,6 +1285,12 @@ function createStationFromScenario(
     tls,
     mqttCredentials,
     cleanSession,
+    // A station released with a will must have that will published BEFORE the id
+    // reaches the next scenario. At the armed default of 10s it would land about
+    // seven seconds into the next lease instead. Decided at CONNECT because the
+    // Will Delay Interval is a CONNECT property; see releaseWithWill at the call
+    // site for why `clean_session: false` is excluded.
+    ...(releaseWithWill ? { willDelayIntervalSeconds: 0 } : {}),
   });
 
   // A FAILED BACKGROUND HEARTBEAT MUST NOT KILL THE RUN.
@@ -2009,7 +2016,30 @@ export class ScenarioRunner {
     // run yet. So a pool station derives its topology from the pool, and a
     // self-provisioning scenario keeps its own declared `station.bayCount` — which is
     // the same number its own `provision` step will use.
-    const station = createStationFromScenario(scenario, variables, target, context.provisioning);
+    // WHETHER THIS STATION'S RELEASE LEAVES THE STATE CLEAN. Decided once, here,
+    // because it takes effect at two different moments: the Will Delay Interval
+    // armed at CONNECT, and the reason code sent at DISCONNECT. Two conditions:
+    //
+    //   A LEASE, AND ONLY A LEASE. A pool id goes back to the allocator and
+    //   another scenario boots it seconds later, so a row left `is_online = true`
+    //   is the one that gets corrected 105s afterwards, inside somebody else's
+    //   lease, with a cause that is false. `owns_station` (1 file) and a
+    //   hardcoded `station.stationId` (6 of 148) are used once and never
+    //   re-leased, so nothing they leave behind can land inside another run.
+    //
+    //   NOT ON A PERSISTENT SESSION. `clean_session: false` is exactly one file
+    //   — core/connection-lost-lwt.yaml — and its falsification arm rests on the
+    //   will being SUPPRESSED for a reconnect to that same session, which needs
+    //   the delay this would zero out. It severs deliberately and gets its own
+    //   will; it does not need the release to supply one.
+    const releaseWithWill = poolStationId !== null && scenario.clean_session !== false;
+    const station = createStationFromScenario(
+      scenario,
+      variables,
+      target,
+      context.provisioning,
+      releaseWithWill,
+    );
     const startTime = Date.now();
 
     try {
@@ -2188,10 +2218,22 @@ export class ScenarioRunner {
       };
     } finally {
       try {
-        await station.disconnect();
+        // A POOL STATION LEAVES THE STATE CLEAN RATHER THAN LEAVING IT TO THE
+        // SWEEP. Without the will the server is told nothing at all: the clean
+        // DISCONNECT discards it (MQTT 5 §3.14.4) and stopHeartbeat() removes the
+        // only thing keeping the row alive, so `is_online` stays true over a dead
+        // socket until CheckStationHeartbeatsCommand deduces the absence at 105s.
+        // Measured on UAT 2026-09-07: 144 boots against 17 offline markings in one
+        // run, four of them `station_booted` immediately followed by
+        // `station_offline / no heartbeat`, one landing after the run had finished
+        // with the station. See releaseWithWill above for the scope.
+        await station.disconnect({ publishWill: releaseWithWill });
       } catch {
         // Best-effort disconnect
       }
+      // AFTER the disconnect, never before: the will has to be on the wire
+      // before the id can be acquired, or the next scenario's boot races a
+      // ConnectionLost about the previous lease.
       if (poolStationId && this.poolAllocator) {
         this.poolAllocator.release(poolStationId);
       }

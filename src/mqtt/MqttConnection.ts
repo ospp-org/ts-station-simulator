@@ -174,6 +174,13 @@ export interface MqttConnectionOptions {
     password: string;
   };
   cleanSession?: boolean;
+  /**
+   * Seconds the broker holds the will before publishing it, armed at CONNECT.
+   * Defaults to DEFAULT_WILL_DELAY_INTERVAL_SECONDS. The runner passes 0 for a
+   * pool-leased station it will release with a will, so the marking lands
+   * before the id reaches the next scenario; see disconnect().
+   */
+  willDelayIntervalSeconds?: number;
 }
 
 /**
@@ -184,6 +191,59 @@ export interface MqttConnectionOptions {
  * fallback caps that latency so the next scenario can proceed.
  */
 const DISCONNECT_TIMEOUT_MS = 3000;
+
+/**
+ * MQTT 5.0 Table 3-10 Disconnect Reason Code 0x04, "Disconnect with Will
+ * Message": the client is closing and REQUIRES the server to publish its Will
+ * Message anyway. The default, 0x00 "Normal disconnection", is what §3.14.4
+ * makes discard the will.
+ *
+ * This is what closes the release gap. A pool station at teardown does neither
+ * of the two things a real station does — it neither loses its socket (will
+ * published) nor falls silent until its keepalive expires. It sends a clean
+ * DISCONNECT, which tells the server nothing, while stopHeartbeat() removes the
+ * only thing that was keeping the row alive. So `stations.is_online` stays true
+ * over a socket that is gone, until the server's sweep DEDUCES the absence at
+ * ceil(interval x 3.5) = 105s and writes cause `heartbeat_timeout` — a claim
+ * that is false about a station which said goodbye, at a timestamp that belongs
+ * to whoever leased the id next.
+ *
+ * IT IS NOT ENOUGH ON ITS OWN, AND THE OTHER HALF IS A SUBTRACTION. Measured
+ * against the UAT broker (EMQX 5.8) 2026-09-07, six DISCONNECT shapes on one
+ * station, each scored by whether a `broker_will` journal row appeared:
+ *
+ *   forced close, no DISCONNECT (`fault: sever`)     -> will at +10s   [control]
+ *   sessionExpiryInterval 0            (the old code) -> NO WILL
+ *   reasonCode 4 + sessionExpiryInterval 0            -> NO WILL
+ *   reasonCode 4 + sessionExpiryInterval 0, delay 0   -> NO WILL
+ *   reasonCode 4                                      -> will at +10s
+ *   reasonCode 4, willDelayInterval 0                 -> will IMMEDIATELY
+ *
+ * So `sessionExpiryInterval: 0` on the DISCONNECT SUPPRESSES the will on this
+ * broker whatever the reason code says — EMQX logs `unclean_terminate` with
+ * `exception: error` inside `emqx_channel:maybe_publish_will_msg/2`, where
+ * `is_durable_session/1` hits an already-torn-down session and throws. The
+ * publish never happens. That is a broker defect, and the reading of MQTT 5
+ * that led here — §3.1.3.2.2's "or the Session ends, whichever is first",
+ * expected to fire the will EARLIER — was exactly backwards in practice.
+ *
+ * Hence disconnect() drops the expiry override on this path and the connection
+ * arms `willDelayInterval: 0` instead. The zero delay is not a nicety: at the
+ * armed default of 10s the marking lands about seven seconds INTO the next
+ * scenario's lease of the same id, which is the cross-scenario marking this
+ * change exists to remove, only faster.
+ */
+export const DISCONNECT_WITH_WILL_REASON_CODE = 0x04;
+
+/**
+ * Will Delay Interval, in seconds, armed at CONNECT unless a connection asks
+ * for another. MUST stay strictly greater than LIVE_RECONNECT_PERIOD_MS: on a
+ * PERSISTENT session (`clean_session: false`, one file in the corpus) the
+ * auto-reconnect has to land inside this window so §3.1.3.2.2 suppresses the
+ * will and `fault: disconnect` stays the arm that does NOT publish one. See
+ * MqttConnection.severWill.test.ts, which pins the inequality.
+ */
+export const DEFAULT_WILL_DELAY_INTERVAL_SECONDS = 10;
 
 /**
  * Minimum wall time, in milliseconds, between a clean DISCONNECT and the
@@ -241,6 +301,7 @@ export class MqttConnection extends EventEmitter {
   // destroyConnection(), disconnect()); a close with no attribution falls
   // through to 'unknown' rather than silently reading as a clean close.
   private closeCause: SeveranceCause = 'none';
+  private readonly willDelayIntervalSeconds: number;
   private kickReasonCode: number | null = null;
   private reconnectRefused = false;
   private refusalReasonCode: number | null = null;
@@ -266,6 +327,8 @@ export class MqttConnection extends EventEmitter {
     this.tlsConfig = options.tls;
     this.mqttCredentials = options.mqttCredentials;
     this.cleanSession = options.cleanSession ?? false;
+    this.willDelayIntervalSeconds =
+      options.willDelayIntervalSeconds ?? DEFAULT_WILL_DELAY_INTERVAL_SECONDS;
   }
 
   /**
@@ -385,7 +448,7 @@ export class MqttConnection extends EventEmitter {
         })),
         qos: 1 as const,
         retain: false,
-        properties: { willDelayInterval: 10 },
+        properties: { willDelayInterval: this.willDelayIntervalSeconds },
       },
     };
 
@@ -640,7 +703,19 @@ export class MqttConnection extends EventEmitter {
     }
   }
 
-  disconnect(): Promise<void> {
+  /**
+   * Close the socket with a DISCONNECT packet.
+   *
+   * `publishWill: true` adds reason code 0x04, which is the difference between
+   * a departure the server learns about and one it has to deduce 105s later —
+   * see DISCONNECT_WITH_WILL_REASON_CODE. It is asked for by the runner's
+   * teardown of a POOL-LEASED station only: those ids are handed straight to
+   * another scenario, so a row left online is the one that gets corrected
+   * inside somebody else's lease. It is deliberately NOT the default, because
+   * `fault: disconnect` exists precisely to be the arm that does not publish a
+   * will (core/connection-lost-lwt.yaml).
+   */
+  disconnect(opts?: { publishWill?: boolean }): Promise<void> {
     return new Promise<void>((resolve) => {
       const client = this.client;
       const stationId = this.stationId;
@@ -675,7 +750,24 @@ export class MqttConnection extends EventEmitter {
       // derivation) starts fresh. The CONNECT-side default we sent earlier
       // (sessionExpiryInterval=3600) is in effect during the session;
       // sending 0 here overrides it on the way out per MQTT 5 §3.14.2.2.2.
-      const disconnectOpts = { properties: { sessionExpiryInterval: 0 } };
+      //
+      // The reason code rides on the SAME object rather than a second call, so
+      // the forced fallback below cannot send a differently-shaped packet than
+      // the graceful path it is standing in for.
+      // MEASURED, NOT DERIVED: the two are mutually exclusive on EMQX 5.8. Asking
+      // for the will AND overriding the expiry to 0 publishes nothing at all —
+      // the broker throws inside its own will-publish path. So this path sends
+      // the reason code INSTEAD of the expiry override, and the connection was
+      // armed with `willDelayInterval: 0` so the will fires now rather than 10s
+      // from now. See DISCONNECT_WITH_WILL_REASON_CODE for the six-shape table.
+      //
+      // Dropping the expiry override costs nothing here: it existed to flush
+      // broker session state before the next CONNECT under the same client_id,
+      // and every scenario but one connects with Clean Start 1, which discards
+      // any surviving session anyway.
+      const disconnectOpts = opts?.publishWill
+        ? { reasonCode: DISCONNECT_WITH_WILL_REASON_CODE }
+        : { properties: { sessionExpiryInterval: 0 } };
 
       // Force-end fallback: if the graceful DISCONNECT round-trip stalls
       // (broker unresponsive, TLS half-close, etc.) bound the wait so the
