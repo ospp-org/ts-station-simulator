@@ -7,6 +7,13 @@ of things that have to be true, so the next run's failures mean something.
 
 ---
 
+> **Two instruments on this host read clean while telling you nothing** — the EMQX
+> log (blind: 0 lines across 120 boots) and the broker's on-disk config (stale: a
+> reload re-reads the OLD file and reports success). Neither is repaired; both are
+> written up, with what to use instead, in
+> [`MEASURED-unreliable-instruments-uat-20260908T060000Z.md`](MEASURED-unreliable-instruments-uat-20260908T060000Z.md).
+> Read it before drawing any conclusion from broker silence or from `emqx.conf`.
+
 ## 1. Environment — all of it, or scenarios fail for reasons unrelated to the code
 
 | variable | needed by | notes |

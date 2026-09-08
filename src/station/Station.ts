@@ -72,6 +72,16 @@ export interface ReservationInfo {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * How long a station waits for its goodbye to be acknowledged before leaving anyway.
+ *
+ * `connection-lost.md` §4.3 rule 3 makes the wait a SHOULD and the abandonment a MAY,
+ * and names the backstop: the §4.2 heartbeat timeout still detects the departure. Two
+ * seconds is long enough for a live broker to PUBACK a 100-byte frame and short enough
+ * that a silent one costs a teardown two seconds rather than a scenario's whole budget.
+ */
+export const PLANNED_SHUTDOWN_ANNOUNCE_TIMEOUT_MS = 2000;
+
 export class Station extends EventEmitter {
   public readonly config: StationConfig;
   public readonly sender: MessageSender;
@@ -289,12 +299,57 @@ export class Station extends EventEmitter {
    * through after its own work is done.
    */
   async announcePlannedShutdown(): Promise<void> {
+    // A STATION THAT NEVER CAME ONLINE HAS NOTHING TO ANNOUNCE — AND NO CHANNEL
+    // TO ANNOUNCE IT ON. This guard is not defensive tidiness; without it the
+    // teardown HANGS, and it hung on UAT.
+    //
+    // The four TLS-floor scenarios (S3/S4/S5/S5b) exist to have their connection
+    // REFUSED. `expect_connect_failure` records the refusal and returns `passed`
+    // immediately — but the runner's `finally` still tears the station down, and
+    // for a POOL-leased station that teardown asks for this announcement. mqtt.js
+    // keeps its client object after a failed handshake, and a QoS-1 publish on an
+    // offline client is BUFFERED: the callback waits for a connection that is not
+    // coming, MqttConnection.publish()'s promise never settles, and the scenario
+    // is killed by the 90 s budget having already proved what it tests. Four green
+    // assertions were reported red, which is the shape that makes a suite stop
+    // meaning anything.
+    //
+    // Reported as `lifecycle`, not as a catch: swallowing a hanging publish would
+    // still hang. The send is never attempted.
+    //
+    // It is also what the spec says. connection-lost.md §4.3 rule 1 binds a station
+    // that is "about to disconnect deliberately" — one that never connected is not
+    // that station, and rule 3 forbids a shutdown being blocked on an unreachable
+    // server, which is exactly what this was.
+    if (this.lifecycle !== StationLifecycle.ONLINE) {
+      return;
+    }
+
     try {
-      await this.sender.send<ConnectionLostPayload>(
-        OsppAction.CONNECTION_LOST,
-        MessageType.EVENT,
-        { stationId: this.config.stationId as ConnectionLostPayload['stationId'], reason: 'PlannedShutdown' },
-      );
+      // BOUNDED, because §4.3 rule 3 says so in terms: the station SHOULD wait for
+      // the QoS 1 PUBACK, and "if the PUBACK does not arrive within a bounded time
+      // the station MAY disconnect anyway — the heartbeat timeout of §4.2 remains
+      // the backstop, and a shutdown MUST NOT be blocked by an unreachable server."
+      //
+      // The lifecycle guard above covers a station that never connected. This covers
+      // the other half: one that connected to a broker which then went quiet. mqtt.js
+      // resolves a QoS-1 publish only on PUBACK, so an unacknowledged frame leaves
+      // this promise pending forever and takes the caller's teardown with it.
+      // Un-awaited would be wrong too — the frame must be given a real chance to
+      // leave before the socket closes, which is the whole point of sending it last.
+      await Promise.race([
+        this.sender.send<ConnectionLostPayload>(
+          OsppAction.CONNECTION_LOST,
+          MessageType.EVENT,
+          { stationId: this.config.stationId as ConnectionLostPayload['stationId'], reason: 'PlannedShutdown' },
+        ),
+        new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, PLANNED_SHUTDOWN_ANNOUNCE_TIMEOUT_MS);
+          // Do not hold the process open on this timer alone: the announcement is
+          // best-effort and must never be the reason a run outlives its work.
+          if (typeof t.unref === 'function') t.unref();
+        }),
+      ]);
     } catch (err) {
       console.log(
         '[Shutdown] station %s could not announce its planned shutdown (%s) — leaving on the heartbeat timeout instead',
