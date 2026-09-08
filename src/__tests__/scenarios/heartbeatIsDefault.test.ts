@@ -327,7 +327,10 @@ describe('heartbeat is the scenario default — the corpus', () => {
     .sort();
 
   it('the denominator is read from disk, not written down', () => {
-    expect(files.length).toBe(148);
+    // 148 -> 149 on 2026-09-08: `probes/three-refusals-leave-a-trace.yaml`, the wire probe
+    // for the three refusals that used to leave no trace. The docblock above keeps 148
+    // because it is a dated measurement, and a measurement point is not rewritten later.
+    expect(files.length).toBe(149);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {

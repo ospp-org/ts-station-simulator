@@ -1,0 +1,134 @@
+name: "Three refusals leave a trace"
+description: "Deliberate wire probes for the three refusals repaired on 2026-09-08 that previously died in a container log. Each one is a frame the server MUST refuse; the point is not the refusal, which was already correct, but that a row now exists for it. Verified by querying station_journal after the run — this scenario asserts what it can see from the station side, which for two of the three is nothing at all, because an EVENT has no response. That asymmetry is the whole reason the defect was invisible."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [100, 300]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  # ── PROBE 1 — a session-bound bay state with no session ────────────────────
+  # Occupied and Finishing are the two session-bound states
+  # (StatusNotificationHandler:142). The bay has no session, so the report is
+  # refused and DISCARDED — correctly. What is new is the journal row, and the
+  # TriggerMessage asking the station to report again, which is why this probe
+  # then waits for one.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # The repair's wire form. Before it, this refusal published nothing at all.
+  - action: wait_for
+    message: TriggerMessage
+    messageType: Request
+    timeout_ms: 20000
+    expect_body:
+      payload.requestedMessage: "StatusNotification"
+
+  # ── PROBE 2 — a billable close for a session that does not exist ───────────
+  # Nothing settles and no session is created; the row records the CLAIM and the
+  # claimant. Ownership is unverifiable on this arm — SessionOwnershipGuard needs
+  # a row — so any station may name any sessionId, which is precisely why the
+  # claim is worth recording.
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "sess_deadbeef99"
+      bayId: "{{bayId_2}}"
+      reason: "Local"
+      actualDurationSeconds: 300
+      creditsCharged: 5
+      finalSeqNo: 7
+
+  - action: delay
+    ms: 2000
+
+  # ── PROBE 3 — a correction under a messageId already completed ─────────────
+  # Two DIFFERENT bodies under ONE identifier. The first is accepted normally.
+  # The second used to be swallowed by transport dedup BELOW the HMAC — thrown
+  # away after the server had proved it came from the station. It is now handled
+  # on its own content, and the collision is recorded.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    correlationId: "evt_probe-body-conflict-0001"
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Faulted"
+      previousStatus: "Available"
+      errorCode: 5001
+      errorText: "PUMP_SYSTEM"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 2000
+
+  # Same identifier, DIFFERENT body — the correction.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    correlationId: "evt_probe-body-conflict-0001"
+    payload:
+      bayId: "{{bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      previousStatus: "Faulted"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 3000
+
+  # The correction was applied rather than discarded. Before the repair the bay
+  # would still read `faulted` here, because the second frame never reached a
+  # handler at all.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=2].status: "available"
