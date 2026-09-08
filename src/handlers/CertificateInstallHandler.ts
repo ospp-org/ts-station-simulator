@@ -1,11 +1,13 @@
 import {
   OsppAction,
   MessageType,
+  OsppErrorCode,
   type OsppEnvelope,
   type CertificateInstallRequest,
   type CertificateInstallResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { errorName } from './bayRefusal.js';
 
 /**
  * Inbound CertificateInstall (Server → Station) — ADR-0002 T1.
@@ -26,10 +28,18 @@ export class CertificateInstallHandler implements Handler {
     const privateKeyPem = station.pendingRenewalKeyPem;
 
     if (privateKeyPem === null) {
+      // 07-errors.md §4.2 permits 4011, 4012, 5103, 5107 here. The station holds no
+      // matching private key: the one it should have retained for this renewal is not
+      // there, which is 5103's condition and not a chain or type failure.
       const rejected: CertificateInstallResponse = {
         status: 'Rejected',
-        errorText: 'No certificate renewal in flight — no matching private key retained.',
+        errorCode: OsppErrorCode.STORAGE_ERROR,
+        errorText: errorName(OsppErrorCode.STORAGE_ERROR),
       };
+
+      console.log(
+        '[CertificateInstall] Rejected — no renewal in flight, no matching private key retained',
+      );
       await station.sender.send<CertificateInstallResponse>(
         OsppAction.CERTIFICATE_INSTALL,
         MessageType.RESPONSE,

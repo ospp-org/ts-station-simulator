@@ -8,6 +8,7 @@ import {
   BayStatus,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { bayRefusalCode, errorName } from './bayRefusal.js';
 import { SequenceCounter } from '../station/SequenceCounter.js';
 
 export class StartServiceHandler implements Handler {
@@ -122,7 +123,7 @@ export class StartServiceHandler implements Handler {
           const response: StartServiceResponse = {
             status: 'Rejected',
             errorCode: OsppErrorCode.BAY_RESERVED,
-            errorText: `Bay ${request.bayId} is reserved under a different reservation`,
+            errorText: errorName(OsppErrorCode.BAY_RESERVED),
             // The rejection names the ordinal it refused, so an operator need not
             // correlate against the request to find out which one was wrong
             // (start-service-response.schema.json:30, REQUIRED when Rejected).
@@ -185,12 +186,19 @@ export class StartServiceHandler implements Handler {
         request.durationSeconds,
       );
     } else {
+      const code = canStart ? OsppErrorCode.BAY_NOT_READY : bayRefusalCode(bayState);
+      console.log(
+        '[StartService] Rejected session %s on bay %s — %s (bay state: %s%s)',
+        request.sessionId,
+        request.bayId,
+        errorName(code),
+        bayState,
+        canStart ? ', refused by acceptRate' : '',
+      );
       const response: StartServiceResponse = {
         status: 'Rejected',
-        errorCode: OsppErrorCode.MQTT_CONNECTION_LOST,
-        errorText: canStart
-          ? 'Randomly rejected by simulator'
-          : `Bay ${request.bayId} is in state ${bayState}, cannot start service`,
+        errorCode: code,
+        errorText: errorName(code),
         // REQUIRED when Rejected — start-service-response.schema.json:30.
         programNumber: request.programNumber,
       };

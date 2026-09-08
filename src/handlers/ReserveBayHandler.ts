@@ -8,6 +8,7 @@ import {
   type ReserveBayResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { bayRefusalCode, errorName } from './bayRefusal.js';
 
 export class ReserveBayHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -67,13 +68,25 @@ export class ReserveBayHandler implements Handler {
         ttlMs,
       );
     } else {
+      // A bay that IS available and is refused anyway is the acceptRate arm: the
+      // station is modelling itself as not ready, which is 3002's second clause.
+      const code = canReserve ? OsppErrorCode.BAY_NOT_READY : bayRefusalCode(bayState);
       const response: ReserveBayResponse = {
         status: 'Rejected',
-        errorCode: OsppErrorCode.TLS_HANDSHAKE_FAILED,
-        errorText: canReserve
-          ? 'Randomly rejected by simulator'
-          : `Bay ${request.bayId} is in state ${bayState}, cannot reserve`,
+        errorCode: code,
+        errorText: errorName(code),
       };
+
+      // The detail the prose used to carry goes here. `errorText` is a name, and
+      // reserve-bay-response has no errorDescription and forbids extra members.
+      console.log(
+        '[ReserveBay] Rejected reservation %s for bay %s — %s (bay state: %s%s)',
+        request.reservationId,
+        request.bayId,
+        errorName(code),
+        bayState,
+        canReserve ? ', refused by acceptRate' : '',
+      );
 
       await station.sender.send<ReserveBayResponse>(
         OsppAction.RESERVE_BAY,

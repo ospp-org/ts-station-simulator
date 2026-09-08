@@ -8,6 +8,7 @@ import {
   type CancelReservationResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { errorName } from './bayRefusal.js';
 
 export class CancelReservationHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -78,9 +79,14 @@ export class CancelReservationHandler implements Handler {
       // Bay is Reserved but no reservation info tracked — should not happen, reject
       const response: CancelReservationResponse = {
         status: 'Rejected',
-        errorCode: OsppErrorCode.CERTIFICATE_ERROR,
-        errorText: `Bay ${request.bayId} is Reserved but no matching reservation found`,
+        errorCode: OsppErrorCode.RESERVATION_NOT_FOUND,
+        errorText: errorName(OsppErrorCode.RESERVATION_NOT_FOUND),
       };
+
+      console.log(
+        '[CancelReservation] Rejected — bay %s is Reserved but tracks no reservation',
+        request.bayId,
+      );
 
       await station.sender.send<CancelReservationResponse>(
         OsppAction.CANCEL_RESERVATION,

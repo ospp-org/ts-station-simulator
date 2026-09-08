@@ -8,6 +8,7 @@ import {
   type StopServiceResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { errorName } from './bayRefusal.js';
 
 export class StopServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -17,9 +18,10 @@ export class StopServiceHandler implements Handler {
     if (!session) {
       const response: StopServiceResponse = {
         status: 'Rejected',
-        errorCode: OsppErrorCode.MQTT_PUBLISH_FAILED,
-        errorText: `Session ${request.sessionId} not found`,
+        errorCode: OsppErrorCode.SESSION_NOT_FOUND,
+        errorText: errorName(OsppErrorCode.SESSION_NOT_FOUND),
       };
+
 
       await station.sender.send<StopServiceResponse>(
         OsppAction.STOP_SERVICE,
