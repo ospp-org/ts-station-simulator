@@ -56,13 +56,31 @@ steps:
         - programNumber: 1
           available: true
 
-  # The repair's wire form. Before it, this refusal published nothing at all.
-  - action: wait_for
-    message: TriggerMessage
-    messageType: Request
-    timeout_ms: 20000
+  - action: delay
+    ms: 2000
+
+  # THE ROW IS THE REPAIR, AND THE TRIGGER IS NOT A SAFE ASSERTION FOR IT.
+  #
+  # Before the fix this refusal published nothing and recorded nothing; the row below is
+  # the whole of what changed. The TriggerMessage that usually accompanies it is NOT
+  # assertable here: `trigger-message.md` §5 rule 9 caps the server at one TriggerMessage
+  # per `requestedMessage` per 30 s per STATION, and `bays:resolve-unknown` sweeps every
+  # minute over exactly the bays a freshly booted pool station has just set to `unknown`.
+  # So an unrelated spender legitimately holds the window when this step runs, the ask is
+  # suppressed — correctly — and a `wait_for` on it times out.
+  #
+  # That is not a flake to be waited out: it is the cap behaving as specified. This
+  # scenario asserted the trigger in its first version and failed in the full suite for
+  # exactly that reason while passing standalone. `details.askedAgain` still records
+  # whether the ask went out on this occasion, which is the honest place for a value that
+  # depends on a budget and a window.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=session_bound_state_refused"
+    expect_status: 200
     expect_body:
-      payload.requestedMessage: "StatusNotification"
+      data[kind=session_bound_state_refused].effectedBy: "Station"
+      data[kind=session_bound_state_refused].reason: "the station reported a session-bound bay state while the server held no active session for that bay"
 
   # ── PROBE 2 — a billable close for a session that does not exist ───────────
   # Nothing settles and no session is created; the row records the CLAIM and the
