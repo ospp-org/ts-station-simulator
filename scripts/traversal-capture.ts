@@ -21,6 +21,12 @@
  *   note <text>                             -- marker record in the capture
  *   boot                                    -- publish BootNotification
  *   send <ACTION> <Request|Response|Event> <json> [correlationId]
+ *   send64 <ACTION> <Request|Response|Event> <base64-json> [correlationId]
+ *                                           -- same as `send`, payload base64-encoded.
+ *                                              REQUIRED when the payload contains newlines
+ *                                              (a PEM CSR or certificate): this file is
+ *                                              line-oriented and a raw PEM splits the
+ *                                              command across lines.
  *   quit [--will|--clean]                   -- disconnect (default clean)
  */
 import { readFile, appendFile, writeFile } from 'node:fs/promises';
@@ -246,6 +252,28 @@ async function main(): Promise<void> {
           const payload = jsonStart >= 0 ? JSON.parse(line.slice(jsonStart, jsonEnd + 1)) : {};
           const tail = line.slice(jsonEnd + 1).trim();
           const corr = tail !== '' ? tail : undefined;
+          await station.sender.send(action, mType, payload, corr);
+        } else if (cmd === 'send64') {
+          // THE CONTROL FILE IS LINE-ORIENTED, AND SOME PAYLOADS CONTAIN NEWLINES.
+          //
+          // `send` reads its JSON out of ONE line. A PEM body — a CSR, a certificate —
+          // carries real newlines, so the command splits across lines: the first fragment
+          // holds an unbalanced `{` and throws, and every fragment after it starts with no
+          // known verb. Measured on the attempt that exposed this: one `ctl-error` followed
+          // by seven `ctl-unknown`. Nothing was sent, and the transcript read as seven bad
+          // commands rather than one command that could not be expressed at all.
+          //
+          // BASE64, not an escape convention and not a multi-line terminator: the alphabet
+          // contains no newline by construction, so the payload stays ONE token and the
+          // existing `split(/\s+/)` keeps working untouched. An escape convention needs
+          // every writer to agree on it; a terminator changes how every line is consumed,
+          // including `note`, `boot` and `quit`. This adds a verb and changes nothing else —
+          // which is exactly what leaves the old commands usable as a control.
+          const action = rest[0] as OsppAction;
+          const mType = rest[1] as MessageType;
+          const encoded = rest[2] ?? '';
+          const corr = rest[3] !== undefined && rest[3] !== '' ? rest[3] : undefined;
+          const payload = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
           await station.sender.send(action, mType, payload, corr);
         } else {
           await rec('meta', 'ctl-unknown', { line });
