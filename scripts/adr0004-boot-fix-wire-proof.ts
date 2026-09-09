@@ -171,8 +171,11 @@ async function main(): Promise<void> {
         serialNumber: `SIM-BOOTFIX-${Date.now()}`,
         bayCount: 2,
         timezone: 'Europe/Bucharest',
-        bays: entry.bayIds.map((bayId, i) => ({
-          bayId, bayNumber: i + 1,
+        // The pairs when the pool carries them; the positional fallback is only correct for a
+        // DENSE bay set, so it is named as an assumption rather than left implicit.
+        bays: (entry.bays ?? entry.bayIds.map((bayId, i) => ({ bayId, bayNumber: i + 1 }))).map(({ bayId, bayNumber }) => ({
+          bayId,
+          bayNumber,
           services: [{ serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', available: true }],
         })),
         behavior: {

@@ -1050,8 +1050,37 @@ export function unsatisfiedVariables(
 
 interface BaysJsonShape {
   stationId?: string;
+  /**
+   * The EXPLICIT pairs, which is what the provisioning response actually carries.
+   * provisioning-response.schema.json says the bayId values "arrive only here" and are
+   * "paired EXPLICITLY with the bayNumber the station declared for it" — precisely so a
+   * non-dense bay set can be expressed at all.
+   */
+  bays?: { bayId?: string; bayNumber?: number }[];
+  /** Positional convenience for `{{ provisioning.bayIds[N] }}`, sorted BY bayNumber. */
   bayIds?: string[];
   baySlugs?: string[];
+}
+
+/**
+ * The positional array, derived from the pairs when the file does not carry it.
+ *
+ * Every current writer persists BOTH `bays` and `bayIds`. Artifacts written before
+ * v0.11.0 carry `bayIds` alone (assertBays.ts records that release replacing one with the
+ * other), and a file carrying `bays` alone is equally legal — nothing obliges the
+ * convenience array to exist. Deriving here means hydration reads either shape, and the
+ * ORDER comes from bayNumber rather than from however the array happened to be written.
+ */
+function orderedBayIdsFrom(parsed: BaysJsonShape): string[] {
+  if (Array.isArray(parsed.bayIds) && parsed.bayIds.length > 0) {
+    return [...parsed.bayIds];
+  }
+  const pairs = (parsed.bays ?? []).filter(
+    (b): b is { bayId: string; bayNumber: number } =>
+      typeof b?.bayId === 'string' && typeof b?.bayNumber === 'number',
+  );
+
+  return [...pairs].sort((a, b) => a.bayNumber - b.bayNumber).map((b) => b.bayId);
 }
 
 /**
@@ -1099,23 +1128,20 @@ async function hydrateProvisioningFromDisk(
     try {
       const raw = await fs.readFile(candidate, 'utf-8');
       const parsed = JSON.parse(raw) as BaysJsonShape;
-      if (
-        typeof parsed.stationId === 'string' &&
-        Array.isArray(parsed.bayIds) &&
-        parsed.bayIds.length > 0
-      ) {
+      const orderedIds = orderedBayIdsFrom(parsed);
+      if (typeof parsed.stationId === 'string' && orderedIds.length > 0) {
         const resolvedKey = keyTemplate
           ? keyTemplate.replace('{{stationId}}', stationId)
           : undefined;
         const receiptKeyPath = resolvedKey?.replace(/-key\.pem$/, '-receipt-key.pem');
         return {
           stationId: parsed.stationId,
-          bayIds: [...parsed.bayIds],
+          bayIds: orderedIds,
           // Carried only when the file actually has it, and only when it is the same
           // LENGTH as bayIds — the two are index-aligned by contract, and a shorter list
           // would silently pair a slug with the wrong bay rather than fail.
           baySlugs:
-            Array.isArray(parsed.baySlugs) && parsed.baySlugs.length === parsed.bayIds.length
+            Array.isArray(parsed.baySlugs) && parsed.baySlugs.length === orderedIds.length
               ? [...parsed.baySlugs]
               : undefined,
           certPath: resolvedKey?.replace(/-key\.pem$/, '.pem'),

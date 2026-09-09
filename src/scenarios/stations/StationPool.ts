@@ -3,6 +3,16 @@ import crypto from 'node:crypto';
 export interface PoolEntry {
   stationId: string;
   bayIds: string[];
+  /**
+   * The EXPLICIT {bayId, bayNumber} pairs from the provisioning response.
+   *
+   * `bayIds` above is a convenience ordering (sorted by bayNumber) and CANNOT express which
+   * number a bay actually carries: a station declaring bays {1,3} yields two ids whose
+   * indices are 0 and 1, and anything reconstructing `bayNumber: i + 1` from that labels
+   * bay 3 as bay 2. The pairs are what provisioning-response.schema.json goes out of its
+   * way to provide; they are carried here so no reader has to guess.
+   */
+  bays?: { bayId: string; bayNumber: number }[];
   certPath?: string;
   keyPath?: string;
   chainPath?: string;
@@ -27,6 +37,16 @@ export interface PoolEntry {
 export interface PoolEntryInput {
   stationId: string;
   bayIds: string[];
+  /**
+   * The EXPLICIT {bayId, bayNumber} pairs from the provisioning response.
+   *
+   * `bayIds` above is a convenience ordering (sorted by bayNumber) and CANNOT express which
+   * number a bay actually carries: a station declaring bays {1,3} yields two ids whose
+   * indices are 0 and 1, and anything reconstructing `bayNumber: i + 1` from that labels
+   * bay 3 as bay 2. The pairs are what provisioning-response.schema.json goes out of its
+   * way to provide; they are carried here so no reader has to guess.
+   */
+  bays?: { bayId: string; bayNumber: number }[];
   certPath?: string;
   keyPath?: string;
   chainPath?: string;
@@ -53,6 +73,7 @@ export class StationPool {
     const entry: PoolEntry = {
       stationId: input.stationId,
       bayIds: [...input.bayIds],
+      bays: input.bays ? input.bays.map((b) => ({ ...b })) : undefined,
       certPath: input.certPath,
       keyPath: input.keyPath,
       chainPath: input.chainPath,

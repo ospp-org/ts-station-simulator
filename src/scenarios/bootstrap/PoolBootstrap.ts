@@ -964,6 +964,8 @@ async function registerAndProvisionStation(
   await Promise.all(writes);
 
   handle.pool.register({
+    // Carry the PAIRS, not only the ordering derived from them — see PoolEntry.bays.
+    bays: [...bayPairs].sort((a, b) => a.bayNumber - b.bayNumber).map((b) => ({ ...b })),
     stationId,
     bayIds,
     certPath: paths.certPath,
