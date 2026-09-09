@@ -754,13 +754,16 @@ export class Station extends EventEmitter {
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().
       uptimeSeconds: this.currentUptimeSeconds(),
-      // A literal, and the last one left in this payload. Truthful only because
-      // `offlineModeSupported: false` below means this simulator never buffers a
-      // transaction, so the count is 0 by construction. It is the same class as
+      // A literal, and the last one left in this payload. It is the same class as
       // the `uptimeSeconds: 0` defect — a self-reported fact hardcoded rather
-      // than derived — and it stops being defensible the moment offline support
-      // is declared. Whoever flips offlineModeSupported to true must derive this
-      // from the real buffer in the same commit.
+      // than derived.
+      //
+      // STILL TRUTHFUL UNDER THE OPT-IN BELOW, and this is the reason rather than an
+      // assertion: this simulator has no offline buffer at all. It emits
+      // AuthorizeOfflinePass and TransactionEvent only when a driver hands it one, live,
+      // over the control file — nothing is ever queued and replayed. So the count is 0 by
+      // construction whether or not the capability is declared. The moment a real buffer
+      // is added, this must be derived from it in the same commit.
       pendingOfflineTransactions: 0,
       timezone: this.config.timezone,
       bootReason: this.currentBootReason,
@@ -780,7 +783,18 @@ export class Station extends EventEmitter {
       messageSigningMode: this.sender.currentSigningMode,
       capabilities: {
         bleSupported: false,
-        offlineModeSupported: false,
+        // OPT-IN, default false — unchanged for every existing scenario and for
+        // `simulator connect`. It exists because the server gate refuses on an EXPLICIT
+        // false (`StationQueryService::offlineAvailability`), and BootNotification is the
+        // only writer of that column, so a station that hardcodes false can never be
+        // driven through the offline arm at all: AuthorizeOfflinePass is unreachable and
+        // the refusal is indistinguishable from a misconfigured tenant.
+        //
+        // Declaring it here is a claim about what this process SUPPORTS, and it is one it
+        // can honour: the AuthorizeOfflinePass / TransactionEvent request pair is built and
+        // signed on demand. It is NOT a claim that the simulator buffers anything — see
+        // `pendingOfflineTransactions` above.
+        offlineModeSupported: process.env.OSPP_SIM_OFFLINE_MODE_SUPPORTED === '1',
         meterValuesSupported: true,
         // Truthful: this simulator implements the device-management command set
         // (ChangeConfiguration, GetConfiguration, GetDiagnostics, Reset, UpdateFirmware,
