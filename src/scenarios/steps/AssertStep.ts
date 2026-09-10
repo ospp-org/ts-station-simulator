@@ -21,6 +21,38 @@ import type { Station } from '../../station/Station.js';
  * now resolves at all.
  */
 
+/**
+ * The fields a peer uses to say WHY it refused, in the order a reader wants them.
+ *
+ * A refusal is reported on `payload.status`, but the reason lives in siblings the assertion
+ * never compared. `security/offline-pass-authorize` failed in 4 of 6 full runs with nothing but
+ * `expected "payload.status" to equal "Accepted", but got "Rejected"` — while the frame in hand
+ * carried `payload.reason`, one string per check in the server's PassValidator. Six runs
+ * produced no attribution because the explanation was discarded at the moment of failure.
+ */
+const REFUSAL_FIELDS = ['reason', 'errorCode', 'errorText'] as const;
+
+/**
+ * `reason=... errorCode=...` for whatever the frame actually carries, or '' for a frame that
+ * carries none.
+ *
+ * The empty case matters as much as the populated one: appending a placeholder to every ordinary
+ * assertion failure would bury the signal this exists to surface, so absence stays silent.
+ */
+function refusalContext(subject: unknown): string {
+  if (subject === null || typeof subject !== 'object') return '';
+  const payload = (subject as Record<string, unknown>).payload;
+  if (payload === null || typeof payload !== 'object') return '';
+
+  const parts: string[] = [];
+  for (const key of REFUSAL_FIELDS) {
+    const value = (payload as Record<string, unknown>)[key];
+    if (value !== undefined && value !== null) parts.push(`${key}=${JSON.stringify(value)}`);
+  }
+
+  return parts.length === 0 ? '' : ` — the peer said: ${parts.join(' ')}`;
+}
+
 /** Fields under this prefix read off the live connection, not a received message — see below. */
 const CONNECTION_FIELD_PREFIX = 'connection.';
 
@@ -66,7 +98,8 @@ export class AssertStep implements Step {
       const doesExist = actual !== undefined && actual !== null;
       if (shouldExist && !doesExist) {
         throw new Error(
-          `Assertion failed: expected field "${field}" to exist, but it is ${String(actual)}`,
+          `Assertion failed: expected field "${field}" to exist, but it is ${String(actual)}` +
+            refusalContext(subject),
         );
       }
       if (!shouldExist && doesExist) {
@@ -80,7 +113,8 @@ export class AssertStep implements Step {
       const expected = definition.equals;
       if (!deepEqual(actual, expected)) {
         throw new Error(
-          `Assertion failed: expected "${field}" to equal ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}`,
+          `Assertion failed: expected "${field}" to equal ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}` +
+            refusalContext(subject),
         );
       }
     }

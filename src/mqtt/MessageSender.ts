@@ -8,6 +8,7 @@ import {
   requiresMac,
   type MessageSigningMode,
   type OsppEnvelope,
+  serializeEnvelopeForWire,
 } from '@ospp/protocol';
 import { signMessage } from '@ospp/protocol/server';
 import type { MqttConnection } from './MqttConnection.js';
@@ -221,7 +222,12 @@ export class MessageSender {
       );
     }
 
-    await this.connection.publish(toServerTopic(this.stationId), JSON.stringify(outgoing), 1);
+    // serializeEnvelopeForWire, NOT JSON.stringify: it asserts the §10.2.1 envelope cap
+    // and THROWS rather than returning bytes no publisher may send. The refusal has to
+    // land here, before publish(), because the broker advertises maximumPacketSize 65536
+    // and silently DROPS anything above it — a station that logged and published anyway
+    // would lose the frame and be told nothing.
+    await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(outgoing), 1);
 
     return outgoing;
   }
@@ -237,6 +243,6 @@ export class MessageSender {
    * If this ever acquires a real caller, the guard belongs here too.
    */
   async sendEnvelope<T>(envelope: OsppEnvelope<T>): Promise<void> {
-    await this.connection.publish(toServerTopic(this.stationId), JSON.stringify(envelope), 1);
+    await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(envelope), 1);
   }
 }
