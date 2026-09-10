@@ -126,6 +126,26 @@ function bootPayloads(): BootPayload[] {
 
 const POWER_ON_AT = new Date('2026-07-21T08:00:00.000Z');
 
+// ---------------------------------------------------------------------------
+// TWO clocks, because uptime is a DIFFERENCED duration and now measured on the
+// monotonic one (Station.poweredOnAt / currentUptimeSeconds — the same rule that
+// governs session duration, spec/profiles/core/heartbeat.md:44 rule 5, applied to
+// the other differenced value on the wire).
+//
+// `vi.setSystemTime` alone no longer moves elapsed time: that is the point of the
+// change, and a test that only stepped the wall clock would now be asserting that
+// a clock CORRECTION changes uptime, which is exactly what must not happen.
+// `elapse()` moves BOTH, which is what "the station ran for two hours" means.
+// ---------------------------------------------------------------------------
+const MONOTONIC_ORIGIN = 5_000_000;
+let monotonicMs = MONOTONIC_ORIGIN;
+
+/** Real time passes: both clocks advance to `ms` after power-on. */
+function elapse(ms: number): void {
+  monotonicMs = MONOTONIC_ORIGIN + ms;
+  vi.setSystemTime(new Date(POWER_ON_AT.getTime() + ms));
+}
+
 describe('TriggerMessage → BootNotification is truthful about the station, not the send', () => {
   beforeEach(() => {
     publishCalls.length = 0;
@@ -133,10 +153,13 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     // (the connection stub resolves connect() through it).
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(POWER_ON_AT);
+    monotonicMs = MONOTONIC_ORIGIN;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicMs);
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('reports the REAL elapsed uptime, not a hardcoded 0 that force-fails live washes', async () => {
@@ -144,7 +167,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     await station.connect();
 
     // Two hours into a healthy connection, the server asks for a re-announce.
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 7200_000));
+    elapse(7200_000);
     await new TriggerMessageHandler().handle(
       triggerEnvelope('BootNotification') as never,
       station as never,
@@ -163,7 +186,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
 
     // A cert renewal re-handshook the link — the station's episode reason is no
     // longer PowerOn. A trigger re-announces that episode; it does not start one.
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 7200_000));
+    elapse(7200_000);
     await station.reconnectWithRenewedCertificate();
     await new TriggerMessageHandler().handle(
       triggerEnvelope('BootNotification') as never,
@@ -180,7 +203,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     const station = buildStation();
     await station.connect();
 
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 40_000_000));
+    elapse(40_000_000);
     await new TriggerMessageHandler().handle(
       triggerEnvelope('BootNotification') as never,
       station as never,
@@ -212,7 +235,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
   it('emits the SAME payload as the boot path — the anti-divergence pin', async () => {
     const station = buildStation();
     await station.connect();
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 3600_000));
+    elapse(3600_000);
 
     await new TriggerMessageHandler().handle(
       triggerEnvelope('BootNotification') as never,

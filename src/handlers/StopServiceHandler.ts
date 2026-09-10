@@ -9,6 +9,7 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { errorName } from './bayRefusal.js';
+import { monotonicNowMs } from '../station/monotonicClock.js';
 
 export class StopServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -40,8 +41,31 @@ export class StopServiceHandler implements Handler {
     // Transition bay: Occupied -> Finishing -> Available
     station.setBayState(session.bayId, BayStatus.FINISHING);
 
-    const startedAt = new Date(session.startedAt).getTime();
-    const actualDurationSeconds = Math.round((Date.now() - startedAt) / 1000);
+    // MONOTONIC, not the wall clock. `stop-service.md:47` rule 5: the station
+    // "MUST calculate actualDurationSeconds from the service start time to the
+    // moment of deactivation, MUST measure that interval on a monotonic timer and
+    // not the wall clock, and MUST round the result to the NEAREST second rather
+    // than truncating it."
+    //
+    // This read `Date.now() - Date.parse(session.startedAt)`. Both ends came off
+    // the wall clock, so an NTP step or a cellular NITZ correction landing
+    // mid-wash went straight into the bill: +1h made a 40-second wash settle as
+    // 3640 seconds and 6067 credits instead of 40 and 67, and -1h drove the
+    // figure NEGATIVE — which `stop-service-response.schema.json` forbids
+    // (`minimum: 0`), so the settlement frame itself became invalid and a
+    // validating server drops it on ingest. Nothing downstream could have caught
+    // the overcharge: the same schema gives the field no `maximum` and no
+    // receiver rule cross-checks it against `startedAt`/`endedAt`
+    // (`heartbeat.md:51` rule 6).
+    //
+    // `session.startedAt` is untouched and stays the wall-clock stamp — it is
+    // what gets ORDERED. It is simply no longer what gets DIFFERENCED.
+    //
+    // The clamp is belt-and-braces on a monotonic source, which cannot run
+    // backwards; it was the ONLY thing standing between a backwards wall-clock
+    // step and a schema-invalid frame, and this site did not have it.
+    const elapsedMs = monotonicNowMs() - session.startedAtMonotonicMs;
+    const actualDurationSeconds = Math.max(0, Math.round(elapsedMs / 1000));
     const creditsCharged = Math.ceil(
       (actualDurationSeconds / 60) * session.priceCreditsPerMinute,
     );

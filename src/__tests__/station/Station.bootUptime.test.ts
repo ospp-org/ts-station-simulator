@@ -101,6 +101,26 @@ function bootPayloads(): BootPayload[] {
 
 const POWER_ON_AT = new Date('2026-07-21T08:00:00.000Z');
 
+// ---------------------------------------------------------------------------
+// TWO clocks, because uptime is a DIFFERENCED duration and now measured on the
+// monotonic one (Station.poweredOnAt / currentUptimeSeconds — the same rule that
+// governs session duration, spec/profiles/core/heartbeat.md:44 rule 5, applied to
+// the other differenced value on the wire).
+//
+// `vi.setSystemTime` alone no longer moves elapsed time: that is the point of the
+// change, and a test that only stepped the wall clock would now be asserting that
+// a clock CORRECTION changes uptime, which is exactly what must not happen.
+// `elapse()` moves BOTH, which is what "the station ran for two hours" means.
+// ---------------------------------------------------------------------------
+const MONOTONIC_ORIGIN = 5_000_000;
+let monotonicMs = MONOTONIC_ORIGIN;
+
+/** Real time passes: both clocks advance to `ms` after power-on. */
+function elapse(ms: number): void {
+  monotonicMs = MONOTONIC_ORIGIN + ms;
+  vi.setSystemTime(new Date(POWER_ON_AT.getTime() + ms));
+}
+
 describe('BootNotification uptime/bootReason truthfulness', () => {
   beforeEach(() => {
     publishCalls.length = 0;
@@ -109,10 +129,13 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
     // (the connection stub resolves connect() through it).
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(POWER_ON_AT);
+    monotonicMs = MONOTONIC_ORIGIN;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicMs);
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('initial power-on reports uptime ~0 and PowerOn (the genuine power-cycle path, unchanged)', async () => {
@@ -133,7 +156,7 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
     await station.retryBoot(); // initial boot at T0
 
     // Station runs for two hours, then the CSMS renews its certificate.
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 7200_000));
+    elapse(7200_000);
     await station.reconnectWithRenewedCertificate();
     await station.retryBoot();
 
@@ -162,7 +185,7 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
     station.pendingRenewalKeyPem = '-----BEGIN PRIVATE KEY-----\nK\n-----END PRIVATE KEY-----';
 
     // 90 minutes of uptime, then the server pushes the renewed leaf.
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 5400_000));
+    elapse(5400_000);
     await new CertificateInstallHandler().handle(
       {
         messageId: 'cmd_install_1',
@@ -188,7 +211,7 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
   it('a genuine power-cycle (fresh Station) is back to uptime ~0 and PowerOn — the server MUST still fail interrupted sessions', async () => {
     const first = buildStation();
     await first.connect();
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 7200_000));
+    elapse(7200_000);
     await first.reconnectWithRenewedCertificate();
     await first.retryBoot();
     publishCalls.length = 0;
@@ -210,7 +233,7 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
     await station.retryBoot();
 
     // Server answered Rejected with retryInterval=30; the handler retries.
-    vi.setSystemTime(new Date(POWER_ON_AT.getTime() + 30_000));
+    elapse(30_000);
     await station.retryBoot();
 
     const retryBootPayload = bootPayloads()[1];

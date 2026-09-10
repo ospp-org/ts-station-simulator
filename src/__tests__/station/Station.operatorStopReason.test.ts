@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { SessionEndReason } from '@ospp/protocol';
 import { Station } from '../../station/Station.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
+import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { StationConfig } from '../../station/StationConfig.js';
 import { BayStatus } from '@ospp/protocol';
 
@@ -46,6 +47,9 @@ describe('a forced stop reports the reason that bills', () => {
     station.sessions.set('sess_1', {
       sessionId: 'sess_1', bayId: 'bay_opstop01', serviceId: 'svc_x',
       startedAt: new Date(Date.now() - 120_000).toISOString(),
+      // The monotonic anchor the settle differences from — the wall-clock stamp
+      // above is no longer read for that (heartbeat.md:44 rule 5).
+      startedAtMonotonicMs: monotonicNowMs() - 120_000,
       durationSeconds: 300, seq: new SequenceCounter(),
     } as never);
 

@@ -1,4 +1,5 @@
 import { parse as parseYaml } from 'yaml';
+import { monotonicNowMs } from '../station/monotonicClock.js';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -1824,7 +1825,7 @@ export class ScenarioRunner {
     userVars?: Map<string, string>,
   ): Promise<ScenarioResult> {
     const budgetMs = scenario.scenario_timeout_ms ?? DEFAULT_SCENARIO_TIMEOUT_MS;
-    const startTime = Date.now();
+    const startTime = monotonicNowMs();
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const running = this.runScenario(scenario, target, userVars);
@@ -1834,12 +1835,12 @@ export class ScenarioRunner {
         resolve({
           name: scenario.name,
           status: 'failed',
-          durationMs: Date.now() - startTime,
+          durationMs: Math.round(monotonicNowMs() - startTime),
           steps: [{
             stepIndex: -1,
             action: 'scenario',
             status: 'failed',
-            durationMs: Date.now() - startTime,
+            durationMs: Math.round(monotonicNowMs() - startTime),
             error:
               `Scenario exceeded its ${budgetMs}ms budget and was abandoned so the run could ` +
               `continue. This is the RUNNER giving up, not an assertion failing — the scenario ` +
@@ -2066,7 +2067,7 @@ export class ScenarioRunner {
       context.provisioning,
       releaseWithWill,
     );
-    const startTime = Date.now();
+    const startTime = monotonicNowMs();
 
     try {
       if (!scenario.defer_mqtt_connect) {
@@ -2090,13 +2091,13 @@ export class ScenarioRunner {
               stepIndex: -1,
               action: 'connect',
               status: 'failed',
-              durationMs: Date.now() - startTime,
+              durationMs: Math.round(monotonicNowMs() - startTime),
               error: msg,
             });
             return {
               name: scenario.name,
               status: 'failed',
-              durationMs: Date.now() - startTime,
+              durationMs: Math.round(monotonicNowMs() - startTime),
               error: msg,
               steps: context.stepResults,
             };
@@ -2112,13 +2113,13 @@ export class ScenarioRunner {
             stepIndex: -1,
             action: 'connect',
             status: 'passed',
-            durationMs: Date.now() - startTime,
+            durationMs: Math.round(monotonicNowMs() - startTime),
             error: `expected rejection confirmed [${classified.reason}]: ${detail}`,
           });
           return {
             name: scenario.name,
             status: 'passed',
-            durationMs: Date.now() - startTime,
+            durationMs: Math.round(monotonicNowMs() - startTime),
             steps: context.stepResults,
           };
         }
@@ -2127,6 +2128,9 @@ export class ScenarioRunner {
 
       // See UNACKED_EVENT_SETTLE_MS. Held across the loop, not per step: the floor is
       // measured from the publish, so anything the scenario did in between counts towards it.
+      // A MONOTONIC reading, like every other elapsed measure in this runner — the
+      // floor is an interval, and an interval read off the wall clock is one
+      // NTP step away from being a negative number or an hour-long wait.
       let unackedEventAt: number | null = null;
 
       for (let i = 0; i < scenario.steps.length; i++) {
@@ -2136,7 +2140,7 @@ export class ScenarioRunner {
         // reported duration. `action` is read off the raw step deliberately: it carries no
         // template and substitution has not run yet.
         if ((rawStep as StepDefinition | undefined)?.action === 'api_call') {
-          const topUp = settleTopUpMs(unackedEventAt, Date.now());
+          const topUp = settleTopUpMs(unackedEventAt, monotonicNowMs());
           if (topUp > 0) {
             console.log(
               '[ScenarioRunner] settling %dms before step %d (api_call) — an unacknowledged Event is still in flight',
@@ -2148,7 +2152,20 @@ export class ScenarioRunner {
           unackedEventAt = null;
         }
 
-        const stepStart = Date.now();
+        // MONOTONIC, and ROUNDED. `performance.now()` is sub-millisecond where
+        // `Date.now()` was integral, so without the round every reported figure
+        // grew a fractional tail — `6143.821835000001ms` in the console, and a
+        // changed `time` attribute in every JUnit case. The measurement changed
+        // clocks; the reported unit must not change with it.
+        //
+        // Every durationMs this runner reports — per step and per
+        // scenario, into the console summary, the JSON report and the JUnit
+        // `time` attribute — is a DIFFERENCE between two readings, and was taken
+        // off the wall clock. A correction landing mid-run therefore moved the
+        // numbers we publish as measurements of the SERVER: a run straddling one
+        // reported the correction, not the latency. Same rule as session
+        // duration (spec/profiles/core/heartbeat.md:44 rule 5), same reason.
+        const stepStart = monotonicNowMs();
 
         // Apply template substitution to the entire step definition.
         //
@@ -2174,7 +2191,7 @@ export class ScenarioRunner {
             stepIndex: i,
             action: (rawStep as StepDefinition | undefined)?.action ?? '(unresolved)',
             status: 'failed',
-            durationMs: Date.now() - stepStart,
+            durationMs: Math.round(monotonicNowMs() - stepStart),
             error: `template substitution failed: ${errorMsg}`,
           });
           throw err;
@@ -2186,7 +2203,7 @@ export class ScenarioRunner {
             stepIndex: i,
             action: substitutedStep.action,
             status: 'failed',
-            durationMs: Date.now() - stepStart,
+            durationMs: Math.round(monotonicNowMs() - stepStart),
             error: `Unknown step action: ${substitutedStep.action}`,
           };
           context.stepResults.push(result);
@@ -2196,13 +2213,13 @@ export class ScenarioRunner {
         try {
           await stepImpl.execute(substitutedStep, context, station);
           if (isUnackedEventSend(substitutedStep)) {
-            unackedEventAt = Date.now();
+            unackedEventAt = monotonicNowMs();
           }
           context.stepResults.push({
             stepIndex: i,
             action: substitutedStep.action,
             status: 'passed',
-            durationMs: Date.now() - stepStart,
+            durationMs: Math.round(monotonicNowMs() - stepStart),
           });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -2210,7 +2227,7 @@ export class ScenarioRunner {
             stepIndex: i,
             action: substitutedStep.action,
             status: 'failed',
-            durationMs: Date.now() - stepStart,
+            durationMs: Math.round(monotonicNowMs() - stepStart),
             error: errorMsg,
           });
           throw err;
@@ -2231,14 +2248,14 @@ export class ScenarioRunner {
       return {
         name: scenario.name,
         status: 'passed',
-        durationMs: Date.now() - startTime,
+        durationMs: Math.round(monotonicNowMs() - startTime),
         steps: context.stepResults,
       };
     } catch (err) {
       return {
         name: scenario.name,
         status: 'failed',
-        durationMs: Date.now() - startTime,
+        durationMs: Math.round(monotonicNowMs() - startTime),
         steps: context.stepResults,
         error: err instanceof Error ? err.message : String(err),
       };

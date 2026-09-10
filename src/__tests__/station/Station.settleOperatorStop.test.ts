@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Station } from '../../station/Station.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
+import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { StationConfig } from '../../station/StationConfig.js';
 import { BayStatus } from '@ospp/protocol';
 
@@ -54,6 +55,11 @@ function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station;
     serviceId: 'svc_x',
     // EXACTLY what StartServiceHandler writes — an ISO string, not a Date.
     startedAt: new Date(Date.now() - startedAtIsoSecondsAgo * 1000).toISOString(),
+    // And the second thing it writes: the monotonic anchor the settle differences
+    // from. `startedAt` is the wall-clock STAMP and is no longer the origin of
+    // any duration (heartbeat.md:51 rule 6) — but it is still asserted above as
+    // the shape the handler stores, which is what this file was written for.
+    startedAtMonotonicMs: monotonicNowMs() - startedAtIsoSecondsAgo * 1000,
     durationSeconds: 300,
     seq: new SequenceCounter(),
   } as never);

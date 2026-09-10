@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { SequenceCounter } from './SequenceCounter.js';
+import { monotonicNowMs } from './monotonicClock.js';
 import {
   recordHeartbeatArmed,
   recordHeartbeatFailed,
@@ -57,6 +58,14 @@ export interface SessionInfo {
    * it, and then it threw on a live wire.
    */
   startedAt: string;
+  /**
+   * The monotonic reading taken at the same moment — the origin every elapsed
+   * time for this session is differenced from (`heartbeat.md:44` rule 5). Kept in
+   * step with Handler.ts's declaration DELIBERATELY: the two interfaces already
+   * disagreed once about `startedAt` (see above) and it cost a live throw, so a
+   * field added to one must be added to the other.
+   */
+  startedAtMonotonicMs: number;
   durationSeconds: number;
   /**
    * The station's ordering counter for this session. Was a bare number the
@@ -110,14 +119,19 @@ export class Station extends EventEmitter {
   public bootAccepted: boolean = false;
 
   /**
-   * The station's power-on instant (epoch ms), fixed when this instance is
-   * constructed. A simulated station's process lifetime IS its power cycle, so
-   * `Date.now() - poweredOnAt` is its true uptime; a genuine power-cycle means a
-   * new process and therefore a new Station, which resets this to ~now.
-   * BootNotification.uptimeSeconds is derived from it rather than hardcoded —
-   * see currentUptimeSeconds().
+   * The station's power-on instant, as a MONOTONIC reading, fixed when this
+   * instance is constructed. A simulated station's process lifetime IS its power
+   * cycle, so `monotonicNowMs() - poweredOnAt` is its true uptime; a genuine
+   * power-cycle means a new process and therefore a new Station, which resets
+   * this. BootNotification.uptimeSeconds is derived from it rather than hardcoded
+   * — see currentUptimeSeconds().
+   *
+   * Monotonic and not `Date.now()`, for the same reason session duration is: this
+   * is a value that gets DIFFERENCED, and a wall-clock step between construction
+   * and a boot corrupted it. It is a per-process reading and is never serialised;
+   * what goes on the wire is the difference, in seconds.
    */
-  private readonly poweredOnAt: number = Date.now();
+  private readonly poweredOnAt: number = monotonicNowMs();
 
   /**
    * Why the station is sending its CURRENT BootNotification. Defaults to
@@ -477,9 +491,17 @@ export class Station extends EventEmitter {
    * short. Reporting a hardcoded 0 on a mere reconnect therefore destroys live
    * washes, which is why this is computed and never a literal. Clamped at 0
    * because the wire schema requires uptimeSeconds >= 0.
+   *
+   * Measured on the MONOTONIC clock. On the wall clock the clamp was not a
+   * safeguard but the failure itself: a backwards correction of any size drove
+   * the difference negative, the clamp reported 0, and 0 is precisely the
+   * assertion "I just power-cycled" — so a station that had merely had its clock
+   * set back killed every live wash on itself, by the same server gate this
+   * docblock describes. A monotonic reading cannot go backwards, so the clamp is
+   * now what it was always meant to be: unreachable.
    */
   private currentUptimeSeconds(): number {
-    return Math.max(0, Math.floor((Date.now() - this.poweredOnAt) / 1000));
+    return Math.max(0, Math.floor((monotonicNowMs() - this.poweredOnAt) / 1000));
   }
 
   handleMessage(envelope: OsppEnvelope): void {
@@ -662,6 +684,13 @@ export class Station extends EventEmitter {
    * Metered from the session's real elapsed time, not from its requested
    * duration: the customer receives what ran, and billing the full request would
    * charge for a wash the reset cut short.
+   *
+   * "Real elapsed time" means the MONOTONIC one — `session-ended.md:61` rule 2,
+   * the same obligation StopService carries at `stop-service.md:47` rule 5. This
+   * differenced the wall clock, and the `Math.max(0, ...)` below made the
+   * backwards direction WORSE than it is on the StopService carrier: a -1h
+   * correction produced a schema-VALID SessionEnded reporting 0 seconds and 0
+   * credits for a wash that was delivered, so nothing downstream could see it.
    */
   async settleSessionAsOperatorStop(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
@@ -671,7 +700,7 @@ export class Station extends EventEmitter {
 
     const actualDurationSeconds = Math.max(
       0,
-      Math.round((Date.now() - new Date(session.startedAt).getTime()) / 1000),
+      Math.round((monotonicNowMs() - session.startedAtMonotonicMs) / 1000),
     );
     // Station.SessionInfo carries no price; the SERVER is the authoritative
     // billing engine (§04-flows.md:823-833) and this value is advisory. 100 cr/min

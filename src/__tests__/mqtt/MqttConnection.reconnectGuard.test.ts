@@ -29,6 +29,20 @@ vi.mock('mqtt', () => ({
 
 const { MqttConnection } = await import('../../mqtt/MqttConnection.js');
 
+/**
+ * The reconnect guard is measured on the MONOTONIC clock, so a fake-timer setup
+ * must fake `performance` too — vitest's DEFAULT `toFake` list does NOT include
+ * it, and with the default list `advanceTimersByTime` moves `Date.now()` while
+ * `performance.now()` keeps ticking in real time. Measured: default list gives
+ * dWall=600 / dMono=0.04 for `advanceTimersByTime(600)`. With `'performance'`
+ * added, `advanceTimersByTime` moves both by 600 and `setSystemTime` moves the
+ * wall clock alone — which is precisely what lets a clock CORRECTION be planted
+ * without real time passing.
+ */
+const FAKE_CLOCKS = [
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance',
+] as const;
+
 describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.0 Phase 3C)', () => {
   beforeEach(() => {
     connectCalls.length = 0;
@@ -61,7 +75,7 @@ describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.
   });
 
   it('reconnect within 500ms of disconnect is deferred via setTimeout, NOT issued immediately', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
     vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
 
     const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_guard' });
@@ -85,7 +99,7 @@ describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.
   });
 
   it('reconnect after 500ms of disconnect runs synchronously', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
     vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
 
     const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_postguard' });
@@ -99,8 +113,106 @@ describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.
     expect(connectCalls).toHaveLength(2);
   });
 
+  // -------------------------------------------------------------------------
+  // The guard is a DIFFERENCED duration — "how long since this stationId last
+  // disconnected" — so it belongs on the monotonic clock for the same reason
+  // session duration does (spec/profiles/core/heartbeat.md:44 rule 5 states the
+  // rule for the field that bills; the class is the same wherever an interval is
+  // subtracted). On the wall clock a correction did not merely mis-measure it: a
+  // backwards step made `elapsed` NEGATIVE, so `RECONNECT_GUARD_MS - elapsed`
+  // became larger than the guard by the size of the correction, and a 500ms wait
+  // turned into an hour-long one.
+  // -------------------------------------------------------------------------
+  it('INSTRUMENT CONTROL: advanceTimersByTime moves both clocks; setSystemTime moves only the wall clock', () => {
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
+    vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
+    const wall0 = Date.now();
+    const mono0 = performance.now();
+
+    vi.advanceTimersByTime(600);
+    expect(Date.now() - wall0).toBe(600);
+    expect(performance.now() - mono0).toBe(600);
+
+    const wall1 = Date.now();
+    const mono1 = performance.now();
+    vi.setSystemTime(Date.now() - 3_600_000);
+    expect(Date.now() - wall1).toBe(-3_600_000);
+    expect(performance.now() - mono1).toBe(0);
+  });
+
+  it('a BACKWARDS wall-clock correction does not strand a reconnect whose guard has already expired', async () => {
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
+    vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
+
+    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_backstep' });
+    conn.connect();
+    await conn.disconnect();
+    expect(connectCalls).toHaveLength(1);
+
+    // 600ms of REAL time pass — the 500ms guard has expired...
+    vi.advanceTimersByTime(600);
+    // ...and only then does an NTP/NITZ fix set the clock back an hour.
+    vi.setSystemTime(Date.now() - 3_600_000);
+
+    conn.connect();
+
+    // Nothing about the broker's bookkeeping changed, so the reconnect is due
+    // now. On the wall clock `elapsed` was -3_599_400 and this deferred the
+    // connect by 3_599_900ms — an hour of silence caused by a clock, on a
+    // station that was ready to reconnect.
+    expect(connectCalls).toHaveLength(2);
+    expect(connectCalls[1].opts.clientId).toBe('stn_backstep');
+  });
+
+  it('INVERSE CONTROL: a FORWARD correction does not skip a guard that has NOT expired', async () => {
+    // The other direction of the same defect, and the one that would let a
+    // reconnect through early — the guard exists because the broker needs the
+    // beat. A monotonic reading ignores the correction in both directions.
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
+    vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
+
+    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_fwdstep' });
+    conn.connect();
+    await conn.disconnect();
+    expect(connectCalls).toHaveLength(1);
+
+    // 100ms of real time — well inside the guard — then the clock jumps forward.
+    vi.advanceTimersByTime(100);
+    vi.setSystemTime(Date.now() + 3_600_000);
+
+    conn.connect();
+    expect(connectCalls).toHaveLength(1);
+
+    // Still deferred, and still by the REAL remainder: 400ms, not 400ms minus an
+    // hour and not an hour.
+    vi.advanceTimersByTime(400);
+    expect(connectCalls).toHaveLength(2);
+  });
+
+  it('a disconnect recorded at monotonic 0 is still a disconnect — absence is the only sentinel', async () => {
+    // The map stored `Date.now()` and read it back with `?? 0` plus an explicit
+    // `last !== 0` test. On a wall clock 0 meant 1970 and no station reported it.
+    // On a monotonic clock 0 is the ORIGIN — which is exactly what a fresh fake
+    // timer reads — so the first disconnect of a young process recorded 0 and was
+    // read back as "never disconnected", skipping the guard entirely.
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
+    vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
+    expect(performance.now()).toBe(0); // the origin the sentinel collided with
+
+    const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_zeroorigin' });
+    conn.connect();
+    await conn.disconnect(); // recorded at monotonic 0
+    expect(connectCalls).toHaveLength(1);
+
+    conn.connect();
+    expect(connectCalls).toHaveLength(1); // deferred, not waved through
+
+    vi.advanceTimersByTime(500);
+    expect(connectCalls).toHaveLength(2);
+  });
+
   it('guard is per-stationId — distinct stations never block each other', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: [...FAKE_CLOCKS] });
     vi.setSystemTime(new Date('2026-05-22T10:00:00.000Z'));
 
     const a = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_AA' });

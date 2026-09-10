@@ -59,7 +59,27 @@ export interface SessionInfo {
   sessionId: string;
   bayId: string;
   serviceId: string;
+  /**
+   * The WALL-CLOCK instant the session began, ISO-8601. This is a stamp, not a
+   * measurement: `heartbeat.md:51` rule 6 gives the wall clock the values that
+   * get ORDERED — `timestamp`, `startedAt`, `endedAt` — and it is what a receiver
+   * that never got a duration has to settle against (`heartbeat.md:48`).
+   *
+   * It is NOT the origin of `actualDurationSeconds`. It was, at both sites that
+   * produce that field, and that is the defect `startedAtMonotonicMs` closes.
+   */
   startedAt: string;
+  /**
+   * The MONOTONIC reading taken at the same moment, and the only legitimate
+   * origin for this session's elapsed time — `heartbeat.md:44` rule 5,
+   * `stop-service.md:47` rule 5, `session-ended.md:61` rule 2.
+   *
+   * Required, with no wall-clock fallback anywhere: a fallback would be a silent
+   * route back to the wrong clock, and this simulator reached it at 2 of 2 sites
+   * for as long as the field did not exist. Milliseconds since an arbitrary
+   * per-process origin — see {@link monotonicNowMs}; never serialise it.
+   */
+  startedAtMonotonicMs: number;
   durationSeconds: number;
   seq: SequenceCounter;
   // Credits-per-minute used to compute `creditsCharged` on session end per OSPP

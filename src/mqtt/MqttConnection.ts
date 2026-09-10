@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { monotonicNowMs } from '../station/monotonicClock.js';
 import { readFileSync } from 'node:fs';
 import type { SecureVersion } from 'node:tls';
 import { connect, type MqttClient, type IClientOptions } from 'mqtt';
@@ -257,6 +258,15 @@ export const DEFAULT_WILL_DELAY_INTERVAL_SECONDS = 10;
  * recreate the wrapper per cycle).
  */
 const RECONNECT_GUARD_MS = 500;
+/**
+ * MONOTONIC readings, not epoch ms — this map exists only to be SUBTRACTED from,
+ * and a value that gets differenced belongs on the clock that cannot step
+ * (spec/profiles/core/heartbeat.md:44 rule 5 states that for the interval that
+ * bills; the class is the same for every interval). On the wall clock a backwards
+ * correction made `elapsed` negative, so `RECONNECT_GUARD_MS - elapsed` exceeded
+ * the guard by the whole size of the correction and a 500ms wait became an
+ * hour-long one. Never serialised, never compared to anything off the wire.
+ */
 const lastDisconnectAt = new Map<string, number>();
 
 /**
@@ -393,12 +403,21 @@ export class MqttConnection extends EventEmitter {
   }
 
   connect(): void {
-    const last = lastDisconnectAt.get(this.stationId) ?? 0;
-    const elapsed = Date.now() - last;
-    if (last !== 0 && elapsed < RECONNECT_GUARD_MS) {
-      const wait = RECONNECT_GUARD_MS - elapsed;
-      setTimeout(() => this.doConnect(), wait);
-      return;
+    // `undefined` — absence — is the "never disconnected" sentinel, NOT 0.
+    //
+    // It read `?? 0` with an explicit `last !== 0` guard, which was safe only
+    // because the stored value was `Date.now()`: 0 meant 1970 and no live station
+    // ever reported it. A monotonic reading legitimately IS 0 at its origin, so
+    // the first disconnect of a freshly started process could record 0 and be
+    // read back as "no prior disconnect" — silently skipping the guard the map
+    // exists for. Absence is the only thing that means absence.
+    const last = lastDisconnectAt.get(this.stationId);
+    if (last !== undefined) {
+      const elapsed = monotonicNowMs() - last;
+      if (elapsed < RECONNECT_GUARD_MS) {
+        setTimeout(() => this.doConnect(), RECONNECT_GUARD_MS - elapsed);
+        return;
+      }
     }
     this.doConnect();
   }
@@ -609,11 +628,11 @@ export class MqttConnection extends EventEmitter {
         // the timestamp so a real connect() that follows honours the guard.
         try {
           probeClient.end(true, { properties: { sessionExpiryInterval: 0 } }, () => {
-            lastDisconnectAt.set(this.stationId, Date.now());
+            lastDisconnectAt.set(this.stationId, monotonicNowMs());
             resolve(result);
           });
         } catch {
-          lastDisconnectAt.set(this.stationId, Date.now());
+          lastDisconnectAt.set(this.stationId, monotonicNowMs());
           resolve(result);
         }
       };
@@ -691,7 +710,7 @@ export class MqttConnection extends EventEmitter {
     // guard leaves it alone rather than recording this as `unknown`.
     this.closeCause = 'severed';
     this.kickReasonCode = null;
-    lastDisconnectAt.set(this.stationId, Date.now());
+    lastDisconnectAt.set(this.stationId, monotonicNowMs());
     this.client = null;
     this.currentClientId = null;
 
@@ -738,7 +757,7 @@ export class MqttConnection extends EventEmitter {
         // stationId honors RECONNECT_GUARD_MS. Recorded BEFORE the wrapper
         // is torn down so a reconnect synchronously chained on the
         // disconnect promise still consults a meaningful value.
-        lastDisconnectAt.set(stationId, Date.now());
+        lastDisconnectAt.set(stationId, monotonicNowMs());
         this.client = null;
         this.currentClientId = null;
         resolve();

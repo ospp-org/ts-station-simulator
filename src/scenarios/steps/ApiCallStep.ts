@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -549,7 +550,11 @@ export class LoginPacer {
   constructor(
     private readonly maxPerWindow: number,
     private readonly windowMs: number = 60_000,
-    private readonly nowFn: () => number = () => Date.now(),
+    // MONOTONIC by default: the window is an ELAPSED interval, and a wall-clock
+    // correction inside it either lets a burst through (forward step) or stalls
+    // the pacer for the size of the correction (backward step). Callers may still
+    // inject their own clock — the unit test drives a fake one.
+    private readonly nowFn: () => number = () => monotonicNowMs(),
     private readonly sleepFn: (ms: number) => Promise<void> = defaultSleep,
   ) {}
 

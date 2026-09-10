@@ -11,6 +11,7 @@ import {
 } from '@ospp/protocol';
 import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
+import { monotonicNowMs } from '../../station/monotonicClock.js';
 
 // The station owns the counter now; a fixture seeds it explicitly.
 function counterAt(n: number): SequenceCounter {
@@ -42,7 +43,13 @@ function makeMockStation(
         sessionId: 'sess_test',
         bayId: 'bay_test',
         serviceId: 'svc_test',
+      // TWO anchors, because the session carries two clocks for two jobs
+      // (heartbeat.md:51 rule 6): `startedAt` is the wall-clock STAMP, and
+      // `startedAtMonotonicMs` is what the elapsed time is DIFFERENCED from.
+      // Offset by the same amount, so this fixture still says "the wash ran for
+      // startedAtOffsetMs" and the assertions below are unchanged.
         startedAt: new Date(Date.now() - startedAtOffsetMs).toISOString(),
+        startedAtMonotonicMs: monotonicNowMs() - startedAtOffsetMs,
         durationSeconds: 300,
         seq: counterAt(seqNoAtStop),
         priceCreditsPerMinute,
