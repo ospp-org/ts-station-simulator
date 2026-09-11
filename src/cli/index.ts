@@ -50,7 +50,7 @@ import {
 } from './provision.js';
 import { persistBrokerArtifacts, loadBrokerArtifacts } from './artifacts.js';
 import { parseUserVars } from './userVars.js';
-import { deriveBays } from './connectBays.js';
+import { deriveBays, loadProvisionedBays } from './connectBays.js';
 import {
   bootstrapPool,
   teardownPool,
@@ -846,11 +846,26 @@ program
         ));
       }
 
-      // Build station config with deterministic IDs (overridable via --var bayId_<N>=<value>)
+      // Build the station's bays. The pairs the SERVER issued at provisioning win:
+      // they arrive once, and the server addresses them by id (a `TriggerMessage`
+      // carrying a `bayId`). Deriving them instead makes the station deny a bay it
+      // owns. `--var bayId_<N>=<value>` still overrides, for a station provisioned
+      // elsewhere; the `bayCount` below is only the fallback shape.
       const userVars = parseUserVars(opts.var ?? []);
       const userVarsArg = userVars.size > 0 ? userVars : undefined;
       const bayCount = 2;
-      const { bays, warnings } = deriveBays(stationId, bayCount, userVars);
+      const provisionedBays = await loadProvisionedBays(stationId, tls?.key);
+      if (provisionedBays) {
+        console.log(chalk.gray(
+          `  Using provisioned bays: ${provisionedBays.map(b => `${b.bayNumber}=${b.bayId}`).join(', ')}`,
+        ));
+      } else {
+        console.warn(chalk.yellow(
+          `  No ${stationId}-bays.json found — falling back to DERIVED bay ids. ` +
+          'The server will address the real ones; provision through this CLI, or pass --var bayId_<N>=<id>.',
+        ));
+      }
+      const { bays, warnings } = deriveBays(stationId, bayCount, userVars, provisionedBays);
       for (const w of warnings) {
         console.warn(chalk.yellow(`  Warning: ${w}`));
       }

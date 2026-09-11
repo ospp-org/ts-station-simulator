@@ -62,20 +62,22 @@ describe('deriveBays', () => {
     expect(bays[0].bayId).toBe(`bay_${stationHex}01`);
     expect(bays[1].bayId).toBe(`bay_${stationHex}02`);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('out of range');
-    expect(warnings[0]).toContain('bayCount=2');
-    expect(warnings[0]).toContain('bay #3');
+    // The warning names the bays this station actually HAS, not a count: a
+    // non-contiguous topology has no "range" to be outside of.
+    expect(warnings[0]).toContain('names no bay');
+    expect(warnings[0]).toContain('declared bays: 1, 2');
+    expect(warnings[0]).toContain('bayId_3');
   });
 
-  it('warns on bayId_0 (below valid range)', () => {
+  it('warns on bayId_0 (names no bay)', () => {
     const { warnings } = deriveBays(
       stationId,
       2,
       new Map([['bayId_0', 'bay_zero']]),
     );
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('out of range');
-    expect(warnings[0]).toContain('bay #0');
+    expect(warnings[0]).toContain('names no bay');
+    expect(warnings[0]).toContain('bayId_0');
   });
 
   it('warns on unrelated keys (not bayId_<N>)', () => {
@@ -130,8 +132,57 @@ describe('deriveBays', () => {
       ]),
     );
     expect(warnings).toHaveLength(2);
-    expect(warnings.some(w => w.includes('bay #5'))).toBe(true);
+    expect(warnings.some(w => w.includes('bayId_5'))).toBe(true);
     expect(warnings.some(w => w.includes('foo'))).toBe(true);
+  });
+
+  /*
+   * The pairs the SERVER issued win over anything derived.
+   *
+   * `connect` used to invent `bay_<stationHex><NN>` and ignore the `bays.json` that
+   * `provision` had just written beside the key. The server then addresses a REAL bay
+   * — a `TriggerMessage` carrying a `bayId`, which the guide documents as the server
+   * asking a bay's state back — and the station denied owning it. Measured against
+   * UAT: the process died on `Unknown bay`, 3 runs out of 3, ~40-60s after boot, and
+   * both bays stayed `unknown` for the whole run.
+   */
+  it('prefers the provisioned pairs over derived ids', () => {
+    const { bays, warnings } = deriveBays(stationId, 2, new Map(), [
+      { bayId: 'bay_19917fa0', bayNumber: 1 },
+      { bayId: 'bay_0c078392', bayNumber: 2 },
+    ]);
+    expect(bays.map(b => b.bayId)).toEqual(['bay_19917fa0', 'bay_0c078392']);
+    expect(warnings).toEqual([]);
+  });
+
+  it('keeps a non-contiguous topology instead of flattening it to 1..n', () => {
+    // A model whose programs sit on bays {1,3} yields bayNumber 3 at index 1.
+    // Deriving would have produced bays 1 and 2 — inventing a bay 2 that does not
+    // exist and losing bay 3, which does.
+    const { bays } = deriveBays(stationId, 2, new Map(), [
+      { bayId: 'bay_one', bayNumber: 1 },
+      { bayId: 'bay_three', bayNumber: 3 },
+    ]);
+    expect(bays.map(b => b.bayNumber)).toEqual([1, 3]);
+    expect(bays.map(b => b.bayId)).toEqual(['bay_one', 'bay_three']);
+  });
+
+  it('lets an explicit --var override a provisioned pair', () => {
+    const { bays, warnings } = deriveBays(stationId, 2, new Map([['bayId_2', 'bay_manual']]), [
+      { bayId: 'bay_one', bayNumber: 1 },
+      { bayId: 'bay_two', bayNumber: 2 },
+    ]);
+    expect(bays.map(b => b.bayId)).toEqual(['bay_one', 'bay_manual']);
+    expect(warnings).toEqual([]);
+  });
+
+  it('accepts --var for a provisioned bay number outside 1..bayCount', () => {
+    const { bays, warnings } = deriveBays(stationId, 2, new Map([['bayId_3', 'bay_manual']]), [
+      { bayId: 'bay_one', bayNumber: 1 },
+      { bayId: 'bay_three', bayNumber: 3 },
+    ]);
+    expect(bays.map(b => b.bayId)).toEqual(['bay_one', 'bay_manual']);
+    expect(warnings).toEqual([]);
   });
 
   it('strips stn_ prefix from stationId when deriving default bayIds', () => {
