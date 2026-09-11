@@ -98,6 +98,9 @@ export class Station extends EventEmitter {
   public lifecycle: StationLifecycle = StationLifecycle.OFFLINE;
   public readonly sessions: Map<string, SessionInfo> = new Map();
   public readonly reservations: Map<string, ReservationInfo> = new Map();
+
+  /** See StationContext.terminalReservations — `reserve-bay.md` §5.2 retention. */
+  public readonly terminalReservations: Map<string, import('../handlers/bayRefusal.js').TerminalReservation> = new Map();
   public currentRevocationEpoch: number = 0;
   /**
    * The catalog version this station currently holds. Empty until the server has

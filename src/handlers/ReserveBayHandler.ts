@@ -8,12 +8,18 @@ import {
   type ReserveBayResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
-import { bayRefusalCode, errorName } from './bayRefusal.js';
+import { bayRefusalCode, errorName, resolveBayOrRefuse } from './bayRefusal.js';
 
 export class ReserveBayHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const request = envelope.payload as ReserveBayRequest;
-    const bayState = station.getBayState(request.bayId);
+    // reserve-bay.md §6 r1 — an unknown bay is 3005, not an exception.
+    const bayState = await resolveBayOrRefuse(
+      station, request.bayId, OsppAction.RESERVE_BAY, envelope.messageId, 'ReserveBay',
+    );
+    if (bayState === null) {
+      return;
+    }
 
     const canReserve = bayState === BayStatus.AVAILABLE;
     const accept = canReserve && Math.random() < station.config.behavior.acceptRate;
@@ -30,6 +36,11 @@ export class ReserveBayHandler implements Handler {
         const reservation = station.reservations.get(request.bayId);
         if (reservation) {
           station.reservations.delete(request.bayId);
+          // RETAINED, not forgotten: cancel-reservation.md r3 needs this record to answer
+          // 3013 instead of a misleading idempotent Accepted.
+          station.terminalReservations.set(request.reservationId, {
+            bayId: request.bayId, outcome: 'expired',
+          });
           try {
             station.setBayState(request.bayId, BayStatus.AVAILABLE);
           } catch {

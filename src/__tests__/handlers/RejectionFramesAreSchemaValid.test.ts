@@ -96,6 +96,7 @@ function makeStation(overrides: Partial<Record<string, unknown>>): {
     },
     sessions: new Map(),
     reservations: new Map(),
+    terminalReservations: new Map(),
     getBayState: () => BayStatus.AVAILABLE,
     setBayState: () => undefined,
     pendingRenewalKeyPem: null,
@@ -236,7 +237,7 @@ const cases: Case[] = [
         new CancelReservationHandler(),
         OsppAction.CANCEL_RESERVATION,
         { bayId: 'bay_c1d2e3f4a5b6', reservationId: 'rsv_11111111' },
-        { getBayState: () => BayStatus.RESERVED, reservations: new Map() },
+        { getBayState: () => BayStatus.RESERVED, reservations: new Map(), terminalReservations: new Map() },
       ),
   },
   {

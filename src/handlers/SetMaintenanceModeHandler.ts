@@ -8,10 +8,45 @@ import {
   type SetMaintenanceModeResponse,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { bayRefusalCode, errorName, resolveBayOrRefuse } from './bayRefusal.js';
 
 export class SetMaintenanceModeHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const request = envelope.payload as SetMaintenanceModeRequest;
+
+    // set-maintenance-mode.md r1 — an unknown bay is 3005, not an exception. Checked for
+    // BOTH directions and before anything else, because a bay that does not exist cannot
+    // be taken out of maintenance either.
+    if (request.bayId) {
+      const exists = await resolveBayOrRefuse(
+        station, request.bayId, OsppAction.SET_MAINTENANCE_MODE, envelope.messageId, 'SetMaintenanceMode',
+      );
+      if (exists === null) {
+        return;
+      }
+
+      // §6 table: `Unknown` is refused in EITHER direction (3002) — the server and the
+      // station do not agree on what the bay is doing, and maintenance is a claim about
+      // a known state. `Reserved` + `enabled` is 3014: someone holds the bay.
+      const refusal =
+        exists === BayStatus.UNKNOWN ? bayRefusalCode(BayStatus.UNKNOWN)
+        : (request.enabled && exists === BayStatus.RESERVED) ? bayRefusalCode(BayStatus.RESERVED)
+        : (request.enabled && exists === BayStatus.FINISHING) ? bayRefusalCode(BayStatus.FINISHING)
+        : null;
+
+      if (refusal !== null) {
+        const rejected: SetMaintenanceModeResponse = {
+          status: 'Rejected',
+          errorCode: refusal,
+          errorText: errorName(refusal),
+        };
+        await station.sender.send<SetMaintenanceModeResponse>(
+          OsppAction.SET_MAINTENANCE_MODE, MessageType.RESPONSE, rejected, envelope.messageId,
+        );
+        console.log('[SetMaintenanceMode] Rejected — bay %s is %s', request.bayId, exists);
+        return;
+      }
+    }
 
     // Check if target bay(s) are Occupied before enabling maintenance
     if (request.enabled) {

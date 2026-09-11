@@ -7,11 +7,34 @@ import {
   type DiagnosticsNotificationPayload,
   type DiagnosticsNotificationStatus,
 } from '@ospp/protocol';
+import { OsppErrorCode } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { errorName } from './bayRefusal.js';
 
 export class GetDiagnosticsHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const request = envelope.payload as GetDiagnosticsRequest;
+
+    // r3 — an inverted window is 5020. Checked before the filename is minted, so a refused
+    // request leaves no half-started collection behind.
+    if (
+      typeof request.startTime === 'string' && typeof request.endTime === 'string' &&
+      new Date(request.startTime).getTime() > new Date(request.endTime).getTime()
+    ) {
+      const rejected: GetDiagnosticsResponse = {
+        status: 'Rejected',
+        errorCode: OsppErrorCode.INVALID_TIME_WINDOW,
+        errorText: errorName(OsppErrorCode.INVALID_TIME_WINDOW),
+      };
+      await station.sender.send<GetDiagnosticsResponse>(
+        OsppAction.GET_DIAGNOSTICS, MessageType.RESPONSE, rejected, envelope.messageId,
+      );
+      console.log(
+        '[GetDiagnostics] Rejected — startTime %s is after endTime %s',
+        request.startTime, request.endTime,
+      );
+      return;
+    }
 
     const fileName = `diagnostics_${station.config.stationId}_${Date.now()}.tar.gz`;
 

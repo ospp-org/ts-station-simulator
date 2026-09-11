@@ -150,6 +150,11 @@ export class StartServiceHandler implements Handler {
         if (reservation) {
           clearTimeout(reservation.timer);
           station.reservations.delete(request.bayId);
+          // RETAINED so cancel-reservation.md r6 can answer 3012 rather than a
+          // misleading Accepted: the reservation is gone, but it did exist.
+          station.terminalReservations.set(reservation.reservationId, {
+            bayId: request.bayId, outcome: 'consumed',
+          });
           console.log(
             '[StartService] Consumed reservation %s on bay %s',
             reservation.reservationId,

@@ -1,4 +1,4 @@
-import { BayStatus, OsppErrorCode } from '@ospp/protocol';
+import { BayStatus, OsppErrorCode, OsppAction, MessageType } from '@ospp/protocol';
 
 /**
  * Why a bay cannot take a reservation or a session, as OSPP names it.
@@ -37,6 +37,54 @@ export function bayRefusalCode(state: BayStatus): OsppErrorCode {
  * It is not a sentence field: these response schemas have no `errorDescription` and are
  * `additionalProperties: false`, so prose has nowhere legal to go and belongs in the log.
  */
+/**
+ * The outcome a reservation reached, retained after it left the live map.
+ *
+ * `reserve-bay.md` §5.2 requires the retention: without it an expired reservation is
+ * indistinguishable from one that never existed, and `cancel-reservation.md` rules 2, 3
+ * and 6 each demand a DIFFERENT answer for those cases (`Accepted`, `3013`, `3012`).
+ * The simulator used to answer all three `Accepted`, which is not a gap but a wrong
+ * statement on the wire.
+ */
+export type ReservationOutcome = 'expired' | 'consumed' | 'cancelled';
+
+export interface TerminalReservation {
+  bayId: string;
+  outcome: ReservationOutcome;
+}
+
+/**
+ * Resolve a `bayId` or refuse with `3005 BAY_NOT_FOUND` — for the three doors that
+ * previously let `getBayState` THROW.
+ *
+ * `reserve-bay.md` §6 r1, `cancel-reservation.md` r1 and `set-maintenance-mode.md` r1 all
+ * say the same thing in the same words, and all three handlers reached `getBayState`
+ * unguarded. `Station.getBayState` throws for an unknown bay, so the server received NO
+ * FRAME AT ALL — a timeout where the protocol defines a refusal, which is the one outcome
+ * that teaches an integrator nothing.
+ *
+ * Returns `null` when it has already answered, so the caller returns immediately.
+ */
+export async function resolveBayOrRefuse(
+  station: import('./Handler.js').StationContext,
+  bayId: string,
+  action: OsppAction,
+  messageId: string,
+  label: string,
+): Promise<BayStatus | null> {
+  try {
+    return station.getBayState(bayId);
+  } catch {
+    await station.sender.send(action, MessageType.RESPONSE, {
+      status: 'Rejected',
+      errorCode: OsppErrorCode.BAY_NOT_FOUND,
+      errorText: errorName(OsppErrorCode.BAY_NOT_FOUND),
+    }, messageId);
+    console.log('[%s] Rejected — bay %s does not exist', label, bayId);
+    return null;
+  }
+}
+
 export function errorName(code: OsppErrorCode): string {
   const name = OsppErrorCode[code];
   /* c8 ignore next 3 -- unreachable for enum members; guards a future non-member caller */

@@ -38,6 +38,26 @@ export class StopServiceHandler implements Handler {
       return;
     }
 
+    // r3 — the sessionId must name a session on THIS bay. A stop naming the right session
+    // and the wrong bay used to be ACCEPTED, and it deactivated the hardware on the
+    // session's own bay: the caller asked to stop bay B and bay A stopped. 3007 exists
+    // precisely for "valid id, wrong place".
+    if (session.bayId !== request.bayId) {
+      const mismatch: StopServiceResponse = {
+        status: 'Rejected',
+        errorCode: OsppErrorCode.SESSION_MISMATCH,
+        errorText: errorName(OsppErrorCode.SESSION_MISMATCH),
+      };
+      await station.sender.send<StopServiceResponse>(
+        OsppAction.STOP_SERVICE, MessageType.RESPONSE, mismatch, envelope.messageId,
+      );
+      console.log(
+        '[StopService] Rejected — session %s runs on bay %s, not %s',
+        request.sessionId, session.bayId, request.bayId,
+      );
+      return;
+    }
+
     // Transition bay: Occupied -> Finishing -> Available
     station.setBayState(session.bayId, BayStatus.FINISHING);
 

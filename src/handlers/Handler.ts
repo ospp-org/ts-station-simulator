@@ -11,6 +11,12 @@ export interface StationContext {
   readonly lifecycle: import('../station/StationLifecycle.js').StationLifecycle;
   sessions: Map<string, SessionInfo>;
   reservations: Map<string, ReservationInfo>;
+  /**
+   * Reservations that have LEFT the live map, by `reservationId` — the retention
+   * `reserve-bay.md` §5.2 requires so `cancel-reservation.md` rules 2/3/6 can be told
+   * apart. Without it "expired", "consumed" and "never existed" all look identical.
+   */
+  terminalReservations: Map<string, import('./bayRefusal.js').TerminalReservation>;
   currentRevocationEpoch: number;
   /**
    * The catalog version this station currently holds — `''` before the first one.
