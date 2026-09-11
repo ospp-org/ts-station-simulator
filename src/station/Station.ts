@@ -461,15 +461,21 @@ export class Station extends EventEmitter {
    * docblock's OWN rejection test — "FirmwareUpdate and Watchdog assert events that did not
    * happen" — ErrorRecovery now fails it too: it is in the seven that assert a boot.
    *
-   * NOT CHANGED IN THIS COMMIT, and that is a decision rather than an omission. csms-server
-   * accepts BOTH: its preserve arm is `[BootReason::RECONNECT, BootReason::ERROR_RECOVERY]`
-   * (BootNotificationHandler:653) and its own comment says ErrorRecovery is "KEPT alongside
-   * it, not replaced. A fleet mid-upgrade emits both." So nothing is broken today. But the
-   * firmware sweep keys on ErrorRecovery SPECIFICALLY — "ErrorRecovery on the old version ->
-   * rollback_detected" (:943, :988) — so flipping this constant changes how a
-   * certificate-renewal reconnect DURING a firmware update is classified. That is a
-   * cross-repo behavioural call, not a cascade consequence, and it belongs to whoever owns
-   * the firmware arc. What is fixed here is the false count that justified the choice.
+   * FLIPPED 2026-09-11, because the deferred call came due on a live run. The paragraph
+   * this replaces said "nothing is broken today" and left the constant alone, naming the
+   * exact hazard it was leaving armed: the firmware sweep keys on ErrorRecovery
+   * SPECIFICALLY, so a certificate-renewal reconnect DURING a firmware update would be
+   * misclassified. That is what happened. On UAT a renewal landed on an open firmware row
+   * and csms-server closed it `failed` / `rollback_detected` —
+   * HandleBootAfterFirmwareUpdate.php:155 branches on ERROR_RECOVERY alone, and `Reconnect`
+   * does not enter it. Session preservation is unaffected by the flip: the preserve arm is
+   * `[BootReason::RECONNECT, BootReason::ERROR_RECOVERY]` and both members keep live washes
+   * alive. So the flip costs nothing and removes the misclassification.
+   *
+   * The normative rule was there the whole time. boot-notification.md §5.2 rule 1: the
+   * station "MUST send `Reconnect` when it re-establishes the MQTT connection without
+   * having restarted, and MUST NOT send it when the firmware did restart." A renewal
+   * re-does the TLS handshake and re-opens the MQTT session; the firmware did not restart.
    *
    * The supporting citation still stands on its own: examples/flows/10-error-recovery.md has
    * a station that merely re-established its link send `bootReason: "ErrorRecovery"` with a
@@ -480,7 +486,7 @@ export class Station extends EventEmitter {
    * Watchdog assert hardware/firmware events that did not happen; ManualReset and
    * ScheduledReset both claim an actual reset the station never performed.
    */
-  private static readonly RECONNECT_BOOT_REASON = BootReason.ERROR_RECOVERY;
+  private static readonly RECONNECT_BOOT_REASON = BootReason.RECONNECT;
 
   /**
    * Seconds since this station powered on — the value BootNotification reports.
@@ -761,7 +767,6 @@ export class Station extends EventEmitter {
   }
 
   async retryBoot(fixedMessageId?: string): Promise<void> {
-    console.log('[Station] Retrying BootNotification...');
     const bootPayload: BootNotificationRequest = {
       stationId: this.config.stationId,
       firmwareVersion: this.config.firmwareVersion,

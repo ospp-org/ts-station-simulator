@@ -196,7 +196,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     const [boot] = bootPayloads();
     expect(boot).toBeDefined();
     expect(boot.bootReason).not.toBe(BootReason.POWER_ON);
-    expect(boot.bootReason).toBe(BootReason.ERROR_RECOVERY);
+    expect(boot.bootReason).toBe(BootReason.RECONNECT);
   });
 
   it('a genuine power-on still reports PowerOn — the trigger does not invent a reason', async () => {

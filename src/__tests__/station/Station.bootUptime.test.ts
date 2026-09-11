@@ -165,9 +165,12 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
     // computes bootTime = now() - 7200s, so a wash started 10 minutes ago has
     // started_at >= bootTime and SURVIVES.
     expect(renewalBoot.uptimeSeconds).toBe(7200);
-    // A reconnect is not a power-cycle.
+    // A reconnect is not a power-cycle. §5.2 rule 1 makes `Reconnect` the MUST here: the
+    // MQTT session was re-established without the firmware restarting. ErrorRecovery is in
+    // the seven that assert a boot, and on the server it lands in the firmware sweep's
+    // rollback arm — measured on UAT 2026-09-11, closing an open update `rollback_detected`.
     expect(renewalBoot.bootReason).not.toBe(BootReason.POWER_ON);
-    expect(renewalBoot.bootReason).toBe(BootReason.ERROR_RECOVERY);
+    expect(renewalBoot.bootReason).toBe(BootReason.RECONNECT);
   });
 
   it('CertificateInstallHandler end-to-end: the boot it triggers carries truthful uptime on the wire', async () => {
