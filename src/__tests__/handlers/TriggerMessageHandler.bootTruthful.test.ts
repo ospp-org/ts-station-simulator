@@ -188,6 +188,15 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     // longer PowerOn. A trigger re-announces that episode; it does not start one.
     elapse(7200_000);
     await station.reconnectWithRenewedCertificate();
+
+    // The re-handshake ends the MQTT session, so the station discards its key
+    // (06-security.md:1070 rule 2) and the reconnect's own BootNotification
+    // RESPONSE issues a new one (rule 4). The stubbed connection delivers no
+    // response, so the re-issue is modelled here — without it this test would
+    // be asserting against a station that a real server had not yet re-keyed,
+    // and the TriggerMessage RESPONSE below could not be signed.
+    station.sessionKey = BOOTED_SESSION_KEY;
+
     await new TriggerMessageHandler().handle(
       triggerEnvelope('BootNotification') as never,
       station as never,

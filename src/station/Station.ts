@@ -398,6 +398,19 @@ export class Station extends EventEmitter {
       await this.announcePlannedShutdown();
     }
     await this.connection.disconnect();
+
+    // THE KEY DIES WITH THE MQTT SESSION. `06-security.md:1070` rule 2 — "Both
+    // peers MUST discard it when the MQTT session ends — the station on
+    // disconnect, the server on the LWT or on any broker-reported disconnect."
+    // The server holds up its half already; this station kept a dead session's
+    // key, because `sessionKey` had exactly one writer and no clear. Note the
+    // company it now keeps: `bootAccepted` is already reset on connect and on
+    // `kicked`, and this field was simply left out of both.
+    //
+    // Any reconnect produces a BootNotification, which issues a new key (rule
+    // 4), so nothing here needs a re-key path of its own.
+    this.sessionKey = null;
+
     this.lifecycle = StationLifecycle.OFFLINE;
     this.emit('disconnected');
   }

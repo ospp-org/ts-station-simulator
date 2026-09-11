@@ -26,9 +26,17 @@ export class BootNotificationHandler implements Handler {
    *   integrator will ever operate, and the long files papered over it one at a
    *   time with an explicit `start_heartbeat` step (8 of 148).
    *
-   *   Only an ACCEPTED boot arms it. A Rejected or Pending station has no session
-   *   to keep alive, and firmware in either state is retrying its boot rather than
-   *   beating.
+   *   Only an ACCEPTED boot arms it, and firmware in any other state is retrying
+   *   its boot rather than beating — 05-state-machines.md:129 lists Heartbeat
+   *   among the messages a restricted station may not send.
+   *
+   *   CORRECTED 2026-09-11. This used to justify that with "A Rejected or Pending
+   *   station has no session to keep alive", which is false for Pending and was
+   *   the rationale under the missing `station.sessionKey` write in that branch.
+   *   A Pending station DOES hold a session key — 05-state-machines.md:57, "the
+   *   response that put it here carries one — because every command it answers is
+   *   signed" — it simply does not beat. Not beating and holding no key are two
+   *   different things, and only `Rejected` is both.
    */
   constructor(
     private readonly autoReact: boolean = true,
@@ -121,6 +129,23 @@ export class BootNotificationHandler implements Handler {
       case 'Pending': {
         const retryInterval = response.retryInterval;
         console.log('[BootNotification] Pending. retryInterval: %ds', retryInterval);
+
+        // A PENDING STATION HOLDS A KEY, AND IT IS THE WHOLE POINT OF THE STATE.
+        // `boot-notification.md:71` rule 5 — "On `Pending`: the station MUST store
+        // the `sessionKey` — a `Pending` station answers signed commands and needs
+        // it (§5.3)". §5.3 at :115 makes the server's half unconditional, and :117
+        // says what withholding it costs: "the server may not send the command, the
+        // station may not accept it, and the station may not answer it — which
+        // closes the exact channel the `Pending` window exists to keep open."
+        // Pending is where an operator repairs whatever is outstanding, and the
+        // repair usually needs a command.
+        //
+        // MEASURED 2026-09-11: without this the station refused
+        // `UpdateServiceCatalog` and `ChangeConfiguration` with `1013 MAC_MISSING`.
+        // `Rejected` deliberately does NOT do this — it accepts no commands and
+        // holds no key (05-state-machines.md:58).
+        station.sessionKey = response.sessionKey ?? null;
+
         if (station.config.behavior.autoRetryBoot) {
           setTimeout(() => {
             station.retryBoot().catch((err: unknown) => {
