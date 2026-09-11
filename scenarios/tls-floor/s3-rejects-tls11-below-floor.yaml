@@ -6,8 +6,10 @@
 # NOTE on why BOTH min_version and max_version are pinned to TLSv1.1 (the
 # task framing this scenario originates from only specified maxVersion):
 # MqttConnection's default minVersion (when a scenario does not override
-# it) is TLSv1.3 — see MqttConnection.doConnect(); Node's own compiled-in
-# default minVersion is TLSv1.2 either way. Setting ONLY max_version=1.1
+# it) is TLSv1.2 — the spec floor, see MqttConnection.doConnect(); Node's
+# own compiled-in default minVersion is TLSv1.2 as well, so the two now
+# agree. (This read "TLSv1.3" until 2026-09-11, when the default was
+# corrected to the floor `02-transport.md` §1.3 actually states.) Setting ONLY max_version=1.1
 # without also lowering min_version to <=1.1 produces a self-contradictory
 # [min > max] range that Node's tls module rejects LOCALLY before ever
 # opening a socket — that would prove "our own TLS options are invalid",

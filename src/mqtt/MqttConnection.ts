@@ -159,13 +159,11 @@ export interface MqttConnectionOptions {
     serverCa?: string; // file path — custom CA for server cert verification (private CA only)
     /**
      * TLS floor/ceiling for this connection, Node tls.connect() semantics
-     * ('TLSv1' | 'TLSv1.1' | 'TLSv1.2' | 'TLSv1.3'). Omit both to keep the
-     * default (TLSv1.3 minimum, unchanged from before this knob existed —
-     * see doConnect()). Added for the TLS-1.2-floor conformance arc: the
-     * CSMS broker floor is moving to 1.2+ (1.3 recommended) so TLS-1.2-only
-     * cellular modems (e.g. SIMCom A7608E-H) can connect; a scenario can
-     * pin an exact version to prove that against a live broker without
-     * changing the simulator's own default posture.
+     * ('TLSv1' | 'TLSv1.1' | 'TLSv1.2' | 'TLSv1.3'). Omit both to get the
+     * SPEC floor — TLSv1.2 minimum, no ceiling — see doConnect(). A scenario
+     * pins an exact version (min === max) to emulate a modem that caps there,
+     * e.g. the SIMCom A7608E-H, which stops at 1.2 with no firmware path
+     * to 1.3.
      */
     minVersion?: SecureVersion;
     maxVersion?: SecureVersion;
@@ -491,13 +489,28 @@ export class MqttConnection extends EventEmitter {
         opts.ca = readFileSync(this.tlsConfig.serverCa);
       }
       opts.rejectUnauthorized = true;
-      // TLS floor/ceiling — passed through to Node tls.connect(). DEFAULT
-      // (no minVersion/maxVersion supplied via tlsConfig) is UNCHANGED from
-      // before this knob existed: TLSv1.3 minimum per OSPP spec §1.3, no
-      // ceiling. A scenario/config that supplies minVersion/maxVersion
-      // (C3 TLS-1.2-floor conformance arc) overrides that floor/ceiling for
-      // this connection only.
-      opts.minVersion = this.tlsConfig.minVersion ?? 'TLSv1.3';
+      // TLS floor/ceiling — passed through to Node tls.connect(). DEFAULT is the
+      // SPEC FLOOR: TLSv1.2 minimum, no ceiling.
+      //
+      // This line read `?? 'TLSv1.3'` and the comment beside it said "TLSv1.3 minimum per
+      // OSPP spec §1.3". That citation was backwards: §1.3 of `02-transport.md` is TITLED
+      // "TLS (1.2 floor, 1.3 recommended)" and reads "All MQTT connections MUST use TLS 1.2
+      // or higher; TLS 1.3 is RECOMMENDED and MUST be negotiated whenever both peers support
+      // it." The 1.3-only rule it named was REPLACED by spec 0.7.0, whose changelog entry
+      // gives the reason in one line: the 1.2 floor "admit[s] constrained cellular modems
+      // (e.g. SIMCom A7608E-H) with no firmware path to 1.3".
+      //
+      // What the old default cost, concretely: this station REFUSED a conforming broker
+      // that offers only TLS 1.2, and the one board the integrator is actually building on
+      // caps exactly at the floor — so the default posture could not model it at all.
+      //
+      // The RECOMMENDATION half is kept by the absence of a ceiling, not by the floor: with
+      // no maxVersion, a peer that supports 1.3 still negotiates 1.3. Floor and ceiling are
+      // separate claims, and only the floor is a MUST.
+      //
+      // A scenario/config that supplies minVersion/maxVersion (C3 TLS-1.2-floor conformance
+      // arc) overrides both for this connection only.
+      opts.minVersion = this.tlsConfig.minVersion ?? 'TLSv1.2';
       if (this.tlsConfig.maxVersion) {
         opts.maxVersion = this.tlsConfig.maxVersion;
       }

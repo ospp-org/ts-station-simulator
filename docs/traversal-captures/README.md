@@ -194,11 +194,25 @@ Things that would surprise a reader, recorded because they surprised me.
 
 1. **The station ignores its own provisioning directive on two fields.** Provisioning
    returned `mqttConfig.cleanStart: false` and `tlsVersion: "1.2"`; the broker's own
-   client table shows station sessions as `clean_start=true`, and
-   `MqttConnection.ts:481` sets `minVersion = tlsConfig.minVersion ?? 'TLSv1.3'`.
+   client table shows station sessions as `clean_start=true`, and `MqttConnection`
+   set `minVersion = tlsConfig.minVersion ?? 'TLSv1.3'`.
    Both still connect, because the broker accepts 1.2 and 1.3 and does not enforce
    `cleanStart` — but a station built to the provisioning response would behave
    differently from this one.
+
+   > **HALF OF THIS IS REPAIRED, 2026-09-11, and it was worse than "ignores a
+   > directive".** The default floor is now `TLSv1.2` — the floor
+   > `spec/02-transport.md` §1.3 states in its own title — so the station no longer
+   > DEMANDS more than the protocol does. The comment beside that line cited §1.3 for
+   > the 1.3-only rule §1.3 had replaced, which is why this stood: the citation named
+   > the section that contradicted it. What it cost is not only the mismatch recorded
+   > here — a broker configured at the conformant floor and offering only 1.2 was
+   > REFUSED by this station, and the integrator's board (SIMCom A7608E-H) caps exactly
+   > at 1.2, so the default posture could not model the one device being built.
+   >
+   > **What is NOT repaired: `mqttConfig.tlsVersion` still has zero readers** —
+   > `grep -rn tlsVersion src/ --include='*.ts'` outside tests returns **0**. The floor
+   > now happens to agree with what UAT advertised; nothing makes it follow.
 2. **`peer_cert_as_clientid = "cn"`** — the broker *overwrites* whatever client id the
    station sends with the certificate CN. Two consequences: the simulator's
    `stationId-<uuid>` anti-collision client id is silently discarded, and a second

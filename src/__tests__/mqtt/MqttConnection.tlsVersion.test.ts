@@ -67,11 +67,39 @@ describe('MqttConnection — TLS min/max version knob (C3 TLS-1.2-floor arc)', (
     expect(connectCalls[0].opts.maxVersion).toBe('TLSv1.2');
   });
 
-  it('DEFAULT unchanged: tls configured with no version pin still floors at TLSv1.3, no maxVersion set', () => {
+  // THE DEFAULT FLOOR IS THE SPEC'S FLOOR, NOT THE TOOL'S PREFERENCE.
+  //
+  // `spec/02-transport.md` §1.3 is titled "TLS (1.2 floor, 1.3 recommended)" and reads:
+  // "All MQTT connections MUST use TLS 1.2 or higher; TLS 1.3 is RECOMMENDED and MUST be
+  // negotiated whenever both peers support it." The amendment that lowered it (spec 0.7.0,
+  // `00-introduction.md`) says why in one line: it "admit[s] constrained cellular modems
+  // (e.g. SIMCom A7608E-H) with no firmware path to 1.3".
+  //
+  // This test used to assert TLSv1.3 and pass, and that is what made it the wrong test: a
+  // floor of 1.3 REFUSES a conforming broker that offers only 1.2, and it cannot model the
+  // integrator's board — the very modem the amendment was written for. The simulator's job
+  // is to be a reference STATION, so its default posture has to be the one the protocol
+  // requires of a station, not a stricter one it happens to be able to afford.
+  //
+  // The recommendation half is kept by the ABSENCE of a ceiling: with no maxVersion, a peer
+  // that supports 1.3 still negotiates 1.3, which is what "MUST be negotiated whenever both
+  // peers support it" asks for. Floor and ceiling are different claims.
+  it('DEFAULT: tls configured with no version pin floors at the SPEC floor, TLSv1.2, with no ceiling', () => {
     const conn = new MqttConnection({
       mqttUrl: 'mqtts://x',
       stationId: 'stn_default',
       tls: {},
+    });
+    conn.connect();
+    expect(connectCalls[0].opts.minVersion).toBe('TLSv1.2');
+    expect(connectCalls[0].opts.maxVersion).toBeUndefined();
+  });
+
+  it('DEFAULT: an explicit 1.3 floor is still available to a scenario that wants to prove it', () => {
+    const conn = new MqttConnection({
+      mqttUrl: 'mqtts://x',
+      stationId: 'stn_pin13',
+      tls: { minVersion: 'TLSv1.3' },
     });
     conn.connect();
     expect(connectCalls[0].opts.minVersion).toBe('TLSv1.3');
