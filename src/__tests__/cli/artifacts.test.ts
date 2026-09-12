@@ -144,3 +144,94 @@ describe('loadBrokerArtifacts', () => {
     expect(result.brokerUri).toBeUndefined();
   });
 });
+
+/*
+ * THE ONE THAT CANNOT BE RECOVERED.
+ *
+ * `spec/04-flows.md` §2, *Persisting the response*, names five fields the station MUST write
+ * exactly as received: `stationCaChain`, `brokerRootCa`, `rootCaThumbprint`,
+ * `serverVerifyKey`, `mqttConfig`. This module owned two of them, and `serverVerifyKey` —
+ * the public key an `OfflinePass` signature is verified against — was declared in the
+ * response type and written nowhere: one occurrence in the whole repository, and it was the
+ * declaration. `rootCaThumbprint` was printed to the console and then lost with the process.
+ *
+ * `serverVerifyKey` is not merely inconvenient to lose. It never travels on MQTT — zero of
+ * the 47 `mqtt/` schemas carry it — so the only way to obtain it again is a fresh
+ * provisioning response, which costs an operator-issued token. A station that lost it cannot
+ * distinguish a real pass from a fabricated one.
+ */
+describe('the trust material the offline path needs', () => {
+  const VERIFY_KEY = '-----BEGIN PUBLIC KEY-----\nMFkwEwYHserververify\n-----END PUBLIC KEY-----\n';
+  const THUMBPRINT = 'sha256:b6ec67bcded1d48fd92f5147948bbc6f0ab36b2076ef16442845a5135419b95c';
+
+  it('persists serverVerifyKey and rootCaThumbprint, each at its own derived path', async () => {
+    const keyPath = keyPathFor(tmpRoot);
+    const result = await persistBrokerArtifacts(keyPath, {
+      serverVerifyKey: VERIFY_KEY,
+      rootCaThumbprint: THUMBPRINT,
+    });
+
+    expect(result.serverVerifyKeyPath).toBe(
+      path.join(tmpRoot, `${stationId}-server-verify-key.pem`),
+    );
+    expect(result.rootCaThumbprintPath).toBe(
+      path.join(tmpRoot, `${stationId}-root-ca-thumbprint.txt`),
+    );
+
+    // Byte-for-byte, because the spec says "exactly as received": a PEM this process
+    // re-armoured or newline-normalised is no longer the bytes the server sent.
+    expect(await fs.readFile(result.serverVerifyKeyPath!, 'utf-8')).toBe(VERIFY_KEY);
+    expect(await fs.readFile(result.rootCaThumbprintPath!, 'utf-8')).toBe(THUMBPRINT);
+  });
+
+  it('reads serverVerifyKey back as CONTENT, not only as a path', async () => {
+    // The broker CA is handed to a TLS library by filename; this key is verified AGAINST,
+    // so a loader that returned only a path would leave every caller to re-read the file.
+    await persistBrokerArtifacts(keyPathFor(tmpRoot), {
+      serverVerifyKey: VERIFY_KEY,
+      rootCaThumbprint: THUMBPRINT,
+    });
+
+    const loaded = await loadBrokerArtifacts(stationId, { key: keyTemplateFor(tmpRoot) });
+
+    expect(loaded.serverVerifyKey).toBe(VERIFY_KEY);
+    expect(loaded.serverVerifyKeyPath).toBe(
+      path.join(tmpRoot, `${stationId}-server-verify-key.pem`),
+    );
+    expect(loaded.rootCaThumbprint).toBe(THUMBPRINT);
+  });
+
+  it('CONTROL — a response carrying neither field writes neither file and loads neither', async () => {
+    // Without this the two tests above are also satisfied by a writer that writes those
+    // files unconditionally, from whatever happens to be in scope.
+    const result = await persistBrokerArtifacts(keyPathFor(tmpRoot), {
+      brokerRootCa: '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n',
+    });
+
+    expect(result.serverVerifyKeyPath).toBeUndefined();
+    expect(result.rootCaThumbprintPath).toBeUndefined();
+    await expect(
+      fs.access(path.join(tmpRoot, `${stationId}-server-verify-key.pem`)),
+    ).rejects.toThrow();
+    await expect(
+      fs.access(path.join(tmpRoot, `${stationId}-root-ca-thumbprint.txt`)),
+    ).rejects.toThrow();
+
+    const loaded = await loadBrokerArtifacts(stationId, { key: keyTemplateFor(tmpRoot) });
+    expect(loaded.serverVerifyKey).toBeUndefined();
+    expect(loaded.rootCaThumbprint).toBeUndefined();
+    // ...while the field that WAS present still loads, so the control is scored on the
+    // right axis rather than on the loader having stopped working.
+    expect(loaded.brokerRootCaPath).toBeDefined();
+  });
+
+  it('CONTROL — an empty string is not a key, and is not written', async () => {
+    const result = await persistBrokerArtifacts(keyPathFor(tmpRoot), {
+      serverVerifyKey: '',
+      rootCaThumbprint: '',
+    });
+
+    expect(result.serverVerifyKeyPath).toBeUndefined();
+    expect(result.rootCaThumbprintPath).toBeUndefined();
+  });
+});

@@ -838,6 +838,19 @@ program
         tls.serverCa = persisted.brokerRootCaPath;
         console.log(chalk.gray(`  Using persisted broker CA: ${persisted.brokerRootCaPath}`));
       }
+      if (persisted.serverVerifyKey) {
+        console.log(chalk.gray(`  Using persisted serverVerifyKey: ${persisted.serverVerifyKeyPath}`));
+      } else if (target.certs) {
+        // Not fatal here — nothing in connect mode verifies a server signature yet — but a
+        // station that reaches the offline path without this key cannot tell a real
+        // OfflinePass from a fabricated one, and provisioning is the only place it is given.
+        console.warn(chalk.yellow(
+          `  No persisted serverVerifyKey for ${stationId}; an OfflinePass signature cannot be verified.`,
+        ));
+      }
+      if (persisted.rootCaThumbprint) {
+        console.log(chalk.gray(`  Persisted root CA thumbprint: ${persisted.rootCaThumbprint}`));
+      }
       if (persisted.brokerUri) {
         console.log(chalk.gray(`  Using persisted broker URI: ${persisted.brokerUri}`));
       } else if (target.certs) {
@@ -1132,6 +1145,18 @@ program
       console.log(`  Root CA SHA256:   ${data.rootCaThumbprint}`);
       if (persistedArtifacts.brokerCaPath) {
         console.log(`  Broker CA:        ${persistedArtifacts.brokerCaPath}`);
+      }
+      if (persistedArtifacts.serverVerifyKeyPath) {
+        console.log(`  Server verify key: ${persistedArtifacts.serverVerifyKeyPath}`);
+      } else {
+        // Loud, because it is unrecoverable without another operator-issued token: the key
+        // never travels on MQTT, and chapter 10 cannot be executed without it.
+        console.warn(chalk.yellow(
+          '  No serverVerifyKey in the response — the offline path cannot verify a pass without it.',
+        ));
+      }
+      if (persistedArtifacts.rootCaThumbprintPath) {
+        console.log(`  Root CA thumbprint: ${persistedArtifacts.rootCaThumbprintPath}`);
       }
       if (persistedArtifacts.mqttJsonPath) {
         console.log(`  MQTT config:      ${persistedArtifacts.mqttJsonPath}`);
