@@ -33,11 +33,12 @@ description: "POST /api/v1/stations/provision three times on one well-formed-but
 #     3. Token state                    -> 409 / 4018
 #     4. CSR decodability               -> 400 / 4010
 #     ... 5-8 bay count, key validity, self-consistency, bound-set comparison.
-# A single call can only ever show ONE rung. The token below is byte-identical in
-# all three: 64 hex characters that hash to no row. Calls 1 and 2 answer 4017 even
-# though the token is already doomed — which is rung 1 beating rung 2 — and call 3,
-# with the body corrected and NOTHING else changed, falls through to 2019. Split
-# into three files each would assert a code; together they assert the ladder.
+# A single call can only ever show ONE rung. Calls 2 and 3 carry a byte-identical
+# token — 64 hex characters that hash to no row — and call 1 carries a token that is
+# malformed on purpose, because that is the property it is about. Call 2 answers 4017
+# even though its token is already doomed, which is rung 1 beating rung 2, and call 3,
+# with the body corrected and NOTHING else changed, falls through to 2019. Split into
+# three files each would assert a code; together they assert the ladder.
 #
 # THE CONTROL IS CALL 3, and it is the one that matters. Without it, calls 1 and 2
 # prove only "this endpoint answers 400 to something", which a server that refused
@@ -100,14 +101,28 @@ station:
     accept_rate: 1.0
     response_delay_ms: [50, 200]
 steps:
-  # --- RUNG 1, ARM A: the token FIELD is malformed (fails size:64 and the
-  # ^[a-f0-9]{64}$ rule). Everything else is well-formed. The complaint must name
-  # provisioningToken and nothing else.
+  # --- RUNG 1, ARM A: the token FIELD is malformed. Everything else is well-formed,
+  # so the complaint must name provisioningToken and nothing else.
+  #
+  # THE VALUE CHANGED ON 2026-09-14, AND THE OLD ONE IS WHY. This arm used to send
+  # `not-a-64-hex-token`, which was malformed only against a rule the server no longer
+  # has: `size:64` plus `^[a-f0-9]{64}$`, the shape this deployment's own generator
+  # emits. csms-server now validates the token against the SCHEMA instead —
+  # `provisioning-request.schema.json`: minLength 16, maxLength 128,
+  # `^[A-Za-z0-9._~-]+$` — under which `not-a-64-hex-token` is 18 legal characters and
+  # therefore WELL-FORMED. This arm was consequently answered 401 / 2019 by the token
+  # layer, and the file went red for asserting a bound that had been withdrawn.
+  #
+  # The replacement is malformed against the bound that EXISTS: 18 characters, inside
+  # 16..128, every character legal except one. `!` is outside the schema's alphabet, so
+  # the alphabet is the single reason for the refusal and the length cannot be blamed.
+  # Measured on UAT the same day: 15 chars, 129 chars and this value are all still
+  # 400 / 4017, while 32, 36 and 64 legal characters are all 401 / 2019.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/stations/provision"
     body:
-      provisioningToken: "not-a-64-hex-token"
+      provisioningToken: "not-a-valid-token!"
       serialNumber: "SN-REFUSAL-{{stationId}}"
       bays:
         - bayNumber: 1
@@ -154,9 +169,11 @@ steps:
       - "details.fields.serialNumber"
 
   # --- RUNG 2, AND THE CONTROL FOR BOTH ARMS ABOVE. Byte-identical to arm B except
-  # that `bays` is now valid. The token is the same 64 hex characters arm B carried,
-  # and it hashes to no row in provisioning_tokens — so with the body no longer
-  # objectionable the request reaches rung 2 and is answered 401 / 2019.
+  # that `bays` is now valid. The token is the same 64 hex characters arm B carried —
+  # legal under the schema's bound, and hashing to no row in provisioning_tokens — so
+  # with the body no longer objectionable the request reaches rung 2 and is answered
+  # 401 / 2019. It is also the control for arm A's new value: same rung, same endpoint,
+  # and the only difference is whether the token's CHARACTERS are legal.
   #
   # `details.reason: not_found` is the discriminator and it is load-bearing: 2019 is
   # answered for FOUR distinct token conditions — not_found, expired, superseded,
