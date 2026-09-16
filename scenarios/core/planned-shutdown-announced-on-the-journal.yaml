@@ -1,0 +1,179 @@
+name: "Planned Shutdown — the announced departure, read off the wire"
+description: "Boot, then shut down DELIBERATELY: publish ConnectionLost with reason PlannedShutdown and close with an ordinary clean DISCONNECT. Assert the goodbye on the frame journal — that it went out, that it was the LAST frame out, and that no UnexpectedDisconnect accompanied it — then read back the server marked offline."
+# WHY THIS FILE DID NOT EXIST, AND WHY IT COULD NOT.
+#
+# `spec 0.36.0`, connection-lost.md §4.3 gave the deliberate shutdown a TRUE value:
+# a station about to disconnect on purpose publishes ConnectionLost with
+# `reason: "PlannedShutdown"` on its own topic, immediately before a clean MQTT
+# DISCONNECT. A clean DISCONNECT suppresses the will (MQTT 5 §3.14.4), so without
+# this value a station shutting down on purpose has no way to say so and the server
+# learns nothing until the heartbeat timeout.
+#
+# Measured 2026-09-16, before this file: `PlannedShutdown` appeared in 0 of 156
+# scenario files. `Ctrl+C` in `simulator connect` called `station.disconnect()` bare,
+# and `announceDeparture` is NOT the default, so the only producer in the whole
+# repository was the runner's own teardown for a POOL-leased station
+# (ScenarioRunner: `releaseWithWill = poolStationId !== null && ...`). That is a
+# harness side effect, not a scenario: it fires after the last step, nothing can
+# assert on it, and in a run without `--bootstrap-pool` it does not fire at all.
+#
+# AND THERE WAS NOWHERE TO ASSERT IT. The goodbye has no Response — it is an EVENT —
+# so `wait_for` has nothing to match, and `context.receivedMessages` only ever holds
+# INBOUND frames the router accepted. An outbound frame was simply not observable
+# from a scenario. The frame journal is what makes this file possible: every frame,
+# both directions, recorded at the MqttConnection chokepoints, addressable as
+# `journal.*`.
+#
+# WHAT DISCRIMINATES. `fault: planned_shutdown` against the two teardowns that
+# already existed, one word apart, each of which would turn this file red:
+#
+#   planned_shutdown  ConnectionLost / PlannedShutdown published by the STATION,
+#                     then a clean DISCONNECT. What this file asserts.
+#   disconnect        socket destroyed, client reconnects in 5s inside the will's
+#                     10s delay -> the broker CANCELS the will. ZERO ConnectionLost
+#                     frames from anyone, so `journal.counts.out.ConnectionLost`
+#                     would be absent.
+#   sever             unclean and final -> the BROKER publishes the will, carrying
+#                     `UnexpectedDisconnect`. That frame is published by the broker
+#                     and never appears in this station's OUTBOUND journal, so the
+#                     count would again be absent — and the `reason` assertion below
+#                     is what separates the two values even when a frame does arrive.
+#
+# WHY THE LAST-FRAME ASSERTION IS SEPARATE FROM THE COUNT. §4.3 rule 2 puts the
+# goodbye after everything the station still owes, and ordering is a property a count
+# cannot express. The journal records at publish-CALL time, in wire order, precisely
+# so this assertion means what it says: `journal.frames` ends on the ConnectionLost,
+# not merely contains one. A station that announced and then kept talking has not
+# said goodbye, it has lied about being about to.
+#
+# WHY BOTH `reason` AND THE COUNT. The count alone is satisfied by a will; the reason
+# alone is satisfied by a station that announced twice. Two ConnectionLost frames
+# about one departure is a false statement on the wire — the server keeps whichever
+# landed second, which makes the first a report of a departure that had not happened.
+#
+# THE SERVER-SIDE READ IS THE END-TO-END HALF, and it is deliberately last. It goes
+# over HTTP, which still works with the MQTT link gone, and it is the only step here
+# that says the server ACTED on the frame rather than merely that the frame left.
+# `isOnline: false` inside this window cannot have come from the heartbeat sweep: the
+# Boot above set `last_seen_at` seconds earlier, and the sweep needs
+# 3.5 x heartbeatIntervalSec of silence.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # The ARM for the journal assertions below: before the departure there is no
+  # ConnectionLost of any kind, in either direction. Without this, every assertion
+  # after the fault could be satisfied by a frame that was already there.
+  - action: assert
+    field: "journal.counts.out.ConnectionLost"
+    exists: false
+
+  - action: assert
+    field: "journal.counts.in.ConnectionLost"
+    exists: false
+
+  # And a positive control on the journal itself: the boot round trip IS recorded, in
+  # both directions. An empty journal would satisfy both `exists: false` assertions
+  # above while proving nothing at all.
+  - action: assert
+    field: "journal.counts.out.BootNotification"
+    equals: 1
+
+  - action: assert
+    field: "journal.counts.in.BootNotification"
+    equals: 1
+
+  # --- THE DEPARTURE. Announced, then an ordinary clean DISCONNECT. ---
+  - action: fault
+    type: planned_shutdown
+
+  # Exactly one, published by THIS station.
+  - action: assert
+    field: "journal.counts.out.ConnectionLost"
+    equals: 1
+
+  - action: assert
+    field: "journal.out[action=ConnectionLost].envelope.payload.reason"
+    equals: "PlannedShutdown"
+
+  - action: assert
+    field: "journal.out[action=ConnectionLost].envelope.payload.stationId"
+    equals: "{{stationId}}"
+
+  # An EVENT, not a Request: the goodbye is not answered and must not ask to be.
+  - action: assert
+    field: "journal.out[action=ConnectionLost].envelope.messageType"
+    equals: "Event"
+
+  # §4.3 rule 2 — published after everything the station still owed.
+  - action: assert
+    field: "journal.frames[action=ConnectionLost].direction"
+    equals: "out"
+
+  # The station said goodbye and then said nothing: the raw bytes carry the true
+  # value and not the will's.
+  - action: assert
+    field: "journal.out[action=ConnectionLost].payload"
+    contains: "\"reason\":\"PlannedShutdown\""
+
+  - action: assert
+    field: "journal.out[action=ConnectionLost].payload"
+    exists: true
+
+  # The clean DISCONNECT suppressed the will, so no UnexpectedDisconnect ever
+  # reached this station's journal in either direction. This is the assertion that
+  # separates an announced departure from a severed one.
+  - action: assert
+    field: "journal.counts.in.ConnectionLost"
+    exists: false
+
+  # --- THE SERVER ACTED ON IT. Over HTTP, which outlives the MQTT link. ---
+  # No long delay: the point of the announcement is that the server is told AT the
+  # moment of departure rather than deducing it at the sweep.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: false

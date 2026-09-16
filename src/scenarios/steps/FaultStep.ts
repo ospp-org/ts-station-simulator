@@ -30,6 +30,27 @@ export class FaultStep implements Step {
         station.severConnection();
         break;
 
+      // THE ANNOUNCED DEPARTURE, and the third distinct teardown in this switch.
+      // The other two say nothing on the wire on purpose:
+      //
+      //   disconnect  destroys the socket and lets the client reconnect in 5s, inside
+      //               the will's 10s delay, so the broker CANCELS the will;
+      //   sever       is unclean and final, so the BROKER publishes the will and the
+      //               server hears `UnexpectedDisconnect`;
+      //   planned_shutdown  is the station's own goodbye — ConnectionLost with
+      //               `reason: "PlannedShutdown"` published FIRST, then an ORDINARY
+      //               clean DISCONNECT, which suppresses the will (MQTT 5 §3.14.4).
+      //
+      // The three are mutually exclusive by construction. Announcing and then forcing
+      // the will would put a PlannedShutdown and an UnexpectedDisconnect about the SAME
+      // departure on the wire, and the server would keep whichever landed second.
+      //
+      // Ends OFFLINE, because that is what a deliberate shutdown is. A scenario asserts
+      // afterwards over HTTP, or against the frame journal, which outlives the link.
+      case 'planned_shutdown':
+        await station.disconnect({ announceDeparture: true });
+        break;
+
       case 'timeout': {
         const ms = (definition.ms as number) ?? 30_000;
         await new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -42,7 +63,10 @@ export class FaultStep implements Step {
         );
 
       default:
-        throw new Error(`Unknown fault type: ${faultType}`);
+        throw new Error(
+          `Unknown fault type: ${faultType}. Known: disconnect, sever, planned_shutdown, ` +
+            'timeout, error.',
+        );
     }
   }
 }

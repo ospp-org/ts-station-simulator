@@ -25,7 +25,7 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-156 YAML-driven test scenarios across 12 categories:
+157 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|

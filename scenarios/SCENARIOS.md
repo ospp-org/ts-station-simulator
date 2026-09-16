@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 156** across 12 categories, counted on disk
+**Total scenarios: 157** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113

@@ -339,7 +339,14 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // commands unanswered but only TWO waited long enough for `command:check-timeouts` to
     // land, so 2 of the 15 timeout arms had ever been observed. These add the StopService
     // money arm and the ReserveBay compensation arm.
-    expect(files.length).toBe(156);
+    // 156 -> 157 on 2026-09-16: `core/planned-shutdown-announced-on-the-journal.yaml`, the
+    // ANNOUNCED departure. Measured that day, `PlannedShutdown` appeared in 0 of the 156
+    // files: the only producer in the repository was the runner's own teardown for a
+    // pool-leased station, which fires after the last step and which nothing can assert on.
+    // It is also the first file to assert on the frame journal — an outbound frame was not
+    // observable from a scenario at all before it, since `receivedMessages` holds only
+    // INBOUND frames the router accepted.
+    expect(files.length).toBe(157);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {
