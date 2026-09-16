@@ -430,8 +430,15 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     const tables = [
       'offline_auth_grants',
       'wallet_entries',
-      'offline_passes',
+      // `offline_transactions` BEFORE `offline_passes`: the transaction carries a
+      // NO-ACTION FK `offline_pass_id` -> `offline_passes.id`, so deleting the pass
+      // first FK-blocks whenever one user both holds a pass and settled a transaction
+      // against it. The writer was reordered for that reason; this list is positional,
+      // so it has to follow. The reverse-graph check only asserts every NO-ACTION FK is
+      // REACHED, not that the statements are topologically ordered among themselves,
+      // which is why nothing else caught the swap.
       'offline_transactions',
+      'offline_passes',
       'payment_intents',
       'sessions',
       'reservations',
