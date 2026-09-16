@@ -8,14 +8,22 @@ import {
   type ScenarioResult,
   type ScenarioDefinition,
 } from '../scenarios/ScenarioRunner.js';
-import { loadTarget, toRunnerTarget, type TargetConfig } from './config.js';
+import {
+  loadTarget,
+  toRunnerTarget,
+  requireMqttCredentials,
+  type TargetConfig,
+} from './config.js';
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
 import { OsppAction } from '@ospp/protocol';
 import { inboundSchemaStats, resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { heartbeatStats } from '../station/heartbeatStats.js';
+import { FrameJournal, resolveJournalSink, prepareJournalSink } from '../mqtt/FrameJournal.js';
+import { assertBays } from '../provisioning/assertBays.js';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
+import { parseTopologySpec, denseTopology, formatTopologySpec, type BaySpec } from '../station/topologySpec.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
 import { StartServiceHandler } from '../handlers/StartServiceHandler.js';
@@ -782,6 +790,8 @@ interface ConnectCommandOptions {
   target?: string;
   station?: string;
   var: string[];
+  journal?: string | boolean;
+  reportBays?: string;
 }
 
 program
@@ -789,6 +799,17 @@ program
   .description('Boot a station and keep it connected, responding to all commands')
   .option('--target <name>', 'Target from config/targets.yaml')
   .option('--station <stationId>', 'Station ID to connect as')
+  .option(
+    '--journal [path]',
+    'Append every frame, both directions, as JSONL. Default: tests/artifacts/journal/<stationId>-<timestamp>.jsonl',
+  )
+  .option(
+    '--report-bays <spec>',
+    'REPORT this topology instead of the provisioned one: <bayNumber>:<programNumber>[,...][;<bay>...]. ' +
+      'Deliberately allowed to disagree with what was declared at provisioning — that disagreement is ' +
+      "what reaches the server's two program-set divergence arms.",
+  )
+  .option('--no-journal', 'Do not journal frames')
   .option(
     '--var <pair>',
     'Override deterministic IDs. Currently honored: bayId_<N>. Format: KEY=VALUE. Repeatable.',
@@ -806,14 +827,19 @@ program
 
       console.log(chalk.blue(`Connecting station ${chalk.bold(stationId)} to ${targetName}...`));
 
-      // Resolve MQTT credentials
+      // Resolve MQTT credentials.
+      //
+      // Through the accessor, not the field: a target that DECLARES broker credentials
+      // this process cannot resolve must fail here rather than connect anonymously and
+      // be refused by the broker for a reason that reads like a server defect.
+      const declaredMqttCredentials = requireMqttCredentials(target);
       let mqttCredentials: { username: string; password: string } | undefined;
-      if (target.mqttCredentials) {
+      if (declaredMqttCredentials) {
         const stationIdHex = stationId.replace(/^stn_/, '');
         const resolveT = (t: string) => t.replace('{{stationIdHex}}', stationIdHex).replace('{{stationId}}', stationId);
         mqttCredentials = {
-          username: resolveT(target.mqttCredentials.usernameTemplate),
-          password: resolveT(target.mqttCredentials.passwordTemplate),
+          username: resolveT(declaredMqttCredentials.usernameTemplate),
+          password: resolveT(declaredMqttCredentials.passwordTemplate),
         };
       }
 
@@ -878,11 +904,47 @@ program
           'The server will address the real ones; provision through this CLI, or pass --var bayId_<N>=<id>.',
         ));
       }
-      const { bays, warnings } = deriveBays(stationId, bayCount, userVars, provisionedBays);
+      // WHAT THIS STATION REPORTS. Without --report-bays this is what the server
+      // issued, which agrees with what was declared at provisioning — the only shape
+      // that was ever possible before, and the reason neither divergence arm could
+      // fire. With it, the reported program set is the operator's to choose:
+      //
+      //   declared {1}   reported {1,7}  -> undeclared [7]  (station has one the server does not)
+      //   declared {1,2} reported {1}    -> omitted    [2]  (server has one the station left out)
+      //
+      // StatusNotificationHandler.php:657-658 is the comparison; it ACCEPTS the report
+      // either way and records a `program_set_mismatch` journal entry behind it.
+      const reportedTopology = opts.reportBays !== undefined
+        ? parseTopologySpec(opts.reportBays)
+        : null;
+      const { bays, warnings } = deriveBays(
+        stationId, bayCount, userVars, provisionedBays, reportedTopology,
+      );
       for (const w of warnings) {
         console.warn(chalk.yellow(`  Warning: ${w}`));
       }
+      if (reportedTopology !== null) {
+        console.log(chalk.yellow(
+          `  REPORTING topology ${formatTopologySpec(reportedTopology)} — this is what goes on the ` +
+            'wire, and it may differ from what this station declared at provisioning.',
+        ));
+      }
       logUserVars(userVarsArg);
+
+      // THE WIRE JOURNAL. On unless --no-journal: `connect` used to print frames and
+      // keep nothing, so a run could be watched but nothing about it could be
+      // asserted afterwards — which is why every adversarial round so far wrote its
+      // own MQTT client instead of using this. The file is JSONL, one frame per line,
+      // both directions, raw payload included.
+      const journalSink = resolveJournalSink(opts.journal, stationId);
+      let journal: FrameJournal | undefined;
+      if (journalSink !== null) {
+        prepareJournalSink(journalSink);
+        journal = new FrameJournal({ file: journalSink });
+        console.log(chalk.gray(`  Frame journal: ${journalSink}`));
+      } else {
+        console.log(chalk.yellow('  Frame journal: OFF (--no-journal) — nothing about this run will be assertable'));
+      }
 
       const station = new Station(
         {
@@ -902,7 +964,13 @@ program
             autoRetryBoot: true,
           },
         },
-        { mqttUrl: effectiveMqttUrl, stationId, tls, mqttCredentials },
+        {
+          mqttUrl: effectiveMqttUrl,
+          stationId,
+          tls,
+          mqttCredentials,
+          ...(journal ? { journal } : {}),
+        },
       );
 
       // Register ALL handlers (cast needed: handlers use StationContext, registerHandler expects Station Handler)
@@ -961,15 +1029,50 @@ program
       console.log(chalk.gray('  StatusNotification per bay sent on boot acceptance.'));
       console.log(chalk.gray('Press Ctrl+C to disconnect.\n'));
 
-      // Keep alive — wait for SIGINT
+      // Keep alive — wait for a shutdown signal.
+      //
+      // ANNOUNCED DEPARTURE. `announceDeparture: true`, because a Ctrl+C is the
+      // deliberate shutdown that `connection-lost.md` §4.3 rule 1 binds: the station
+      // publishes ConnectionLost with `reason: "PlannedShutdown"` and THEN closes with
+      // an ordinary clean DISCONNECT. This used to call `disconnect()` bare, which left
+      // the station with the same two wrong options every real station had before the
+      // value existed — say nothing, and the server holds `is_online` true over a dead
+      // socket until the sweep DEDUCES the absence at ceil(interval x 3.5); or force the
+      // will, which tells the server at the right moment and tells it
+      // `UnexpectedDisconnect` about a station that said goodbye.
+      //
+      // It is passed HERE rather than made the default in disconnect(), because
+      // `fault: disconnect` exists precisely to be the arm that says nothing
+      // (core/connection-lost-lwt.yaml rests on it).
+      //
+      // SIGTERM as well as SIGINT: `docker stop` and a systemd unit both send SIGTERM,
+      // and a station that announces on one signal and not the other reports its
+      // departure truthfully only when a human is at the keyboard.
+      //
+      // `once`, not `on`, and a shared latch: a second Ctrl+C during the bounded
+      // announcement must not start a second teardown. The lifecycle guard inside
+      // announcePlannedShutdown() already makes the SECOND publish impossible, so this
+      // latch is about not racing two disconnects, not about the frame.
       await new Promise<void>((resolve) => {
-        process.on('SIGINT', () => {
-          console.log(chalk.yellow('\nDisconnecting...'));
-          station.disconnect().then(resolve).catch(resolve);
-        });
+        let leaving = false;
+        const leave = (signal: string) => {
+          if (leaving) return;
+          leaving = true;
+          console.log(chalk.yellow(`\nDisconnecting on ${signal} — announcing PlannedShutdown first...`));
+          station
+            .disconnect({ announceDeparture: true })
+            .then(resolve)
+            .catch(resolve);
+        };
+        process.once('SIGINT', () => leave('SIGINT'));
+        process.once('SIGTERM', () => leave('SIGTERM'));
       });
 
-      console.log(chalk.green('Disconnected.'));
+      const announced = journal?.count({ direction: 'out', action: OsppAction.CONNECTION_LOST }) ?? 0;
+      console.log(chalk.green(`Disconnected. ConnectionLost frames published: ${announced}.`));
+      if (journal) {
+        console.log(chalk.gray(`  Frames journalled: ${journal.frames.length} (file: ${journal.file})`));
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error(chalk.red(`Fatal: ${error.message}`));
@@ -985,7 +1088,22 @@ interface ProvisionCommandOptions {
   target: string;
   token: string;
   serialNumber?: string;
-  bayCount: string; // Commander returns string for option values
+  bayCount?: string; // Commander returns string for option values
+  bays?: string;
+}
+
+/**
+ * A CLI integer, refused rather than coerced.
+ *
+ * `Number.parseInt` reads '2x' as 2 and '1.9' as 1, so a typo becomes a topology
+ * nobody meant to declare — and at provisioning that is written to the server as
+ * the reference every later report is compared against.
+ */
+function requirePositiveInt(value: string, flag: string): number {
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error(`${flag} must be a positive integer, got "${value}"`);
+  }
+  return Number(value.trim());
 }
 
 // F-05: FLAT normative provisioning body — no `data` envelope
@@ -1013,7 +1131,16 @@ program
   .description('Provision an mTLS certificate via OSPP spec §2 (POST /api/v1/stations/provision)')
   .requiredOption('-t, --target <name>', 'target environment')
   .requiredOption('--token <provisioningToken>', 'single-use provisioning token from CSMS admin')
-  .requiredOption('--bay-count <n>', 'declared bay count; must match the station registration')
+  .option(
+    '--bay-count <n>',
+    'declared bay count, dense 1..N with one program each; must match the station registration',
+  )
+  .option(
+    '--bays <spec>',
+    'declare an EXPLICIT topology instead of a dense count: ' +
+      '<bayNumber>:<programNumber>[,...][;<bay>...] — e.g. "1:1,2;3:7" for bays {1,3} where ' +
+      'bay 1 runs programs {1,2} and bay 3 runs {7}. Neither set need be dense.',
+  )
   .option('--serial-number <s>', 'station serial number')
   .action(async (stationId: string, opts: ProvisionCommandOptions) => {
     try {
@@ -1025,10 +1152,28 @@ program
         );
       }
 
-      const bayCount = Number.parseInt(opts.bayCount, 10);
-      if (!Number.isFinite(bayCount) || bayCount < 1) {
-        throw new Error(`--bay-count must be a positive integer, got "${opts.bayCount}"`);
+      // EXACTLY ONE of the two. They describe the same field and a caller that
+      // passes both has stated two topologies, so the request would carry whichever
+      // this code happened to prefer — which is the class of ambiguity that made
+      // `bayIds[]` positional for a release.
+      if (opts.bays !== undefined && opts.bayCount !== undefined) {
+        throw new Error(
+          'pass either --bay-count or --bays, not both: they declare the same field. ' +
+            `--bay-count ${opts.bayCount} is the dense topology ` +
+            `"${formatTopologySpec(denseTopology(Number(opts.bayCount) || 1))}".`,
+        );
       }
+      if (opts.bays === undefined && opts.bayCount === undefined) {
+        throw new Error(
+          'a station DECLARES its topology at provisioning, so one of --bay-count or --bays is ' +
+            'required. provisioning-request.schema.json makes `bays` required and `bayCount` is ' +
+            'gone from the wire.',
+        );
+      }
+
+      const declaredTopology: BaySpec[] = opts.bays !== undefined
+        ? parseTopologySpec(opts.bays)
+        : denseTopology(requirePositiveInt(opts.bayCount!, '--bay-count'));
 
       const url = `${target.csmsUrl}/api/v1/stations/provision`;
       console.log(chalk.blue(`Provisioning station ${chalk.bold(stationId)} via ${url}...`));
@@ -1064,15 +1209,19 @@ program
       // the server creates the bay records and the moment an operator needs the
       // labels to build the service bindings".
       //
-      // Derived from the same deriveBays() the connect path uses, so what the
-      // station declares at provisioning is what it re-declares at boot. Deriving
-      // them separately is how a station ends up disagreeing with itself.
-      const { bays: declaredBays } = deriveBays(stationId, bayCount, new Map());
+      // THIS IS THE REFERENCE the server stores as `bay_programs` and compares
+      // every later StatusNotification against. It used to come from the same
+      // `deriveBays()` the connect path uses, on the argument that "what the station
+      // declares at provisioning is what it re-declares at boot" — which made the
+      // two sides ONE array and left both of the server's divergence arms
+      // unreachable (`array_diff` of a set with itself is empty in both directions).
+      // `connect --report-bays` is the other half; see topologySpec.ts.
+      console.log(chalk.gray(`  Declaring topology: ${formatTopologySpec(declaredTopology)}`));
 
       const body = {
         provisioningToken: opts.token,
         serialNumber: opts.serialNumber ?? `SIM-${Date.now()}`,
-        bays: declaredBays.map(b => ({
+        bays: declaredTopology.map(b => ({
           bayNumber: b.bayNumber,
           programs: b.programs.map(p => ({
             programNumber: p.programNumber,
@@ -1095,6 +1244,16 @@ program
       }
 
       const data = (await res.json()) as ProvisioningResponse;
+
+      // THE RESPONSE SET MUST BE THE DECLARED SET. Unchecked until now on this path
+      // (the scenario path has always checked it), and a non-dense declaration is
+      // exactly where it matters: a token that bound {1,3}, replayed after something
+      // else minted more bays, comes back with a set that is not the one declared,
+      // and `bays.json` below would then pair a bay NUMBER with another bay's id.
+      assertBays(data.bays, {
+        context: 'provision',
+        declaredBayNumbers: declaredTopology.map(b => b.bayNumber),
+      });
 
       // The private keys are already on disk and flushed; only the RESPONSE is
       // written here.
