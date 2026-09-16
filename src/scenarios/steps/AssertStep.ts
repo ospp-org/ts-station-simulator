@@ -56,6 +56,26 @@ function refusalContext(subject: unknown): string {
 /** Fields under this prefix read off the live connection, not a received message — see below. */
 const CONNECTION_FIELD_PREFIX = 'connection.';
 
+/**
+ * Fields under this prefix read off the FRAME JOURNAL — the wire, not the router's
+ * buffer.
+ *
+ * The difference is the point. `context.receivedMessages` holds what the router
+ * ACCEPTED: `MessageRouter.route()` refuses and emits nothing on a parse, MAC or
+ * schema failure, so a frame the peer really sent can be entirely absent from it.
+ * The journal sits at the MqttConnection chokepoints, in front of those gates, and
+ * records both directions — so a claim about what actually crossed the socket is
+ * answerable here and nowhere else.
+ *
+ * The subject is FrameJournal.projection(); see it for the addressable shape. Two
+ * examples of what that buys a scenario:
+ *
+ *   field: journal.counts.out.ConnectionLost              equals: 1
+ *   field: journal.out[action=ConnectionLost].envelope.payload.reason
+ *                                                         equals: PlannedShutdown
+ */
+const JOURNAL_FIELD_PREFIX = 'journal.';
+
 export class AssertStep implements Step {
   async execute(
     definition: StepDefinition,
@@ -73,7 +93,23 @@ export class AssertStep implements Step {
     // instead of context.receivedMessages.
     let subject: unknown;
     let subjectField: string;
-    if (field.startsWith(CONNECTION_FIELD_PREFIX)) {
+    if (field.startsWith(JOURNAL_FIELD_PREFIX)) {
+      // REFUSED, not answered, when the station keeps no journal. Resolving against
+      // a missing journal would make every path under this prefix read `undefined`,
+      // so `exists: false` would pass and the scenario would report having proved an
+      // absence it never observed — a green that means nothing, which is worse than
+      // a red.
+      if (!station.journal) {
+        throw new Error(
+          `AssertStep: "${field}" reads the frame journal, but this station has no frame journal. ` +
+            'A journal claim against an unjournalled station cannot fail, so it is refused rather ' +
+            'than answered. Give the station a FrameJournal (scenario mode wires one per station; ' +
+            '`simulator connect` writes one unless --no-journal is passed).',
+        );
+      }
+      subject = station.journal.projection();
+      subjectField = field.slice(JOURNAL_FIELD_PREFIX.length);
+    } else if (field.startsWith(CONNECTION_FIELD_PREFIX)) {
       // Transport-level facts with no OSPP message behind them: the negotiated
       // TLS version (TLS-1.2-floor arc) and the severance state (ADR-0004
       // TIER 1 — kicked / banned / un-banned).

@@ -36,6 +36,7 @@ import {
 import { MessageRouter } from '../mqtt/MessageRouter.js';
 import { resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { MessageSender } from '../mqtt/MessageSender.js';
+import type { FrameJournal } from '../mqtt/FrameJournal.js';
 import type { StationConfig } from './StationConfig.js';
 import { StationLifecycle } from './StationLifecycle.js';
 
@@ -119,6 +120,17 @@ export class Station extends EventEmitter {
   public pendingRenewalKeyPem: string | null = null;
 
   private readonly connection: MqttConnection;
+
+  /**
+   * Every frame this station sent or received, when the caller asked for one.
+   *
+   * `undefined` on a station built without a journal, and a reader must treat that
+   * as "not measured" rather than as an empty wire — an absence asserted against a
+   * station that journals nothing is a vacuous pass, which is the failure mode this
+   * whole instrument exists to remove.
+   */
+  public readonly journal: FrameJournal | undefined;
+
   public bootAccepted: boolean = false;
 
   /**
@@ -154,6 +166,7 @@ export class Station extends EventEmitter {
     super();
     this.config = config;
     this.connection = new MqttConnection(mqttOptions);
+    this.journal = mqttOptions.journal;
     // The getter, not a captured value: the session key arrives in the
     // BootNotification response, necessarily AFTER this router exists. Passing
     // `this.sessionKey` here would freeze null forever.

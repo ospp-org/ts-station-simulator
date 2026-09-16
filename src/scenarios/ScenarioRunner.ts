@@ -1,7 +1,8 @@
 import { parse as parseYaml } from 'yaml';
 import { monotonicNowMs } from '../station/monotonicClock.js';
+import { FrameJournal } from '../mqtt/FrameJournal.js';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { SecureVersion } from 'node:tls';
 import type { StepDefinition } from './steps/Step.js';
@@ -1164,6 +1165,36 @@ async function hydrateProvisioningFromDisk(
 }
 
 // ---------------------------------------------------------------------------
+// Frame journal path
+// ---------------------------------------------------------------------------
+
+/** Where a scenario's wire journal lands. `tests/artifacts/` is gitignored in full. */
+const JOURNAL_DIR = 'tests/artifacts/journal';
+
+/**
+ * One journal file per scenario RUN, named for the scenario and the station it
+ * leased.
+ *
+ * The station id is in the name rather than only the scenario name because a
+ * pooled run re-leases ids across scenarios: two files named only for their
+ * scenario would be unambiguous, but a reader chasing "what did stn_x do" would
+ * have to open all of them. The timestamp keeps a re-run from overwriting the
+ * evidence of the run before it — a journal that is silently replaced is worth
+ * less than no journal.
+ *
+ * The directory is created here, synchronously, because FrameJournal degrades to
+ * memory-only on an unwritable sink: correct for an instrument, useless as a
+ * default, and the degradation would be announced once per frame.
+ */
+function journalPathFor(scenarioName: string, stationId: string): string {
+  const slug = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+  mkdirSync(path.resolve(JOURNAL_DIR), { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.resolve(JOURNAL_DIR, `${slug(scenarioName)}--${slug(stationId)}--${stamp}.jsonl`);
+}
+
+// ---------------------------------------------------------------------------
 // Station factory
 // ---------------------------------------------------------------------------
 
@@ -1173,6 +1204,7 @@ function createStationFromScenario(
   target: TargetConfig,
   provisioning?: ProvisioningArtifact,
   releaseWithWill = false,
+  journal?: FrameJournal,
 ): Station {
   // Default to clean session for scenarios. Persistent sessions accumulate
   // server-published commands while the station is offline; on reconnect
@@ -1318,6 +1350,11 @@ function createStationFromScenario(
     // Will Delay Interval is a CONNECT property; see releaseWithWill at the call
     // site for why `clean_session: false` is excluded.
     ...(releaseWithWill ? { willDelayIntervalSeconds: 0 } : {}),
+    // Every scenario gets one, so `field: journal.*` is answerable from any file
+    // without a per-scenario opt-in. The cost is one synchronous append per frame
+    // to a gitignored path; the alternative is a corpus where half the files can
+    // make a wire claim and half cannot, with nothing in the YAML to say which.
+    ...(journal ? { journal } : {}),
   });
 
   // A FAILED BACKGROUND HEARTBEAT MUST NOT KILL THE RUN.
@@ -2060,12 +2097,19 @@ export class ScenarioRunner {
     //   the delay this would zero out. It severs deliberately and gets its own
     //   will; it does not need the release to supply one.
     const releaseWithWill = poolStationId !== null && scenario.clean_session !== false;
+    const journal = new FrameJournal({
+      // The id from `variables`, which is the same resolution the station factory
+      // performs (pool lease > the file's own `station.stationId` > generated), so
+      // the file name names the station that actually connected.
+      file: journalPathFor(scenario.name, variables.get('stationId') ?? poolStationId ?? 'unknown'),
+    });
     const station = createStationFromScenario(
       scenario,
       variables,
       target,
       context.provisioning,
       releaseWithWill,
+      journal,
     );
     const startTime = monotonicNowMs();
 

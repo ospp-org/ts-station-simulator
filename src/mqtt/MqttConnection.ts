@@ -11,6 +11,7 @@ import {
   toServerTopic,
 } from '@ospp/protocol';
 import { resolveWireProtocolVersion } from './protocolVersion.js';
+import type { FrameJournal } from './FrameJournal.js';
 
 /**
  * mqtt.js's IClientOptions (ISecureClientOptions) does not model TLS
@@ -145,6 +146,19 @@ export type ReconnectProbeResult =
 export interface MqttConnectionOptions {
   mqttUrl: string;
   stationId: string;
+  /**
+   * Record every frame that crosses this connection, in both directions.
+   *
+   * Wired HERE and not at MessageSender/MessageRouter because this is the only
+   * pair of chokepoints that sees ALL of them. `MessageSender.sendEnvelope()`
+   * publishes without passing the signing guard, the LWT builder below publishes
+   * nothing at all through `send()`, and `MessageRouter.route()` refuses and emits
+   * NOTHING on a parse, MAC or schema failure — so a journal at either layer would
+   * be blind to precisely the frames an adversarial run exists to observe.
+   *
+   * Omit it and this class behaves exactly as it did before the journal existed.
+   */
+  journal?: FrameJournal;
   tls?: {
     key?: string;      // file path — station client key (mTLS)
     cert?: string;     // file path — station client cert (mTLS), the LEAF
@@ -302,6 +316,7 @@ export class MqttConnection extends EventEmitter {
   private tlsConfig?: MqttConnectionOptions['tls'];
   private readonly mqttCredentials?: MqttConnectionOptions['mqttCredentials'];
   private readonly cleanSession: boolean;
+  private readonly journal?: FrameJournal;
   private isDestroyingConnection = false;
   // --- ADR-0004 TIER 1 severance observability -------------------------
   // Why the socket last went down, and whether the broker is refusing us.
@@ -335,6 +350,7 @@ export class MqttConnection extends EventEmitter {
     this.tlsConfig = options.tls;
     this.mqttCredentials = options.mqttCredentials;
     this.cleanSession = options.cleanSession ?? false;
+    this.journal = options.journal;
     this.willDelayIntervalSeconds =
       options.willDelayIntervalSeconds ?? DEFAULT_WILL_DELAY_INTERVAL_SECONDS;
   }
@@ -573,6 +589,11 @@ export class MqttConnection extends EventEmitter {
     });
 
     client.on('message', (topic, payload, packet) => {
+      // BEFORE the emit, so the journal holds the frame even when the listener
+      // chain refuses it. MessageRouter drops an unparseable, unsigned or
+      // non-conforming frame without emitting anything, and those are the ones
+      // that matter.
+      this.journal?.record('in', topic, payload, normaliseQos(packet?.qos));
       this.emit('message', topic, payload, packet);
     });
   }
@@ -840,9 +861,18 @@ export class MqttConnection extends EventEmitter {
   publish(topic: string, payload: string | Buffer, qos: 0 | 1 | 2): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (!this.client) {
+        // Nothing was handed over, so nothing is journalled.
         reject(new Error('MQTT client is not connected'));
         return;
       }
+      // Recorded at CALL time, not on settle. A QoS-1 publish resolves on PUBACK,
+      // which can land AFTER an inbound frame the outbound one caused — recording
+      // on settle would put effect before cause in the file and quietly corrupt
+      // every causal assertion built on it. So a journalled `out` frame states
+      // that this process handed these bytes to the client, at this instant, in
+      // this order; delivery is the client's business, and a failure reaches the
+      // CALLER as a rejected publish.
+      this.journal?.record('out', topic, payload, qos);
       this.client.publish(topic, payload, { qos }, (err) => {
         if (err) {
           reject(err);
@@ -856,4 +886,13 @@ export class MqttConnection extends EventEmitter {
   onMessage(callback: (topic: string, payload: Buffer) => void): void {
     this.on('message', callback);
   }
+}
+
+/**
+ * mqtt.js types `packet.qos` as `QoS`, but a packet reconstructed from the wire
+ * can arrive without it. Defaulted to 0 rather than asserted, because a journal
+ * must never be the reason an inbound frame is lost.
+ */
+function normaliseQos(qos: unknown): 0 | 1 | 2 {
+  return qos === 1 || qos === 2 ? qos : 0;
 }
