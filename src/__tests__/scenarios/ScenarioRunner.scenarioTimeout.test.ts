@@ -320,11 +320,43 @@ describe('the legitimate overrides in the corpus', () => {
       'firmware-unexpected-version-at-boot.yaml',
       'firmware-update-full-cycle-reboot.yaml',
       'heartbeat-silence-offline-sweep.yaml',
+      // --- added 2026-09-11. Argument below. ---
+      'reserve-bay-unanswered-compensates-with-a-cancel.yaml',
       'reserve-expire.yaml',
       // --- added 2026-08-26. Argument below the firmware block. ---
       'session-start-ack-timeout-and-the-bay-it-half-claims.yaml',
+      // --- added 2026-09-11. Argument below. ---
+      'stop-service-unanswered-settles-as-stop-ack-lost.yaml',
     ]);
   });
+
+  /**
+   * THE ARGUMENT FOR THE TWO SILENCE FILES, added 2026-09-11.
+   *
+   * `stop-service-unanswered-settles-as-stop-ack-lost` and
+   * `reserve-bay-unanswered-compensates-with-a-cancel` are the same shape as the 08-26
+   * override below, and the argument is the same one: the wait is set by a SERVER SCHEDULE
+   * that nothing in the file can shorten.
+   *
+   * Both leave a dispatched command unanswered on purpose. What they are waiting for is
+   * `command:check-timeouts`, which is `->everyMinute()` (routes/console.php:27-30) and is
+   * named in the registry as SCAN_CADENCE_SECONDS = 60 (PendingCommandRegistry.php:96). So
+   * the worst case from dispatch to sweep is the action's configured timeout plus a full
+   * cadence:
+   *
+   *   StopService  config/ospp.php:225  10s + 60s = 70s   -> 90s of delay
+   *   ReserveBay   config/ospp.php:226   5s + 60s = 65s   -> 75s of delay
+   *
+   * plus boot, the session or reservation round trip, and the read-back — over the 90s
+   * default in both cases. Shortening either delay below its floor does not make the file
+   * faster, it makes it assert against a sweep that has not run yet, which is the flake the
+   * 08-26 argument already describes. The margin above the floor covers
+   * `->withoutOverlapping(10)` skipping a tick, which a 5-worker parallel run can cause.
+   *
+   * Both budgets are 240s rather than the ~120s the arithmetic strictly needs, because a
+   * scenario whose own wait is 75-90s has very little room left before the runner kills it,
+   * and a killed scenario reports as a hang rather than as the assertion that failed.
+   */
 
   /**
    * THE ARGUMENT FOR `session-start-ack-timeout-and-the-bay-it-half-claims`, added

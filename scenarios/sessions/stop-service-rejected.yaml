@@ -5,7 +5,7 @@
 #     --station stn_realstation \
 #     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
 name: "Stop Service Rejected - Session Not Found"
-description: "POST /api/v1/sessions/{id}/stop with an unknown sessionId returns HTTP 404 SESSION_NOT_FOUND server-side without dispatching to the station. Original station-rejection test (errorCode 3006) is no longer reachable: server pre-validates the session ID; the station never sees a StopService Request for an unknown session."
+description: "POST /api/v1/sessions/{id}/stop with an unknown sessionId returns HTTP 404 SESSION_NOT_FOUND server-side without dispatching to the station. The station never sees a StopService Request for an unknown session."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -91,5 +91,16 @@ steps:
     # StopService on the wire is what distinguishes them, and that absence is not
     # assertable here (there is no "no message arrived" step); it is a documented
     # consequence, not a proof.
+    #
+    # CORRECTION 2026-09-11 — this file used to say the station-rejection path was
+    # "no longer reachable". That is true ONLY for an unknown sessionId, which is the
+    # case this file drives. For a session the SERVER created and dispatched a
+    # StopService for, the station's 3006 is perfectly reachable and settles money as
+    # StationLostSession — and a different code on the same message bills the whole
+    # booking instead. Both arms are now on the wire:
+    #     stop-service-refused-session-not-found-desync.yaml    (3006)
+    #     stop-service-refused-while-running-bills-full.yaml    (non-3006)
+    # The generalisation cost nothing while nobody tried it; it had held since the
+    # file was written, and it was wrong about two money branches.
     expect_body:
       errorCode: 3006

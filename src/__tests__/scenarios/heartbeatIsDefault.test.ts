@@ -330,7 +330,16 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // 148 -> 149 on 2026-09-08: `probes/three-refusals-leave-a-trace.yaml`, the wire probe
     // for the three refusals that used to leave no trace. The docblock above keeps 148
     // because it is a dated measurement, and a measurement point is not rewritten later.
-    expect(files.length).toBe(149);
+    // 149 -> 154 on 2026-09-11: five station-refusal files — two StopService (money), one
+    // ReserveBay, one GetDiagnostics, one UpdateServiceCatalog. Measured that day, the
+    // corpus answered StopService nine times and accepted every one, so NEITHER money arm
+    // of StopServiceResponseHandler had ever been driven over a broker — the arm that bills
+    // the whole booking, and the 3006 arm that settles it as unconfirmed delivery.
+    // 154 -> 156 the same day: the SILENCE cases. Measured then, the corpus left 16 server
+    // commands unanswered but only TWO waited long enough for `command:check-timeouts` to
+    // land, so 2 of the 15 timeout arms had ever been observed. These add the StopService
+    // money arm and the ReserveBay compensation arm.
+    expect(files.length).toBe(156);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {

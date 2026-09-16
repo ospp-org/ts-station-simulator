@@ -1,0 +1,221 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER ARM REACHED — the StopService TIMEOUT arm, which is one of only two timeout arms
+# that move money.
+#   csms-server app/Shared/Protocol/Services/CommandTimeoutScanner.php:213-234
+#     private function handleStopServiceTimeout(array $correlationData): void
+#     ...
+#     $this->failSessionAction->execute(
+#         sessionId: $sessionId,
+#         failReason: 'StopService command timeout: station did not respond',
+#         failErrorCode: 1010,
+#         reason: TerminalReason::StopAckLost,
+#     );
+#
+# This is the SILENCE case, and it is a different code path from a refusal. A refused stop
+# runs StopServiceResponseHandler and settles immediately, from the station's own error
+# code. An UNANSWERED stop runs nothing at all until `command:check-timeouts` sweeps it a
+# minute later — no handler, no station input, the server deciding alone.
+#
+# WHY IT HAD NEVER BEEN DRIVEN. Measured 2026-09-11 over all 154 files: the corpus waits on
+# a server command 128 times and answers 112 of them, so 16 waits go unanswered — but a wait
+# left unanswered is not the same as an expiry OBSERVED. Summing every `delay` that follows
+# each unanswered wait and comparing it against that action's configured timeout plus the
+# 60s scan cadence, only TWO of the sixteen wait long enough for the sweep to land:
+# UpdateFirmware (firmware-command-timeout-no-response.yaml, 402s against 360s needed) and
+# StartService (session-start-ack-timeout-and-the-bay-it-half-claims.yaml). The other
+# fourteen end within a couple of seconds and the pool is torn down under them. So 2 of the
+# 15 timeout arms were exercised, and StopService was not one of them.
+#
+# THE WINDOW, AND WHY THE DELAY IS 90s.
+#   config/ospp.php:225   'StopService' => 10       — the logical timeout
+#   PendingCommandRegistry.php:96  SCAN_CADENCE_SECONDS = 60  — `command:check-timeouts`
+#                                   is `->everyMinute()` (routes/console.php:27-30)
+#   so the worst case from dispatch to sweep is 10 + 60 = 70s. 90s is that plus margin for
+#   `->withoutOverlapping(10)` skipping a tick under load, which a parallel run can cause.
+#
+# WHY NEITHER `fail_reason` NOR THE CREDIT AMOUNT IS ASSERTED — and why that is not a
+# weakness here.
+#   TWO sweepers race for this session and they are DESIGNED to agree. The command scanner
+#   above fires at 10s; the session STOPPING sweep (SessionTimeoutService.php:87-90,
+#   config/ospp.php:375 `'stopping' => 60`) fires at 60s. Whichever lands first wins, and
+#   the loser is a no-op on an already-terminal row. They write:
+#       scanner : failReason 'StopService command timeout: station did not respond'
+#       reaper  : failReason 'Stop timeout (60s): station never confirmed the stop'
+#   and BOTH write `failErrorCode: 1010` and `TerminalReason::StopAckLost`. Pinning
+#   `fail_reason` would pin which sweeper won, which is a race — it would flake, and it
+#   would be asserting scheduler timing rather than server behaviour.
+#
+#   That the two agree is deliberate and recent: the scanner's own comment (:225-229) records
+#   that the "former scanner-vs-reaper divergence (scanner=full-refund-floor,
+#   reaper=pro-rata) is closed". So the property worth pinning is the one they share —
+#   an unanswered stop is StopAckLost at 1010, not a full refund and not a silent hang —
+#   and this file pins exactly that.
+#
+#   The credit amount is elapsed-derived: StopAckLost on a UserDuration kind pro-rates on
+#   delivered time with NO low-delivery floor (UserDurationStrategy.php:76,
+#   TerminalReason.php:110 => false), and delivered time here is however long the sweep took
+#   to land. Asserting a number would be asserting the scheduler's phase.
+#
+# WHAT A FAILING SERVER LOOKS LIKE. The discriminating alternatives are all real and all
+# reachable: the session left `active` or `stopping` forever (no sweep ran); `completed`
+# with a full charge (the refusal arm's rule borrowed for silence); or `failed` under a
+# server-chosen code other than 1010. None of them produce the pair below.
+name: "Stop Service Unanswered - settles as StopAckLost"
+description: "Server dispatches StopService for an active session and the station never answers. No handler runs; command:check-timeouts must settle it as StopAckLost with code 1010 rather than leaving the session hung or billing it as a completed wash."
+scenario_timeout_ms: 240000
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A real, funded, ACTIVE session. The stop has to have something to stop. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-27T08:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  - action: delay
+    ms: 1500
+
+  # --- The operator asks for the stop. The server answers 200 and publishes StopService. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
+    expect_status: 200
+
+  # --- The command reaches the station. Confirming that is what makes the silence below
+  #     a DECISION not to answer, rather than a message that never arrived. ---
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # THE SILENCE. There is deliberately no `send` here. Nothing else in this file
+  # answers a StopService, so the runner's auto-correlation has nothing to pair
+  # with the Request above and the command stays pending until it expires.
+  # ────────────────────────────────────────────────────────────────────────────
+
+  - action: delay
+    ms: 90000
+
+  # THE ASSERTION — settled, and settled as a lost ACK. Both sweepers that can reach this
+  # session write this exact pair; neither writes anything else.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.fail_error_code: 1010
+
+  # --- Pool hygiene: the session is terminal and the bay was never released by the
+  #     station (it never answered), so restate Available for the next scenario. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

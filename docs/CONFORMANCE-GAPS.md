@@ -22,8 +22,9 @@ Codes emitted rose **13 → 17** of 118.
 > `PROGRAM_NOT_DECLARED` (`StartServiceHandler.ts:82`) and `BAY_NOT_FOUND`
 > (`StartServiceHandler.ts:26`).
 >
-> The single compact measurement: **13 distinct codes emitted, out of the 118** in the enum this
-> package already imports.
+> The single compact measurement: **13 distinct codes emitted, out of the 119** in the enum this
+> package already imports. *(The denominator read 118 until 2026-09-11; the enum's own docblock
+> says 119, and 119 distinct names and 119 distinct numeric values are on disk.)*
 
 > **WHY IT MATTERS MORE THAN ANY ROW BELOW.** This station is the receiver every scenario and
 > every end-to-end traversal is validated against. For each absent row it answers `Accepted`
@@ -140,6 +141,58 @@ server sees a timeout instead of a refusal. Those two are counted as **partial**
 
 ---
 
+## THE DECISION: this stays a scenario corpus, and does not become a virtual station
+
+**Taken 2026-09-11. Anyone reopening it should not have to re-measure — the numbers are here.**
+
+The obvious reading of this document is "wire up the other 19 handlers and make the simulator a
+faithful station." That is **not** what we are doing, and the reason is what the measurements
+above and in
+[`MEASURED-server-refusal-paths-20260911T090000Z.md`](MEASURED-server-refusal-paths-20260911T090000Z.md)
+actually showed.
+
+**The numbers the decision rests on:**
+
+| | |
+|---|--:|
+| station-side MUST obligations measured | **70** |
+| absent at the first measurement | **41** |
+| closed in the first batch | **11** — leaving **30** absent, **36 of 70** short of complete |
+| of the 41, rule labels that reach a server path a scenario can drive | **34 of 42** |
+| of those, ones that put a `Rejected` RESPONSE on the wire | **30** |
+| labels that say nothing about the server whatever the station does | **8** |
+
+**Why scenarios win.** A scenario reaches the same server code a conformant handler would. That is
+not an approximation — it was measured: a scenario `send` with `messageType: Response`
+auto-correlates to the pending Request (`SendStep.ts:302-320`), so the server's
+`PendingCommandRegistry` resolves it exactly as it would a real station's answer, and its response
+handler runs unchanged. **9 of the server's 16 refusal branch-points and 4 of its 15 timeout arms
+are now driven this way, including 3 of 3 that move money** — with no change to how the simulator
+works.
+
+**What tightening the handlers would buy, and who it is for.** Fidelity. A station that *decides*
+to refuse rather than being scripted to. That is worth having — and it is **the integrator's
+problem**, not this tool's: the integrator is building real firmware against the spec, and the
+conformance rows above are the checklist for it. This simulator exists to validate the **server**.
+
+**What it would cost.** Changing the receiver changes the instrument every other scenario is
+validated against. 154 files currently pass against a lenient station; making it strict turns every
+latent server defect into a simultaneous scenario failure, and the first one to land hides the
+rest. That is the exact hazard §7 of `RUNNING-AGAINST-UAT.md` describes for the inbound schema
+gate, which was measured in `warn` before being trusted in `strict` for precisely this reason.
+A scenario carries none of that risk: it adds a file, it does not move the floor under 154 others.
+
+**So the rule going forward.** A row here is worth closing when it makes the *station* more
+faithful for the integrator. A server path is worth reaching with a *scenario*. The two are
+different jobs and the same document should not be read as asking for both.
+
+**What does NOT follow from this.** The eleven already closed stay closed, and
+`ConformanceRefusals.test.ts` keeps pinning them — this is a decision about what to build next,
+not a retraction. And the handler default is untouched: no row here is closed by making the
+station refuse by default.
+
+---
+
 ## Why none of the 149 scenarios could break — and why that is the bigger finding
 
 **Scenario mode instantiates 1 of the 20 handlers.** Derived with a working instrument, after the
@@ -163,3 +216,101 @@ is cited as evidence.
 
 **Nothing here depended on leniency.** The honest reason is not that the scenarios are strict —
 it is that they never reach the code that was lenient.
+
+---
+
+## Two claims about `connect` mode, recorded 2026-09-12
+
+Both came out of an adversarial run of the firmware integration guide against UAT, by a session
+allowed to read only the guide. Neither blocks us — we drive the server with **scenarios** — and
+neither is a row in the table above, because neither is a station-side MUST. They are recorded
+because both make the tool *look* like something it is not.
+
+**Every number below is derived by a command, and the command is printed with it.** Nothing here
+is obtained by subtracting one claim from another.
+
+### 1. "All 20 OSPP handlers are wired" is true about registration and false about behaviour
+
+`README.md`, under `### connect`, reads *"All 20 OSPP handlers are wired (boot, heartbeat,
+**session lifecycle**, configuration, firmware, diagnostics, maintenance, catalog, trigger,
+certificates, data transfer, status, **meter**, security event)."*
+
+The count is right:
+
+```
+ls src/handlers/*.ts | wc -l                          -> 22
+  minus Handler.ts (the interface) and bayRefusal.ts (a helper)
+  = 20 handlers on disk
+grep -c '^      reg(OsppAction\.' src/cli/index.ts    -> 20   (connect mode)
+grep -c 'registerHandler' src/scenarios/ScenarioRunner.ts -> 1 (scenario mode; see the section above)
+```
+
+**20 of 20, in connect mode.** What the sentence then implies — and does not hold — is that a
+registered handler *drives* the thing it is named after. `StartServiceHandler` accepts the
+command and records the session, and nothing afterwards happens:
+
+```
+grep -rn 'durationSeconds' src/ | grep -v __tests__ | wc -l   -> 10 sites
+grep -n 'setInterval\|setTimeout' src/station/Station.ts      -> 1 setInterval (heartbeat)
+                                                                 3 setTimeout  (waitForConnect,
+                                                                   planned-shutdown announce,
+                                                                   waitForKick)
+```
+
+**Zero of the four timers is session-bound**, and no `durationSeconds` site sits next to any of
+them. So in connect mode a station that accepted a `StartService`:
+
+- emits **no** `MeterValues` autonomously — the only emitter is `TriggerMessageHandler`'s
+  `case 'MeterValues'`, a one-shot the *server* has to pull, and it reports `liquidMl: 0,
+  energyWh: 0` for every active session;
+- **does not stop** when `durationSeconds` elapses;
+- sends **no** `SessionEnded`, so the server's sweeper is what eventually settles the session.
+
+One of the three is deliberate and should not be read as a gap: `StopServiceHandler` sends no
+`SessionEnded` on a commanded stop, because `session-ended.md` §5 makes that a `MUST NOT`. The
+genuinely missing path is **natural expiry at `durationSeconds`** — and, under it, the meter
+cadence `behavior.meterValuesIntervalSec` advertises (default `30`), which has no consumer
+outside `GetConfigurationHandler` reporting it back.
+
+**Not gated.** `scripts/check-doc-claims.mjs` holds five README numbers — scenarios, categories,
+linter checks, wire version, actions — and the handler sentence is not among them, which is why it
+could say "wired" for as long as it has. `npm run check:doc-claims` passes with it in place.
+
+**Consequence for anyone reading a green run:** connect mode is a wire-framing and signing peer,
+not a session-driving station. The guide's chapters 5–10 cannot be executed through it; the
+adversarial session wrote its own wire client for exactly that reason, and we use scenarios.
+
+### 2. Connect mode invents its own `serialNumber` instead of the provisioned one
+
+```
+grep -rn 'generateSerialNumber' src/ | grep -v __tests__
+  src/station/StationConfig.ts          -> the generator, `SN-${uuid[0..8]}`
+  src/cli/index.ts:893                  -> connect mode, inline in the Station config
+  src/scenarios/bootstrap/PoolBootstrap.ts:924 -> pooled provisioning POST
+  src/scenarios/ScenarioRunner.ts:862   -> the scenario `serialNumber` variable
+```
+
+Provisioning sends a serial of a different shape entirely (`SIM-<epoch>`, `src/cli/index.ts`,
+provision command) and **persists none**: `<stationId>-bays.json` carries `stationId`, `bays` and
+`bayIds`, and nothing else. So the value is unrecoverable once the provision process exits, and
+the first boot after provisioning always reports a serial the server has not seen.
+
+The server's own journal names the consequence, and this repo already measured the rate —
+`docs/traversal-captures/README.md`: **897 `serial_changed` rows against 1218 `station_booted`,
+73.6 % of all boots logged as hardware swaps**, with pending offline transactions held for manual
+review.
+
+**The split between modes is not uniform**, which is why the ratio is what it is rather than
+100 %:
+
+| mode | serial at provisioning | serial at boot | agree? |
+|---|---|---|---|
+| `connect` | `SIM-<epoch>`, not persisted | `SN-<hex>`, generated fresh | **no** |
+| scenario, non-pooled | the `serialNumber` variable, via `{{serialNumber}}` | the same variable | **yes** |
+| scenario, pooled (`--bootstrap-pool`) | generated inline for the POST, not persisted | the scenario variable | **no** |
+
+The precedent for the fix is in this tree already: `src/cli/connectBays.ts` describes the
+identical defect class for `bayId` — *"`connect` used to invent `bay_<stationHex><NN>` and ignore
+the file it had just written… That is measuring the instrument, not the server."* — and closing
+that one required the same two halves, a write at provisioning and a read at connect. The write
+half now exists for the trust material (`src/cli/artifacts.ts`); the serial has neither half.

@@ -1,0 +1,231 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER BRANCH REACHED — and it is a MONEY branch with no scenario on it.
+#   csms-server app/Modules/Session/Handlers/StopServiceResponseHandler.php:179-182
+#     // The station refused the stop and keeps running -- it washes the full reserved
+#     // duration regardless of connectivity -- so the session delivered in full.
+#     $this->completeSessionAction->forceCompleteFullDelivery(
+#         $sessionId,
+#         "Station rejected StopService while running: {$dto->errorText} (code {$dto->errorCode})",
+#     );
+#
+#   `forceCompleteFullDelivery` (CompleteSessionAction.php:222-260) re-enters
+#   `execute()` with `actualDurationSeconds: $session->duration_requested` — the WHOLE
+#   booking — so the customer is billed for every second they reserved and refunded
+#   nothing. That is the opposite of the sibling 3006 arm, and the ONLY thing that
+#   chooses between them is the numeric errorCode on this response
+#   (StopServiceResponseHandler.php:124).
+#
+# WHY NO SCENARIO REACHED IT. Measured 2026-09-11 over all 149 files: the corpus
+# contains 104 `messageType: Response` sends and SIX of them are refusals
+# (UpdateFirmware x3, CertificateInstall, ChangeConfiguration, StartService). StopService
+# is answered NINE times and every one of them is `Accepted`. The neighbouring file
+# `stop-service-rejected.yaml` is not a counter-example — it never starts a session and
+# asserts a SERVER-side pre-dispatch 404, and its own header says the station-rejection
+# path "is no longer reachable". That statement is true only for an UNKNOWN sessionId.
+# For a session the server itself created and dispatched a StopService for — this file —
+# the station's refusal is reachable, and it settles money.
+#
+# WHY 3007 SESSION_MISMATCH. It is one of the two refusals `stop-service.md` requires of
+# a conforming station (r1 3005 unknown bay, r3 3007 session names a different bay) and
+# the simulator implements NEITHER (docs/CONFORMANCE-GAPS.md group D). So the code here
+# is both a real station obligation and a non-3006 value, which is what selects the arm.
+# Any non-3006 code takes the same branch; 3007 is chosen so the file names a gap.
+#
+# HONESTY ABOUT WHAT IS PROVEN. The station in scenario mode is a byte source — it is
+# not deciding to refuse, it is scripted to. That is fine and deliberate: this file is a
+# proof about the SERVER's handling, not about station conformance. It is stated here so
+# nobody later reads a green run as evidence that a station detects a bay mismatch.
+#
+# THE ARITHMETIC, DERIVED NOT COPIED. `svc_wash_basic` is seeded PerMinute at 100
+# credits/minute (uatPrivileged.ts DEFAULT_SEED_SERVICES) and the booking below is 300s,
+# so `credits_authorized` = ceil(300/60 * 100) = 500. Full delivery bills
+# duration_requested = 300s = 500 credits, refund 0. The sibling `stop-service.yaml`
+# books the SAME service for the SAME 300s and, on an Accepted stop reporting 45
+# delivered seconds, settles 75/425. Same fixture, same money in, opposite money out —
+# and the only difference on the wire is this file's `status: Rejected`.
+#
+# NEITHER ASSERTED NUMBER IS ECHOED FROM THIS FILE. 500 and 0 appear in no payload sent
+# here; `credits_charged` is computed by the settlement strategy from
+# `duration_requested`, and `refund_amount` is derived in SessionResource:53-56. The one
+# value this file does supply — 3007 — is asserted only where the server RE-DERIVED a
+# decision from it: `details.settledAs`, which is written by comparing the code against
+# SESSION_NOT_FOUND (StopServiceResponseHandler.php:124,140).
+name: "Stop Service Refused While Running - full delivery billed"
+description: "Server dispatches StopService for an active session; the station refuses with 3007 SESSION_MISMATCH. The server must treat the wash as delivered in full - bill the whole reserved duration, refund nothing, and journal the refusal as full_delivery."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- Start a real, funded session: 300s at 100 cr/min = 500 authorized ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # Mirrors stop-service.yaml: the StartService Response and the Occupied notification are
+  # processed asynchronously, so the session must be observed ACTIVE before the stop is
+  # asked for. A MeterValues then a delay is the pattern that file established.
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-27T08:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  - action: delay
+    ms: 1500
+
+  # --- Operator asks for the stop. The server answers 200 and publishes StopService. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # --- THE REFUSAL. Schema-required for a Rejected stop: errorCode AND errorText
+  #     (stop-service-response.schema.json allOf[1]). ---
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3007
+      errorText: "SESSION_MISMATCH"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 1 — the money. A server that ignored the refusal would leave this `active`;
+  # one that treated a refused stop like a Fault would refund. Full delivery is the only
+  # outcome that bills the whole 500 and returns 0.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 500
+      data.refund_amount: 0
+
+  # ASSERTION 2 — the DECISION, not just its effect. `settledAs` is the server comparing
+  # this file's 3007 against SESSION_NOT_FOUND and recording which settlement rule it
+  # picked. The sessions row shows the outcome and cannot show which of the two rules
+  # produced it — the handler's own docblock says so (StopServiceResponseHandler.php:26-30).
+  # This is the field that distinguishes the two money arms.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
+    expect_status: 200
+    expect_body:
+      data[kind=command_refused].effectedBy: "Station"
+      data[kind=command_refused].details.action: "StopService"
+      data[kind=command_refused].details.errorCode: 3007
+      data[kind=command_refused].details.settledAs: "full_delivery"
+
+  # --- Pool hygiene: the session is terminal, so only the bay is returned. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

@@ -1,0 +1,225 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER BRANCH REACHED — the SECOND money arm of the same handler, and the one that
+# settles the OPPOSITE way from its sibling.
+#   csms-server app/Modules/Session/Handlers/StopServiceResponseHandler.php:124
+#     $desync = $dto->errorCode === OsppErrorCode::SESSION_NOT_FOUND->value;
+#   ...:168-175
+#     $this->sessionMetrics->recordAnomaly('stop_session_not_found_desync');
+#     $this->completeSessionAction->execute(
+#         sessionId: $sessionId,
+#         actualDurationSeconds: null,
+#         reason: TerminalReason::StationLostSession,
+#     );
+#
+#   3006 means the station has NO record of a session the server already took money for.
+#   Delivery is UNCONFIRMED — which is not the same as proven-to-have-run, and that
+#   distinction is the whole point of the split. `StationLostSession` routes per service
+#   kind: UserDurationStrategy.php:76 pro-rates on server-observed elapsed;
+#   AllOrNothingSettlement.php:62 FULL-REFUNDS, because "a discrete unit with no
+#   confirmation is not billable".
+#
+#   Its sibling — ANY other errorCode — calls `forceCompleteFullDelivery` and bills the
+#   entire booking. Same message, same shape, same schema; opposite money. The only
+#   discriminator on the wire is the integer in `errorCode`.
+#
+# WHY NO SCENARIO REACHED IT. Measured 2026-09-11 across all 149 files: StopService is
+# answered nine times in the corpus and every one is `Accepted`. Neither money arm of
+# this handler had ever been driven over a broker. `stop-service-rejected.yaml` looks
+# like it covers this — it even pins the number 3006 — but that 3006 is produced
+# SERVER-side, pre-dispatch, for an unknown sessionId, and its own header says so: the
+# station never sees a StopService Request in that file. Here the session is real, the
+# server dispatches, and the STATION is the one saying 3006. Same number, different
+# origin, different code path.
+#
+# WHY THE CREDIT AMOUNT IS NOT ASSERTED, AND WHAT IS ASSERTED INSTEAD.
+#   This arm passes `actualDurationSeconds: null`, so the server derives delivered time
+#   from its own clock, and `TerminalReason::StationLostSession` carries NO low-delivery
+#   floor (TerminalReason.php:110 => false). The charge is therefore
+#   ceil(elapsed/60 * 100) over a wall-clock interval this file cannot pin — a few
+#   seconds of broker and HTTP latency move it. Asserting a number here would be
+#   asserting the test runner's timing, and it would flake.
+#
+#   So the assertion is placed on the field that IS deterministic and that actually
+#   decides the money: `details.settledAs`. The server writes it at
+#   StopServiceResponseHandler.php:140 by comparing the received code against
+#   SESSION_NOT_FOUND. It reads `StationLostSession` here and `full_delivery` in the
+#   sibling file. That pair — one field, two files, opposite values, one differing byte
+#   on the wire — is the proof the split exists and is driven by the code.
+#
+#   The alternative that WOULD be deterministic is a MultiUnit booking, where this arm
+#   full-refunds (charged 0) by AllOrNothingSettlement.php:62. Not done here on purpose:
+#   MultiUnit changes the service kind as well as the errorCode, so it would move two
+#   variables at once and stop being a clean discriminator against the sibling file.
+#
+# HONESTY. The station is scripted, not deciding. This proves the SERVER's handling.
+name: "Stop Service Refused - Session Not Found desync"
+description: "Server dispatches StopService for an active session; the station answers 3006 SESSION_NOT_FOUND, meaning it never had the session. The server must settle it as StationLostSession - unconfirmed delivery - not as a full-delivery wash."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A real, funded session the server believes in: 300s at 100 cr/min = 500 ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-27T08:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # --- THE REFUSAL. The station denies ever having had this session. ---
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3006
+      errorText: "SESSION_NOT_FOUND"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 1 — the session reached a terminal, settled state rather than being left
+  # active or swept later as a timeout. The credit figure is deliberately absent; see the
+  # header for why, and ASSERTION 2 for what carries the money decision instead.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+
+  # ASSERTION 2 — the settlement RULE the server chose. `StationLostSession` here against
+  # `full_delivery` in stop-service-refused-while-running-bills-full.yaml, from the same
+  # handler, the same endpoint and the same field, differing only in the errorCode this
+  # file put on the wire. A server that ignored the code would write one value for both.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
+    expect_status: 200
+    expect_body:
+      data[kind=command_refused].effectedBy: "Station"
+      data[kind=command_refused].details.action: "StopService"
+      data[kind=command_refused].details.errorCode: 3006
+      data[kind=command_refused].details.settledAs: "StationLostSession"
+
+  # --- Pool hygiene ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

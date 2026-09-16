@@ -1,0 +1,151 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/Reservation/Handlers/ReserveBayResponseHandler.php:147-185
+#     private function handleRejected(string $reservationId, ReserveBayResponseDto $dto): void
+#     ...
+#     $this->reservationRepository->update($reservation, [
+#         'status' => ReservationStatus::CANCELLED,
+#         'cancelled_at' => now(),
+#     ]);
+#     Event::dispatch(new ReservationCancelled(..., reason: ReservationCancellationReason::StationRejected, ...));
+#
+# WHY IT MATTERS. `POST /api/v1/reservations` answers 201 and writes a PENDING row BEFORE
+# the station has said anything — the reservation is a promise the server makes on the
+# station's behalf. The station's answer is what settles it. If the server ignored a
+# refusal the row would sit PENDING forever while the bay is not actually held, and the
+# customer would be told they have a reservation the machine never granted.
+#
+# WHY NO SCENARIO REACHED IT. Measured 2026-09-11 across all 149 files: ReserveBay is
+# answered FIVE times in the corpus and every one is `Accepted`. The refusal arm — the
+# one that cancels the row — had never been on the wire. The simulator's own handler
+# cannot produce it either: scenario mode instantiates 1 of 20 handlers
+# (ScenarioRunner.ts:1358, BootNotificationHandler and nothing else), so the refusal has
+# to be written into the file, which is exactly what this does.
+#
+# WHY 3014 BAY_RESERVED. `reserve-bay.md` §6 r1 requires 3005 for an unknown bay and the
+# set-maintenance-mode table maps a bay already `Reserved` to 3014 — a station that holds
+# the bay for someone else is the realistic reason to refuse a reservation. Any Rejected
+# code takes the same server arm; 3014 is chosen because it names a real station
+# obligation rather than an arbitrary number.
+#
+# WHAT IS ASSERTED, AND WHY IT IS SERVER-PRODUCED.
+#   1. `data.status: "cancelled"` — written by the handler above. The discriminating
+#      alternatives are real: left `pending` (refusal ignored), or `expired` (swept later
+#      by reservation:check-expiry rather than cancelled now). Neither value appears in
+#      any payload this file sends.
+#   2. The journal row — ReserveBayResponseHandler is one of only THREE response handlers
+#      that does NOT write `station_journal` on refusal (the other two are StartService,
+#      which fails the session instead, and ChangeConfiguration). So there is deliberately
+#      no journal assertion here: the reservation row IS the whole durable trace, and
+#      claiming otherwise would be asserting a row the server never writes.
+#
+# HONESTY. The station is scripted, not deciding. This is a proof about the SERVER.
+name: "Reserve Bay Refused By Station"
+description: "Server dispatches ReserveBay after answering 201; the station refuses with 3014 BAY_RESERVED. The server must cancel the reservation it had already promised, not leave it pending."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The server promises the reservation before asking the station. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
+
+  - action: wait_for
+    message: ReserveBay
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      reservationId: "payload.reservationId"
+      bayId: "payload.bayId"
+
+  # --- THE REFUSAL. reserve-bay-response.schema.json requires errorCode AND errorText
+  #     alongside a Rejected status. ---
+  - action: send
+    message: ReserveBay
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3014
+      errorText: "BAY_RESERVED"
+
+  - action: delay
+    ms: 2000
+
+  # THE ASSERTION — the promise the server made is withdrawn.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "cancelled"
+
+  # --- Pool hygiene: the bay was never actually held, so restate Available. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true

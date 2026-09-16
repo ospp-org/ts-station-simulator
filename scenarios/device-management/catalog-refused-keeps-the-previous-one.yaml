@@ -1,0 +1,197 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/DeviceManagement/Handlers/UpdateServiceCatalogResponseHandler.php:187-201
+#     $this->stationJournal->record(
+#         kind: StationJournalRecorder::KIND_COMMAND_REFUSED,
+#         details: [..., 'errorMeaning' => self::REJECTION_MEANINGS[$errorCode] ?? ..., ...],
+#     );
+#
+# WHY THIS ONE, OUT OF THE EIGHT STILL AT ZERO. Every other refusal left on the list writes
+# a journal row and nothing else. This one carries an INVARIANT: `update-service-catalog.md`
+# r8 says a station refusing a binding it never declared keeps the PREVIOUS catalog in
+# force, and the server's half of that is that the refusal arm performs zero catalog writes
+# — no `service_catalogs` insert, no `stations.current_catalog_version` bump, no
+# `station_services` upsert. All three of those happen on the Accepted arm
+# (UpdateServiceCatalogResponseHandler.php:323-360). So this is the one refusal where
+# "the server did nothing" is the property under test, and doing nothing is exactly the
+# thing a test usually cannot see.
+#
+# HOW THE INVARIANT IS MADE VISIBLE WITHOUT A NEW ENDPOINT.
+#   Nothing exposes `stations.current_catalog_version` over REST — no Resource carries it
+#   (grepped `app/Http/Resources/`, zero hits). But the version is DERIVED from it on every
+#   publish:
+#       UpdateServiceCatalogAction.php:325
+#       $nextVersion = ($current === null) ? '1' : (string) ((int) $current + 1);
+#   under `stations ... lockForUpdate()`. So publishing TWICE reads the column twice.
+#   The first publish claims N+1. If the station refuses and the server correctly writes
+#   nothing, the column is untouched and the SECOND publish claims N+1 again. If the server
+#   had advanced the column on a refusal, the second claims N+2 — and the station is left
+#   holding a catalog the server believes it accepted. Two 202s carrying the SAME number is
+#   the assertion; it needs no column, no new route, and no assumption about what N is.
+#
+# WHY 5024 AND NOT 5023/5025. All three take the same arm, so the branch would be proven by
+# any of them. 5024 is chosen because it is the one the spec attaches the keep-the-previous
+# rule to, it is the row docs/CONFORMANCE-GAPS.md group F names, and it is the only one of
+# the three whose `errorMeaning` sentence states the invariant this file is testing:
+#   'UNSUPPORTED_SERVICE — the station refused the WHOLE catalog and kept the previous one...'
+#
+# WHY NO SCENARIO REACHED IT. Measured 2026-09-11 across the corpus: UpdateServiceCatalog is
+# answered four times and every one is `Accepted`. The sibling `service-catalog-update.yaml`
+# proves the accept path down to the three-tier writes; this is its refusal twin, and it
+# reuses that file's hard-won mechanics — `requires_pool`, the pool-owner `auth` override,
+# and the explicit `correlationId`, without which the handler returns early at "no pending
+# command found" and every assertion above it still passes.
+#
+# HONESTY. The station is scripted, not deciding — the simulator's UpdateServiceCatalog
+# handler has no refusal branch at all (CONFORMANCE-GAPS group F), and scenario mode
+# instantiates only BootNotificationHandler regardless. This proves the SERVER's handling.
+name: "Catalog Refused - the station keeps the previous one"
+description: "Server publishes a catalog; the station refuses the WHOLE thing with 5024 UNSUPPORTED_SERVICE. The server must perform no catalog write at all - proven by a second publish claiming the same version number, which it can only do if the first never advanced."
+requires_pool: >-
+  POST .../catalog/publish authorizes `catalog.manage`, held by tenant_owner and by no
+  identity that exists outside a bootstrapped run — the pool's ephemeral owner is minted and
+  deleted per run, so there is no account to seed or to source from a secrets file. Same
+  reason as the sibling service-catalog-update.yaml.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot. deviceManagementSupported is REQUIRED: without it the publish route answers
+  #     409 COMMAND_PRE_EMPTED / 6008 `device_management_not_declared` and nothing is sent. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- FIRST PUBLISH. The version is CAPTURED rather than pinned to a literal.
+  #
+  #     The sibling service-catalog-update.yaml asserts `catalogVersion: "2"` on the
+  #     grounds that a fresh pool station holds "1". That is true of a station no other
+  #     scenario has published to — but a pooled run shares 5 stations across the whole
+  #     corpus, and there are now TWO files that publish. If the allocator hands both the
+  #     same station, whichever runs second starts at "2" and a literal "2" fails for a
+  #     fixture reason that has nothing to do with the branch under test.
+  #
+  #     Capturing sidesteps that entirely, and it is also the more honest assertion: the
+  #     property is "the refused publish advanced NOTHING", which is a statement about two
+  #     numbers being equal, not about either one being 2. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    expect_status: 202
+    capture:
+      claimedVersion: "catalogVersion"
+
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      catalog_msg_id: "messageId"
+
+  # --- THE REFUSAL. update-service-catalog-response.schema.json requires errorCode AND
+  #     errorText on a Rejected status. `previousCatalogVersion` is required only on the
+  #     Accepted arm, and is deliberately absent here. ---
+  - action: send
+    message: UpdateServiceCatalog
+    messageType: Response
+    correlationId: "{{captured.catalog_msg_id}}"
+    payload:
+      status: "Rejected"
+      errorCode: 5024
+      errorText: "UNSUPPORTED_SERVICE"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 1 — the refusal was understood, not merely received. `errorMeaning` is a
+  # server-side lookup keyed on the numeric code (REJECTION_MEANINGS, :56-60); it appears in
+  # no payload this file sends, and an unrecognised or absent code writes
+  # 'unknown or absent errorCode' instead. Asserting the sentence proves the server mapped
+  # 5024 specifically.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
+    expect_status: 200
+    expect_body:
+      data[kind=command_refused].effectedBy: "Station"
+      data[kind=command_refused].details.action: "UpdateServiceCatalog"
+      data[kind=command_refused].details.errorCode: 5024
+      data[kind=command_refused].details.catalogVersion: "{{captured.claimedVersion}}"
+      data[kind=command_refused].details.errorMeaning: "UNSUPPORTED_SERVICE — the station refused the WHOLE catalog and kept the previous one; a serviceId or a (bay, program) binding names hardware it never declared. Do NOT re-send unchanged"
+
+  # ASSERTION 2 — THE INVARIANT. The second publish reads
+  # `stations.current_catalog_version` again under the same lock and claims current + 1.
+  # Claiming the SAME number twice is only possible if the refused publish advanced
+  # nothing; a server that had bumped the column on a refusal claims the next one here and
+  # the assertion fails naming both values.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    expect_status: 202
+    expect_body:
+      catalogVersion: "{{captured.claimedVersion}}"
+
+  # --- Pool hygiene: this second publish is also in flight, so answer it and let the
+  #     station's catalog settle rather than leaving a pending command for the timeout
+  #     scanner to sweep during someone else's scenario. Accepted this time.
+  #
+  #     `previousCatalogVersion` is REQUIRED on the Accepted arm and is informational to
+  #     the server: UpdateServiceCatalogResponseHandler:136 reads it and, on disagreement,
+  #     only logs — ":232-233" says in as many words that it persists anyway rather than
+  #     discard a real update. So a station-chosen literal here cannot corrupt anything,
+  #     and "1" is what a fresh pool station held. On a re-used station it would be the
+  #     wrong number and still harmless; it is not asserted anywhere. ---
+  - action: wait_for
+    message: UpdateServiceCatalog
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      catalog_msg_id_2: "messageId"
+
+  - action: send
+    message: UpdateServiceCatalog
+    messageType: Response
+    correlationId: "{{captured.catalog_msg_id_2}}"
+    payload:
+      status: "Accepted"
+      previousCatalogVersion: "1"

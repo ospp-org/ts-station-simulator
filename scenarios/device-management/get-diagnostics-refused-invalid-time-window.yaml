@@ -1,0 +1,145 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/DeviceManagement/Handlers/GetDiagnosticsResponseHandler.php:136-171
+#     $diagnosticsUpload->update([
+#         'status' => 'failed',
+#         'error_text' => $errorText ?? 'Rejected by station',
+#         'failure_reason' => DiagnosticsFailureReason::RejectedByStation->value,
+#         'completed_at' => now(),
+#         ...
+#     ]);
+#     $this->stationJournal->record(kind: KIND_COMMAND_REFUSED, ...);
+#
+# WHY IT IS NOT THE SAME AS THE FILE NEXT DOOR. `diagnostics-failure.yaml` also ends with
+# a `failed` upload row — but it gets there by ACCEPTING the command and then sending a
+# DiagnosticsStatusNotification carrying a failure. That is the station trying and
+# failing. This file is the station REFUSING TO TRY, which is a different arm of a
+# different handler and writes a different `failure_reason`:
+#     reported_by_station   <- the accept-then-fail path (diagnostics-failure.yaml)
+#     rejected_by_station   <- this path
+# The two values are what distinguish them, and the second had never been produced over a
+# broker. Measured 2026-09-11 across all 149 files: GetDiagnostics is answered three
+# times in the corpus and every one is `Accepted`.
+#
+# WHY 5020 INVALID_TIME_WINDOW. `get-diagnostics.md` r3 requires a conforming station to
+# refuse when `startTime` is after `endTime`, and docs/CONFORMANCE-GAPS.md group I records
+# that this simulator does not implement it — the check is "a field comparison" it has
+# never made. Naming the code here puts the SERVER half of that gap on the wire even
+# though the station half is still absent.
+#
+# WHY THE REQUEST DOES NOT ACTUALLY CARRY AN INVERTED WINDOW. `POST /admin/stations/{id}/
+# diagnostics` is driven with an uploadUrl only, which is what the sibling file does and
+# what the route accepts. The station's refusal here is scripted, so an inverted window in
+# the request would be decoration — it would not cause the refusal and could not be
+# asserted. Stated rather than faked: this file proves the server's handling of a 5020, not
+# that anything detected one.
+#
+# WHAT IS ASSERTED, AND WHY EACH IS SERVER-PRODUCED.
+#   1. `failure_reason: "rejected_by_station"` — a server-chosen enum
+#      (DiagnosticsFailureReason.php:55). It appears in no payload sent here, and it is
+#      the field that separates this arm from the accept-then-fail arm.
+#   2. `details.errorCode: 5020` in the journal — the handler parses this with
+#      `is_numeric` rather than a cast (:130-134) specifically so a non-conforming value
+#      lands as null instead of 0. Asserting the number proves the parse, and the journal
+#      is the ONLY place the numeric code survives: the handler's own comment (:141-152)
+#      records that `error_text` is not a reconstruction of it, because this repo's
+#      fixtures ship codes and texts that disagree.
+name: "Get Diagnostics Refused - Invalid Time Window"
+description: "Server dispatches GetDiagnostics; the station refuses with 5020 INVALID_TIME_WINDOW. The server must close the upload as failed with failure_reason rejected_by_station - distinct from a station that accepted and then failed - and keep the numeric code in the journal."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        # REQUIRED, and measured the hard way on UAT 2026-09-11: without it the route
+        # answers 409 COMMAND_PRE_EMPTED / 6008 `device_management_not_declared`
+        # (wouldBe 2007) and no GetDiagnostics is ever published. The boot declaration is
+        # the gate for every device-management command, which is why the sibling
+        # diagnostics-failure.yaml carries it too.
+        deviceManagementSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Operator asks for diagnostics. 202: accepted for dispatch, not yet answered. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    body:
+      uploadUrl: "https://diagnostics.example.com/refused-window"
+    expect_status: 202
+
+  - action: wait_for
+    message: GetDiagnostics
+    messageType: Request
+    timeout_ms: 15000
+
+  # --- THE REFUSAL. get-diagnostics-response.schema.json requires errorCode AND errorText
+  #     on a Rejected status. ---
+  - action: send
+    message: GetDiagnostics
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 5020
+      errorText: "INVALID_TIME_WINDOW"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 1 — the upload row is closed, and closed as a REFUSAL rather than as a
+  # failed attempt. A server that ignored the refusal would leave this `pending` until
+  # CommandTimeoutScanner swept it, which would write failure_reason `command_timeout`.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
+    expect_status: 200
+    expect_body:
+      data[upload_url=https://diagnostics.example.com/refused-window].status: "failed"
+      data[upload_url=https://diagnostics.example.com/refused-window].failure_reason: "rejected_by_station"
+
+  # ASSERTION 2 — the numeric code survived. This is the only surface that keeps it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
+    expect_status: 200
+    expect_body:
+      data[kind=command_refused].effectedBy: "Station"
+      data[kind=command_refused].details.action: "GetDiagnostics"
+      data[kind=command_refused].details.errorCode: 5020

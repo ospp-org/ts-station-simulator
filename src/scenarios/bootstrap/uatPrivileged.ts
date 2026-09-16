@@ -1279,8 +1279,18 @@ export function buildTeardownTestUsersSql(
     // 1. wallet_entries — child of wallets (NO ACTION). Must precede the wallets delete.
     `DELETE FROM wallet_entries WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id IN (${userIds}));`,
     // 2-9. Nine NO-ACTION FKs that point at users.id directly.
-    `DELETE FROM offline_passes WHERE user_id IN (${userIds});`,
+    // ORDER CORRECTED 2026-09-13: transactions BEFORE passes. `offline_transactions`
+    // carries a NO-ACTION FK `offline_pass_id` -> `offline_passes.id`, so deleting the
+    // pass first FK-blocks the moment one user both HOLDS a pass and SETTLED a
+    // transaction against it — and because the caller folds these into one transaction,
+    // the block rolls the whole identity sweep back and removes nothing. Measured on UAT
+    // 2026-09-13 while sweeping run residue: `offline_transactions_offline_pass_id_fkey`
+    // on a single adv2 customer that owned both rows. The docblock's numbered list above
+    // had them the other way round, which is why the order looked deliberate; it was not
+    // covered because the FK-coverage test asserts that every NO-ACTION FK is REACHED,
+    // not that the statements are in a topological order among themselves.
     `DELETE FROM offline_transactions WHERE user_id IN (${userIds});`,
+    `DELETE FROM offline_passes WHERE user_id IN (${userIds});`,
     `DELETE FROM payment_intents WHERE user_id IN (${userIds});`,
     `DELETE FROM sessions WHERE user_id IN (${userIds});`,
     `DELETE FROM reservations WHERE user_id IN (${userIds});`,

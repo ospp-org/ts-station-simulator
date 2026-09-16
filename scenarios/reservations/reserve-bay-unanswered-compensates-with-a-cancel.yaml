@@ -1,0 +1,190 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}
+#
+# SERVER ARM REACHED — the only timeout arm of the fifteen that COMPENSATES by putting a
+# new message on the wire. Every other arm either settles a row it already owns, or logs.
+#   csms-server app/Shared/Protocol/Services/CommandTimeoutScanner.php:238-259
+#     private function handleReserveBayTimeout(array $correlationData): void
+#     ...
+#     $dto = new CancelReservationDto(
+#         reservationId: $reservationId,
+#         reason: ReservationCancellationReason::CommandTimeout,
+#     );
+#     $this->cancelReservationAction->execute($dto);
+#
+#   and CancelReservationAction.php:195-220 builds and publishes a REAL command:
+#     MessageBuilder::request('CancelReservation')->withPayload([
+#         'bayId' => $osppBayId, 'reservationId' => $reservationId ])
+#     ... registerPendingCommand ... $this->stationGateway->sendCommand(...)
+#
+# WHY THIS IS THE BEST-OBSERVABLE TIMEOUT IN THE SYSTEM. Every other arm's effect is a
+# column the scenario has to go and read afterwards, which proves the row changed but not
+# that the SERVER acted — a sweep, a cascade or a later write could have done it. Here the
+# server's action IS a message, sent unbidden, to a station that has said nothing since the
+# ReserveBay. Catching it on the wire is direct evidence of the arm running, and the
+# `reservationId` it carries ties it to this scenario's own reservation rather than to any
+# other traffic on the pool.
+#
+# WHY IT HAD NEVER BEEN DRIVEN. Measured 2026-09-11 over all 154 files: the corpus leaves 16
+# server-command waits unanswered, but only TWO of them wait long enough for the sweep to
+# land (UpdateFirmware and StartService, one file each). ReserveBay is answered every time
+# it is waited on — 5 Accepts and, since today, 1 Rejected. The silence had never happened.
+#
+# THE WINDOW, AND WHY THE DELAY IS 75s.
+#   config/ospp.php:226   'ReserveBay' => 5        — the shortest timeout in the table
+#   PendingCommandRegistry.php:96  SCAN_CADENCE_SECONDS = 60, `->everyMinute()`
+#   so worst case dispatch-to-sweep is 5 + 60 = 65s. 75s adds margin for
+#   `->withoutOverlapping(10)` skipping a tick, which a parallel run can cause.
+#
+#   The `wait_for` below does NOT need the compensation to arrive after it starts:
+#   WaitForStep drains anything already buffered ("Anything already buffered from before
+#   this step counts as arrival", WaitForStep.ts:129-137), so a CancelReservation published
+#   at second 65 of the delay is still caught at second 75.
+#
+# NO COMPETING SWEEPER, WHICH IS WHY THIS FILE CAN PIN MORE THAN ITS SESSION SIBLINGS.
+#   The reservation is booked for 5 minutes, and `reservation:check-expiry` only expires a
+#   reservation past its TTL — 300s, four times the window this file waits. So unlike the
+#   StartService and StopService timeouts, where a session-state sweep races the command
+#   scanner to the same outcome, nothing here can produce this effect except the arm above.
+#   The cancellation is attributable.
+#
+# WHAT A FAILING SERVER LOOKS LIKE. The reservation left `pending` forever while the bay is
+# not actually held — a promise to a customer that no machine ever agreed to — or cancelled
+# in the database with no CancelReservation sent, leaving the station holding a bay the
+# server has already given away. The two assertions below separate those: one reads the
+# wire, the other reads the row, and a server doing only half scores one of them.
+name: "Reserve Bay Unanswered - the server compensates with a Cancel"
+description: "Server dispatches ReserveBay after answering 201 and the station never replies. command:check-timeouts must cancel the reservation AND publish a CancelReservation naming it - the one timeout arm whose compensation is visible on the wire."
+scenario_timeout_ms: 240000
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The server promises the reservation before the station has agreed to anything.
+  #     5 minutes of TTL, deliberately far beyond the ~65s this file needs, so
+  #     reservation:check-expiry cannot be what cancels it. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/reservations"
+    body:
+      bay_id: "{{bayId_1}}"
+      duration_minutes: 5
+      session_source: "MobileApp"
+    expect_status: 201
+
+  - action: wait_for
+    message: ReserveBay
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      reservationId: "payload.reservationId"
+      bayId: "payload.bayId"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # THE SILENCE. No `send` answers the ReserveBay above. The command stays pending
+  # until it expires 5 seconds later, and the sweep picks it up within the minute.
+  # ────────────────────────────────────────────────────────────────────────────
+
+  - action: delay
+    ms: 75000
+
+  # ASSERTION 1 — THE COMPENSATION, ON THE WIRE. A CancelReservation the server sent on its
+  # own initiative, to a station that has been silent since the ReserveBay. Nothing in this
+  # file asked for it.
+  - action: wait_for
+    message: CancelReservation
+    messageType: Request
+    timeout_ms: 30000
+    capture:
+      cancel_msg_id: "messageId"
+
+  # ASSERTION 2 — and it names THIS reservation. Without this the step above would pass on
+  # any CancelReservation the pool happened to produce; with it, the message is tied to the
+  # reservation this scenario created and to no other.
+  - action: assert
+    field: "payload.reservationId"
+    equals: "{{captured.reservationId}}"
+
+  # --- Answer the compensation, so the pool is not left with a second pending command for
+  #     the scanner to sweep during someone else's scenario. ---
+  - action: send
+    message: CancelReservation
+    messageType: Response
+    correlationId: "{{captured.cancel_msg_id}}"
+    payload:
+      status: "Accepted"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 3 — the row agrees with the wire. A server that sent the command but left the
+  # reservation `pending`, or cancelled the row and sent nothing, fails one of the two.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/reservations/{{captured.reservationId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "cancelled"
+
+  # --- Pool hygiene: the bay was never actually held by the station. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
