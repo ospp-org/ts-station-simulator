@@ -62,14 +62,27 @@ Override via `--target` flag or `OSPP_TARGET` env var.
 ### Environment variables per target
 
 Each target in `config/targets.yaml` can reference env vars with the
-`${VAR_NAME}` syntax (resolved at load time). Required vars per target:
+`${VAR_NAME}` syntax. Which vars a run actually needs is a property of the
+COMMAND, not of the target:
 
-| Target       | Required env vars                                  |
+| Target       | Credential env vars                                |
 |--------------|----------------------------------------------------|
 | `uat`        | `UAT_EMAIL`, `UAT_PASSWORD`                        |
 | `sandbox-gm` | `SANDBOX_GM_EMAIL`, `SANDBOX_GM_PASSWORD`, `SANDBOX_GM_MQTT_USER`, `SANDBOX_GM_MQTT_PASS` |
 
 Set these in a local `.env` file at repo root (git-ignored).
+
+**When each one is required.** A placeholder in a URL, a cert path or the station
+pool is resolved when the target loads, and an unset one aborts immediately — no
+command can work without those. A placeholder in a CREDENTIAL section is resolved
+when the credential is READ:
+
+- `run` logs in, so it needs the pair, and fails with the same
+  `Environment variable UAT_EMAIL is not set` it always did;
+- `connect` needs `mqtt_credentials` only if the target declares them;
+- `provision` needs NEITHER. It posts a single-use token in the request body and
+  sends no `Authorization` header, so `simulator provision -t uat` runs with
+  `UAT_EMAIL` unset. It used to abort on it before reaching its own certs check.
 
 ## CLI Reference
 
@@ -106,12 +119,53 @@ server-initiated commands until Ctrl+C.
 simulator connect --target <name> --station <id>
 ```
 
-Bay IDs are derived deterministically from station ID. All 20 OSPP
-handlers are wired (boot, heartbeat, session lifecycle, configuration,
-firmware, diagnostics, maintenance, catalog, trigger, certificates,
-data transfer, status, meter, security event).
+Bay IDs come from `<stationId>-bays.json` when the station was provisioned through
+this CLI, and are derived deterministically from the station ID otherwise. All 20
+OSPP handlers are wired (boot, heartbeat, session lifecycle, configuration,
+firmware, diagnostics, maintenance, catalog, trigger, certificates, data transfer,
+status, meter, security event).
 
-Press Ctrl+C to disconnect cleanly.
+**Ctrl+C announces the departure.** The station publishes `ConnectionLost` with
+`reason: "PlannedShutdown"` and then closes with an ordinary clean DISCONNECT
+(`connection-lost.md` §4.3). `SIGTERM` does the same, so `docker stop` is as
+truthful as a keyboard. Before this, Ctrl+C said nothing and the server held
+`is_online` true over a dead socket until the sweep deduced the absence at
+`ceil(interval x 3.5)`.
+
+**Every frame is journalled**, both directions, as JSONL — one object per line
+carrying direction, action, messageId, both clocks, topic, byte count and the RAW
+payload:
+
+```bash
+simulator connect --target local-mtls --station stn_aaaaaaaa      # journal on by default
+simulator connect ... --journal results/wire.jsonl                # somewhere specific
+simulator connect ... --no-journal                                # off
+```
+
+The journal sits at the `MqttConnection` chokepoints, in FRONT of the MAC and
+schema gates, so a frame the station refused is still recorded — those are the ones
+an adversarial run is looking for. A scenario asserts against it with
+`field: journal.*` rather than grepping stdout:
+
+```yaml
+- action: assert
+  field: journal.counts.out.ConnectionLost
+  equals: 1
+- action: assert
+  field: journal.out[action=ConnectionLost].envelope.payload.reason
+  equals: PlannedShutdown
+```
+
+**Reporting a topology that disagrees with the declared one.** `--report-bays` sets
+what goes on the wire, deliberately allowed to differ from what the station declared
+at provisioning — which is what reaches the server's two program-set divergence
+arms (`StatusNotificationHandler`, `undeclared` / `omitted`):
+
+```bash
+# declared {1,2} on bay 1, reported {1}   -> omitted [2]
+# declared {1}   on bay 2, reported {1,7} -> undeclared [7]
+simulator connect ... --report-bays '1:1;2:1,7'
+```
 
 ### provision
 
@@ -124,8 +178,29 @@ signed certificate plus the Station CA chain.
 ```bash
 simulator provision <stationId> \
   --target <name> \
-  --token <provisioningToken>
+  --token <provisioningToken> \
+  --bay-count <n>              # dense 1..n, one program each
 ```
+
+**Declaring a topology.** Exactly one of `--bay-count` or `--bays` is required —
+they describe the same field, and passing both states two topologies. `--bays`
+declares an explicit one, `<bayNumber>:<programNumber>[,...][;<bay>...]`; neither
+set need be dense, and every bound is the schema's (bay 1..64, program 1..32,
+unique within its scope):
+
+```bash
+--bays '1:1,2;2:1'   # bay 1 runs programs {1,2}; bay 2 runs {1}
+--bays '1:1;3:1'     # bays {1,3} — bay 2 was never fitted
+```
+
+Program labels are derived (`Program <n>`) and are not part of the syntax: `label`
+is printable ASCII, which includes the separators, and the schema says the field is
+descriptive and never compared at boot. A scenario needing a specific label
+declares `bays:` on its provision step, which takes full objects.
+
+The response's bay set is checked against the declared set before anything is
+written, so a token that bound `{1,3}` and comes back with another set fails loudly
+instead of pairing a bay number with another bay's id.
 
 Provisioning tokens are issued by the CSMS server administrator
 (single-use, time-limited). Files are written to the paths configured
