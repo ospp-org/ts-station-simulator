@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { BayConfig } from '../station/StationConfig.js';
+import type { BaySpec } from '../station/topologySpec.js';
 
 export interface DeriveBaysResult {
   bays: BayConfig[];
@@ -62,45 +63,85 @@ export async function loadProvisionedBays(
 /**
  * Build the station's bay list.
  *
- * Precedence, highest first:
+ * WHICH BAY NUMBERS, highest precedence first:
+ *   1. `topology` — an EXPLICIT declaration. It decides the bay numbers and the
+ *      per-bay PROGRAMS, and it is the only input that can make what the station
+ *      reports differ from what the server has on record for it. See topologySpec.ts
+ *      for why that difference is the point.
+ *   2. `provisioned` — the pairs the SERVER issued. Both the id and the bay NUMBER
+ *      come from here, so a non-contiguous topology (`{1,3}`) survives instead of
+ *      being flattened to `1..n`.
+ *   3. `bayCount` — dense `1..N`, correct only for a station that was never
+ *      provisioned through this CLI.
+ *
+ * WHICH BAY ID, highest precedence first:
  *   1. `--var bayId_<N>=…` — an explicit operator override, for a station whose pairs
  *      live somewhere this CLI cannot read.
- *   2. `provisioned` — the pairs the SERVER issued. Authoritative whenever present:
- *      both the id and the bay NUMBER come from here, so a non-contiguous topology
- *      (`{1,3}`) survives instead of being flattened to `1..n`.
- *   3. `bay_<stationHex><NN>` — a derived placeholder, correct only for a station that
- *      was never provisioned through this CLI.
+ *   2. the `provisioned` pair for that bay NUMBER, whatever decided the numbers. A
+ *      station that reports a different program set still has to address a bay the
+ *      server can resolve, so the issued id is kept even when the topology overrides
+ *      everything else.
+ *   3. `bay_<stationHex><NN>` — a derived placeholder.
  */
 export function deriveBays(
   stationId: string,
   bayCount: number,
   userVars: Map<string, string>,
   provisioned?: ProvisionedBay[] | null,
+  topology?: readonly BaySpec[] | null,
 ): DeriveBaysResult {
   const stationHex = stationId.replace(/^stn_/, '');
   const bays: BayConfig[] = [];
-  // When the server told us the topology, it decides both the count and the numbers.
-  const slots: Array<{ bayNumber: number; bayId?: string }> =
-    provisioned && provisioned.length > 0
-      ? provisioned.map(p => ({ bayNumber: p.bayNumber, bayId: p.bayId }))
-      : Array.from({ length: bayCount }, (_, i) => ({ bayNumber: i + 1 }));
+  const warnings: string[] = [];
+
+  const issuedIdFor = new Map<number, string>(
+    (provisioned ?? []).map(p => [p.bayNumber, p.bayId]),
+  );
+
+  // An explicit topology decides the numbers; otherwise the server's pairs do;
+  // otherwise a dense count.
+  const slots: Array<{ bayNumber: number; programs: BayConfig['programs'] }> =
+    topology && topology.length > 0
+      ? topology.map(b => ({
+          bayNumber: b.bayNumber,
+          // `available: true`: this shape declares that the program EXISTS. A faulted
+          // program is reported present-but-unavailable, which is a per-run state a
+          // scenario sets, not a property of the declaration.
+          programs: b.programs.map(p => ({
+            programNumber: p.programNumber,
+            label: p.label,
+            available: true,
+          })),
+        }))
+      : (provisioned && provisioned.length > 0
+          ? provisioned.map(p => ({ bayNumber: p.bayNumber, programs: defaultPrograms() }))
+          : Array.from({ length: bayCount }, (_, i) => ({ bayNumber: i + 1, programs: defaultPrograms() })));
 
   for (const slot of slots) {
     const i = slot.bayNumber;
-    const defaultBayId = slot.bayId ?? `bay_${stationHex}${String(i).padStart(2, '0')}`;
+    const issued = issuedIdFor.get(i);
+    if (topology && issuedIdFor.size > 0 && issued === undefined) {
+      // Said out loud rather than refused. A station reporting a bay the server has
+      // no record of is a legitimate adversarial case — but the id below is then
+      // INVENTED, so the server cannot resolve it, and the branch that answers is
+      // the unresolvable-bay one rather than either program-set arm. A run that
+      // confuses the two has measured nothing.
+      warnings.push(
+        `topology declares bay ${i}, which is not among the provisioned pairs ` +
+          `(${[...issuedIdFor.keys()].sort((a, b) => a - b).join(', ')}) — the server never issued ` +
+          'an id for it, so the derived placeholder below will not resolve server-side',
+      );
+    }
+    const defaultBayId = issued ?? `bay_${stationHex}${String(i).padStart(2, '0')}`;
     const overrideBayId = userVars.get(`bayId_${i}`);
     bays.push({
       bayId: overrideBayId ?? defaultBayId,
       bayNumber: i,
-      // Programs are firmware constants the station owns; services are what the
-      // server pushed. Both are declared here because the simulator plays both
-      // halves, but only programs go on the wire in a StatusNotification.
-      programs: [{ programNumber: 1, label: 'Basic Wash', available: true }],
+      programs: slot.programs,
       services: [{ serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', available: true }],
     });
   }
 
-  const warnings: string[] = [];
   for (const key of userVars.keys()) {
     const m = key.match(BAY_KEY_RE);
     if (!m) {
@@ -122,4 +163,15 @@ export function deriveBays(
   }
 
   return { bays, warnings };
+}
+
+/**
+ * The one-program default a bare bay count has always meant.
+ *
+ * Programs are firmware constants the station owns; services are what the server
+ * pushed. Both are declared here because the simulator plays both halves, but only
+ * programs go on the wire in a StatusNotification.
+ */
+function defaultPrograms(): BayConfig['programs'] {
+  return [{ programNumber: 1, label: 'Basic Wash', available: true }];
 }
