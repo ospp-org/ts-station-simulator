@@ -49,6 +49,35 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # THE SAME FACT, READ OFF THE WIRE INSTEAD OF OFF THE ROUTER BUFFER.
+  #
+  # The assertion above reads `context.receivedMessages` — what MessageRouter
+  # ACCEPTED. The three below read the frame journal, which records at the
+  # MqttConnection chokepoints, in FRONT of the router's parse, MAC and schema
+  # gates. Both forms are kept deliberately: they draw the same conclusion from two
+  # independent sources, so a disagreement between them turns this file red rather
+  # than being invisible. That is the point of the pair, and it is why the old form
+  # is not simply replaced.
+  #
+  # The two sources are NOT interchangeable, which is what makes the journal worth
+  # having: a frame the router refuses is absent from `receivedMessages` entirely, so
+  # the old form cannot distinguish "the server never answered" from "the server
+  # answered and this station rejected it". The journal can.
+  - action: assert
+    field: "journal.in[action=BootNotification].envelope.payload.status"
+    equals: "Accepted"
+
+  # The round trip itself, in both directions — the denominator the assertion above
+  # is read against. Without it, a path that silently resolved to undefined would be
+  # indistinguishable from a matching value.
+  - action: assert
+    field: "journal.counts.out.BootNotification"
+    equals: 1
+
+  - action: assert
+    field: "journal.counts.in.BootNotification"
+    equals: 1
+
   # --- Bay enters Unavailable (maintenance) ---
   - action: send
     message: StatusNotification
