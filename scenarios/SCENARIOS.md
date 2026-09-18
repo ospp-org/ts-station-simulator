@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 157** across 12 categories, counted on disk
+**Total scenarios: 158** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113
@@ -121,6 +121,7 @@ branch that `core/happy-boot.yaml` does not.
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
 | `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |
+| `sessions/start-refused-binding-uncovered` | `StartSessionAction.php:507` uncovered-binding guard | `409` + `errorCode 3020`, `details.declaredPrograms`, and no session row |
 | `sessions/meter-values-seqno-gap-still-ingested` | `MeterValuesHandler.php:112` gap check | the three `meter_values` rows the server wrote |
 | `sessions/meter-values-seqno-out-of-order-still-ingested` | `MeterValuesHandler.php:112` + the watermark rule at `:126` | four rows — the repeated ordinal is not deduplicated |
 | `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction.php:91` pre-flight | `409` + `ospp_code 6005`, and no Reset on the wire |

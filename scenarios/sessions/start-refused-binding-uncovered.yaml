@@ -1,0 +1,438 @@
+name: "Start Refused — 3020 BINDING_UNCOVERED, the ordinal the bay stopped declaring"
+description: >-
+  Bind a service to a program ordinal the bay declares, re-provision the station with a
+  topology that DROPS that ordinal, then start a session against the binding. The server
+  answers 409 `3020 BINDING_UNCOVERED` and names, in `details`, both the offending ordinal
+  and the ones the bay still declares — which is what makes the registry's recommended
+  action executable rather than advice.
+
+# WHY THIS FILE EXISTS, AND WHY IT IS THE ONLY SHAPE THAT REACHES THE CODE.
+#
+# `3020 BINDING_UNCOVERED` was minted in spec v0.42.0 and reached csms-server in 8fe20097.
+# It is the third of three refusals that all mean "this (bay, service, program) will not
+# start", and the server distinguishes them by three DIFFERENT questions — so a scenario
+# that reaches the wrong one proves nothing about this code:
+#
+#   3019 SERVICE_NOT_BOUND    `resolve()` found no binding at all.
+#   3003 SERVICE_UNAVAILABLE  the ordinal IS declared, and the station reported it
+#                             `available: false`.
+#   3020 BINDING_UNCOVERED    the binding names an ordinal that is no longer in the bay's
+#                             declaration at all — `bay_programs` has no such row.
+#
+# csms-server's own `AnUncoveredBindingDoesNotStartTest.php` pins all three apart, and its
+# `:286` control is the one that matters here: a declared-but-unavailable ordinal must stay
+# 3003. So this file may not reach 3020 by marking a program unavailable.
+#
+# ── RE-PROVISIONING IS THE ONLY WAY TO DROP AN ORDINAL, MEASURED ────────────────────────
+#
+# A StatusNotification cannot do it. `StatusNotificationHandler::applyProgramAvailability`
+# only flips the `available` column on rows that already exist — it has no DELETE — and the
+# profile it implements says so in as many words (`profiles/core/status-notification.md:39`,
+# quoted at `StatusNotificationHandler.php:662-668`): "A program that cannot run is reported
+# present with `available: false`, never omitted — omission means the hardware changed, and
+# that requires re-provisioning, not a status report."
+#
+# The writer that DOES remove rows is the provisioning path:
+# `CertificateManager.php:490` deletes every `bay_programs` row for the bay and `:493`
+# re-inserts the declared set. That is the whole reason the sequence below re-provisions.
+#
+# AND THE 4020 GATE DOES NOT STAND IN THE WAY, which is the fact that makes this file
+# possible at all. `BayCountMismatchException` compares the declared bay NUMBER SET against
+# the registered one — its own docblock spells out that the name says "count" and the
+# comparison is a set. Both provisionings below declare bays {1, 2}. Only the PROGRAM list
+# inside bay 1 narrows, from {1, 2} to {1}, and no gate reads that.
+#
+# ── WHAT THIS FILE NEEDS THAT NO OTHER FILE IN THE CORPUS NEEDS ─────────────────────────
+#
+# A SECOND `connect_mqtt`. Re-provisioning issues a new certificate and rebinds the
+# station's keys, so the identity the first connection holds is stale from that moment —
+# csms-server logs the rotation as "broker reconnect-bar lifted … re-provisioned,
+# certificate N issued". `ConnectMqttStep` derives its key/cert paths from the `certs_dir`
+# that `ProvisionStep` captures (`ConnectMqttStep.ts:42-61`), so the second connect picks
+# up the rotated material by construction rather than by a new knob.
+#
+# It is nonetheless UNEXERCISED: 0 of the 157 scenarios in this corpus call `connect_mqtt`
+# more than once. That is stated here rather than discovered by whoever runs this first.
+#
+# AND THE STATION MUST BE ONLINE FOR THE REFUSAL TO BE REACHABLE AT ALL.
+# `StartSessionAction.php:100` refuses an offline station with `3005 STATION_OFFLINE`
+# before any of the binding questions are asked — the 3020 guard is at `:507`. So a boot
+# that does not land makes this file report the WRONG code rather than fail, which is why
+# the second boot below is followed by an assertion on the station's own state rather than
+# by a bare delay.
+
+# ── WHY THIS IS SKIPPED, MEASURED 2026-09-18 ────────────────────────────────────────────
+#
+# NOT a claim that the sequence is wrong: every step below is a shape the runner already
+# supports, and `npm run lint:scenarios` passes it. What is missing is a stack to run it
+# against, and the obstruction is in the LOCAL environment, not in this repository.
+#
+# The local csms stack (`--target local-mtls`, http://localhost:8080) is 6 migrations
+# behind its own checked-out code, so `POST /api/v1/stations/provision` answers
+# `500 / 6001 SERVER_INTERNAL_ERROR` on every call — measured twice. The cause is exact:
+# the provisioning path queries `station_services.deleted_at`, the column is added by
+# `2026_09_17_000003_add_deleted_at_to_station_services`, and that migration cannot run
+# because an EARLIER pending one,
+# `2026_09_16_000001_move_two_mis_filed_names_into_the_platform_tier`, refuses on a
+# collision: both `certificates.revoke` and `platform.certificates.revoke` already exist
+# (rows dated 2026-08-19 and 2026-09-17), and it declines to merge them rather than
+# silently union two sets of grants. Resolving that collision is an operator decision
+# about permission data, not a simulator change.
+#
+# UAT is not an alternative for this file: 3020 reaches a server only from 8fe20097
+# onward, and nothing is deployed.
+#
+# The BROKER is not the obstruction, contrary to a note carried by earlier sessions. Its
+# server certificate carries `DNS:localhost` and `IP Address:127.0.0.1` in its SAN
+# alongside the UAT names, and the local broker routes under its ACL — an anonymous probe
+# is disconnected because `deny_action: disconnect` and the ACL matches on client id
+# (`acl.conf` header), which is the rule working, not a fault.
+skip: >-
+  The local stack cannot provision: 6 pending migrations, the first of which refuses on a
+  duplicate permission name (`certificates.revoke` / `platform.certificates.revoke`), so
+  `station_services.deleted_at` is absent and POST /api/v1/stations/provision answers 500
+  / 6001. Measured 2026-09-18. UAT cannot serve as an alternative — 3020 exists only from
+  csms-server 8fe20097 and nothing is deployed. Unskip once the local migration chain runs
+  to HEAD; nothing in this file changes.
+skip_kind: environment
+
+requires_pool: >-
+  Minting a provisioning token authorizes `stations.manage_provisioning_tokens` and
+  creating a station service authorizes `catalog.manage`; both live on tenant_owner, and
+  the only tenant_owner that exists is the ephemeral one a bootstrapped run mints and
+  deletes. Same constraint as provision-rejected-key-and-topology-rungs.yaml.
+owns_station: >-
+  This file RE-PROVISIONS mid-run, which issues a new certificate and rebinds the station's
+  keys. Doing that to a pool station would rotate an identity four other scenarios are
+  leasing. `owns_station` also resolves `{{stationId}}` to the fresh per-scenario id, so
+  every step below — the Station object, both `connect_mqtt` calls and the cert-path
+  templates — reads one name for one station.
+
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+
+# The first connection is made by the `connect_mqtt` step below, AFTER provisioning — there
+# is no certificate to connect with before it.
+defer_mqtt_connect: true
+
+# NO `scenario_timeout_ms` OVERRIDE, deliberately. Two provisionings sounds long, but
+# `provision-rejected-key-and-topology-rungs.yaml` performs FIVE on the 90 s default and is
+# not on the override list either. The list's own rule is that an override is argued for,
+# and the assertion beside it requires the file's declared `delay:` sum to exceed the
+# default — this file declares no delays at all. An override taken on a guess, by a file
+# that has never been run end to end, is the guess this repository asks not to be made.
+
+station:
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+
+steps:
+  # ── Operator: the org, a location, and a station of this file's own ────────────────────
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Uncovered binding {{stationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  # Registration writes the BAYS. It does not write programs — those arrive with the
+  # provisioning declaration below, which is the only writer of `bay_programs`.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+        - bayNumber: 2
+    expect_status: 201
+    creates:
+      station: "data.station_id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "uncovered binding — first provisioning, bay 1 declares {1,2}"
+    expect_status: 201
+    capture:
+      provisioning_token_a: "data.rawToken"
+
+  # ── FIRST PROVISIONING — bay 1 declares TWO ordinals ──────────────────────────────────
+  # This is the declaration the binding below is legal against. Bay 2 exists only so the
+  # bay SET has more than one member, which is what makes the re-provisioning below a
+  # narrowing of PROGRAMS rather than of bays.
+  - action: provision
+    station_id: "{{stationId}}"
+    token_var: "provisioning_token_a"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uncovered-binding"
+    bays:
+      - bayNumber: 1
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+          - programNumber: 2
+            label: "Foam Wash"
+      - bayNumber: 2
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+
+  - action: connect_mqtt
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1, 2]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: false
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  # A bay is `unknown` to the server after every accepted Boot, and only a StatusNotification
+  # clears it — an unreported bay is refused `3002 BAY_NOT_READY` at
+  # `StartSessionAction.php:194`, which is ahead of the 3020 guard at `:507`. Reporting BOTH
+  # ordinals here is CORE-013: the reported set must EQUAL the set this bay just declared.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+        - programNumber: 2
+          available: true
+
+  # ── Operator: a service, bound to the ordinal the bay DOES declare ────────────────────
+  # `serviceId` is caller-supplied so the binding and the start below can name the same
+  # service (StationServiceCatalogController.php:186-192 honours it; a collision is a named
+  # 422, not a silent substitution).
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      serviceId: "svc_uncovered_{{stationId}}"
+      name: "Foam Wash"
+      kind: "wash"
+      pricingType: "per_minute"
+      pricePerMinute: 100
+    expect_status: 201
+    capture:
+      station_service_id: "data.id"
+
+  # PROGRAM 2, deliberately. Ordinal 1 would survive the re-provisioning below and the file
+  # would then prove nothing — it would start a session.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.station_service_id}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      bayId: "{{captured.bayId_1}}"
+      programNumber: 2
+    expect_status: 201
+    expect_body:
+      # Both echoed members, because a binding that landed on the wrong bay or the wrong
+      # ordinal would still answer 201 and the refusal below would then be measuring
+      # something else.
+      binding.bayNumber: 1
+      binding.programNumber: 2
+
+  # ── SECOND PROVISIONING — the same bay SET, bay 1 declaring ONE ordinal ───────────────
+  # {1, 2} against {1, 2}: the 4020 set comparison is satisfied and cannot fire. Bay 1's
+  # program list narrows to {1}, `CertificateManager.php:490` deletes its `bay_programs`
+  # rows and `:493` re-inserts only ordinal 1 — so the binding made above now names an
+  # ordinal with no row behind it. That is the condition, and nothing else produces it.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "uncovered binding — second provisioning, bay 1 drops ordinal 2"
+    expect_status: 201
+    capture:
+      provisioning_token_b: "data.rawToken"
+
+  - action: provision
+    station_id: "{{stationId}}"
+    token_var: "provisioning_token_b"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+    artifacts_dir: "tests/artifacts/uncovered-binding-narrowed"
+    bays:
+      - bayNumber: 1
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+      - bayNumber: 2
+        programs:
+          - programNumber: 1
+            label: "Basic Wash"
+
+  # The certificate rotated, so the first connection's identity is stale. This is the
+  # second `connect_mqtt` no other file in the corpus performs; it reads the key material
+  # the step above captured into `certs_dir`.
+  - action: connect_mqtt
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+        deviceManagementSupported: false
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  # ORDINAL 2 IS ABSENT HERE, AND THAT IS THE POINT. The re-provisioning narrowed bay 1's
+  # declaration to {1}, and CORE-013 binds the report to the declaration — so a conforming
+  # station reports ordinal 1 alone. It must NOT report ordinal 2 as `available: false`:
+  # that is the 3003 SERVICE_UNAVAILABLE shape, a DECLARED program that cannot run, and
+  # csms-server's own `AnUncoveredBindingDoesNotStartTest.php:286` pins it apart from 3020.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # ONLINE, ASSERTED RATHER THAN ASSUMED. `StartSessionAction.php:100` refuses an offline
+  # station with 3005 long before it asks any binding question, so a boot that did not land
+  # would make the step below report the wrong code instead of failing here.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 200
+    expect_body:
+      data.status: "online"
+
+  # The wallet, because `4001 INSUFFICIENT_BALANCE` is raised at
+  # `StartSessionAction.php:379` — ahead of the 3020 guard at `:507`. An unfunded wallet
+  # would refuse this start for the wrong reason.
+  - action: fund_wallet
+    credits: 500
+
+  # ── THE REFUSAL ───────────────────────────────────────────────────────────────────────
+  # NOT `background: true`, unlike every other start in this corpus. A start that SUCCEEDS
+  # blocks on SessionReadySignal::wait until the station answers StartService over MQTT; a
+  # refused one never dispatches — csms-server's own test asserts 0 commands published —
+  # so it answers immediately and a backgrounded call would only defer the assertion.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    body:
+      bay_id: "{{captured.bayId_1}}"
+      service_id: "svc_uncovered_{{stationId}}"
+      duration_seconds: 60
+    expect_status: 409
+    expect_body:
+      errorCode: 3020
+      errorText: "BINDING_UNCOVERED"
+      # ALL FOUR MEMBERS THE REGISTRY ROW NAMES, and the last two are the point of the
+      # file. `RECOMMENDED_ACTION[3020]` tells an operator to "Re-bind the service to one
+      # of `details.declaredPrograms`" — an answer that omitted that list would be telling
+      # them to choose from a set nobody gave them, and `errorCode` alone cannot see that.
+      details.bayId: "{{captured.bayId_1}}"
+      details.programNumber: 2
+      # Ascending, and pinned: `ServiceProgramResolver.php:83` orders by `program_number`,
+      # and csms-server's `AnUncoveredBindingDoesNotStartTest.php:219` declares [3,1] in
+      # its fixture precisely to hold that sort in place.
+      details.declaredPrograms: [1]
+
+  # NOTHING WAS STARTED, asserted from the server rather than inferred from the 409. The
+  # refusal's own wording says the customer has not been charged "because nothing was
+  # started"; a 409 that had nevertheless written a session row would satisfy every
+  # assertion above.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/sessions?station_id={{stationId}}"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 200
+    expect_body:
+      data: []

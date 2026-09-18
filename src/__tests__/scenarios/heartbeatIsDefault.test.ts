@@ -346,7 +346,19 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // It is also the first file to assert on the frame journal — an outbound frame was not
     // observable from a scenario at all before it, since `receivedMessages` holds only
     // INBOUND frames the router accepted.
-    expect(files.length).toBe(157);
+    // 157 -> 158 on 2026-09-18: `sessions/start-refused-binding-uncovered.yaml`, the first
+    // file for `3020 BINDING_UNCOVERED` — minted in spec v0.42.0, carried into
+    // `@ospp/protocol` 0.39.0, and reaching csms-server at 8fe20097. Measured that day, the
+    // corpus asserted 34 distinct OSPP codes of the SDK's 120 and 3020 was in none of them,
+    // which is the whole of what a new refusal code costs a corpus that enumerates by hand:
+    // nothing fails, the code simply has no witness.
+    //
+    // It is also the first file to call `connect_mqtt` TWICE — 0 of the 157 did — because
+    // re-provisioning rotates the station's certificate and the sequence needs the station
+    // back online afterwards. And it is SKIPPED: the local stack cannot provision, so the
+    // file is linted and counted but has never been run. Its `skip:` reason carries the
+    // measurement.
+    expect(files.length).toBe(158);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {
