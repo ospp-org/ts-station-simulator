@@ -1,7 +1,7 @@
 # Sprint Server #2 regression — resolveServiceUuid station-scoping.
 #
 # Pre-fix bug: StationQueryService::resolveServiceUuid joined station_services
-# × service_definitions on sd.service_id WITHOUT filtering by station. When
+# x service_definitions on sd.service_id WITHOUT filtering by station. When
 # two stations in one org both carried the same svc_* code, a session-start
 # naming a serviceId that the REQUEST's station did NOT carry — but another
 # station in the same org did — was ACCEPTED. sessions.service_id then FK'd
@@ -10,88 +10,246 @@
 # (organization_id, service_id), so the varchar join could leak across
 # tenants too.
 #
-# The fix (this scenario asserts the regression is closed):
-# resolveServiceUuid(string $serviceId, string $stationUuid) — mandatory
-# station UUID. Body filters by ss.station_id. Cross-station and cross-tenant
-# resolution both return null → 404 INVALID_SERVICE 3004.
+# The fix this file asserts is closed: resolveServiceUuid(string $serviceId,
+# string $stationUuid) — mandatory station UUID, body filters by ss.station_id,
+# cross-station and cross-tenant resolution both return null -> 404
+# INVALID_SERVICE 3004.
 #
-# Setup expected on UAT (one-time, run the existing onboarding scenarios):
+# ── WHAT CHANGED HERE, 2026-09-21 ──────────────────────────────────────────
 #
-#   1. Bootstrap station A in some org O:
-#      simulator run \
-#        --scenario scenarios/e2e/e2e-new-customer-onboarding.yaml \
-#        --target uat \
-#        --station stn_a_<your-id> \
-#        --var serviceId_1=svc_wash_A_<your-id>
+# This file used to carry `skip_when_pooled` and a header telling an operator to
+# run two onboarding scenarios by hand, pass two --vars, and keep station A's
+# bays armed between them. It now BUILDS its own second station, so it runs in
+# the ordinary pooled suite and needs no argument at all.
 #
-#   2. Bootstrap station B in the SAME org O (note: re-use the same SMB-owner
-#      email from step 1 so the platform admin creates one shared org, OR add
-#      the new station via admin REST flows directly against the existing org).
-#      Station B's catalog MUST carry svc_dry_B_<your-id> and MUST NOT carry
-#      svc_wash_A_<your-id>:
-#        simulator run \
-#          --scenario scenarios/e2e/e2e-new-customer-onboarding.yaml \
-#          --target uat \
-#          --station stn_b_<your-id> \
-#          --var serviceId_1=svc_dry_B_<your-id>
+# The pool gives a scenario ONE station, which is station A. Station B is
+# registered here through the admin API under the same run organisation, with a
+# catalog of exactly one service that A does not carry. Disjoint is more than
+# the assertion needs and more than can be arranged — A's catalog is the pool's
+# own five — so what is built is the ONE service on B and not on A, which is
+# precisely the row the unscoped join used to reach.
 #
-#   3. Run THIS scenario, passing station A's bayId and station B's serviceId:
-#        simulator run \
-#          --scenario scenarios/sessions/session-rejected-invalid-service-cross-station.yaml \
-#          --target uat \
-#          --station stn_a_<your-id> \
-#          --var stationA_bayId=bay_<...from-onboarding-step-1...> \
-#          --var stationB_serviceId=svc_dry_B_<your-id>
+# ── AND THE BAYS DO NOT HAVE TO BE ARMED, measured rather than assumed ──────
 #
-# Expected result: HTTP 404 INVALID_SERVICE 3004.
-# Pre-fix on the same data: HTTP 201 (wrong) — service_id resolves to station
-# B's station_services row, session is accepted at station A's bay with
-# station B's pricing.
+# The header this file carried said station A's bays had to be `Available` or
+# the answer would be 409 BAY_NOT_READY 3002 before the subject was reached.
+# That was true of an older order and is not true of the deployed one:
+# `resolveServiceUuid` is called by the CONTROLLER
+# (`SessionController.php:63`), BEFORE `StartSessionAction::execute` and
+# therefore before `validateBayForStart` (`StartSessionAction.php:240`). Only
+# two things are asked first — is the bay in service (404 BAY_NOT_FOUND) and
+# does the service resolve ON THAT STATION (404 INVALID_SERVICE) — and
+# `Bay::inService()` reads retirement, not status. So this file still never
+# connects: `defer_mqtt_connect: true` below is kept, and now for a reason that
+# is checked.
 #
-# ── AND STATION A'S BAY MUST NOT BE `unknown` WHEN YOU RUN STEP 3 ───────────
-#
-# Written down because this file cannot enforce it and nothing else states it.
-# `StartSessionAction` validates the BAY before it resolves the service —
-# `validateBayForStart` at :115, the three INVALID_SERVICE arms at :146/:182/:213 —
-# so a station A whose bays sit at `unknown` answers **409 BAY_NOT_READY 3002**
-# and the subject of this file is never reached. The failure would read as the
-# regression having reopened; it is the precondition having lapsed.
-#
-# Every accepted BootNotification resets every bay to `unknown`
-# (`BootNotificationHandler::resetBaysToUnknown`, unconditional), and only an
-# accepted StatusNotification clears it. This file carries
-# `defer_mqtt_connect: true` — it never connects, so it can send no station
-# message and cannot arm the bay itself. The arm therefore comes from step 1
-# above: the onboarding run reports every bay `Available` and leaves them that
-# way. **If station A has rebooted since, re-run step 1 (or send a
-# StatusNotification for that bay) before step 3.**
-#
-# `BayGatedCommandsAreArmed.test.ts` excuses this file for exactly the reason
-# above and fences the excuse on `skip_when_pooled`, so the exemption can never
-# quietly cover a file the unattended suite runs.
+# The positive control at the end is what makes the 404 attributable. A 404 on
+# its own is also what a mistyped service id answers. The control sends the SAME
+# service id to the station that DOES carry it and gets a DIFFERENT refusal —
+# 3002, `bay_never_reported`, station B having never reported — which places the
+# first refusal at the service and the second past it.
 name: "Session Rejected - Invalid Service Cross-Station (Sprint Server #2 regression)"
-skip_when_pooled: "Needs manual cross-station setup via --var stationA_bayId / stationB_serviceId (two stations, disjoint catalogs) — not auto-runnable in a pooled suite. Run with --scenario <file> --target uat --var ... (see header comment)."
-description: "Two stations in one org with disjoint catalogs. Session-start with bay on station A + serviceId from station B must reject with 404 INVALID_SERVICE. Asserts resolveServiceUuid station-scoping closes the cross-station/cross-tenant ambiguity."
+description: "Two stations in one org with a service only the second carries. Session-start with a bay on station A + that serviceId must reject 404 INVALID_SERVICE 3004; the same serviceId on station B's own bay is refused later, at the bay gate. Asserts resolveServiceUuid station-scoping closes the cross-station/cross-tenant ambiguity."
 
-# This scenario doesn't drive MQTT — the assertion is server-side HTTP.
-# The `station:` block is a YAML schema requirement; we never connect_mqtt.
+# Registering a station and adding a service to it authorize `stations.create` and
+# `catalog.manage`, held by tenant_owner and by no identity a pooled run otherwise has —
+# the per-scenario `tenant_operator` is refused 403 on both. The run's ephemeral owner is
+# minted by --bootstrap-pool, which is what this key declares a dependency on.
+requires_pool: >-
+  Station B is registered and given its service through the admin API as the run's
+  ephemeral tenant_owner (`stations.create` + `catalog.manage`); the per-scenario
+  tenant_operator holds neither and is refused 403.
+
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+
+# The subject is decided in the controller, before any bay-readiness or dispatch gate, so
+# no station message is needed and neither station is connected. See the header.
 defer_mqtt_connect: true
 
 station:
   stationId: "{{stationId}}"
-  bayCount: 1
+  # DEFAULT_POOL_BAYS. A file declaring fewer bays than a pool station was provisioned with
+  # is held out of service at boot (3018 Pending) — it does not boot here, but the count is
+  # what `{{bayId_1}}` is hydrated against.
+  bayCount: 2
   stationModel: "WashPro X200"
   stationVendor: "SimCorp"
 
 steps:
-  # Regression: station A's bay + station B's serviceId → 404 INVALID_SERVICE.
-  # Pre-fix this returned 201 because resolveServiceUuid found station B's
-  # station_services row via the unscoped varchar join.
+  # ── The run organisation ───────────────────────────────────────────────────────────────
+  # `data.0` is the run org: the ephemeral owner this file authenticates as is a member of
+  # exactly one, the one the bootstrap minted for it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  # ── Station B: its own location, so the teardown owns it by id ─────────────────────────
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Cross-station B {{runStationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  # `{{runStationId}}` and not `{{stationId}}`: the latter IS station A, the leased pool
+  # station this file's assertion points at. The runner generates the former per scenario
+  # and leaves it unused unless a file asks for a second identity, which is this case.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{runStationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+    expect_status: 201
+    creates:
+      station: "data.station_id"
+
+  # B's own bay, read back rather than assumed: registration mints the `bay_*` id, the
+  # request cannot name it, and the control at the end sends it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{runStationId}}"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 200
+    expect_body:
+      data.bays[bayNumber=1].status: "unknown"
+    capture:
+      stationB_bayId: "data.bays[bayNumber=1].bayId"
+
+  # ── The service that exists on B and on no other station ───────────────────────────────
+  # Stamped with B's id, so it cannot collide with the pool's five (svc_wash_basic,
+  # svc_wash_premium, svc_dry, svc_vacuum, and svc_multiunit when some file declares it)
+  # nor with another worker's run. `UserDuration` + `PerMinute` is the shape the corpus's
+  # other service-creating files send; it is also what keeps `fixedDurationSeconds` from
+  # becoming required.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{runStationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      serviceId: "svc_xstation_{{runStationId}}"
+      serviceName: "Cross-station Foam"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 10
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "svc_xstation_{{runStationId}}"
+
+  # THE SERVICE IS NOT ON A — asserted, not assumed. If the pool ever seeded this code on
+  # every station the refusal below would be correct for the wrong reason, and nothing else
+  # in this file would notice.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    expect_status: 200
+    expect_body_absent:
+      - "data.services[serviceId=svc_xstation_{{runStationId}}]"
+
+  # ── The customer, because a start needs one ────────────────────────────────────────────
+  # Registration is unauthenticated and opens the wallet at 0. The wallet is funded even
+  # though the refusal below is raised in the CONTROLLER, ahead of any money gate: the
+  # control step at the end does reach the action, and a 402 there would hide the 3002.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "Cross-station customer {{runStationId}}"
+      email: "xstation-{{runStationId}}@onestoppay.dev"
+      password: "E2eTestPass123!"
+      password_confirmation: "E2eTestPass123!"
+    expect_status: 201
+    capture:
+      customer_id: "user.id"
+      customer_email: "user.email"
+    creates:
+      user: "user.email"
+
+  - action: fund_wallet
+    user_id: "{{captured.customer_id}}"
+    credits: 500
+
+  # Captured, not installed: `set_auth_token` would replace the run's owner token and the
+  # admin reads above would then be the customer's. `headers:` is spread last into the
+  # request, so naming Authorization on the two start steps overrides it for those alone.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.customer_email}}"
+      password: "E2eTestPass123!"
+    expect_status: 200
+    capture:
+      customer_token: "data.access_token"
+
+  # ── THE SUBJECT: station A's bay, station B's service ──────────────────────────────────
+  # Pre-fix this answered 201 and the session was accepted at A's bay with B's pricing.
+  # NOT `background: true`: a refused start never dispatches, so it answers at once.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
+    headers:
+      Authorization: "Bearer {{captured.customer_token}}"
     body:
-      bay_id: "{{stationA_bayId}}"
-      service_id: "{{stationB_serviceId}}"
+      bay_id: "{{bayId_1}}"
+      service_id: "svc_xstation_{{runStationId}}"
       duration_seconds: 300
     expect_status: 404
+    expect_body:
+      # FLAT, not wrapped: this route carries the `OsppErrorSurface` marker, so
+      # `OsppErrorObject::make` writes `errorCode` at the top level. The `{error: {...}}`
+      # shape is the uncovered fallback and does not apply here.
+      errorCode: 3004
+      errorText: "INVALID_SERVICE"
+
+  # ── POSITIVE CONTROL: the same service id, sent to the station that carries it ─────────
+  # Without this, the 404 above is also what a mistyped service id answers, or what a
+  # service the creation step never actually wrote answers. Here the service DOES resolve:
+  # the request passes the controller's `resolveServiceUuid` — the only writer of 3004 on
+  # this route — and is refused by a gate INSIDE StartSessionAction instead.
+  #
+  # 6003 and not 3002, measured 2026-09-21 rather than reasoned: station B is registered and
+  # never connected, so it is offline, and the dispatchability check is asked BEFORE
+  # `validateBayForStart`. Its bay is `unknown` and would answer 3002 if B were online; the
+  # file asserts the gate that actually fires. Either way the control does its work — a 3004
+  # here would mean the service was never on B and the refusal above proved nothing.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    headers:
+      Authorization: "Bearer {{captured.customer_token}}"
+    body:
+      bay_id: "{{captured.stationB_bayId}}"
+      service_id: "svc_xstation_{{runStationId}}"
+      duration_seconds: 300
+    expect_status: 502
+    expect_body:
+      errorCode: 6003
+      errorText: "STATION_OFFLINE"

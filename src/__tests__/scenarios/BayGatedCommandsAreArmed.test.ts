@@ -66,10 +66,20 @@ const GATED_ROUTES: ReadonlyArray<{ pattern: RegExp; bayKey: string; allWhenAbse
  *                       own subject. A file that pins it is testing the rule, not tripping
  *                       over it, and the only way to test it is to command an unreported bay.
  *
+ *   3004 INVALID_SERVICE  the service does not resolve ON THIS STATION. Same ordering
+ *                       argument as 3005 and from the same function: the CONTROLLER answers
+ *                       it at `SessionController.php:63-65`, before `StartSessionAction`
+ *                       runs at all, so `validateBayForStart` is never reached.
+ *   6003 STATION_OFFLINE the station is not on the wire. Measured on UAT 2026-09-21 rather
+ *                       than read: a start naming a registered-but-never-connected station's
+ *                       own bay — a bay that is `unknown` and would answer 3002 — came back
+ *                       502/6003, so this gate too is asked first. And the remedy is doubly
+ *                       impossible here: a station that is offline cannot report anything.
+ *
  * A SET, not a band: 3011 BAY_MAINTENANCE is the adjacent bay-state refusal and is NOT
  * excused, which the control below pins in both directions.
  */
-const DELIBERATE_BAY_REFUSALS = new Set([3005, 3002]);
+const DELIBERATE_BAY_REFUSALS = new Set([3005, 3002, 3004, 6003]);
 
 /**
  * Does this scenario connect its station DURING its steps? A `defer_mqtt_connect` file that
@@ -362,6 +372,24 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
     const maintenance = { ...base, expect_body: { 'error.ospp_code': 3011 } };
     expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, maintenance] }, 'x')).toHaveLength(1);
 
+    // 3004 and 6003 joined the set on 2026-09-21, both read through the FLAT Error Object
+    // that `/sessions/start` now answers with — which is also what proves `assertedErrorCode`
+    // recognises the excuse in the spelling the route actually uses.
+    const invalidService = { ...base, expect_body: { errorCode: 3004, errorText: 'INVALID_SERVICE' } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, invalidService] }, 'x')).toEqual([]);
+
+    const stationOffline = { ...base, expect_body: { errorCode: 6003, errorText: 'STATION_OFFLINE' } };
+    expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, stationOffline] }, 'x')).toEqual([]);
+
+    // Still a set: the neighbour of each new member is refused. 3003 SERVICE_UNAVAILABLE sits
+    // beside 3004 and 6004 beside 6003, and neither is excused.
+    for (const code of [3003, 6004]) {
+      expect(
+        unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, { ...base, expect_body: { errorCode: code } }] }, 'x'),
+        `code ${code} must NOT be excused`,
+      ).toHaveLength(1);
+    }
+
     // And an unasserted command is still flagged — the excuse requires the assertion,
     // it is not inherited from the route or from the shape of the id.
     expect(unarmedCommandsIn({ station: { bayCount: 2 }, steps: [boot, base] }, 'x')).toHaveLength(1);
@@ -434,7 +462,16 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
       // Only an EXCUSED file needs the fence. A deferred file that connects later is held to
       // the arming rule like every other, so it is free to run in the unattended suite.
       if (connectsLater(doc)) continue;
-      if (typeof doc.skip_when_pooled !== 'string' || doc.skip_when_pooled === '') {
+      if (typeof doc.skip_when_pooled === 'string' && doc.skip_when_pooled !== '') continue;
+      // NARROWED 2026-09-21, and narrowed rather than dropped. The fence exists because a
+      // file must not RELY on the excuse while the unattended suite runs it — not because
+      // deferring is itself suspect. A file whose every gated command is independently
+      // excused (it asserts one of DELIBERATE_BAY_REFUSALS) relies on nothing: remove the
+      // whole `defer_mqtt_connect` exclusion and it still passes the arming rule. Measured
+      // on the file that prompted this, `sessions/session-rejected-invalid-service-cross-
+      // station.yaml`: two gated starts, asserting 3004 and 6003, both answered before
+      // `validateBayForStart`. Held to the rule it would be flagged for nothing.
+      if (unarmedCommandsIn(doc, 'fence').length > 0) {
         leaking.push(file.slice(SCENARIOS_DIR.length + 1));
       }
     }
@@ -443,9 +480,25 @@ describe('every bay-gated command is issued to a bay the scenario has reported',
       leaking,
       '`defer_mqtt_connect: true` excuses a file from the arming rule because it cannot send ' +
         'a StatusNotification at all. That excuse is only tolerable while the file stays out ' +
-        'of the unattended suite — these declare the first without the second:\n' +
+        'of the unattended suite, or while the file does not need it — these declare the ' +
+        'first, run unattended, AND have a gated command the excuse is carrying:\n' +
         leaking.map((f) => `  ${f}`).join('\n'),
     ).toEqual([]);
+
+    // THE FENCE STILL FENCES. A deferred file that runs unattended and commands an unarmed
+    // bay with no excusing assertion must still be caught, or the narrowing above deleted
+    // the rule instead of scoping it.
+    expect(
+      unarmedCommandsIn(
+        {
+          station: { bayCount: 1 },
+          steps: [
+            { action: 'api_call', method: 'POST', url: '{{target_url}}/api/v1/sessions/start', body: { bay_id: '{{bayId_1}}' } },
+          ],
+        },
+        'fence-control',
+      ),
+    ).toHaveLength(1);
 
     // The exclusion covers something, or its fence is measuring nothing.
     expect(scanCorpus().deferred.length).toBeGreaterThan(0);

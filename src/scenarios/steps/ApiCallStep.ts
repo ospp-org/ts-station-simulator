@@ -781,8 +781,118 @@ function cookieHeaderFor(context: ScenarioContext, url: string): Record<string, 
   return value === undefined ? {} : { Cookie: value };
 }
 
+/**
+ * A positive whole number of milliseconds, accepting the STRING a `{{token}}` substitution
+ * leaves behind. Template substitution is textual — it has no way to put a number back — so a
+ * budget an operator supplies with `--var` arrives here as "600000". Rejecting it would mean
+ * the only budgets expressible in YAML are the ones hard-coded in the file, which is the
+ * opposite of what a per-run window needs. Anything that is not exactly a positive integer
+ * still throws, including "600000.5", "6e5" and "".
+ */
+function positiveMs(value: unknown, field: string): number {
+  const n = typeof value === 'string' && /^[0-9]+$/.test(value) ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(
+      `ApiCallStep: "${field}" must be a positive whole number of milliseconds, got ${JSON.stringify(value)}`,
+    );
+  }
+  return n;
+}
+
+/** A validated `poll:` block. `undefined` means the step reads exactly once, as all others do. */
+interface PollSpec {
+  timeoutMs: number;
+  intervalMs: number;
+}
+
+/**
+ * Parse and VALIDATE `poll:` before a single request goes out.
+ *
+ * WHY IT EXISTS. Some answers are not wrong on the first read, they are not yet true. A web
+ * payment intent turns `succeeded` when the processor's return URL reaches
+ * `PaymentLandingController::callback`, which settles it in the request — an EVENT, minutes
+ * after the purchase POST, whose moment nothing in the scenario controls. Reading once and
+ * failing reports "the payment did not settle" for a state that says "it has not settled yet".
+ *
+ * WHY GET ONLY, AND REFUSED RATHER THAN IGNORED ELSEWHERE. Polling re-issues the request.
+ * On `POST /w/{slug}/process` that buys another batch every interval; with `creates:` it
+ * mints a row per attempt and the teardown only ever learns the last id. Those are not
+ * degraded modes to warn about, they are wrong, so they throw. A malformed block throws too:
+ * silently falling back to one read is exactly the failure this option exists to remove.
+ */
+function parsePoll(definition: StepDefinition): PollSpec | undefined {
+  const raw = definition.poll;
+  if (raw === undefined) return undefined;
+
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      `ApiCallStep: "poll" must be a map with timeout_ms and interval_ms, got ${JSON.stringify(raw)}`,
+    );
+  }
+  const spec = raw as Record<string, unknown>;
+  const timeoutMs = positiveMs(spec.timeout_ms, 'poll.timeout_ms');
+  const intervalMs = positiveMs(spec.interval_ms, 'poll.interval_ms');
+
+  const method = ((definition.method as string) ?? 'GET').toUpperCase();
+  if (method !== 'GET') {
+    throw new Error(
+      `ApiCallStep: "poll" is only supported on GET (this step is ${method}). Re-issuing a ` +
+        'write every interval would repeat its effect — a polled purchase buys a batch per attempt.',
+    );
+  }
+  if (definition.background === true) {
+    throw new Error(
+      'ApiCallStep: "poll" is not supported with "background: true" — nothing awaits the ' +
+        'response, so there is no assertion to re-read.',
+    );
+  }
+  if (definition.creates !== undefined) {
+    throw new Error(
+      'ApiCallStep: "poll" cannot be combined with "creates" — each attempt would record a ' +
+        'different id and the teardown would only learn the last one.',
+    );
+  }
+
+  return { timeoutMs, intervalMs };
+}
+
 export class ApiCallStep implements Step {
+  /**
+   * One read, unless the step carries `poll:` — then read until the assertions hold.
+   *
+   * The failure carried out of a timed-out poll is the LAST attempt's, verbatim, with the
+   * budget appended. That is deliberate: "expected succeeded, but got pending" names the
+   * state of the thing under test, while a bare "timed out" names only the instrument.
+   */
   async execute(
+    definition: StepDefinition,
+    context: ScenarioContext,
+    station: Station,
+  ): Promise<void> {
+    const poll = parsePoll(definition);
+    if (poll === undefined) {
+      return this.executeOnce(definition, context, station);
+    }
+
+    const deadline = monotonicNowMs() + poll.timeoutMs;
+    let attempts = 0;
+    for (;;) {
+      attempts += 1;
+      try {
+        return await this.executeOnce(definition, context, station);
+      } catch (err) {
+        if (monotonicNowMs() >= deadline) {
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `${message} — polled for ${poll.timeoutMs}ms (${attempts} read(s), every ${poll.intervalMs}ms)`,
+          );
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, poll.intervalMs));
+    }
+  }
+
+  private async executeOnce(
     definition: StepDefinition,
     context: ScenarioContext,
     _station: Station,

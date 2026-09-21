@@ -55,6 +55,29 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 # on the operator's machine; the DNS view that matters is the app container's). Until that
 # exists, a red with a measured reason is more honest than a green that was never run.
 #
+# ── DRIVEN AGAINST BT'S REAL SANDBOX, 2026-09-21, AND HERE IS WHERE IT STOPS ───────────────
+#
+# Everything up to the acquirer's decision now runs: the pooled bootstrap seeds svc_multiunit
+# at capacity 2 and the BT credentials, `GET /w/{slug}` serves the page and its CSRF token,
+# `POST /w/{slug}/process` with unit_count 2 answers 302 to ecclients-sandbox.btrl.ro, BT's
+# hosted form renders THIS order — merchant Test iPAY 3, 4.00 RON, "Multi-Unit Dispenser 2 -
+# 5s at WashPro X200" — a card is accepted by it, and BT redirects the browser back to
+# `/pay/callback?intent=…`, which settles the intent in that request.
+#
+# What stops it is the CARD, and the server is not at fault. Asked directly,
+# `getOrderStatusExtended` answered for that order:
+#
+#   orderStatus 6, paymentAmountInfo.paymentState DECLINED, approvedAmount 0,
+#   actionCode 341017 "3DS2 authentication status in ARes is unknown"
+#
+# — i.e. the PAN is not enrolled in BT's sandbox 3DS directory. csms-server mapped that to
+# `payment_intents.status = failed`, wrote no batch and no ledger row, which is correct.
+# The card that DOES settle in this sandbox is a specific one: the six succeeded intents of
+# 2026-07-01/02 all carry `cardAuthInfo.pan 414049**7910`, expiry 2029-09, cardholder
+# "OSP Test". That card is held by the operator; it is in no checkout, on no host, in no
+# session record, and BT publishes no test PAN (btepos.ro serves its API document only to an
+# authenticated merchant). So the missing instrument is NAMED but not obtainable here.
+#
 # WHERE IT FAILS NOW, and this part was repaired: step [9] asserts the intent reached
 # `succeeded` and fails in under three seconds with `expected "succeeded", but got "pending"`,
 # naming the intent. It used to run on to [10] and fail at 60s with "Timeout waiting for
@@ -448,12 +471,33 @@ steps:
   # `undefined`, which says only that the row is not in a list it may never have been in.
   # Reading the row and asserting its status reports "expected succeeded, but got pending" —
   # the actual state of the actual intent, which is the sentence worth having.
+  #
+  # POLLED, AND THIS IS THE STEP THE CARD LEG IS DRIVEN THROUGH. The read above is not
+  # wrong on its first attempt, it is early: between the purchase POST and the settlement
+  # the intent is `pending`, truthfully. What ends the wait is an EVENT — the customer's
+  # browser coming back from BT's hosted form to `/pay/callback?intent=…`, which settles
+  # the intent IN THAT REQUEST — and nothing in this file controls when that happens.
+  # The 600s budget is the human leg: reading the intent's `metadata.payment_url`, opening
+  # BT's form, typing the sandbox card. Unattended, this file still goes red at the same
+  # assertion, with the same sentence: "expected succeeded, but got pending".
+  #
+  # THE STEP ABOVE IS THE BELT, NOT THE BRACE. `/pay/callback` is idempotent and settles
+  # whatever BT already reports as paid, so it covers the browser that was closed before
+  # it returned; the poll covers the browser that returns. Neither replaces the other.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/payments?method=bt_ipay&per_page=50"
     expect_status: 200
     expect_body:
       data[id={{captured.intentId}}].status: "succeeded"
+    poll:
+      # A REQUIRED --var, and nothing generates it — which is what turns an unattended run
+      # into a SKIP that names the instrument instead of a ten-minute red. The variable is
+      # not a permission: supplying it only opens the window, and a window in which nobody
+      # types a card ends in the same assertion with the same sentence. Attended:
+      #   --var cardSettleTimeoutMs=600000
+      timeout_ms: "{{cardSettleTimeoutMs}}"
+      interval_ms: 5000
 
   # UNIT 1 — TimerExpired (delivered)
   - action: wait_for

@@ -119,6 +119,19 @@ describe('the corpus, as a standing survey', () => {
     // `authId` and `sessionId`, so both files now mint their own grant in an earlier step and
     // capture those values. Two scenarios sat skipped for two months on an unchecked premise.
     //
+    // session-rejected-invalid-service-cross-station.yaml LEFT ON THE SAME DAY and for the
+    // same kind of reason: its two --vars described "two stations with disjoint catalogs"
+    // that a human was supposed to have built. The file now REGISTERS its own second station
+    // through the admin API and gives it the one service the first does not carry, so there
+    // is nothing left for an operator to arrange and nothing left to pass.
+    //
+    // multiunit-jam-drive.yaml JOINED, and it is the second kind in a purer form than the
+    // other three: `cardSettleTimeoutMs` is the width of the window in which a HUMAN types a
+    // card into BT's hosted form. Nothing can generate that, and supplying it is not a
+    // permission — a window nobody uses ends at the same failed assertion. Unattended the
+    // file skips naming the instrument; attended it runs with
+    // `--var cardSettleTimeoutMs=600000`.
+    //
     // The three `metrics` files are NOT that. They need `metricsScrapeToken`, which the
     // runner defines ITSELF from OSPP_SIM_METRICS_SCRAPE_TOKEN whenever that is exported —
     // so in a run that has the token they are not in this list at all and execute normally.
@@ -130,11 +143,11 @@ describe('the corpus, as a standing survey', () => {
     // the value comes from and why it is set only when non-empty.
     expect(needing).toEqual([
       'multiunit-e2e/multiunit-batch-drive.yaml',
+      'multiunit-e2e/multiunit-jam-drive.yaml',
       'multiunit-e2e/single-session-drive.yaml',
       'security/mac-missing-drops-request.yaml',
       'security/mac-verification-failed-drops-request.yaml',
       'security/offline-fraud-rapid-transactions.yaml',
-      'sessions/session-rejected-invalid-service-cross-station.yaml',
     ]);
   });
 

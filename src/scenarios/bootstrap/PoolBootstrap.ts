@@ -1148,6 +1148,12 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // parent delete FK-blocks on a leftover grant. Mirrors offline_transactions (swept in
     // both the station- and user-scoped teardowns).
     `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
+    // meter_values carries NO foreign key at all — neither to `bays` nor to `sessions` — so
+    // it never blocks a delete and was never noticed by the FK-coverage walk. It is swept
+    // HERE because both scoping subqueries resolve through rows the next statements remove.
+    // Measured on UAT 2026-09-21: 2 723 rows, of which 2 721 name a bay that no longer
+    // exists — every full run since the table was added has left its samples behind.
+    `DELETE FROM meter_values WHERE bay_id IN (${bays}) OR session_id IN (${sess});`,
     `DELETE FROM sessions WHERE bay_id IN (${bays});`,
     // After sessions (which reference it) and before payment_intents (which it references).
     `DELETE FROM unit_batches WHERE bay_id IN (${bayBizIds});`,
@@ -1158,7 +1164,28 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     `DELETE FROM firmware_updates WHERE station_id IN (${sids});`,
     `DELETE FROM diagnostics_uploads WHERE station_id IN (${sids});`,
     `DELETE FROM provisioning_tokens WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
-    `DELETE FROM certificates WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
+    // ADR-0005 invariant 7 (csms-server
+    // `2026_07_23_000001_guard_revoked_certificate_deletion.php`): a BEFORE DELETE trigger
+    // REFUSES a certificate that is `status='revoked' AND expires_at > now()`, because
+    // `CertificateRevocationRepository::revokedSerials()` reads `certificates WHERE
+    // status='revoked'` and nothing else — the row IS the CRL entry, and removing it
+    // un-revokes the holder. Since this whole teardown is ONE transaction, that refusal used
+    // to abort all 53 statements and leave the entire per-run world standing. Measured on
+    // UAT 2026-09-21 against the live pool, in a rolled-back transaction: 14 statements ran,
+    // the 15th raised `restrict_violation` on serial 1394, 39 never ran, the pool survived.
+    //
+    // The exclusion is the trigger's own predicate, no wider: an EXPIRED revoked certificate
+    // is date-rejected at the handshake regardless, so the guard lets it go and so do we.
+    // Nothing else has to be kept alongside a kept row — `certificates` has ZERO outbound
+    // foreign keys and its `station_id` is a varchar business key with no FK (UAT
+    // pg_constraint, 2026-09-21), and 3 of the 10 revoked-unexpired certificates on UAT
+    // already outlive their station row. The station, its bays, the location and the org
+    // therefore still go.
+    `DELETE FROM certificates WHERE (station_id = ANY(${stationArray})${orRunOrgStationBizId}) AND NOT (status = 'revoked' AND expires_at > now());`,
+    // pending_commands: varchar `station_id`, no FK — same silent class as `certificates`
+    // and `provisioning_tokens`, and never swept. Measured on UAT 2026-09-21: 9 770 rows,
+    // 9 544 of them naming a station that no longer exists.
+    `DELETE FROM pending_commands WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
     // security_events + its dedup key. NOT covered by the FK discipline above: the FK is
     // ON DELETE SET NULL (the only one in the schema besides
     // provisioning_tokens.issued_certificate_id), so deleting the station does not block and
@@ -1174,6 +1201,14 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // that made sec_00000001..b unusable: a global unique key holding ids nothing owns.
     `DELETE FROM security_event_dedup WHERE event_id IN (SELECT event_id FROM security_events WHERE station_id IN (${sids}));`,
     `DELETE FROM security_events WHERE station_id IN (${sids});`,
+    // station_journal: both its FKs (station_id -> stations, bay_id -> bays) are ON DELETE
+    // SET NULL, the same class that already orphaned 38 security_events — a delete neither
+    // blocks nor cascades, it quietly NULLs the key and the row survives owning nothing.
+    // Swept by the varchar `station_ospp_id` TOO, not only the uuid: that column is the one
+    // that outlives a SET NULL, so the sweep still finds rows a previous aborted run
+    // orphaned (21 437 of 21 703 rows on UAT 2026-09-21 are in exactly that state, and all
+    // 21 437 still carry it). One pooled boot writes 3 rows.
+    `DELETE FROM station_journal WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR station_ospp_id = ANY(${stationArray})${runOrg ? ` OR station_organization_id = ${runOrg}` : ''};`,
     `DELETE FROM bays WHERE station_id IN (${sids});`,
     `DELETE FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned};`,
     `DELETE FROM locations WHERE id = ANY(${locationArray})${orRunOrgOwned};`,
