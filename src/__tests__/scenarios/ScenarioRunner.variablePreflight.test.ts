@@ -107,9 +107,17 @@ describe('the corpus, as a standing survey', () => {
 
     // TWO KINDS, and the distinction matters when reading a run summary.
     //
-    // The first five are parameterized harnesses: they need a `--var` describing state a
-    // human arranged out of band (an auth-form grant, two cross-wired stations, a batch
-    // reason), and nothing can generate it. They skip in every bulk run, always.
+    // The first three are parameterized harnesses: they need a `--var` describing state a
+    // human arranged out of band (two cross-wired stations, a batch reason). A bulk run that
+    // does not pass one skips them; `single-session-drive` and `multiunit-batch-drive` take
+    // `--var reason=<SessionEndReason>` and are RUN, one arm at a time, by passing it.
+    //
+    // THE TWO offline-auth-transaction-reconcile FILES LEFT THIS LIST ON 2026-09-21, and the
+    // reason is worth keeping: they were held here by the claim that no UAT API mints an
+    // auth-form grant. That was false. POST /api/v1/sessions/offline-auth exists
+    // (routes/api/v1/sessions.php:53 -> OfflineAuthController::store) and answers 201 with
+    // `authId` and `sessionId`, so both files now mint their own grant in an earlier step and
+    // capture those values. Two scenarios sat skipped for two months on an unchecked premise.
     //
     // The three `metrics` files are NOT that. They need `metricsScrapeToken`, which the
     // runner defines ITSELF from OSPP_SIM_METRICS_SCRAPE_TOKEN whenever that is exported —
@@ -125,8 +133,6 @@ describe('the corpus, as a standing survey', () => {
       'multiunit-e2e/single-session-drive.yaml',
       'security/mac-missing-drops-request.yaml',
       'security/mac-verification-failed-drops-request.yaml',
-      'security/offline-auth-transaction-reconcile-hostile.yaml',
-      'security/offline-auth-transaction-reconcile.yaml',
       'security/offline-fraud-rapid-transactions.yaml',
       'sessions/session-rejected-invalid-service-cross-station.yaml',
     ]);

@@ -124,3 +124,31 @@ export function generateSecurityEventId(): string {
     .join('');
   return `sec_${hex}`;
 }
+
+/**
+ * A per-run `appNonce` in the shape csms-server's OfflineAuthRequest demands:
+ * `^[A-Za-z0-9+/]{43}=$` (app/Http/Requests/Session/OfflineAuthRequest.php:55-58), i.e. a
+ * base64 32-byte value with the single trailing pad. Standard base64, never base64url —
+ * the `-` and `_` alphabet fails that regex.
+ *
+ * WHY THE HARNESS GENERATES IT. The offline auth-form grant that
+ * security/offline-auth-transaction-reconcile{,-hostile}.yaml settle is minted by
+ * `POST /api/v1/sessions/offline-auth`, which requires a nonce per call. A literal would
+ * be reusable across runs, and the nonce exists precisely to stop a grant being replayed.
+ */
+export function generateAppNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes));
+}
+
+/**
+ * A per-run `deviceId`, matching OfflineAuthRequest's `^[A-Za-z0-9_-]{1,64}$` and the
+ * `deviceId` the grant is bound to. Fresh per run so two runs never share a device
+ * identity, which is what the grant's replay guard is keyed on alongside the counter.
+ */
+export function generateDeviceId(): string {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `dev_${hex}`;
+}

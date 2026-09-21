@@ -21,7 +21,6 @@ description: >
 # rather than a missing fixture — the exact attribution cost RUNNING-AGAINST-UAT
 # was written about. Same treatment, same reason, as
 # sessions/session-rejected-invalid-service-cross-station.yaml.
-skip_when_pooled: "Needs an out-of-band auth-form grant via --var offlineTxId/authId/sessionId; no UAT API mints one, so substitution throws in a pooled run. Run with --scenario <file> --target uat --var ... (see header)."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -65,17 +64,67 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+
+  # The TransactionEvent's `userId` is schema-required (transaction-event-request.schema.json)
+  # and must be the subject the grant was issued to — the per-scenario pooled identity this
+  # run is authenticated as. GET /api/v1/me names it; the sibling
+  # security/offline-fraud-rapid-transactions.yaml reaches the same value the other way, off
+  # an offline pass's `data.attributes.sub`.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      actingUserId: "data.id"
+
+  # --- Mint the auth-form grant this file settles -------------------------------
+  # THE PREMISE THAT KEPT THIS FILE SKIPPED WAS FALSE. It carried
+  # `skip_when_pooled: "...no UAT API mints one..."`. Measured 2026-09-21 against the
+  # deployed tree: POST /api/v1/sessions/offline-auth EXISTS — routes/api/v1/sessions.php:53
+  # -> OfflineAuthController::store — and answers 201 carrying `authId` and `sessionId`
+  # (app/Http/Resources/Offline/OfflineAuthResource.php). Those are exactly the two values
+  # the TransactionEvent below was said to need out of band, so the file mints its own grant
+  # and captures them instead of demanding a --var.
+  #
+  # The route is gated `feature:offline_mode_enabled` + `org.context` + `org.member` and it
+  # DEBITS the wallet at signing time, so it needs the per-scenario identity the pool mints
+  # (offline_enabled=true, funded) and that identity's organisation — which is why this works
+  # in a pooled run and could not have worked from a bare --station run.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/offline-auth"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      appNonce: "{{runAppNonce}}"
+      deviceId: "{{runDeviceId}}"
+    expect_status: 201
+    capture:
+      authId: "data.authId"
+      grantSessionId: "data.sessionId"
+
   # --- Auth-form TransactionEvent: settle the server-signed grant ---
   - action: send
     message: TransactionEvent
     payload:
-      offlineTxId: "{{offlineTxId}}"
-      authId: "{{authId}}"
-      sessionId: "{{sessionId}}"
-      userId: "{{userId}}"
-      deviceId: "{{deviceId}}"
-      bayId: "{{bayId}}"
-      serviceId: "{{serviceId}}"
+      offlineTxId: "{{runOfflineTxId}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserId}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
       startedAt: "2026-01-01T10:00:00.000Z"
       endedAt: "2026-01-01T10:05:00.000Z"
       durationSeconds: 300

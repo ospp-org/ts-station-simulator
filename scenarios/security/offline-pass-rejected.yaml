@@ -2,8 +2,28 @@ name: "Offline Pass Authorization Rejected"
 description: "Boot station and send an AuthorizeOfflinePass request with an expired offline pass, then verify the server rejects it."
 skip: true
 skip_reason: >-
-  RE-VERIFIED 2026-08-15 — the reason this file carried until today was FALSE, and its true status
-  is UNKNOWN. It said "Requires sandbox to have invalid/expired offline pass data". It does not:
+  VERDICT SETTLED 2026-09-21: NOT RUNNABLE AS NAMED, AND SUPERSEDED FOR WHAT IT CAN REACH.
+  (Recorded here because the status carried since 2026-08-15 was "UNKNOWN", and an unknown that
+  nobody settles is indistinguishable from a scenario nobody runs.)
+
+  WHY IT IS NOT RUNNABLE, from the three measurements below: the expiry branch this file is
+  named for cannot be reached by any fixture a scenario can build, because the signature check
+  precedes the expiry check, the earliest server-signed expiry obtainable is one hour in the
+  future, and the response schema carries no errorCode to tell one refusal from another.
+
+  WHY WHAT IT CAN REACH IS ALREADY COVERED: the only branch this fixture actually exercises is
+  OFFLINE_PASS_INVALID at check 1. security/offline-pass-refused-the-three-a-station-meets.yaml
+  asserts exactly that reason string — and two more — against REAL server-signed passes, and it
+  passes in every pooled run. This file would add a weaker proof of a covered branch.
+
+  WHAT WOULD MAKE IT RUNNABLE, so the cost is stated rather than implied: either an errorCode on
+  authorize-offline-pass-response (a spec change — the schema is additionalProperties:false), or
+  a server-side way to mint a pass whose expiry is already past (a test-only affordance this
+  corpus does not build). Both are decisions for whoever owns the offline profile.
+
+  THE ORIGINAL RE-VERIFICATION, 2026-08-15, kept because it is what closed the first false
+  reason: the file said "Requires sandbox to have invalid/expired offline pass data". It does
+  not. It said "Requires sandbox to have invalid/expired offline pass data". It does not:
   the expired pass is a LITERAL in this file (expiresAt 2024-06-01, long past; issuedAt
   2024-01-01), so the scenario constructs its own fixture and depends on no seeded data at all.
   LEFT SKIPPED AND MARKED, deliberately, because whether it would pass cannot be settled by

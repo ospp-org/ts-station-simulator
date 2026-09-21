@@ -1,5 +1,12 @@
 name: "E2E — Session-End Reason Matrix (v0.4.0 §25)"
-skip_when_pooled: "Self-provisions its own org + fresh station (action: provision) — collides with --bootstrap-pool's shared pool (409 Station already exists). Proven standalone in the gate; run with --scenario <file> --target uat."
+owns_station: >-
+  This parcours REGISTERS its own station (action: provision) as part of onboarding, so it
+  cannot use a pool station: in a pooled run `{{stationId}}` would resolve to one the pool
+  already registered and the registration answers 409 "Station already exists". That 409 is
+  why all three e2e files were `skip_when_pooled` until 2026-09-21 — the id collided, not the
+  scenario. `owns_station` resolves `{{stationId}}` to the fresh per-scenario id that nothing
+  else leases, so the registration is the first one for that station and collides with
+  nothing. What the file creates it already declares in `creates:`, so teardown removes it.
 description: |
   Verifies the v0.4.0 SessionEndedHandler match arms by running four
   autonomous-stop variants against a single freshly-onboarded 4-bay

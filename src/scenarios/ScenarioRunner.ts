@@ -19,6 +19,8 @@ import {
   generateServiceId,
   generateOfflineTxId,
   generateSecurityEventId,
+  generateAppNonce,
+  generateDeviceId,
 } from '../station/StationConfig.js';
 import type { StationConfig, BayConfig } from '../station/StationConfig.js';
 import { SendStep } from './steps/SendStep.js';
@@ -903,10 +905,11 @@ export function generateVariables(
   // Fresh per run, so a scenario reconciling an offline transaction never hardcodes an
   // offlineTxId. The server dedups on it permanently, so a literal is reconcilable exactly
   // once per database and every later run gets `Duplicate` (see generateOfflineTxId).
-  // Deliberately NOT named `offlineTxId`: security/offline-auth-transaction-reconcile*.yaml
-  // REQUIRE that one as an explicit --var describing an out-of-band grant, and generating a
-  // default for it would turn their honest "Template variable not found" into a confusing
-  // downstream failure against a grant the server never issued.
+  // Deliberately NOT named `offlineTxId`: the reconcile files spell `{{runOfflineTxId}}`
+  // explicitly, so the id they settle is visibly the one this run generated rather than an
+  // implicit default. (Until 2026-09-21 this note said those files REQUIRED an out-of-band
+  // --var because no UAT API minted a grant. That was false — see the offline-auth note
+  // below — and it kept two scenarios skipped for two months.)
   vars.set('runOfflineTxId', generateOfflineTxId());
 
   // Indexed siblings, for a scenario that reconciles SEVERAL transactions in one run and
@@ -921,6 +924,22 @@ export function generateVariables(
   // unique event_id (SecurityAuditLogger.php:67), so a hardcoded one is insertable exactly
   // once per database. See generateSecurityEventId.
   vars.set('runSecurityEventId', generateSecurityEventId());
+
+  // THE AUTH-FORM GRANT IS NOT OUT OF BAND, and the note above used to say it was.
+  //
+  // security/offline-auth-transaction-reconcile{,-hostile}.yaml carried
+  // `skip_when_pooled: "...no UAT API mints one..."`. Measured 2026-09-21 against the
+  // deployed tree: `POST /api/v1/sessions/offline-auth` EXISTS (routes/api/v1/sessions.php:53
+  // -> OfflineAuthController::store) and answers 201 with `authId` and `sessionId` on the
+  // body (app/Http/Resources/Offline/OfflineAuthResource.php). Both files now mint their own
+  // grant in an earlier step and capture those two values, so neither needs a --var and
+  // neither is skipped.
+  //
+  // These two feed that call. The nonce and device id are per RUN, not per file, because the
+  // grant's replay guard is keyed on (deviceId, counter) and a literal would make a second
+  // run of the same file replay the first run's identity.
+  vars.set('runAppNonce', generateAppNonce());
+  vars.set('runDeviceId', generateDeviceId());
 
   // A station id that is FRESH PER SCENARIO and, unlike `stationId` above, is NEVER replaced
   // by the pool's. Same reason as the two ids above: a file that needs to REGISTER a station
