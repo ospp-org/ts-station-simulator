@@ -3,7 +3,7 @@ import type { LintCheck, LintIssue, ParsedScenario } from '../types.js';
 /**
  * A SECOND `connect_mqtt` ON A LIVE CONNECTION THROWS, AND NOTHING SAW IT.
  *
- * `ConnectMqttStep` ends by calling `station.setTls(...)` (`ConnectMqttStep.ts:97`), and
+ * `ConnectMqttStep` ends by calling `station.setTls(...)` (`ConnectMqttStep.ts:140`), and
  * `MqttConnection.setTls` refuses outright while a client exists:
  *
  *     if (this.client !== null) {

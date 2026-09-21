@@ -50,11 +50,11 @@ description: >-
 # station's keys, so the identity the first connection holds is stale from that moment —
 # csms-server logs the rotation as "broker reconnect-bar lifted … re-provisioned,
 # certificate N issued". `ConnectMqttStep` derives its key/cert paths from the `certs_dir`
-# that `ProvisionStep` captures (`ConnectMqttStep.ts:42-61`), so the second connect picks
+# that `ProvisionStep` captures (`ConnectMqttStep.ts:73-92`), so the second connect picks
 # up the rotated material by construction rather than by a new knob.
 #
 # IT MUST BE PRECEDED BY A TEARDOWN, and that is not a stylistic choice. `ConnectMqttStep`
-# ends by calling `station.setTls()` (`ConnectMqttStep.ts:97`), and `MqttConnection.setTls`
+# ends by calling `station.setTls()` (`ConnectMqttStep.ts:140`), and `MqttConnection.setTls`
 # throws "cannot change TLS after connect(); disconnect first" while a client exists
 # (`MqttConnection.ts:396-400`). There is no `disconnect` action in the step registry; the
 # only two kinds that null the client are `fault: sever` (`FaultStep.ts:29-30` ->
