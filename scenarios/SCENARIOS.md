@@ -130,26 +130,44 @@ branch that `core/happy-boot.yaml` does not.
 
 ## Summary
 
+<!-- COUNTS ARE GATED. `npm run check:doc-claims` derives every Count below from the
+     directory it names and fails the build on a disagreement — the same gate, and the same
+     derivation, that covers README.md's copy of this table. Measured 2026-09-21, before the
+     gate reached this file: six of the seven rows were wrong (only `Fleet` agreed), they
+     summed to 83 against a real 158, and five directories had no row at all. The Coverage
+     column is prose and is NOT derived: a row can describe the wrong things while its name
+     and count are right. -->
+
 | Category | Count | Coverage |
 |----------|-------|----------|
-| Core | 16 | Boot (all 6 reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer, Reconnect |
-| Sessions | 18 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
-| Reservations | 6 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
-| Device Management | 20 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
-| Security | 18 | SecurityEvent (11 types), Certificates (3), OfflinePass (3), TransactionEvent (1) |
-| Chaos | 7 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
+| Core | 25 | Boot (all 6 reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer, Reconnect |
+| Sessions | 29 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
+| Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
+| Device Management | 40 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
+| Security | 26 | SecurityEvent (11 types), Certificates (3), OfflinePass (3), TransactionEvent (1) |
+| Chaos | 8 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
 | Fleet | 3 | Parallel boot, Mixed workload, Meter flood |
+| e2e | 3 | New-customer onboarding, returning-customer session, session-end matrix — each self-provisions its own org, location and station |
+| multiunit-e2e | 3 | Multi-unit batch drive, jam mid-batch, and the single-session control |
+| probes | 1 | Three refusals asserted to leave a server-side trace |
+| provisioning | 2 | Provisioning refused on the request and the token, and on the key and topology rungs |
+| tls-floor | 10 | TLS 1.2 floor and 1.3 default, below-floor and missing-client-cert refusals, revoked and expired leaves with their accepting controls |
 
 ---
 
-## Core (20 scenarios)
+## Core (25 scenarios)
 
-<!-- COUNT IS THE FILE COUNT, and the table below does not yet match it. Pre-existing
-     drift, recorded rather than silently patched: `boot-rejected.yaml` has a row but no
-     file, and `boot-disabled-station-boots-and-stays-gated.yaml`,
+<!-- THE HEADING COUNT IS GATED; THE ROWS BELOW ARE NOT, AND THEY DISAGREE.
+     `check:doc-claims` derives the 25 in this heading from `scenarios/core/` and fails on a
+     disagreement. The file table below lists 18 — pre-existing drift, recorded rather than
+     silently patched, because reconciling it means writing 7 rows of prose about what each
+     missing file tests, which is content work and not a number. Known members of the gap:
+     `boot-rejected.yaml` has a row but no file, and
+     `boot-disabled-station-boots-and-stays-gated.yaml`,
      `boot-poweron-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
-     have files but no row (the last two are described in the table at the top of this
-     file instead). Nothing gates this document, which is why it drifted. -->
+     have files but no row (the last two are described in the table at the top of this file
+     instead). Comparing listed filenames against the tree is a different instrument from
+     counting them, and it is named here rather than half-built. -->
 
 
 | File | Name | What it tests | Status |
@@ -173,7 +191,7 @@ branch that `core/happy-boot.yaml` does not.
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |
 | `core/data-transfer-response.yaml` | Data Transfer Response | Wait for DataTransfer from server | new |
 
-## Sessions (18 scenarios)
+## Sessions (29 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -196,7 +214,7 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/session-deauthorized-revocation-epoch.yaml` | Session Deauthorized via RevocationEpoch (v0.4.0) | RevocationEpoch bump → SessionEnded reason: Deauthorized; creditsCharged=0 | new |
 | `sessions/session-final-seqno-terminal.yaml` | Session finalSeqNo Terminal Marker | Sends StopService Response finalSeqNo=3 (the only writer of `sessions.final_seq_no`); a control frame at seqNo=3 is ingested, seqNo 99/100 are discarded — asserted on the server-written `meter_values` collection | rewritten 2026-08-10 |
 
-## Reservations (6 scenarios)
+## Reservations (8 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -207,7 +225,7 @@ branch that `core/happy-boot.yaml` does not.
 | `reservations/reserve-rejected-maintenance.yaml` | Reserve Rejected - Maintenance | SERVER refuses `POST /reservations` on a bay in maintenance, 409 + `ospp_code 3011`; nothing on the wire | new |
 | `reservations/reserve-rejected-already-reserved.yaml` | Reserve Rejected - Already Reserved | First reservation ACCEPTED on the wire; SERVER refuses the second, 409 + `ospp_code 3014` | new |
 
-## Device Management (20 scenarios)
+## Device Management (40 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -231,7 +249,7 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/maintenance-mode-all-bays.yaml` | Maintenance All Bays | SetMaintenanceMode (no bayId) → all Unavailable | new |
 | `device-management/service-catalog-update.yaml` | Service Catalog Update | UpdateServiceCatalog → Accepted | migrated |
 
-## Security (18 scenarios)
+## Security (26 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -271,7 +289,7 @@ branch that `core/happy-boot.yaml` does not.
 > true. **A skip reason is the least-verified sentence in the corpus** — nothing runs it, so nothing
 > checks it, and it survives exactly the change that falsifies it.
 
-## Chaos (7 scenarios)
+## Chaos (8 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|

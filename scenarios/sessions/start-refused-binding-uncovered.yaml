@@ -26,11 +26,13 @@ description: >-
 # ── RE-PROVISIONING IS THE ONLY WAY TO DROP AN ORDINAL, MEASURED ────────────────────────
 #
 # A StatusNotification cannot do it. `StatusNotificationHandler::applyProgramAvailability`
-# only flips the `available` column on rows that already exist — it has no DELETE — and the
-# profile it implements says so in as many words (`profiles/core/status-notification.md:39`,
-# quoted at `StatusNotificationHandler.php:662-668`): "A program that cannot run is reported
-# present with `available: false`, never omitted — omission means the hardware changed, and
-# that requires re-provisioning, not a status report."
+# (`StatusNotificationHandler.php:639`) only flips the `available` column on rows that
+# already exist — its single write is the UPDATE at `:653-657` and the file contains no
+# DELETE at all — and the profile it implements says so in as many words
+# (`profiles/core/status-notification.md:39`, quoted at `StatusNotificationHandler.php:664-668`):
+# "A program that cannot run is reported present with `available: false`, never omitted —
+# omission means the hardware changed, and that requires re-provisioning, not a status
+# report."
 #
 # The writer that DOES remove rows is the provisioning path:
 # `CertificateManager.php:490` deletes every `bay_programs` row for the bay and `:493`
@@ -51,50 +53,38 @@ description: >-
 # that `ProvisionStep` captures (`ConnectMqttStep.ts:42-61`), so the second connect picks
 # up the rotated material by construction rather than by a new knob.
 #
-# It is nonetheless UNEXERCISED: 0 of the 157 scenarios in this corpus call `connect_mqtt`
-# more than once. That is stated here rather than discovered by whoever runs this first.
+# IT MUST BE PRECEDED BY A TEARDOWN, and that is not a stylistic choice. `ConnectMqttStep`
+# ends by calling `station.setTls()` (`ConnectMqttStep.ts:97`), and `MqttConnection.setTls`
+# throws "cannot change TLS after connect(); disconnect first" while a client exists
+# (`MqttConnection.ts:396-400`). There is no `disconnect` action in the step registry; the
+# only two kinds that null the client are `fault: sever` (`FaultStep.ts:29-30` ->
+# `severConnection()`, `MqttConnection.ts:751`) and `fault: planned_shutdown`
+# (`FaultStep.ts:50-51` -> `disconnect({ announceDeparture: true })`, `:798`). The third,
+# `fault: disconnect`, calls `destroyConnection()` and leaves the client in place to
+# auto-reconnect, so it does NOT clear the way.
+#
+# `planned_shutdown` IS THE ONE THIS FILE MEANS, not `sever`. The station is going down
+# because it has just been re-provisioned and must come back holding new key material —
+# a departure it knows about in advance. `sever` is the unclean, final teardown that leaves
+# the will armed, so the broker publishes it and the server records an
+# `UnexpectedDisconnect` about a departure that was in fact planned. This file's deliverable
+# is what the server journals, so writing a false cause into that journal to save a line
+# would corrupt the evidence it exists to produce. `planned_shutdown` publishes
+# ConnectionLost with `reason: "PlannedShutdown"` and then a clean DISCONNECT, which
+# suppresses the will (MQTT 5 §3.14.4).
+#
+# It remains the only file in the corpus that connects twice: 5 of the 158 scenarios call
+# `connect_mqtt`, all five declare `defer_mqtt_connect: true`, and only this one calls it
+# more than once. `ConnectLifecycleCheck` is what now keeps a second connect from being
+# written without its teardown.
 #
 # AND THE STATION MUST BE ONLINE FOR THE REFUSAL TO BE REACHABLE AT ALL.
-# `StartSessionAction.php:100` refuses an offline station with `3005 STATION_OFFLINE`
+# `StartSessionAction.php:101` refuses an offline station with `6003 STATION_OFFLINE`
 # before any of the binding questions are asked — the 3020 guard is at `:507`. So a boot
 # that does not land makes this file report the WRONG code rather than fail, which is why
 # the second boot below is followed by an assertion on the station's own state rather than
-# by a bare delay.
-
-# ── WHY THIS IS SKIPPED, MEASURED 2026-09-18 ────────────────────────────────────────────
-#
-# NOT a claim that the sequence is wrong: every step below is a shape the runner already
-# supports, and `npm run lint:scenarios` passes it. What is missing is a stack to run it
-# against, and the obstruction is in the LOCAL environment, not in this repository.
-#
-# The local csms stack (`--target local-mtls`, http://localhost:8080) is 6 migrations
-# behind its own checked-out code, so `POST /api/v1/stations/provision` answers
-# `500 / 6001 SERVER_INTERNAL_ERROR` on every call — measured twice. The cause is exact:
-# the provisioning path queries `station_services.deleted_at`, the column is added by
-# `2026_09_17_000003_add_deleted_at_to_station_services`, and that migration cannot run
-# because an EARLIER pending one,
-# `2026_09_16_000001_move_two_mis_filed_names_into_the_platform_tier`, refuses on a
-# collision: both `certificates.revoke` and `platform.certificates.revoke` already exist
-# (rows dated 2026-08-19 and 2026-09-17), and it declines to merge them rather than
-# silently union two sets of grants. Resolving that collision is an operator decision
-# about permission data, not a simulator change.
-#
-# UAT is not an alternative for this file: 3020 reaches a server only from 8fe20097
-# onward, and nothing is deployed.
-#
-# The BROKER is not the obstruction, contrary to a note carried by earlier sessions. Its
-# server certificate carries `DNS:localhost` and `IP Address:127.0.0.1` in its SAN
-# alongside the UAT names, and the local broker routes under its ACL — an anonymous probe
-# is disconnected because `deny_action: disconnect` and the ACL matches on client id
-# (`acl.conf` header), which is the rule working, not a fault.
-skip: >-
-  The local stack cannot provision: 6 pending migrations, the first of which refuses on a
-  duplicate permission name (`certificates.revoke` / `platform.certificates.revoke`), so
-  `station_services.deleted_at` is absent and POST /api/v1/stations/provision answers 500
-  / 6001. Measured 2026-09-18. UAT cannot serve as an alternative — 3020 exists only from
-  csms-server 8fe20097 and nothing is deployed. Unskip once the local migration chain runs
-  to HEAD; nothing in this file changes.
-skip_kind: environment
+# by a bare delay. (`3005` is a DIFFERENT code — `BAY_NOT_FOUND`, raised at `:96` when the
+# bay id names no in-service bay. The two were conflated here until 2026-09-21.)
 
 requires_pool: >-
   Minting a provisioning token authorizes `stations.manage_provisioning_tokens` and
@@ -210,7 +200,24 @@ steps:
           - programNumber: 1
             label: "Basic Wash"
 
+  # `broker_ca_path` IS NAMED, and it has to be. `ProvisionStep` writes
+  # `<stationId>-broker-ca.pem` only when the provisioning response carries `brokerRootCa`,
+  # and the server emits that field ONLY in `private_ca` mode (`config/ospp.php:550-553`,
+  # `OspConfigValidator.php:121-133`). The local stack declares no `OSPP_BROKER_DEPLOYMENT`,
+  # so it runs the `public_ca` default and the field is always absent — measured: a
+  # provisioning artifacts dir here holds key, cert, chain, mqtt.json and the receipt pair,
+  # and no broker-ca. The local broker nevertheless presents a PRIVATELY issued leaf
+  # (`CN = emqx`, issuer `CN = OneStopPay MQTT CA`) ALONE, with no intermediate, so a client
+  # left on the system trust store fails it with "unable to verify the first certificate".
+  #
+  # This is the bundle `config/targets.yaml` already declares as `local-mtls`'s `ca:` —
+  # MQTT CA + Root CA. `ConnectMqttStep` does not read the target's `ca:` itself
+  # (`ScenarioContext` carries no target cert config), which is why it is named per step.
+  # Absent — on any target whose broker uses a public CA — the step fs.access-checks it and
+  # falls through to the system store (`ConnectMqttStep.ts:84-92`), so naming it costs a
+  # non-local run nothing.
   - action: connect_mqtt
+    broker_ca_path: "certs/local/broker-ca.pem"
 
   - action: send
     message: BootNotification
@@ -243,9 +250,11 @@ steps:
     timeout_ms: 15000
 
   # A bay is `unknown` to the server after every accepted Boot, and only a StatusNotification
-  # clears it — an unreported bay is refused `3002 BAY_NOT_READY` at
-  # `StartSessionAction.php:194`, which is ahead of the 3020 guard at `:507`. Reporting BOTH
-  # ordinals here is CORE-013: the reported set must EQUAL the set this bay just declared.
+  # clears it — an unreported bay is refused `3002 BAY_NOT_READY` with
+  # `details.reason: bay_never_reported` (`SessionStateMachine.php:106-109`, reached from
+  # `StartSessionAction.php:240` and thrown at `:251`), which is ahead of the 3020 guard at
+  # `:507`. Reporting BOTH ordinals here is CORE-013: the reported set must EQUAL the set
+  # this bay just declared.
   - action: send
     message: StatusNotification
     messageType: Event
@@ -261,8 +270,18 @@ steps:
 
   # ── Operator: a service, bound to the ordinal the bay DOES declare ────────────────────
   # `serviceId` is caller-supplied so the binding and the start below can name the same
-  # service (StationServiceCatalogController.php:186-192 honours it; a collision is a named
-  # 422, not a silent substitution).
+  # service (`StationServiceCatalogController.php:379-382` honours it; a collision is a
+  # named 422 `SERVICE_ID_TAKEN` at `:859-865`, not a silent substitution).
+  #
+  # THE FIELD NAMES AND ENUM VALUES ARE THE FORM REQUEST'S, not this file's earlier guesses.
+  # `StoreStationServiceRequest::rules()` (`:30-68`) accepts `serviceName`, `serviceKind`
+  # and `priceCreditsPerMinute`; it has no `prepareForValidation`, so `name`, `kind` and
+  # `pricePerMinute` were simply ignored and the call 422'd on three missing required keys.
+  # `serviceKind` is `UserDuration|FixedDuration|MultiUnit` (`ServiceKind.php:35-37`) and
+  # `pricingType` is `PerMinute|Fixed` (`PricingType.php:9-10`) — `wash` and `per_minute`
+  # are members of neither. `UserDuration` is also what keeps `fixedDurationSeconds` from
+  # becoming required (`required_unless:serviceKind,UserDuration`, `:63`). This is the shape
+  # the four other corpus files that create a service already send.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
@@ -270,11 +289,14 @@ steps:
       X-Organization-Id: "{{captured.org_id}}"
     body:
       serviceId: "svc_uncovered_{{stationId}}"
-      name: "Foam Wash"
-      kind: "wash"
-      pricingType: "per_minute"
-      pricePerMinute: 100
+      serviceName: "Foam Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 10
+      available: true
     expect_status: 201
+    expect_body:
+      data.serviceId: "svc_uncovered_{{stationId}}"
     capture:
       station_service_id: "data.id"
 
@@ -328,10 +350,17 @@ steps:
           - programNumber: 1
             label: "Basic Wash"
 
+  # THE ANNOUNCED DEPARTURE that makes the second connect legal — see the header. The
+  # station is going down because it has just been re-provisioned, which is a departure it
+  # knows about, so it says so on the wire rather than letting the broker publish a will.
+  - action: fault
+    type: planned_shutdown
+
   # The certificate rotated, so the first connection's identity is stale. This is the
   # second `connect_mqtt` no other file in the corpus performs; it reads the key material
   # the step above captured into `certs_dir`.
   - action: connect_mqtt
+    broker_ca_path: "certs/local/broker-ca.pem"
 
   - action: send
     message: BootNotification
@@ -379,9 +408,20 @@ steps:
         - programNumber: 1
           available: true
 
-  # ONLINE, ASSERTED RATHER THAN ASSUMED. `StartSessionAction.php:100` refuses an offline
-  # station with 3005 long before it asks any binding question, so a boot that did not land
+  # ONLINE, ASSERTED RATHER THAN ASSUMED. `StartSessionAction.php:101` refuses an offline
+  # station with 6003 long before it asks any binding question, so a boot that did not land
   # would make the step below report the wrong code instead of failing here.
+  #
+  # `data.isOnline`, a BOOLEAN — this route builds its body inline
+  # (`StationManagementController.php:350-...`) and emits `isOnline` at `:380`. It has no
+  # top-level `status` at all; the only `status` keys in the payload are the certificate's
+  # (`:370`) and each bay's (`:432`). A `status` STRING does exist, on the UUID-keyed
+  # dashboard route (`DashboardStationController.php:236`), which this `stn_`-shaped id
+  # cannot address: `admin.php:99-100` constrains this route to `stn_[0-9a-f]+` and
+  # `dashboard.php:57` constrains that one to a uuid, precisely so they do not shadow.
+  #
+  # `data.id` IS that uuid, and it is captured here because the sessions filter below needs
+  # it — see that step.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
@@ -389,13 +429,55 @@ steps:
       X-Organization-Id: "{{captured.org_id}}"
     expect_status: 200
     expect_body:
-      data.status: "online"
+      data.isOnline: true
+    capture:
+      station_uuid: "data.id"
 
-  # The wallet, because `4001 INSUFFICIENT_BALANCE` is raised at
-  # `StartSessionAction.php:379` — ahead of the 3020 guard at `:507`. An unfunded wallet
-  # would refuse this start for the wrong reason.
+  # ── The customer, because the money gate is asked before the binding gate ─────────────
+  # `4001 INSUFFICIENT_BALANCE` is raised at `StartSessionAction.php:379-382` (HTTP 402),
+  # ahead of the 3020 guard at `:507`, and it is only asked when the request carries a user
+  # (`:375` — `paymentIntentId === null && userId !== null`). So this file needs a customer
+  # with a funded wallet, or the start is refused for the wrong reason.
+  #
+  # Registration is unauthenticated and opens the wallet at 0 (`RegisterAction.php:49`).
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "Uncovered binding customer {{stationId}}"
+      email: "uncovered-{{stationId}}@onestoppay.dev"
+      password: "E2eTestPass123!"
+      password_confirmation: "E2eTestPass123!"
+    expect_status: 201
+    capture:
+      customer_id: "user.id"
+      customer_email: "user.email"
+    creates:
+      user: "user.email"
+
+  # `user_id` IS REQUIRED — the wallet is keyed on that uuid, and `FundWalletStep` throws
+  # without it (`FundWalletStep.ts:46-53`). No REST route credits a wallet, so this runs
+  # SQL against the target's database directly; against the local stack that is a plain
+  # `docker exec`, with no ssh hop, when `UAT_SSH_HOST` names a local host
+  # (`uatPrivileged.ts:143-148`, `runUatSql` at `:193-195`).
   - action: fund_wallet
+    user_id: "{{captured.customer_id}}"
     credits: 500
+
+  # The customer's own bearer, captured rather than installed. `set_auth_token` would
+  # replace the run's token for good and the admin assertion at the end of this file — a
+  # tenant-scoped route — would then 403 as the customer. `headers:` is spread LAST into the
+  # request (`ApiCallStep.ts:844-852`), so naming Authorization on the one step that must be
+  # the customer overrides the context token for that step alone.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.customer_email}}"
+      password: "E2eTestPass123!"
+    expect_status: 200
+    capture:
+      customer_token: "data.access_token"
 
   # ── THE REFUSAL ───────────────────────────────────────────────────────────────────────
   # NOT `background: true`, unlike every other start in this corpus. A start that SUCCEEDS
@@ -405,22 +487,39 @@ steps:
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
+    headers:
+      Authorization: "Bearer {{captured.customer_token}}"
     body:
       bay_id: "{{captured.bayId_1}}"
       service_id: "svc_uncovered_{{stationId}}"
       duration_seconds: 60
     expect_status: 409
     expect_body:
+      # FLAT, not wrapped. This route carries the `OsppErrorSurface` marker
+      # (`routes/api/v1/sessions.php:36-37`), so the renderer takes the covered branch at
+      # `bootstrap/app.php:353-359` and `OsppErrorObject::make` writes `errorCode` at the
+      # top level (`OsppErrorObject.php:66`). The `{error: {...}}` shape is the UNCOVERED
+      # fallback and does not apply here.
       errorCode: 3020
       errorText: "BINDING_UNCOVERED"
-      # ALL FOUR MEMBERS THE REGISTRY ROW NAMES, and the last two are the point of the
-      # file. `RECOMMENDED_ACTION[3020]` tells an operator to "Re-bind the service to one
-      # of `details.declaredPrograms`" — an answer that omitted that list would be telling
-      # them to choose from a set nobody gave them, and `errorCode` alone cannot see that.
+      # ALL FOUR MEMBERS THE REGISTRY ROW NAMES — `StartSessionAction.php:516-521`. The last
+      # two are the point of the file: `RECOMMENDED_ACTION[3020]` tells an operator to
+      # "Re-bind the service to one of `details.declaredPrograms`", so an answer that
+      # omitted that list would be telling them to choose from a set nobody gave them, and
+      # `errorCode` alone cannot see that.
       details.bayId: "{{captured.bayId_1}}"
+      # THE `station_services` UUID, NOT the `svc_…` wire id this request sent. Measured on
+      # the wire: the start body carries `service_id: svc_uncovered_<stationId>` (the shape
+      # `StartSessionRequest::rules()` enforces with `regex:/^svc_[a-z0-9_]+$/`), and the
+      # refusal answers `details.serviceId: 40e0f1da-…` — `$dto->serviceId` has been resolved
+      # to the row id by the time the 3020 guard builds `details`
+      # (`StartSessionAction.php:518`). So this is asserted against the id the creation step
+      # captured, which is the same row. Asserting the wire id here passed review and failed
+      # the wire, which is the whole reason this file had to be run.
+      details.serviceId: "{{captured.station_service_id}}"
       details.programNumber: 2
-      # Ascending, and pinned: `ServiceProgramResolver.php:83` orders by `program_number`,
-      # and csms-server's `AnUncoveredBindingDoesNotStartTest.php:219` declares [3,1] in
+      # Ascending, and pinned: `ServiceProgramResolver.php:79` orders by `program_number`,
+      # and csms-server's `AnUncoveredBindingDoesNotStartTest.php:218` declares [3,1] in
       # its fixture precisely to hold that sort in place.
       details.declaredPrograms: [1]
 
@@ -428,9 +527,16 @@ steps:
   # refusal's own wording says the customer has not been charged "because nothing was
   # started"; a 409 that had nevertheless written a session row would satisfy every
   # assertion above.
+  #
+  # THE FILTER TAKES THE UUID, NOT THE WIRE ID. `SessionListRequest::rules()` validates
+  # `station_id` as `uuid` (`:63`) and the controller compares it to `stations.id`
+  # (`DashboardSessionController.php:58-60`), so `stn_…` here was a 422, not a filter. The
+  # filter is KEPT rather than dropped: unfiltered, `data: []` would assert that the whole
+  # organization has no sessions at all — a claim any other scenario's row falsifies, which
+  # would make this step fail for a reason that has nothing to do with 3020.
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/admin/sessions?station_id={{stationId}}"
+    url: "{{target_url}}/api/v1/admin/sessions?station_id={{captured.station_uuid}}"
     headers:
       X-Organization-Id: "{{captured.org_id}}"
     expect_status: 200

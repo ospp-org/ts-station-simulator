@@ -242,7 +242,7 @@ npm run certs:sync       # Download sandbox certificates
 - **SDK** — All protocol types from `@ospp/protocol` (never redefined locally)
 - **MQTT 5.0** — Two topics per station (`to-server`/`to-station`), action in envelope
 - **Scenarios** — YAML-driven with template variables and captured values
-- **Linter** — 8 checks: captured vars, message direction, enum values, wait_for completeness, payload schema, multi-unit declaration, pre-empt discriminator
+- **Linter** — 11 checks: captured vars, message direction, enum values, wait_for completeness, payload schema, multi-unit declaration, pre-empt discriminator
 - **Parallel execution** — Semaphore-based, station pool allocation for sandbox
 
 ## Protocol Conformance

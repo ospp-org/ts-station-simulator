@@ -10,6 +10,9 @@ import { PayloadSchemaCheck } from './checks/PayloadSchemaCheck.js';
 import { PreEmptDiscriminatorCheck } from './checks/PreEmptDiscriminatorCheck.js';
 import { MultiUnitDeclaredCheck } from './checks/MultiUnitDeclaredCheck.js';
 import { ErrorCodeRegistryCheck } from './checks/ErrorCodeRegistryCheck.js';
+import { ConnectLifecycleCheck } from './checks/ConnectLifecycleCheck.js';
+import { RequiredStepArgsCheck } from './checks/RequiredStepArgsCheck.js';
+import { SkipMarkerShapeCheck } from './checks/SkipMarkerShapeCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -24,6 +27,9 @@ export class ScenarioLinter {
       new PreEmptDiscriminatorCheck(),
       new MultiUnitDeclaredCheck(),
       new ErrorCodeRegistryCheck(),
+      new ConnectLifecycleCheck(),
+      new RequiredStepArgsCheck(),
+      new SkipMarkerShapeCheck(),
     ];
   }
 

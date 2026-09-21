@@ -697,8 +697,17 @@ export function buildSeedCatalogSql(
     //    picks the bay's lowest declared ordinal deterministically (the bootstrap declares
     //    one program per bay, so this is that program). A bay with no declared programs
     //    contributes no row — see the docblock.
-    'INSERT INTO bay_services (bay_id, station_service_id, program_number, available)',
-    'SELECT b.id, ss.id, MIN(bp.program_number), true',
+    // NOT `available`. The column was dropped by csms-server's
+    // `2026_09_18_000001_drop_available_from_bay_services` — one writer that only ever wrote
+    // `true`, zero readers — and writing it made every `--bootstrap-pool` run against a
+    // current server die here with `column "available" of relation "bay_services" does not
+    // exist`. Omitting it is also correct against a server that still HAS the column: it was
+    // `BOOLEAN NOT NULL DEFAULT TRUE`, so the default lands every row on the only value this
+    // statement ever produced. (`bay_programs.available` and `station_services.available` are
+    // different columns on different tables and both still exist — step 2 above writes the
+    // latter deliberately.)
+    'INSERT INTO bay_services (bay_id, station_service_id, program_number)',
+    'SELECT b.id, ss.id, MIN(bp.program_number)',
     'FROM bays b',
     '  JOIN stations s ON s.id = b.station_id',
     '  JOIN station_services ss ON ss.station_id = s.id',
@@ -710,7 +719,6 @@ export function buildSeedCatalogSql(
     'GROUP BY b.id, ss.id',
     'ON CONFLICT (bay_id, station_service_id) DO UPDATE SET',
     '  program_number = EXCLUDED.program_number,',
-    '  available = EXCLUDED.available,',
     '  updated_at = NOW();',
     // 4. service_catalogs audit row — only for never-seeded stations (current_catalog_version
     //    IS NULL). Re-seeding never double-writes.
