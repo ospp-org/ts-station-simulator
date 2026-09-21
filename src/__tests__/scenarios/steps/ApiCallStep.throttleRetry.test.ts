@@ -183,10 +183,15 @@ describe('fetchWithThrottleRetry', () => {
       const r = new Response(body, { status: 429 });
       // Track if .text() was consumed via the readable stream side effect.
       const origText = r.text.bind(r);
-      r.text = async () => {
-        bodyConsumed = true;
-        return origText();
-      };
+      // `Response.text` is declared read-only, so it cannot be assigned through;
+      // defineProperty is the write that the type permits.
+      Object.defineProperty(r, 'text', {
+        configurable: true,
+        value: async (): Promise<string> => {
+          bodyConsumed = true;
+          return origText();
+        },
+      });
       return r;
     };
     const fetchFn = vi

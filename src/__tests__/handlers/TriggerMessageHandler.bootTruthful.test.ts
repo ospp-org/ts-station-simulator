@@ -106,7 +106,7 @@ function triggerEnvelope(requestedMessage: string) {
     messageId: 'cmd_trigger_1',
     messageType: MessageType.REQUEST,
     action: OsppAction.TRIGGER_MESSAGE,
-    source: MessageSource.CSMS,
+    source: MessageSource.SERVER,
     timestamp: '2026-07-21T10:00:00.000Z',
     protocolVersion: OSPP_PROTOCOL_VERSION,
     payload: { requestedMessage },

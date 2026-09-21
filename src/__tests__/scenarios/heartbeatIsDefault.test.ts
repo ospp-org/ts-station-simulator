@@ -15,6 +15,7 @@ import {
   MessageSource,
   BayStatus,
   OSPP_PROTOCOL_VERSION,
+  createEnvelope,
   type OsppEnvelope,
 } from '@ospp/protocol';
 import type { StationContext } from '../../handlers/Handler.js';
@@ -87,7 +88,7 @@ function bootRaw(status: string, heartbeatIntervalSec: number): Buffer {
       messageId: 'cmd_boot_resp_hb',
       messageType: MessageType.RESPONSE,
       action: OsppAction.BOOT_NOTIFICATION,
-      source: MessageSource.CSMS,
+      source: MessageSource.SERVER,
       timestamp: '2026-06-15T00:00:00.000Z',
       protocolVersion: OSPP_PROTOCOL_VERSION,
       payload: {
@@ -125,9 +126,16 @@ async function pulsesWithin(
     const errors: Error[] = [];
     station.on('error', (err: Error) => errors.push(err));
 
-    vi.spyOn(station.sender, 'send').mockImplementation(async (action: OsppAction) => {
+    vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
       if (action === OsppAction.HEARTBEAT) heartbeats.push(Date.now());
       if (opts.sendRejects) throw new Error('MQTT client is not connected');
+      // `send` answers with the envelope it published, so a stub that returns
+      // nothing does not have that method's type. Returning the envelope keeps
+      // the stub honest instead of widening it to `never`.
+      return createEnvelope({
+        messageId: 'stub', messageType, action, source: MessageSource.STATION,
+        payload, protocolVersion: OSPP_PROTOCOL_VERSION,
+      });
     });
 
     station.router.route(TOPIC, bootRaw(status, intervalSec));

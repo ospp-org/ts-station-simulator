@@ -66,7 +66,7 @@ function installEnvelope(messageId = 'cmd_install_1'): OsppEnvelope {
     messageId,
     messageType: MessageType.REQUEST,
     action: OsppAction.CERTIFICATE_INSTALL,
-    source: MessageSource.CSMS,
+    source: MessageSource.SERVER,
     timestamp: '2026-07-18T00:00:00.000Z',
     protocolVersion: OSPP_PROTOCOL_VERSION,
     payload: {

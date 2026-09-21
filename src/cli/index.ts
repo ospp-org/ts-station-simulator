@@ -170,6 +170,22 @@ program
 
       const runner = new ScenarioRunner();
       runner.setKeepCreated(opts.keepCreated === true);
+
+      // --keep-created cannot outlive a pool teardown, and saying so beats letting the
+      // operator find out from an empty console. A bootstrapped run MINTS an organization
+      // and tears it down at the end; every pool-compatible scenario that declares
+      // `creates:` makes its location and station INSIDE that org (three do today). So the
+      // objects --keep-created keeps are children of the thing the teardown removes, and
+      // the teardown now sweeps them rather than FK-aborting on them — which is the correct
+      // outcome for cleanliness and the surprising one for a debugging run. --keep-pool is
+      // the flag that actually preserves them, because it preserves the org they sit in.
+      if (opts.bootstrapPool && opts.keepCreated && !opts.keepPool) {
+        console.warn(chalk.yellow(
+          '--keep-created without --keep-pool: the per-run organization is torn down at the ' +
+          'end of this run, and what a scenario creates lives inside it, so the kept objects ' +
+          'go with it. Add --keep-pool to preserve them.',
+        ));
+      }
       const maxWorkers = parseInt(opts.workers, 10);
 
       // 2. Resolve the scenario set (discovery only — no mutation yet, so a

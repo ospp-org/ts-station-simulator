@@ -23,6 +23,7 @@
     "postbuild": "chmod +x dist/cli/index.js",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test:watch": "vitest",
     "lint:scenarios": "node dist/linter/index.js scenarios/",
     "certs:sync": "tsx scripts/download-certs.ts sandbox",

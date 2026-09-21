@@ -34,9 +34,11 @@ function makeSender(): { sender: MessageSender; published: () => string | null }
       payload = p;
     },
   } as unknown as MqttConnection;
-  // 'Off' signing mode: this file is about SIZE, not MAC. A signing refusal would be a
+  // 'None' signing mode: this file is about SIZE, not MAC. A signing refusal would be a
   // second reason for `published()` to be null and would make every assertion ambiguous.
-  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => null, 'Off');
+  // Was 'Off', which is not a MessageSigningMode member at all; `requiresMac` compares
+  // against 'All', so it behaved as 'None' while naming a mode that does not exist.
+  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => null, 'None');
   return { sender, published: () => payload };
 }
 

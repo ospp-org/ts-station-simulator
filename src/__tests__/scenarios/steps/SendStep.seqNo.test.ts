@@ -10,6 +10,7 @@ import {
 } from '@ospp/protocol';
 import type { Station, SessionInfo } from '../../../station/Station.js';
 import { SequenceCounter } from '../../../station/SequenceCounter.js';
+import { monotonicNowMs } from '../../../station/monotonicClock.js';
 
 // The station owns the counter now; a fixture seeds it explicitly.
 function counterAt(n: number): SequenceCounter {
@@ -30,7 +31,8 @@ function makeMockStation(): { station: Station; captured: CapturedSend[]; sessio
     sessionId: 'sess_test',
     bayId: 'bay_test',
     serviceId: 'svc_test',
-    startedAt: new Date(),
+    startedAt: new Date().toISOString(),
+    startedAtMonotonicMs: monotonicNowMs(),
     durationSeconds: 300,
     seq: counterAt(0),
   };

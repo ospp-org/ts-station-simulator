@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ const PROVISION_RESPONSE = {
 
 describe('ProvisionStep — populates context.provisioning + writes bays.json', () => {
   let tmpDir: string;
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof globalThis.fetch>;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provision-test-'));

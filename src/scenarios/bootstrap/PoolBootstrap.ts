@@ -1061,8 +1061,37 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
       ? `ARRAY[${sqlLiteral(handle.locationId)}]::uuid[]`
       : 'ARRAY[]::uuid[]';
 
+  // The organization THIS RUN MINTED, if it minted one. Everything inside it belongs to
+  // this run by construction — that is what makes widening the sweep to it safe, and it is
+  // why the scope is `createdOrgId` and never `orgId`: the bootstrap sometimes REUSES an
+  // organization, and a reused one holds other runs' rows.
+  //
+  // WHY THE WIDENING EXISTS. `locations.organization_id` is `REFERENCES organizations(id)`
+  // with no ON DELETE clause — NO ACTION — while `stations.organization_id` is ON DELETE
+  // CASCADE (`2026_05_01_060003_add_organization_id_to_stations.php:24`). So a leftover
+  // station cannot block `DELETE FROM organizations` and a leftover LOCATION can. This
+  // deleted exactly one location, `handle.locationId`, the one the bootstrap made — but
+  // every pool-compatible scenario carrying `creates: location` makes another inside the
+  // same run org (three do today: sessions/start-refused-binding-uncovered,
+  // provisioning/provision-rejected-key-and-topology-rungs and
+  // device-management/catalog-publish-refused-two-ways-under-one-code), and `--keep-created`
+  // keeps exactly those. The whole teardown is ONE transaction, so that one FK violation
+  // aborted all of it: the run printed a teardown warning and left the entire per-run world
+  // — org, location, stations, bays, sessions, intents — on the server.
+  //
+  // Stations are widened for the same reason one rung down: a station left at a location
+  // blocks the LOCATION delete (`stations.location_id` is NOT NULL and NO ACTION), which
+  // is the same abort one statement earlier.
+  const runOrg = handle.createdOrgId ? sqlLiteral(handle.createdOrgId) : null;
+  const orRunOrgOwned = runOrg ? ` OR organization_id = ${runOrg}` : '';
+  // Business ids of stations reachable only through the org — kept as its own arm so the
+  // `stationArray` arm stays independent of the `stations` table being present.
+  const orRunOrgStationBizId = runOrg
+    ? ` OR station_id IN (SELECT station_id FROM stations WHERE organization_id = ${runOrg})`
+    : '';
+
   // Resolve this run's uuid sets from the varchar business station_id.
-  const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})`;
+  const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned}`;
   const bays = `SELECT id FROM bays WHERE station_id IN (${sids})`;
   const sess = `SELECT id FROM sessions WHERE bay_id IN (${bays})`;
   // The BUSINESS ids of this run's bays (`bay_<hex>`), distinct from the UUIDs above.
@@ -1128,8 +1157,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     `DELETE FROM station_configurations WHERE station_id IN (${sids});`,
     `DELETE FROM firmware_updates WHERE station_id IN (${sids});`,
     `DELETE FROM diagnostics_uploads WHERE station_id IN (${sids});`,
-    `DELETE FROM provisioning_tokens WHERE station_id = ANY(${stationArray});`,
-    `DELETE FROM certificates WHERE station_id = ANY(${stationArray});`,
+    `DELETE FROM provisioning_tokens WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
+    `DELETE FROM certificates WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
     // security_events + its dedup key. NOT covered by the FK discipline above: the FK is
     // ON DELETE SET NULL (the only one in the schema besides
     // provisioning_tokens.issued_certificate_id), so deleting the station does not block and
@@ -1146,8 +1175,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     `DELETE FROM security_event_dedup WHERE event_id IN (SELECT event_id FROM security_events WHERE station_id IN (${sids}));`,
     `DELETE FROM security_events WHERE station_id IN (${sids});`,
     `DELETE FROM bays WHERE station_id IN (${sids});`,
-    `DELETE FROM stations WHERE station_id = ANY(${stationArray});`,
-    `DELETE FROM locations WHERE id = ANY(${locationArray});`,
+    `DELETE FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned};`,
+    `DELETE FROM locations WHERE id = ANY(${locationArray})${orRunOrgOwned};`,
   ];
 
   // Orphan-sweep for service_definitions we seeded — symmetric ownership with the bootstrap.

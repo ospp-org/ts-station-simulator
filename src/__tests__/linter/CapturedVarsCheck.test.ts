@@ -8,6 +8,7 @@ describe('CapturedVarsCheck', () => {
   it('captured var used after capture produces no issues', () => {
     const scenario: ParsedScenario = {
       filePath: 'test.yaml',
+      declarations: {},
       name: 'test',
       steps: [
         { action: 'wait_for', message: 'BootNotification', messageType: 'Response', timeout_ms: 5000, capture: { heartbeat: 'payload.heartbeatIntervalSec' } },
@@ -21,6 +22,7 @@ describe('CapturedVarsCheck', () => {
   it('captured var used BEFORE capture produces 1 issue', () => {
     const scenario: ParsedScenario = {
       filePath: 'test.yaml',
+      declarations: {},
       name: 'test',
       steps: [
         { action: 'send', message: 'Heartbeat', payload: { interval: '{{captured.heartbeat}}' } },
@@ -35,6 +37,7 @@ describe('CapturedVarsCheck', () => {
   it('captured var never captured produces an issue', () => {
     const scenario: ParsedScenario = {
       filePath: 'test.yaml',
+      declarations: {},
       name: 'test',
       steps: [
         { action: 'send', message: 'X', payload: { x: '{{captured.nonexistent}}' } },

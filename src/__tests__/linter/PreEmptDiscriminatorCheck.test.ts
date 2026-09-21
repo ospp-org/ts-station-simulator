@@ -4,6 +4,7 @@ import type { ParsedScenario } from '../../linter/types.js';
 
 const scenario = (steps: Record<string, unknown>[]): ParsedScenario => ({
   filePath: 'scenarios/test.yaml',
+  declarations: {},
   name: 'test',
   steps,
 });

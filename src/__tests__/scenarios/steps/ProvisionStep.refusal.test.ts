@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +29,7 @@ const FLAT_ERROR = {
 
 describe('ProvisionStep — expect_status turns a refusal into an assertion', () => {
   let tmpDir: string;
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof globalThis.fetch>;
   let lastBody: Record<string, unknown> = {};
 
   function mockRefusal(status: number, body: unknown): void {
@@ -128,7 +129,7 @@ describe('ProvisionStep — expect_status turns a refusal into an assertion', ()
 
 describe('ProvisionStep — the three key-shape knobs, each malforming ONE field', () => {
   let tmpDir: string;
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof globalThis.fetch>;
   let lastBody: Record<string, string> = {};
 
   beforeEach(async () => {

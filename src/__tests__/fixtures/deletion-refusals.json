@@ -1,0 +1,93 @@
+{
+  "_provenance": {
+    "recorded_from": "csms-server @ 8f167043 (master)",
+    "how": "read from the committed sources, not from a live call: the emitters are DeletionRefusedException and the four Actions below, and the wire shape is the controller's 409 body",
+    "wire_shape": "HTTP 409, body { message: <prose>, details: { reason: <slug>, ...context } }",
+    "note": "ADR-0013 deliberately assigns NO numeric OSPP code to these four doors. DeletionRefusedException.php:31-37 states why: the registry holds 121 codes and none means 'refused because something still references this' — 3016 ACTIVE_SESSIONS_PRESENT fits one of the six causes and not the other five."
+  },
+  "station": {
+    "route": "DELETE /api/v1/admin/stations/{stationId}",
+    "permission": "stations.delete",
+    "emitter": "app/Modules/Station/Actions/DeleteStationAction.php:161-199",
+    "refusals": [
+      {
+        "status": 409,
+        "details": { "reason": "live_session" },
+        "message": "Station stn_aaaa1111 has a live session. Let it settle, then delete the station.",
+        "teaches": "settle the session, then delete the station"
+      },
+      {
+        "status": 409,
+        "details": { "reason": "unit_batch_in_progress" },
+        "message": "Station stn_aaaa1111 has a multi-unit batch in progress on bay 1 — units are paid for and not yet delivered. Let the batch finish, then delete the station.",
+        "teaches": "finish the batch, then delete the station"
+      },
+      {
+        "status": 409,
+        "details": { "reason": "bay_reserved" },
+        "message": "Station stn_aaaa1111 has a reserved bay (1). Let the reservation lapse or cancel it, then delete the station.",
+        "teaches": "clear the reservation, then delete the station"
+      }
+    ]
+  },
+  "service": {
+    "route": "DELETE /api/v1/admin/stations/{stationId}/services/{stationServiceId}",
+    "permission": "catalog.manage",
+    "emitter": "app/Modules/Station/Actions/DeleteStationServiceAction.php:66-73",
+    "refusals": [
+      {
+        "status": 409,
+        "details": { "reason": "live_session" },
+        "message": "This service has a live session. Let it settle, then delete the service.",
+        "teaches": "settle the session, then delete the service"
+      }
+    ]
+  },
+  "location": {
+    "route": "DELETE /api/v1/locations/{id}",
+    "permission": "locations.delete",
+    "emitter": "app/Modules/Location/Actions/DeleteLocationAction.php:56-63",
+    "refusals": [
+      {
+        "status": 409,
+        "details": { "reason": "location_has_stations", "stations": 2 },
+        "message": "Location Sim Pool Location still has 2 station(s). Delete them first, then delete the location.",
+        "teaches": "delete the stations, then delete the location"
+      }
+    ]
+  },
+  "station_model": {
+    "route": "POST /api/v1/admin/station-models/{stationModelId}/retire",
+    "permission": "station_models.manage (tenant-owned) | platform.station_models.manage (platform-owned)",
+    "emitter": "app/Modules/Station/Actions/RetireStationModelAction.php:60-82",
+    "refusals": [
+      {
+        "status": 409,
+        "details": { "reason": "model_already_retired" },
+        "message": "Station model WashPro X200 was already retired at 2026-09-20T00:00:00+00:00.",
+        "teaches": "retirement is one-way; there is no un-retire"
+      },
+      {
+        "status": 409,
+        "details": { "reason": "model_in_use", "stations": 3 },
+        "message": "Station model WashPro X200 is still used by 3 station(s). Repoint or delete them first, then retire the model.",
+        "teaches": "repoint or delete the stations, then retire the model"
+      }
+    ]
+  },
+  "organization": {
+    "route": "DELETE /api/v1/organizations/{id}",
+    "permission": "platform.organizations.delete (platform_super_admin only)",
+    "emitter": "app/Modules/Tenant/Exceptions/OrganizationHasInFlightPaymentsException.php:45-53",
+    "wire_shape_note": "the odd one out — NOT DeletionRefusedException; body is { error, message, in_flight_payments }",
+    "refusals": [
+      {
+        "status": 409,
+        "error": "ORGANIZATION_HAS_IN_FLIGHT_PAYMENTS",
+        "in_flight_payments": 1,
+        "message": "Cannot delete this organization: 1 payment(s) are still in flight. Deleting it now would strand that money — the settlement read would refuse a deleted tenant and leave the intent pending forever, and a refund needs the merchant credentials that deletion takes away. Wait for the payments to settle (payment:poll-webpay runs every minute), or suspend the organization instead — suspension stops new business and lets payments already taken finish.",
+        "teaches": "wait for settlement, or suspend instead"
+      }
+    ]
+  }
+}

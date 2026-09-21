@@ -28,10 +28,17 @@ targets:
       # NOTE: `certs/` is gitignored in full, so this path — like every other
       # under it — exists only on a machine that produced it. `requires_files` is
       # a SCENARIO key and cannot cover a target-level path, so any scenario aimed
-      # at this target inherits an undeclarable fixture dependency. A missing file
-      # here surfaces as a connect error rather than an honest skip. Kept in mind
-      # rather than fixed: only s6/s6b use this target, and both declare their own
-      # leaves and skip when pooled.
+      # at this target inherits a fixture dependency it cannot declare.
+      #
+      # This said the dependency "surfaces as a connect error rather than an honest
+      # skip", and was "kept in mind rather than fixed". Both halves are out of date.
+      # The runner derives the dependency from the target instead of asking the YAML
+      # to declare it: `findMissingTargetCert()` (`ScenarioRunner.ts:1518`) checks
+      # every NON-TEMPLATED path in this block, and a missing one is an INCONCLUSIVE
+      # skip that names the path — not a connect error. Templated paths are excluded
+      # on purpose: `{{stationId}}` entries are written per run by provisioning and
+      # are correctly absent beforehand, so treating them as fixtures would make
+      # every `defer_mqtt_connect` scenario inconclusive on a clean box.
       ca: "certs/local/broker-ca.pem"
       station_ca_chain: "certs/local/{{stationId}}-chain.pem"
 

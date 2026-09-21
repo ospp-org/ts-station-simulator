@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { MessageType, OSPP_PROTOCOL_VERSION, OsppAction } from '@ospp/protocol';
 import { MessageSender } from '../../mqtt/MessageSender.js';
+import type { MqttConnection } from '../../mqtt/MqttConnection.js';
 
 /*
  * The wire protocolVersion must be OVERRIDABLE, and its DEFAULT must be conformant.
@@ -41,7 +42,10 @@ function makeSender(protocolVersion?: string): { sender: MessageSender; publishe
       payload = p;
     },
   } as unknown as MqttConnection;
-  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => null, 'Critical', protocolVersion);
+  // 'None', not 'Critical': this file is about the wire protocolVersion, not MACs, and
+  // 'Critical' is the RETIRED pre-'All' default — not a MessageSigningMode member. It
+  // compared unequal to 'All' and so already meant 'None'.
+  const sender = new MessageSender(fakeConnection, 'stn_simtest01', () => null, 'None', protocolVersion);
   return { sender, published: () => payload };
 }
 

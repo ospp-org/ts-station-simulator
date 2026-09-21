@@ -194,7 +194,7 @@ describe('BootNotification uptime/bootReason truthfulness', () => {
         messageId: 'cmd_install_1',
         messageType: MessageType.REQUEST,
         action: OsppAction.CERTIFICATE_INSTALL,
-        source: MessageSource.CSMS,
+        source: MessageSource.SERVER,
         timestamp: '2026-07-21T09:30:00.000Z',
         protocolVersion: OSPP_PROTOCOL_VERSION,
         payload: {

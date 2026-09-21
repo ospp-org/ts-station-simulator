@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,7 +33,7 @@ const PROVISION_RESPONSE = {
 
 describe('ProvisionStep — the key set is durable before the POST (CONS-132)', () => {
   let tmpDir: string;
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof globalThis.fetch>;
   let keysOnDiskAtPost: { tls: boolean; receipt: boolean } | null;
   let submittedBody: Record<string, unknown> | null;
 

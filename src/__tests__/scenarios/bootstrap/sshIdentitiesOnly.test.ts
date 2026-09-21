@@ -53,6 +53,7 @@ describe('sshIdentityArgs', () => {
       container: 'c',
       dbUser: 'u',
       dbName: 'd',
+      appContainer: 'a',
     });
 
     expect(args).toEqual(['-i', '/home/gabi/.ssh/id_ed25519', '-o', 'IdentitiesOnly=yes']);
@@ -90,6 +91,7 @@ describe('runUatSql — the argv that actually reaches ssh', () => {
       container: 'csms-postgres-uat',
       dbUser: 'csms_uat',
       dbName: 'csms_uat',
+      appContainer: 'csms-app-uat',
     });
 
     expect(seenCmd).toBe('ssh');

@@ -195,6 +195,44 @@ describe('requires_files — transparent skip when the fixture is absent', () =>
     expect(result.skipKind).toBe('inconclusive');
   });
 
+  /**
+   * THE TARGET-LEVEL FIXTURE, END TO END — the claim `config/targets.yaml` used to make
+   * about itself, checked at the runner rather than at the predicate.
+   *
+   * That comment said a missing target cert "surfaces as a connect error rather than an
+   * honest skip", and called it kept in mind rather than fixed. `findMissingTargetCert`
+   * is tested above, but nothing proved the RUNNER acts on it — which is the half the
+   * comment was actually about, and the half a connect error would have shown up in. A
+   * connect error and an inconclusive skip are opposite verdicts: one says the target is
+   * broken, the other says the instrument is absent and the question was never put.
+   *
+   * `connectSucceeds` is left TRUE here on purpose. If the skip did not happen first, the
+   * scenario would run and pass, so a green result cannot be mistaken for the skip.
+   */
+  it('a missing TARGET cert is an inconclusive skip that names the path, not a connect error', async () => {
+    const runner = new ScenarioRunner();
+    const missing = path.join(dir, 'broker-ca.pem');
+    const result = await runner.runScenario(
+      scenario({}),
+      { ...target, tls: { serverCa: missing } } as TargetConfig,
+    );
+
+    expect(result.status).toBe('skipped');
+    expect(result.skipKind).toBe('inconclusive');
+    // The reason rides on the synthetic skip step, which is where a reporter reads it.
+    expect(result.steps[0]?.error).toContain(missing);
+    expect(result.steps[0]?.error).toContain('target fixture');
+  });
+
+  it('a TEMPLATED target path is not a fixture — provisioning writes it, so absence proves nothing', async () => {
+    const runner = new ScenarioRunner();
+    const result = await runner.runScenario(
+      scenario({}),
+      { ...target, tls: { cert: path.join(dir, '{{stationId}}.pem') } } as TargetConfig,
+    );
+    expect(result.status).not.toBe('skipped');
+  });
+
   it('tags "does not apply" skips NOT-APPLICABLE, so they never turn a conclusive run red', async () => {
     const runner = new ScenarioRunner();
 

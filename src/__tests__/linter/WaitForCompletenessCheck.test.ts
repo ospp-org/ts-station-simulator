@@ -5,7 +5,7 @@ import type { ParsedScenario } from '../../linter/types.js';
 const check = new WaitForCompletenessCheck();
 
 function makeScenario(steps: Record<string, unknown>[]): ParsedScenario {
-  return { filePath: 'test.yaml', name: 'test', steps };
+  return { filePath: 'test.yaml', name: 'test', declarations: {}, steps };
 }
 
 describe('WaitForCompletenessCheck', () => {

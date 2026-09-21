@@ -81,7 +81,7 @@ describe('unsatisfiedVariables — what a scenario asks for that nothing supplie
 
   it('bayId_N beyond the declared bayCount is NOT provided', () => {
     expect(unsatisfiedVariables(scenario({
-      station: { stationId: '{{stationId}}', bayCount: 2 },
+      station: { stationId: '{{stationId}}', bayCount: 2, stationModel: 'WashPro X200', stationVendor: 'SimCorp' },
       steps: [{ action: 'send', payload: { b: '{{bayId_4}}' } }],
     } as Partial<ScenarioDefinition>), TARGET)).toEqual(['bayId_4']);
   });

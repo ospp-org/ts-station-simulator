@@ -28,8 +28,14 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # Both configs. `tsc --noEmit` alone reads tsconfig.json, whose `include: ["src"]`
+      # leaves the top-level `tests/` out and whose `exclude` drops `src/__tests__` — so
+      # this step was green across 165 test files it never looked at. Measured when the
+      # second config was added: 56 errors in 39 of those files, including 8 sites naming
+      # a `MessageSource.CSMS` that does not exist (undefined on the wire at runtime) and
+      # 15 building a ParsedScenario without its required `declarations`.
       - name: Type-check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint scenarios
         run: npm run lint:scenarios

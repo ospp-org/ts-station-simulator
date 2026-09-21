@@ -30,7 +30,7 @@ function envelopeOf(
 
 function wire(envelope: OsppEnvelope): Buffer {
   return Buffer.from(
-    JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) }),
+    JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope as unknown as Record<string, unknown>) }),
   );
 }
 

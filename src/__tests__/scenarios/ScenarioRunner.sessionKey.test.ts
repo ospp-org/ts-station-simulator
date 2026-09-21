@@ -37,7 +37,7 @@ function bootAcceptedRaw(sessionKey: string): Buffer {
       messageId: 'cmd_boot_resp_sk',
       messageType: MessageType.RESPONSE,
       action: OsppAction.BOOT_NOTIFICATION,
-      source: MessageSource.CSMS,
+      source: MessageSource.SERVER,
       timestamp: '2026-06-15T00:00:00.000Z',
       protocolVersion: OSPP_PROTOCOL_VERSION,
       payload: {

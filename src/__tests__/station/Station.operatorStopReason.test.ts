@@ -4,7 +4,7 @@ import { Station } from '../../station/Station.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
 import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { StationConfig } from '../../station/StationConfig.js';
-import { BayStatus } from '@ospp/protocol';
+import { BayStatus, createEnvelope, MessageSource, OSPP_PROTOCOL_VERSION } from '@ospp/protocol';
 
 // ---------------------------------------------------------------------------
 // This file used to pin a BLOCKED state: the fix could not land because
@@ -40,8 +40,15 @@ describe('a forced stop reports the reason that bills', () => {
   it('emits OperatorStopped, not Deauthorized', async () => {
     const station = new Station(makeConfig(), {} as never);
     const sent: Record<string, unknown>[] = [];
-    vi.spyOn(station.sender, 'send').mockImplementation(async (_a, _t, p) => {
-      sent.push(p as Record<string, unknown>);
+    vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
+      sent.push(payload as Record<string, unknown>);
+    // `send` answers with the envelope it published, so a stub that returns
+    // nothing does not have that method's type. Returning the envelope keeps
+    // the stub honest instead of widening it to `never`.
+      return createEnvelope({
+        messageId: 'stub', messageType, action, source: MessageSource.STATION,
+        payload, protocolVersion: OSPP_PROTOCOL_VERSION,
+      });
     });
     station.setBayState('bay_opstop01', BayStatus.OCCUPIED);
     station.sessions.set('sess_1', {

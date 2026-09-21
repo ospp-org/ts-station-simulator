@@ -67,13 +67,35 @@ describe('teardown — the money path', () => {
   });
 
   /**
-   * Scoped by the run's own BAY BUSINESS IDS, never by organisation: the bootstrap sometimes
-   * REUSES a standing org rather than minting one, and an org-scoped delete would then reach
-   * intents another run created. Bays are always run-created.
+   * Scoped by the run's own BAY BUSINESS IDS, never by a REUSED organisation: the bootstrap
+   * sometimes reuses a standing org rather than minting one, and an org-scoped delete would
+   * then reach intents another run created. Bays are always run-created.
+   *
+   * The distinction is `createdOrgId`, not `orgId`. This used to assert the string
+   * `organization_id` was absent outright, on a fixture where the two fields held the SAME
+   * value — so it could not tell a reused org from a minted one, and it read as a ban on
+   * both. A run-minted org is a different thing: nothing inside it predates the run, so
+   * reaching stations through it is how the teardown stops FK-aborting on a location a
+   * scenario made (see TeardownOrderMatchesDeletionContract.test.ts). The ban that matters
+   * is the one below: a REUSED org must never scope anything.
    */
-  it('scopes the money sweep to this run\'s bays, not to the organisation', () => {
-    const stmt = sql.slice(at('payment_intents'), sql.indexOf(';', at('payment_intents')));
+  it('never scopes the money sweep by a REUSED organisation', () => {
+    const reused = buildTeardownSql({ ...handle(), createdOrgId: undefined });
+    const from = reused.indexOf('DELETE FROM payment_intents');
+    const stmt = reused.slice(from, reused.indexOf(';', from));
     expect(stmt).toContain('SELECT bay_id FROM bays');
     expect(stmt).not.toContain('organization_id');
+    // And nothing else in the whole transaction leans on the reused org either.
+    expect(reused).not.toContain("organization_id = 'org-1'");
+  });
+
+  it('reaches through a MINTED org only, and still only through this run\'s bays', () => {
+    const stmt = sql.slice(at('payment_intents'), sql.indexOf(';', at('payment_intents')));
+    expect(stmt).toContain('SELECT bay_id FROM bays');
+    // The only organisation named anywhere in the transaction is the one this run
+    // created — 28 scopes at the time of writing, every one of them that id.
+    const scoped = [...sql.matchAll(/organization_id = '([^']+)'/g)].map((m) => m[1]);
+    expect(scoped.length).toBeGreaterThan(0);
+    expect([...new Set(scoped)]).toEqual(['org-1']);
   });
 });

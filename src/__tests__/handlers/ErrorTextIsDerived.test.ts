@@ -152,7 +152,7 @@ describe('errorText in the handlers is derived from the registry, never typed', 
     // What makes accepting both honest rather than lax. If the SDK ever let the enum name
     // and the registry's `text` diverge, the second spelling would stop being a synonym and
     // this reds before anything ships on the difference.
-    const codes = Object.values(OsppErrorCode).filter((v): v is number => typeof v === 'number');
+    const codes = Object.values(OsppErrorCode).filter((v): v is OsppErrorCode => typeof v === 'number');
     const disagreeing = codes.filter((c) => OsppErrorCode[c] !== OSPP_ERROR_REGISTRY[c].text);
     expect(disagreeing).toEqual([]);
     expect(codes.length).toBeGreaterThan(100);

@@ -56,7 +56,7 @@ function makeMockStation(): { station: Station; router: MessageRouter } {
 function publish(router: MessageRouter, env: OsppEnvelope): void {
   router.route(
     'test/topic',
-    Buffer.from(JSON.stringify({ ...env, mac: computeMac(TEST_SESSION_KEY, env) })),
+    Buffer.from(JSON.stringify({ ...env, mac: computeMac(TEST_SESSION_KEY, env as unknown as Record<string, unknown>) })),
   );
 }
 

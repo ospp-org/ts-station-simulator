@@ -26,6 +26,7 @@ function authStep(offlinePassValue: unknown): Record<string, unknown> {
 function offlinePassTypeErrors(offlinePassValue: unknown): string[] {
   const scenario: ParsedScenario = {
     filePath: 'test.yaml',
+    declarations: {},
     name: 'test',
     steps: [authStep(offlinePassValue)],
   };

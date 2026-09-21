@@ -20,12 +20,12 @@ function invalidStatusStep(expectInvalid?: boolean): Record<string, unknown> {
 
 describe('PayloadSchemaCheck — expect_invalid opt-out', () => {
   it('a `send` step with expect_invalid: true is NOT validated, even though the payload is genuinely invalid', () => {
-    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', steps: [invalidStatusStep(true)] };
+    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', declarations: {}, steps: [invalidStatusStep(true)] };
     expect(check.check(scenario)).toHaveLength(0);
   });
 
   it('the SAME invalid payload WITHOUT expect_invalid still fails (opt-out is not a blanket weakening)', () => {
-    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', steps: [invalidStatusStep(false)] };
+    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', declarations: {}, steps: [invalidStatusStep(false)] };
     const issues = check.check(scenario);
     expect(issues.length).toBeGreaterThan(0);
     expect(issues.some((i) => i.message.includes('bayNumber'))).toBe(true);
@@ -37,13 +37,14 @@ describe('PayloadSchemaCheck — expect_invalid opt-out', () => {
   });
 
   it('omitting expect_invalid entirely (default/undefined) still fails the same invalid payload', () => {
-    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', steps: [invalidStatusStep(undefined)] };
+    const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', declarations: {}, steps: [invalidStatusStep(undefined)] };
     expect(check.check(scenario).length).toBeGreaterThan(0);
   });
 
   it('expect_invalid on one step does not suppress validation on a DIFFERENT step in the same scenario', () => {
     const scenario: ParsedScenario = {
       filePath: 'test.yaml',
+      declarations: {},
       name: 'test',
       steps: [invalidStatusStep(true), invalidStatusStep(false)],
     };

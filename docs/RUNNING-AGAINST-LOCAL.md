@@ -9,6 +9,20 @@ The six numbered blockers were measured that day, against `csms-server` at `0e9f
 `@ospp/protocol 0.26.0` installed here. The closed entry at the end is dated separately and
 was measured against `csms-server` at `8f167043` with `@ospp/protocol 0.39.0`.
 
+**Re-checked 2026-09-21 against `csms-server` at `8f167043` with `@ospp/protocol 0.39.0` —
+3 of the 7 claims here no longer held as written**, and the entries below say so in place
+rather than being deleted:
+
+| claim | 2026-09-21 |
+|---|---|
+| 1 — plaintext `1883` disabled | not re-checked: it is a property of the running broker, and this round did not touch the stack |
+| 2 — `stn_e0000001.pem` expired on purpose | **holds** (`-checkend 0` still fails on it, and on it alone). Its "valid leaves" list was one short and is corrected |
+| 3 — `OSPP_PROTOCOL_VERSION=0.2.1` mandatory | **false** — the stack moved to `0.3.0`, which is the SDK default. Set nothing |
+| 4 — dev database truncated by the container suite | not re-checked: environmental, and only a run against the stack can say |
+| 5 — `PUT …/catalog` retired | **holds** — `routes/api/v1/admin.php:267` is the only catalog route at `8f167043`, and it is the `POST …/catalog/publish` door |
+| 6 — publish is `catalog.manage` | role table **holds**; the claim that no scenario can run as the pool owner is **false** |
+| trailing — testing endpoints disabled | numerator **holds** (4), denominator was stale (32 → 40) |
+
 ## Why bother with local at all
 
 `scripts/deploy-uat.sh` is `git pull origin master --ff-only`, so UAT can only ever run code
@@ -23,6 +37,8 @@ edge, no supervisord consumer, no public-CA broker cert.
 ---
 
 ## The six blockers, in the order they fire
+
+*(3 and 6 are corrected in place below — read the entry, not the heading.)*
 
 ### 1. Target `local` is dead — use `local-mtls`
 
@@ -47,22 +63,42 @@ cd certs/local && for f in stn_*.pem; do
 done
 ```
 
-Valid at the time of writing: `stn_b222c63b`, `stn_e0000002`, `stn_e26b94f3`.
+Valid on 2026-09-21, by the loop above: `stn_b222c63b`, `stn_e0000002`, `stn_e26b94f3`,
+`stn_f297ceb1` — 4 of the 5 leaves in `certs/local`, the fifth being the expired fixture.
 
-### 3. `OSPP_PROTOCOL_VERSION=0.2.1` is mandatory
+### 3. `OSPP_PROTOCOL_VERSION` — CLOSED 2026-09-21, set nothing
 
-The local server pins `OSPP_PROTOCOL_VERSION=0.2.1` (`csms-server/.env:65`) and negotiation is
-**exact match**, so an unset env means every boot is refused **`1007
-PROTOCOL_VERSION_MISMATCH — Unsupported version: 0.3.0`**, logged server-side as the far less
-helpful `Protocol: invalid message`.
+This entry read *"`OSPP_PROTOCOL_VERSION=0.2.1` is mandatory"*. It is not, and the wire says
+so to the second. The local server pinned `0.2.1`, negotiation is **exact match**, and an
+unset env therefore meant every boot was refused `1007 PROTOCOL_VERSION_MISMATCH`. The stack
+now runs `0.3.0`, which is also the SDK default, so the correct value of this variable is
+**unset**.
 
-`resolveWireProtocolVersion()` (`src/mqtt/protocolVersion.ts`) exists for exactly this and
-its docblock says so: *"The env remains an override for talking to a server pinned
-elsewhere."*
+Both halves are in the recorded frame journals under `tests/artifacts/journal/`, four minutes
+apart on 2026-09-21, against the same scenario file:
 
-**This is not a bump artefact.** `OSPP_PROTOCOL_VERSION` is `'0.3.0'` in `@ospp/protocol` at
-**both** `v0.23.0` and `v0.26.0` — verified at both tags — so no SDK bump causes it and none
-fixes it. It is a property of the local server's configuration.
+| journal | server's `protocolVersion` | boot |
+|---|---|---|
+| `…stn-1a139d42--2026-09-21T05-24-08…` | `0.2.1` | **Rejected**, `errorCode 1007`, `errorText "PROTOCOL_VERSION_MISMATCH"`, `supportedVersions ["0.2.1"]` |
+| `…stn-63c71a15--2026-09-21T05-26-12…` | `0.3.0` | **Accepted** |
+
+Every server-sourced frame recorded after that — **6 of the 7** journals in that directory
+carrying one, the seventh being the `05-24` rejection above — says `0.3.0`. The station sent
+`0.3.0` in all of them: it is the SDK default and no run set the env.
+
+`tests/artifacts/` is gitignored (`.gitignore:17`), so those journals exist only on the
+machine that produced them and do not travel with the repo — which is why the decisive
+values are quoted above rather than merely cited. To re-derive the claim on any machine,
+run one scenario against the stack and read the inbound BootNotification Response: a
+`protocolVersion` of `0.3.0` with `status "Accepted"` is the whole measurement.
+
+`resolveWireProtocolVersion()` (`src/mqtt/protocolVersion.ts`) still exists and its docblock
+is still accurate — *"The env remains an override for talking to a server pinned elsewhere."*
+An override is what it is. It is no longer something a local run has to set.
+
+**It never was a bump artefact.** `OSPP_PROTOCOL_VERSION` is `'0.3.0'` in `@ospp/protocol` at
+`v0.23.0`, `v0.26.0` and `v0.39.0` alike, so no SDK bump caused it and none fixed it — the
+server's configuration moved.
 
 ### 4. The dev database is empty again — re-seed it
 
@@ -115,10 +151,25 @@ So publish as a pool identity is **403 "This action is unauthorized"**. That ref
 decision, not an obstacle — `csms-server` binds it to owner+admin because "which prices and
 programs a station starts selling under is the settlement-critical decision D-RBAC".
 
-The pool **does** mint an ephemeral `tenant_owner`, but its password never leaves
-`PoolBootstrap` and no scenario can ask for it, so *running as the pool owner would need a
-runner change*. What works today is declaring the identity in the file, the same mechanism the
-`e2e/*` scenarios use:
+The role table above still holds. The sentence that followed it does not: it said *"its
+password never leaves `PoolBootstrap` and no scenario can ask for it, so running as the pool
+owner would need a runner change"*. **That change landed.** `PoolBootstrap` publishes the
+ephemeral owner's credentials to `SIM_POOL_OWNER_EMAIL` / `SIM_POOL_OWNER_PASSWORD`
+(`PoolBootstrap.ts:509-510`) and clears them at teardown, and **9 scenarios** ask for them
+today — including `device-management/service-catalog-update.yaml`, the file the working
+invocation below runs:
+
+```yaml
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+```
+
+That is the right identity for a catalog publish: the pool owner is a `tenant_owner` **of the
+run's own organisation**, so the permission is held in the tenant tier where the decision
+actually lives.
+
+Declaring a platform admin instead still works and is what the `e2e/*` files do:
 
 ```yaml
 auth:
@@ -138,7 +189,6 @@ no role edit.
 ```bash
 export UAT_E2E_PLATFORM_ADMIN_EMAIL=admin@csms.local
 export UAT_E2E_PLATFORM_ADMIN_PASSWORD=password
-export OSPP_PROTOCOL_VERSION=0.2.1
 export UAT_SSH_HOST=local UAT_DB_CONTAINER=csms-postgres UAT_DB_USER=csms UAT_DB_NAME=csms
 
 npx simulator run \
@@ -158,9 +208,12 @@ crossed the schema rail the `v0.25.0` bump armed, rather than merely being sent.
 
 ## One thing that will still stop you
 
-* **4 of 32 `device-management` scenarios fail locally on `403 "Testing endpoints are
+* **4 of 40 `device-management` scenarios fail locally on `403 "Testing endpoints are
   disabled"`** — `TESTING_TRIGGER_COMMAND_ENABLED` is unset on the dev stack. Environmental,
-  not a defect.
+  not a defect. The four are `get-configuration.yaml`, `get-configuration-filtered.yaml`,
+  `reset-forced-settles-session-as-operator-stop.yaml` and
+  `reset-graceful-refused-with-active-session.yaml`. The denominator read 32 and the suite
+  has grown to 40; the numerator was re-counted, not carried over.
 
 ### Closed 2026-09-21 — the deferred connect had no broker anchor
 

@@ -5,7 +5,7 @@ import type { ParsedScenario } from '../../linter/types.js';
 const check = new CapturedVarsCheck();
 
 function scenarioWith(steps: Record<string, unknown>[]): ParsedScenario {
-  return { filePath: 'test.yaml', name: 'test', steps };
+  return { filePath: 'test.yaml', name: 'test', declarations: {}, steps };
 }
 
 // Regression coverage for the CapturedVarsCheck provision-awareness fix: a

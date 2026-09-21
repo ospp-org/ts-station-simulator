@@ -31,6 +31,14 @@ function makeEnvelope(
   };
 }
 
+// `computeMac` takes a plain `Record<string, unknown>`; `OsppEnvelope` is an
+// interface, and an interface has no implicit index signature, so it is not
+// assignable to one. Production widens at the same boundary and for the same
+// reason (`MessageRouter.ts:194` on the verify side) — this is that cast, named
+// once instead of repeated at seven call sites.
+const macOf = (env: OsppEnvelope): string =>
+  computeMac(TEST_SESSION_KEY, env as unknown as Record<string, unknown>);
+
 describe('MessageRouter', () => {
   it('parses valid JSON buffer and emits action event', () => {
     const router = new MessageRouter(() => TEST_SESSION_KEY);
@@ -38,7 +46,7 @@ describe('MessageRouter', () => {
     const handler = vi.fn();
     router.on(OsppAction.HEARTBEAT, handler);
 
-    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) })));
+    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: macOf(envelope) })));
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ action: OsppAction.HEARTBEAT }));
@@ -65,7 +73,7 @@ describe('MessageRouter', () => {
     router.onAction(OsppAction.BOOT_NOTIFICATION, handler);
 
     const envelope = makeEnvelope(OsppAction.BOOT_NOTIFICATION);
-    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) })));
+    router.route('test/topic', Buffer.from(JSON.stringify({ ...envelope, mac: macOf(envelope) })));
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ action: OsppAction.BOOT_NOTIFICATION }));
@@ -77,7 +85,7 @@ describe('MessageRouter', () => {
     router.onceAction(OsppAction.RESET, handler);
 
     const envelope = makeEnvelope(OsppAction.RESET);
-    const buf = Buffer.from(JSON.stringify({ ...envelope, mac: computeMac(TEST_SESSION_KEY, envelope) }));
+    const buf = Buffer.from(JSON.stringify({ ...envelope, mac: macOf(envelope) }));
 
     router.route('test/topic', buf);
     router.route('test/topic', buf);
@@ -96,8 +104,8 @@ describe('MessageRouter', () => {
         messageId: 'req-B',
         messageType: MessageType.RESPONSE,
       });
-      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: computeMac(TEST_SESSION_KEY, a) })));
-      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: computeMac(TEST_SESSION_KEY, b) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: macOf(a) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: macOf(b) })));
 
       const drainedA = router.drainBuffered(
         OsppAction.BOOT_NOTIFICATION,
@@ -121,8 +129,8 @@ describe('MessageRouter', () => {
       const router = new MessageRouter(() => TEST_SESSION_KEY);
       const a = makeEnvelope(OsppAction.HEARTBEAT, { messageId: 'x' });
       const b = makeEnvelope(OsppAction.HEARTBEAT, { messageId: 'y' });
-      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: computeMac(TEST_SESSION_KEY, a) })));
-      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: computeMac(TEST_SESSION_KEY, b) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...a, mac: macOf(a) })));
+      router.route('test/topic', Buffer.from(JSON.stringify({ ...b, mac: macOf(b) })));
 
       const drained = router.drainBuffered(OsppAction.HEARTBEAT);
       expect(drained).toHaveLength(2);

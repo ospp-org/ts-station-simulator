@@ -1,0 +1,25 @@
+{
+  // Typecheck configuration for the TEST TREE. The build config (`tsconfig.json`)
+  // sets `rootDir: src` and `exclude: src/__tests__`, and its `include: ["src"]`
+  // leaves the top-level `tests/` out altogether — so between the two, not one of
+  // this repository's 165 test files was ever typechecked. `npx tsc --noEmit` in CI
+  // read the same build config and therefore agreed, which is why the gap was
+  // invisible: the step was present, green, and blind.
+  //
+  // Measured consequences of that blindness, both present at the moment this file
+  // was added: `AssertStep.refusalContext.test.ts` asserted on a ScenarioContext
+  // field that did not exist on the type, and 15 call sites built a
+  // ScenarioDefinition without its required `steps` — 56 errors across 39 files.
+  //
+  // This config emits nothing; it exists only to be checked. It is deliberately a
+  // SEPARATE file rather than a widening of the build config: widening would pull
+  // `src/__tests__` into `dist` and ship the tests with the package.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src", "tests", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

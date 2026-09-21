@@ -61,11 +61,14 @@ Configured in `config/targets.yaml`:
 | `uat` | UAT environment (mTLS) — see [`docs/RUNNING-AGAINST-UAT.md`](docs/RUNNING-AGAINST-UAT.md) |
 | `sandbox` | OSPP conformance sandbox (mTLS + MQTT credentials) |
 
-A local run hits **six** pre-existing blockers in a fixed order — disabled listener, a
-deliberately-expired fixture cert, the `OSPP_PROTOCOL_VERSION` pin, an empty dev database, a
-retired route, and a permission the pool identity does not hold.
+A local run hits pre-existing blockers in a fixed order — disabled listener, a
+deliberately-expired fixture cert, an empty dev database, a retired route, and a permission
+the pool identity does not hold. The `OSPP_PROTOCOL_VERSION` pin was one of them and is not
+any more: the stack moved to `0.3.0` on 2026-09-21, which is the SDK default, so that
+variable is now left unset.
 [`docs/RUNNING-AGAINST-LOCAL.md`](docs/RUNNING-AGAINST-LOCAL.md) lists them with the fix for
-each; reading it first saves rediscovering them one at a time.
+each and a dated re-check of every claim; reading it first saves rediscovering them one at a
+time.
 
 Override via `--target` flag or `OSPP_TARGET` env var.
 

@@ -46,7 +46,7 @@ function triggerEnvelope(messageId = 'cmd_trigger_1'): OsppEnvelope {
     messageId,
     messageType: MessageType.REQUEST,
     action: OsppAction.TRIGGER_CERTIFICATE_RENEWAL,
-    source: MessageSource.CSMS,
+    source: MessageSource.SERVER,
     timestamp: '2026-07-18T00:00:00.000Z',
     protocolVersion: OSPP_PROTOCOL_VERSION,
     payload: { certificateType: 'StationCertificate' },

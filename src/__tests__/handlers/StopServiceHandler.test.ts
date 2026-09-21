@@ -89,6 +89,14 @@ function makeStopServiceRequest(): OsppEnvelope {
   };
 }
 
+/**
+ * The Accepted arm of the `StopServiceResponse` union. `actualDurationSeconds`
+ * and `creditsCharged` live only there — the Rejected arm carries an error code
+ * instead — so reading them off the bare union is a type error, which is what the
+ * inline `as { creditsCharged?: number }` escapes here were silently paying for.
+ */
+type AcceptedStopService = Extract<StopServiceResponse, { status: 'Accepted' }>;
+
 describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
   it('Accepted Response carries finalSeqNo from session.seqNo', async () => {
     const { station, captured } = makeMockStation(7);
@@ -100,7 +108,7 @@ describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
       (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
     );
     expect(response).toBeDefined();
-    const payload = response!.payload as StopServiceResponse;
+    const payload = response!.payload as AcceptedStopService;
     expect(payload.status).toBe('Accepted');
     expect((payload as { finalSeqNo?: number }).finalSeqNo).toBe(7);
   });
@@ -158,9 +166,9 @@ describe('StopServiceHandler — Bug F: creditsCharged spec formula', () => {
     const response = captured.find(
       (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
     );
-    const payload = response!.payload as StopServiceResponse;
+    const payload = response!.payload as AcceptedStopService;
     expect(payload.actualDurationSeconds).toBe(60);
-    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(100);
+    expect(payload.creditsCharged).toBe(100);
   });
 
   it('75s @ 100 cr/min → creditsCharged = 125 (ceil rounding)', async () => {
@@ -175,9 +183,9 @@ describe('StopServiceHandler — Bug F: creditsCharged spec formula', () => {
     const response = captured.find(
       (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
     );
-    const payload = response!.payload as StopServiceResponse;
+    const payload = response!.payload as AcceptedStopService;
     expect(payload.actualDurationSeconds).toBe(75);
-    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(125);
+    expect(payload.creditsCharged).toBe(125);
   });
 
   it('60s @ 10 cr/min → creditsCharged = 10 (different rate)', async () => {
@@ -192,7 +200,7 @@ describe('StopServiceHandler — Bug F: creditsCharged spec formula', () => {
     const response = captured.find(
       (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
     );
-    const payload = response!.payload as StopServiceResponse;
-    expect((payload as { creditsCharged?: number }).creditsCharged).toBe(10);
+    const payload = response!.payload as AcceptedStopService;
+    expect(payload.creditsCharged).toBe(10);
   });
 });

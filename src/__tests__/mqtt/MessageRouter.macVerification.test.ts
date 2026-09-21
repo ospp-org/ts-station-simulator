@@ -31,7 +31,7 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     messageType: MessageType.REQUEST,
     action: OsppAction.START_SERVICE,
     timestamp: new Date().toISOString(),
-    source: MessageSource.CSMS,
+    source: MessageSource.SERVER,
     protocolVersion: '0.2.1',
     // A schema-conformant StartService payload: the router validates inbound
     // payloads now, and `{sessionId, bayId}` alone is missing four required

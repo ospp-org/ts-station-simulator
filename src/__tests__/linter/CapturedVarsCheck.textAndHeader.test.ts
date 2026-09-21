@@ -7,6 +7,7 @@ const check = new CapturedVarsCheck();
 
 const scenario = (steps: ParsedScenario['steps']): ParsedScenario => ({
   filePath: 'test.yaml',
+  declarations: {},
   name: 'test',
   steps,
 });

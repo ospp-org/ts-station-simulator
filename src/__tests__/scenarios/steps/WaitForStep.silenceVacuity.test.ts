@@ -42,7 +42,7 @@ function envelope(payload: unknown, messageId = 'hb-bad'): OsppEnvelope {
 }
 
 function publish(router: MessageRouter, env: OsppEnvelope): void {
-  router.route('to-station', Buffer.from(JSON.stringify({ ...env, mac: computeMac(KEY, env) })));
+  router.route('to-station', Buffer.from(JSON.stringify({ ...env, mac: computeMac(KEY, env as unknown as Record<string, unknown>) })));
 }
 
 function stationWith(mode: 'strict' | 'warn'): { station: Station; router: MessageRouter } {

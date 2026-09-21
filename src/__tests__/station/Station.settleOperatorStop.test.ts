@@ -3,7 +3,7 @@ import { Station } from '../../station/Station.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
 import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { StationConfig } from '../../station/StationConfig.js';
-import { BayStatus } from '@ospp/protocol';
+import { BayStatus, createEnvelope, MessageSource, OSPP_PROTOCOL_VERSION } from '@ospp/protocol';
 
 // ---------------------------------------------------------------------------
 // The REAL settle, not a mocked one.
@@ -40,8 +40,15 @@ function makeConfig(): StationConfig {
 function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station; sent: unknown[] } {
   const station = new Station(makeConfig(), {} as never);
   const sent: unknown[] = [];
-  vi.spyOn(station.sender, 'send').mockImplementation(async (_a: unknown, _t: unknown, p: unknown) => {
-    sent.push(p);
+  vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
+    sent.push(payload);
+  // `send` answers with the envelope it published, so a stub that returns
+  // nothing does not have that method's type. Returning the envelope keeps
+  // the stub honest instead of widening it to `never`.
+    return createEnvelope({
+      messageId: 'stub', messageType, action, source: MessageSource.STATION,
+      payload, protocolVersion: OSPP_PROTOCOL_VERSION,
+    });
   });
 
   // A bay carrying a session is OCCUPIED — what StartServiceHandler sets on

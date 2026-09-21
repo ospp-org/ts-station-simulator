@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import Ajv2020 from 'ajv/dist/2020.js';
+import Ajv2020Module from 'ajv/dist/2020.js';
 import {
   OsppAction,
   MessageType,
@@ -41,7 +41,21 @@ const require_ = createRequire(import.meta.url);
 const SCHEMA_ROOT = path.join(path.dirname(require_.resolve('@ospp/protocol')), 'schemas');
 const SCHEMA_DIR = path.join(SCHEMA_ROOT, 'mqtt');
 
-const ajv = new Ajv2020({ strict: false, allErrors: true });
+// `ajv/dist/2020.js` is CJS reached through NodeNext, so the default import is the
+// namespace and TS sees no construct signature on it. Same shape already typed in
+// sessionDurationMonotonic.test.ts, whose comment points here; this is that type,
+// plus the `compile` this file also uses.
+type SchemaValidator = ((data: unknown) => boolean) & {
+  errors?: Array<{ instancePath: string; message?: string }> | null;
+};
+interface AjvLike {
+  addSchema(schema: unknown, key?: string): void;
+  getSchema(key: string): SchemaValidator | undefined;
+  compile(schema: unknown): SchemaValidator;
+}
+const Ajv2020 = Ajv2020Module as unknown as new (opts: Record<string, unknown>) => AjvLike;
+
+const ajv: AjvLike = new Ajv2020({ strict: false, allErrors: true });
 
 // The response schemas $ref siblings under common/ (stop-service-response reaches
 // credit-amount). Register every schema the package ships so a $ref is resolved

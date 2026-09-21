@@ -173,7 +173,7 @@ describe('a station the pool does not own is torn down as before', () => {
 
   it('owns_station takes no lease, so it does not announce either', async () => {
     const runner = new ScenarioRunner();
-    await runner.runScenario(def('owner', { owns_station: true }), {
+    await runner.runScenario(def('owner', { owns_station: 'this test owns its station' }), {
       ...BASE_TARGET,
       stationPool: ['stn_poolrel3'],
     });

@@ -24,7 +24,7 @@ function sessionEndedStep(reasonValue: unknown): Record<string, unknown> {
 }
 
 function reasonIssues(reasonValue: unknown): LintIssue[] {
-  const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', steps: [sessionEndedStep(reasonValue)] };
+  const scenario: ParsedScenario = { filePath: 'test.yaml', name: 'test', declarations: {}, steps: [sessionEndedStep(reasonValue)] };
   return check.check(scenario).filter((i) => i.message.includes('/reason'));
 }
 
