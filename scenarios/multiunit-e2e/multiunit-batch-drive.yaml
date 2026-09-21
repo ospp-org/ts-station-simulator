@@ -82,10 +82,18 @@ description: "Boot single-bay station, report Available, then reactively drive 3
 # Rewriting it to drive N units via repeated POST /sessions/start would make it
 # pass and would destroy its subject: client-initiated starts are the opposite of
 # the server-pushed batch rounds this file exists to prove.
-skip_when_pooled: "Blocked on the CARD LEG, not on a missing driver — the earlier reason here was wrong. The batch entry is POST /w/{slug}/process with unit_count=N (routes/web.php:29; the old search was scoped to routes/api/v1), and WebPaymentOrchestrator drives the units. This file is also still PURELY REACTIVE: it has no api_call at all, so it waits for rounds nothing in it has bought — the purchase steps multiunit-jam-drive.yaml carries would have to be written here too. MEASURED 2026-09-21 by driving the jam drive to BT's real sandbox: the whole front half works (302 to ecclients-sandbox.btrl.ro, the hosted form renders the order, a card is accepted, BT returns to /pay/callback and the intent settles synchronously), and what stops it is the PAN. getOrderStatusExtended answered orderStatus 6, paymentState DECLINED, actionCode 341017 \"3DS2 authentication status in ARes is unknown\" — the card is not enrolled in BT's sandbox 3DS directory. The one that does settle here is the operator's: every succeeded intent on UAT carries pan 414049**7910, expiry 2029-09, cardholder \"OSP Test\"; BT publishes no test PAN and no checkout holds that card. Un-skip together with the purchase steps when that card is available."
+# THREE units, so the pool seeds a MultiUnit service whose max_unit_quantity reaches 3.
+# Declared rather than assumed: `effectiveMax` collapses to 1 for a service that is not
+# MultiUnit, and `POST /w/{slug}/process` then answers `invalid_quantity`.
+requires_multiunit_service: 3
 station:
   stationId: "{{stationId}}"
-  bayCount: 1
+  # TWO BAYS, AND ONLY BAY 1 IS DRIVEN. The count matches DEFAULT_POOL_BAYS, not the
+  # subject: `BootTopologyComparator` compares the DECLARED boot topology against the
+  # PROVISIONED one and answers 3018 TOPOLOGY_MISMATCH + Pending when they differ, which
+  # holds the station out of service for the rest of the file -- same as its jam-drive twin, which already declares two.
+  # Measured 2026-09-21 on this file's first ever run: step 2 got Pending/3018.
+  bayCount: 2
   stationModel: "WashPro X200"
   stationVendor: "SimCorp"
   behavior:
@@ -103,6 +111,8 @@ steps:
       serialNumber: "{{serialNumber}}"
       bays:
         - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
           programNumbers: [1]
       uptimeSeconds: 0
       pendingOfflineTransactions: 0
@@ -148,6 +158,173 @@ steps:
   # =========================================================================
   # UNIT 1 — full delivery (TimerExpired). Hardcoded so the batch advances.
   # =========================================================================
+  # ── THE PURCHASE, WHICH THIS FILE DID NOT HAVE ────────────────────────────────────────
+  #
+  # Until 2026-09-22 this scenario was PURELY REACTIVE: it waited for server-pushed
+  # StartService rounds that nothing in it had bought, so even with a working card leg it
+  # could only ever time out. The steps below are the jam drive's, with unit_count 3 instead
+  # of 2 — one buyer for both files, so a change to the webpay contract cannot fix one and
+  # leave the other asserting an older shape.
+  - action: api_call
+    method: GET
+    url: "{{webpay_url}}/w/{{baySlug_1}}"
+    cookies: true
+    follow_redirects: false
+    expect_status: 200
+    expect_body_text:
+      - '<form method="POST"'
+      - 'name="unit_count"'
+    capture_text:
+      csrf: 'name="_token"\s+value="([^"]+)"'
+
+  # unit_count: 3 — the whole subject, and the count this file is unrolled for. Against the pool's default catalog this is
+  # `invalid_quantity`, because effectiveMax collapses to 1 for any service that is
+  # not MultiUnit with a capacity; `requires_multiunit_service: 2` in the header is
+  # what makes 2 legal.
+  #
+  # duration_seconds is REQUIRED by WebPaymentRequest (min 60) and then IGNORED for
+  # this kind: getServicePricing replaces it with the service's own
+  # fixed_duration_seconds preset, so the number that reaches StartService is the
+  # 5-second pulse the catalog carries, not the 60 posted here. Sending a value the
+  # server discards is not sloppiness — omitting it is a 422.
+  #
+  # NOT FOLLOWING THE REDIRECT is what makes this step able to fail honestly. Both
+  # outcomes are 302: away to the processor's hosted form is the armed path, back to
+  # payment.error?reason=... is a precondition that did not hold. Followed, the error
+  # page answers 200 and the reason survives only as a query string nobody read —
+  # and the armed path would issue a real request to the payment host.
+  - action: api_call
+    method: POST
+    url: "{{webpay_url}}/w/{{baySlug_1}}/process"
+    cookies: true
+    follow_redirects: false
+    body:
+      _token: "{{captured.csrf}}"
+      service_id: "{{serviceId_multiunit}}"
+      duration_seconds: 60
+      unit_count: 3
+    expect_status: 302
+    # THE ASSERTION `expect_status` CANNOT MAKE. Both outcomes here are 302, so the
+    # code alone proves the request was accepted and nothing more. Naming the host
+    # makes the refusal path — 302 to payment.error?reason=... — fail AT THIS STEP,
+    # reporting the reason it carries, instead of sixty seconds later as a wait_for
+    # timeout blaming a StartService that was never going to be sent.
+    #
+    # The host is the same whether BT's real sandbox answers or the double does:
+    # the double is a DNS+TLS interception of exactly this name, which is why one
+    # assertion covers both and why it is not written as "not payment.error".
+    expect_header:
+      location: "ecclients-sandbox.btrl.ro"
+    capture_header:
+      payUrl: "location"
+
+  # FIND THE INTENT THIS PURCHASE CREATED. It is not observable from the purchase:
+  # the 302 above goes to the processor's hosted form, which carries the PROCESSOR's
+  # order id, not ours. It is discovered instead through the ordinary operator read
+  # — the same list the dashboard's Payments page renders — matched on reference_id,
+  # which for a session payment IS the bay.
+  #
+  # `data[referenceId=...]` selects by FIELD rather than by index because this
+  # collection has no ORDER BY the scenario can rely on, and "the most recent row"
+  # is the assertion that passes on someone else's.
+  #
+  # The expect_body is not decoration: `capture` on a selector that matches nothing
+  # stores undefined SILENTLY, and the failure would then surface one step later as
+  # a substitution error naming a variable rather than naming the intent that was
+  # never created.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/payments?status=pending&method=bt_ipay&per_page=50"
+    expect_status: 200
+    expect_body:
+      "data[referenceId={{bayId_1}}].referenceType": "session_payment"
+    capture:
+      intentId: "data[referenceId={{bayId_1}}].id"
+
+  # SETTLE IT. This is the door the customer's browser lands on coming back from the
+  # processor — unauthenticated by design — and it calls settleIntent() IN THE
+  # REQUEST: no queue, no callback wait, no webhook. BT iPay has no webhook channel
+  # at all (BtIpayProcessor::verifyWebhook always throws), so redirect-and-poll is
+  # the whole settlement design, and this is its synchronous half.
+  #
+  # WHY THE SYNCHRONOUS HALF AND NOT THE ASYNC ONE — and the first version of this
+  # comment got the reason wrong, so both are recorded. It claimed the async half
+  # does not exist on this stack because csms-server's compose defines no scheduler
+  # service. The compose half of that is true and the conclusion is FALSE: the app
+  # IMAGE runs one. Measured in the running container — `php artisan schedule:work`
+  # is PID 24 under supervisord — so `payment:poll-webpay` does fire every minute.
+  #
+  # The real reason is the THRESHOLD, and it survives the correction. `pollPending`
+  # reads `findStalePending(config('payment.intent.webpay_poll_threshold_minutes'))`,
+  # which is 2, so the poller does not look at an order until two minutes after it
+  # was bought. Every wait_for below is 60s. The net is there; it is slower than the
+  # thing it would be catching, and a scenario that waited for it would be asserting
+  # on a timeout rather than on a settlement.
+  - action: api_call
+    method: GET
+    url: "{{webpay_url}}/pay/callback?intent={{captured.intentId}}"
+    expect_status: 200
+
+  # DID THE PAYMENT ACTUALLY SETTLE — asked HERE, where the answer is, instead of inferred
+  # sixty seconds later from a StartService that never comes.
+  #
+  # THE CALLBACK'S 200 PROVES NOTHING, and that is a property of the handler rather than a
+  # suspicion: `PaymentLandingController::callback` returns the SAME view with the SAME
+  # literal `'status' => 'processing'` on every path. It calls `settleIntent`, which
+  # "swallows its own errors and is idempotent", and then renders that constant regardless.
+  # There is no header and no body field on that response that differs between a settled
+  # payment and an unsettled one, so no assertion on step [8] can discriminate — the read
+  # has to be of the INTENT, not of the page.
+  #
+  # `settleIntent` asks the processor: `$processor->getStatus($merchant, $transactionId)`.
+  # Nothing in this scenario can make a real acquirer report a paid order — settling one
+  # means a card typed into BT's hosted form — so until `tools/bt-ipay-double/` is stood up
+  # this step is where the run stops, naming the payment.
+  #
+  # WHAT IT COSTS TODAY AND WHY IT IS STILL RIGHT: the file already failed, at [9], with
+  # "Timeout waiting for StartService Request after 60000ms" — a message pointing at the
+  # station and the MQTT path, three steps and one subsystem from the intent that never
+  # left `pending`. Measured 2026-08-27: `unit_batches` held ZERO rows and the newest
+  # `payment_intents` row on UAT was from 2026-07-02. This fails in 100ms and says so.
+  # THE LIST AND NOT `GET /admin/payments/{id}`, MEASURED: the single-payment show answers
+  # 403 to the per-scenario `tenant_operator` this file runs as, while the index — the same
+  # route prefix, the same middleware — answers 200, because it scopes by organisation
+  # rather than authorising the row. Step [7] above already proves the identity can read
+  # this door. Asking the wrong one would have turned a payment assertion into a
+  # permissions one.
+  #
+  # NO `status=` FILTER, deliberately. Filtering to `succeeded` and finding nothing reports
+  # `undefined`, which says only that the row is not in a list it may never have been in.
+  # Reading the row and asserting its status reports "expected succeeded, but got pending" —
+  # the actual state of the actual intent, which is the sentence worth having.
+  #
+  # POLLED, AND THIS IS THE STEP THE CARD LEG IS DRIVEN THROUGH. The read above is not
+  # wrong on its first attempt, it is early: between the purchase POST and the settlement
+  # the intent is `pending`, truthfully. What ends the wait is an EVENT — the customer's
+  # browser coming back from BT's hosted form to `/pay/callback?intent=…`, which settles
+  # the intent IN THAT REQUEST — and nothing in this file controls when that happens.
+  # The 600s budget is the human leg: reading the intent's `metadata.payment_url`, opening
+  # BT's form, typing the sandbox card. Unattended, this file still goes red at the same
+  # assertion, with the same sentence: "expected succeeded, but got pending".
+  #
+  # THE STEP ABOVE IS THE BELT, NOT THE BRACE. `/pay/callback` is idempotent and settles
+  # whatever BT already reports as paid, so it covers the browser that was closed before
+  # it returned; the poll covers the browser that returns. Neither replaces the other.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/payments?method=bt_ipay&per_page=50"
+    expect_status: 200
+    expect_body:
+      data[id={{captured.intentId}}].status: "succeeded"
+    poll:
+      # A REQUIRED --var, and nothing generates it — which is what turns an unattended run
+      # into a SKIP that names the instrument instead of a ten-minute red. The variable is
+      # not a permission: supplying it only opens the window, and a window in which nobody
+      # types a card ends in the same assertion with the same sentence. Attended:
+      #   --var cardSettleTimeoutMs=600000
+      timeout_ms: "{{cardSettleTimeoutMs}}"
+      interval_ms: 5000
+
   - action: wait_for
     message: StartService
     messageType: Request

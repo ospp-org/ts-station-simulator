@@ -35,7 +35,12 @@ name: "Single-Session Drive (card-free, UserDuration/FixedDuration)"
 description: "Boot single-bay station, report Available, trigger a single session via POST /sessions/start (background), answer the server-pushed StartService with Accepted, then end with reason={{reason}}. Parameterized service ({{serviceId_1}}) + reason for kind zero-regression."
 station:
   stationId: "{{stationId}}"
-  bayCount: 1
+  # TWO BAYS, AND ONLY BAY 1 IS DRIVEN. The count matches DEFAULT_POOL_BAYS, not the
+  # subject: `BootTopologyComparator` compares the DECLARED boot topology against the
+  # PROVISIONED one and answers 3018 TOPOLOGY_MISMATCH + Pending when they differ, which
+  # holds the station out of service for the rest of the file -- the pool provisions DEFAULT_POOL_BAYS and the comparator answers 3018 on anything else.
+  # Measured 2026-09-21 on this file's first ever run: step 2 got Pending/3018.
+  bayCount: 2
   stationModel: "WashPro X200"
   stationVendor: "SimCorp"
   behavior:
@@ -53,6 +58,8 @@ steps:
       serialNumber: "{{serialNumber}}"
       bays:
         - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
           programNumbers: [1]
       uptimeSeconds: 0
       pendingOfflineTransactions: 0

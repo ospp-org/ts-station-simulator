@@ -69,8 +69,14 @@ const scenarioPath = (name: string) =>
  * Drop the on-disk fixture dependency from a loaded definition so the BEHAVIOUR
  * assertions below run identically on a developer box and in CI.
  *
- * S5 names a specific revoked leaf (`certs/uat/stn_985c8a8b.*`). That is the
- * point of the file and it is asserted as contract at the call sites. But
+ * S5 names a specific revoked leaf (`certs/uat/revoked-fixture.*`). That is the
+ * point of the file and it is asserted as contract at the call sites. The path is
+ * STATION-INDEPENDENT since 2026-09-22, deliberately: the fixture's private key is
+ * handed over once, at provisioning, so a lost fixture is re-minted with a NEW station
+ * and a NEW serial (`scripts/mint-revoked-fixture.sh`), and a station-named path would
+ * make every re-mint edit both this test and the scenario. The previous one named
+ * `stn_985c8a8b`, whose key was never stored — which is why S5 was the corpus's only
+ * inconclusive result from 2026-08-13 until it was re-minted. But
  * `certs/` is gitignored in full, so those bytes exist only where they were
  * provisioned: keeping them would make this test assert "the machine happens to
  * have a July-2026 UAT artifact", and it would fail in CI for a reason that has
@@ -252,14 +258,14 @@ describe('TLS floor S1-S4 — the actual committed scenario files (integration)'
     expect(def.tls).toEqual({
       min_version: 'TLSv1.2',
       max_version: 'TLSv1.2',
-      cert: 'certs/uat/stn_985c8a8b.pem',
-      key: 'certs/uat/stn_985c8a8b-key.pem',
-      chain: 'certs/uat/stn_985c8a8b-chain.pem',
+      cert: 'certs/uat/revoked-fixture.pem',
+      key: 'certs/uat/revoked-fixture-key.pem',
+      chain: 'certs/uat/revoked-fixture-chain.pem',
     });
     expect(def.requires_files).toEqual([
-      'certs/uat/stn_985c8a8b.pem',
-      'certs/uat/stn_985c8a8b-key.pem',
-      'certs/uat/stn_985c8a8b-chain.pem',
+      'certs/uat/revoked-fixture.pem',
+      'certs/uat/revoked-fixture-key.pem',
+      'certs/uat/revoked-fixture-chain.pem',
     ]);
 
     const target: TargetConfig = { mqttUrl: 'mqtts://x' } as TargetConfig;

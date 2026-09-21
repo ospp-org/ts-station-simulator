@@ -1005,3 +1005,84 @@ Accepted). Not attributable to this change, on mechanism rather than on absence 
   0 failed / 6 skipped of 26** — this file among the passes. It does not reproduce.
 
 The positive cause was not identified here and should not be recorded as if it were.
+
+## 9. Two local fixtures that do not travel with the repository
+
+Both live outside git on purpose, and both have been lost once. Losing either costs a
+measured result: the first cost the corpus its only revocation proof for six weeks, the
+second cost a whole session's card leg.
+
+### The revoked-certificate fixture — `certs/uat/revoked-fixture*`
+
+`tls-floor/s5-rejects-revoked-cert.yaml` needs a leaf whose ONLY defect is that its serial
+is revoked. Three files, plus a provenance note:
+
+| path | what it is |
+|---|---|
+| `certs/uat/revoked-fixture.pem` | the leaf |
+| `certs/uat/revoked-fixture-key.pem` | its private key, mode 600 |
+| `certs/uat/revoked-fixture-chain.pem` | the station-CA chain |
+| `certs/uat/revoked-fixture.txt` | station id, serial, notAfter, how it was revoked |
+
+Recreate with **`scripts/mint-revoked-fixture.sh`**. It bootstraps a one-station pool, copies
+that station's material out of the run's own paths (the teardown removes exactly the paths
+the handle lists), grants `platform_super_admin` to a run-scoped identity with
+`ospp:assign-platform-role`, revokes through `POST
+/api/v1/admin/stations/{stationId}/revoke-certificate`, checks the serial against the SERVED
+CRL with a control, and tears the pool down. It refuses to clobber an existing fixture unless
+`FORCE=1`.
+
+Two things about it are worth knowing before you plan around them.
+
+**The private key is handed over exactly once.** The server issues it at provisioning and
+`certs/` is gitignored in full, so a fixture that is deleted cannot be reconstructed from the
+server — only re-minted, with a new station and a new serial. That is how the previous
+fixture (`stn_985c8a8b`, serial `012C`, revoked 2026-07-23) was lost.
+
+**The certificate row stays on UAT until it expires, by design.** ADR-0005 invariant 7
+(csms-server `2026_07_23_000001_guard_revoked_certificate_deletion.php`) refuses to delete a
+certificate while `status='revoked' AND expires_at > now()`, because
+`CertificateRevocationRepository::revokedSerials()` reads that table and nothing else — the
+row IS the CRL entry, and deleting it would silently un-revoke the holder. Nothing else
+survives: `certificates` has zero outbound foreign keys, so the station, its bays, the
+location, the organization and the run identities are all torn down normally.
+
+Permission note, measured: `platform.certificates.revoke` is held by **one role of nine**,
+`platform_super_admin`. The standing e2e platform admin is `platform_admin` and does **not**
+hold it, so a revoke attempted with the usual identity answers 403.
+
+### The BT iPay sandbox card — `.env.uat-card`
+
+The two multi-unit scenarios reach a real BT hosted page and cannot finish without a card
+that is enrolled in the sandbox's 3DS directory. The card lives at repository root in
+`.env.uat-card`, ignored by `.gitignore:7` (`.env.*`), mode 600. Verify before writing to it:
+
+```bash
+git check-ignore -v .env.uat-card      # must print the .gitignore line
+git ls-files .env.uat-card | wc -l     # must print 0
+```
+
+Shape — four keys, env format, no export lines:
+
+```
+OSPP_UAT_SANDBOX_CARD_NUMBER=…
+OSPP_UAT_SANDBOX_CARD_EXPIRY=…        # MM/YY
+OSPP_UAT_SANDBOX_CARD_CVV=…
+OSPP_UAT_SANDBOX_CARD_HOLDER=…
+```
+
+Load it with `set -a; . .env.uat-card; set +a`. **The values are never printed** — not in a
+report, not in a log, not in a commit message. This file is the one place they live inside
+the working tree.
+
+Why it exists: the card was treated as lost on 2026-09-21 after a search of both repositories,
+every session scratchpad, the browser's bookmarks and the public web. It had never been lost —
+it was in the assistant's own memory directory, and the search had not looked there. One
+canonical path removes the question.
+
+**Only a card enrolled in BT's sandbox 3DS directory settles.** A published test PAN such as
+the classic `4111…` is accepted by the form, reaches BT, and comes back
+`orderStatus 6 / paymentState DECLINED / actionCode 341017 "3DS2 authentication status in ARes
+is unknown"`. The flow also has a second page after the card form — a 3DS confirmation whose
+button is labelled **"Confirmare autentificare"**. Without pressing it the payment does not
+finish, and the intent stays `pending` until the settlement poll gives up.

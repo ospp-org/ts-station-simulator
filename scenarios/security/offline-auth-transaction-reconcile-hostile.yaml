@@ -64,6 +64,31 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # THE BAY AND ITS PROGRAM, REPORTED BEFORE THE GRANT IS ASKED FOR.
+  #
+  # `bay_programs.available` is a LATCH, and every clause of that is a writer: the column
+  # defaults to true and `CertificateManager:493` omits it at provisioning;
+  # `StatusNotificationHandler:656` is the only thing that ever sets it;
+  # `BootNotificationHandler::resetBaysToUnknown` bumps `version`/`updated_at` (and `status`
+  # on a cold boot) and does NOT touch it. So a pooled file that never reports inherits
+  # whatever the PREVIOUS lessee of this shared bay left there, and
+  # `ServiceProgramResolver::isReportedUnavailable` then refuses the grant at
+  # `AuthorizeOfflineSessionAction:164` -- 409 3003, naming the bay and the service.
+  #
+  # Measured 2026-09-21: this file and its hostile twin both failed exactly that way on
+  # their first ever run, on the same bay, in the same parallel run. The server was right
+  # both times; the scenario had not declared its own state.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
 
   # The TransactionEvent's `userId` is schema-required (transaction-event-request.schema.json)
   # and must be the subject the grant was issued to — the per-scenario pooled identity this

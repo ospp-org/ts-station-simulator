@@ -27,9 +27,14 @@
 # every pooled run since the file was written. That was never a bad scenario —
 # it was a correct scenario the environment could not satisfy.
 #
-# Naming the leaf here removes the argument. `stn_985c8a8b` (serial 012C) was
-# revoked on UAT on 2026-07-23 and has been carried by the served station-CA CRL
-# ever since; the CRL fetched 2026-08-13 still lists 012C (alongside 012D).
+# Naming the leaf here removes the argument. The fixture is `certs/uat/revoked-fixture*`,
+# minted 2026-09-22: station `stn_f079001d`, serial `0582` (1410), revoked through the
+# server's own route and confirmed on the served CRL the same minute (11 serials listed,
+# 0582 among them; serial 0581 absent, so the list is not a blanket one). The PREVIOUS
+# fixture named `stn_985c8a8b` (serial 012C, revoked 2026-07-23) and its private key was
+# never stored, which is why this scenario was the corpus's only inconclusive result from
+# 2026-08-13 until today. The path is now station-independent, so recreating the fixture
+# does not edit this file.
 # Revocation is PERMANENT by construction — RevokeStationCertificateAction's
 # docblock (invariant 3) and two PostgreSQL triggers that refuse an un-revoke —
 # so the SERVER half of this fixture is standing state, not a snapshot that
@@ -84,16 +89,18 @@
 name: "TLS floor S5 — rejects a revoked client certificate (broker CRL check)"
 description: "Client presents a REVOKED but otherwise-valid leaf (correct chain, in-floor TLS version). The broker's enable_crl_check MUST reject it at the TLS handshake, and the refusal MUST classify as broker-certificate-revoked (invariant 6) — not a client-side or unattributed failure."
 requires_files:
-  - "certs/uat/stn_985c8a8b.pem"
-  - "certs/uat/stn_985c8a8b-key.pem"
-  - "certs/uat/stn_985c8a8b-chain.pem"
+  - "certs/uat/revoked-fixture.pem"
+  - "certs/uat/revoked-fixture-key.pem"
+  - "certs/uat/revoked-fixture-chain.pem"
 requires_files_hint: >-
-  Obtain it by provisioning a UAT station, then revoking its certificate with an
-  identity holding `certificates.revoke` (platform_super_admin) — POST
-  /api/v1/admin/stations/{stationId}/revoke-certificate — and keeping the leaf,
-  key and chain that station was issued. Confirm the serial is listed by
-  `curl -s https://api-uat.onestoppay.ro/pki/station-ca.crl | openssl crl -inform DER -noout -text`
-  before relying on this scenario.
+  Recreate it with `scripts/mint-revoked-fixture.sh` (docs/RUNNING-AGAINST-UAT.md, "The revoked-certificate
+  fixture"): it bootstraps a one-station pool, copies that station's leaf/key/chain to these
+  three paths, grants `platform_super_admin` to a run-scoped identity with
+  `ospp:assign-platform-role`, revokes through POST
+  /api/v1/admin/stations/{stationId}/revoke-certificate, checks the serial on the served CRL,
+  and tears the pool down. The certificate itself STAYS on UAT until it expires — ADR-0005
+  invariant 7 forbids deleting a revoked unexpired row, because it IS the CRL entry.
+  Certificate material is gitignored in full, so it never travels with the repository.
 tls:
   min_version: "TLSv1.2"
   max_version: "TLSv1.2"
@@ -101,9 +108,9 @@ tls:
   # MqttConnection presents leaf-first then the chain (buildPresentedCertChain),
   # so this is a complete, correctly-ordered mTLS identity whose ONLY defect is
   # that serial 012C is on the CRL.
-  cert: "certs/uat/stn_985c8a8b.pem"
-  key: "certs/uat/stn_985c8a8b-key.pem"
-  chain: "certs/uat/stn_985c8a8b-chain.pem"
+  cert: "certs/uat/revoked-fixture.pem"
+  key: "certs/uat/revoked-fixture-key.pem"
+  chain: "certs/uat/revoked-fixture-chain.pem"
 expect_connect_failure: true
 expect_refusal_reason: broker-certificate-revoked
 # NO SERVER-STATE ASSERTION IS POSSIBLE — THE PROOF IS THE TLS HANDSHAKE.
