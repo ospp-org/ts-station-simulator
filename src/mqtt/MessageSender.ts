@@ -21,8 +21,10 @@ import { resolveWireProtocolVersion } from './protocolVersion.js';
  * csms-server verifies inbound MACs at
  * `app/Shared/Protocol/Middleware/VerifyIncomingMiddleware.php`, and nothing in
  * scenario mode could provoke a failure there: `send()` always signs correctly
- * with the real session key, and the only other publish path (`sendEnvelope`)
- * has no caller. So three server branches sat unreachable from YAML.
+ * with the real session key, and it is now the ONLY publish path — the second
+ * one, `sendEnvelope()`, was deleted (it had no caller and reached
+ * `connection.publish` without passing the §5.7 guard below). So three server
+ * branches sat unreachable from YAML.
  *
  * The modes map to the branches, NOT to a taxonomy of attacks:
  *   - `omit`      -> `:51`  MAC_MISSING            (mac absent on a message that owes one)
@@ -230,19 +232,5 @@ export class MessageSender {
     await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(outgoing), 1);
 
     return outgoing;
-  }
-
-  /**
-   * Publish a pre-built envelope verbatim — no signing, no exemption check.
-   *
-   * CURRENTLY UNCALLED (verified across `src/`), and left in place rather than
-   * deleted only because it is a published surface. Flagged because it is a
-   * second unsigned-publish path: anything routed through here bypasses the
-   * §5.7 fail-closed guard in `send()` above. A caller MUST therefore pass an
-   * envelope that is already signed, or one of the three structural exemptions.
-   * If this ever acquires a real caller, the guard belongs here too.
-   */
-  async sendEnvelope<T>(envelope: OsppEnvelope<T>): Promise<void> {
-    await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(envelope), 1);
   }
 }

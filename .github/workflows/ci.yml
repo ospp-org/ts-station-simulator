@@ -34,6 +34,14 @@ jobs:
       - name: Lint scenarios
         run: npm run lint:scenarios
 
+      # The README's numbers and its per-suite scenario table, against the corpus. This
+      # step did not exist while the table was wrong in six of its seven rows: the gate
+      # was written, wired into package.json, and never run by anything, so it could only
+      # catch a drift that someone already suspected. A gate nobody runs is the defect it
+      # was built to prevent, one level up.
+      - name: Documentation claims
+        run: npm run check:doc-claims
+
       # Measures how far the @ospp/protocol pin is from the published SDK, and
       # separates that from a stale node_modules. This repo vendors no spec artefacts
       # — it reads schemas through the SDK — so it deliberately has NO `.spec-ref` of

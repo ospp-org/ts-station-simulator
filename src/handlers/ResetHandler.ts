@@ -6,6 +6,7 @@ import {
   type ResetRequest,
   type ResetResponse,
 } from '@ospp/protocol';
+import { errorName } from './bayRefusal.js';
 import type { Handler, StationContext } from './Handler.js';
 
 export class ResetHandler implements Handler {
@@ -28,7 +29,7 @@ export class ResetHandler implements Handler {
       const rejected: ResetResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.ACTIVE_SESSIONS_PRESENT,
-        errorText: 'ACTIVE_SESSIONS_PRESENT',
+        errorText: errorName(OsppErrorCode.ACTIVE_SESSIONS_PRESENT),
       };
 
       await station.sender.send<ResetResponse>(

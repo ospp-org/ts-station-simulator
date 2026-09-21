@@ -8,8 +8,10 @@ import {
   OsppAction,
   MessageType,
   BayStatus,
+  type OsppErrorCode,
   type OsppEnvelope,
 } from '@ospp/protocol';
+import { errorName } from '../../handlers/bayRefusal.js';
 import { ReserveBayHandler } from '../../handlers/ReserveBayHandler.js';
 import { StartServiceHandler } from '../../handlers/StartServiceHandler.js';
 import { StopServiceHandler } from '../../handlers/StopServiceHandler.js';
@@ -275,6 +277,18 @@ describe('every Rejected frame the simulator emits is valid against the schema i
           PERMITTED_CODES[c.message],
           `${code} is not a code 07-errors.md §4.2 permits for ${c.message}`,
         ).toContain(code);
+
+        // THE TEXT AGAINST ITS OWN CODE, on the frame rather than in the source.
+        //
+        // The schema only demands UPPER_SNAKE_CASE, so `errorText: 'BAY_BUSY'` beside
+        // `errorCode: 3005` is schema-valid and names the wrong refusal — the exact shape
+        // this file's header calls "made schema-valid, which is worse". The source-side
+        // half is `ErrorTextIsDerived.test.ts`, which sees all 21 assignment sites but
+        // cannot see a runtime value; this sees the value, on the 7 branches driven here.
+        expect(
+          (r.payload as { errorText?: string }).errorText,
+          `errorText does not name the code this frame carries (${code})`,
+        ).toBe(errorName(code as OsppErrorCode));
       }
     });
   }

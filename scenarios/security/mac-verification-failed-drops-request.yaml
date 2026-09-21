@@ -15,7 +15,8 @@
 #
 #   Nothing in scenario mode could reach this before: MessageSender::send() always
 #   signed correctly with the real session key, and the only other publish path
-#   (sendEnvelope) has no caller. `tamper_mac: corrupt` exists for this.
+#   (sendEnvelope) had no caller — it has since been deleted, leaving send() the
+#   only way out. `tamper_mac: corrupt` exists for this.
 #
 # WHAT THIS SCENARIO CAN AND CANNOT DISTINGUISH — stated, not papered over
 #   A mac with flipped bytes and a mac computed with the WRONG KEY are the same

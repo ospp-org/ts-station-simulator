@@ -92,24 +92,15 @@ describe('MessageSender — the envelope cap is enforced where it publishes', ()
     ).rejects.toThrow(/StatusNotification[\s\S]*64512/);
   });
 
-  it('the second publish site — sendEnvelope — is guarded too', async () => {
-    // Currently uncalled, but a published surface. MessageSender.ts documents that if it
-    // ever acquires a caller the send() guards belong here; the cap is one of them.
-    const { blob } = await payloadForEnvelopeSize(MAX_ENVELOPE_BYTES + 1);
-    const { sender, published } = makeSender();
-
-    // Build the over-cap envelope without publishing it, by reusing send()'s shape.
-    const envelope = {
-      messageId: crypto.randomUUID(),
-      messageType: MessageType.EVENT,
-      action: OsppAction.STATUS_NOTIFICATION,
-      timestamp: '2026-09-10T10:00:00.000Z',
-      source: 'Station',
-      protocolVersion: '0.3.0',
-      payload: { blob },
-    };
-
-    await expect(sender.sendEnvelope(envelope)).rejects.toThrow(RangeError);
-    expect(published()).toBeNull();
+  it('there is exactly ONE publish path, and it is the guarded one', async () => {
+    // `sendEnvelope()` used to sit beside `send()` and reach `connection.publish` without
+    // the §5.7 fail-closed signing guard. It was deleted rather than documented: measured
+    // 0 callers in `src/` outside this file, `scripts/` and the CLI, and the only reference
+    // that executed was the characterisation test this replaces.
+    //
+    // This is what keeps it gone. A second publish path re-added here is a second place the
+    // guard has to be remembered, which is how it was missed the first time.
+    const methods = Object.getOwnPropertyNames(MessageSender.prototype);
+    expect(methods.filter((m) => /^send/.test(m))).toEqual(['send']);
   });
 });

@@ -29,13 +29,23 @@ npx simulator run --all --target sandbox
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
-| `core` | 16 | Boot (all reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer |
-| `sessions` | 13 | Full lifecycle, Start/Stop, Rejections, Timeout, Fault, MeterValues |
-| `reservations` | 6 | Reserve+Start, Cancel, Expire, Rejections |
-| `device-management` | 20 | Firmware, Diagnostics, Configuration, Reset, TriggerMessage, Maintenance |
-| `security` | 18 | SecurityEvents, Certificates, OfflinePass, TransactionEvent |
-| `chaos` | 7 | Disconnect, Slow responses, Malformed messages, Reconnect |
+| `chaos` | 8 | Disconnect (boot, session), Connection timeout, Slow responses, Malformed and out-of-order frames, Rapid reconnect |
+| `core` | 25 | Boot (all reasons, and the Pending/Rejected arms), Heartbeat, StatusNotification, ConnectionLost/LWT, DataTransfer, Topology mismatch, Planned shutdown |
+| `device-management` | 40 | Firmware (14), Configuration, Diagnostics, Reset, TriggerMessage, Maintenance, Service catalog, Bay edit |
+| `e2e` | 3 | New-customer onboarding, Returning-customer session, Session-end reason matrix |
 | `fleet` | 3 | Parallel boot, Mixed workload, Meter flood |
+| `multiunit-e2e` | 3 | Multi-unit batch drive, Multi-unit jam drive, Single-session drive |
+| `probes` | 1 | Refusals leave a durable trace |
+| `provisioning` | 2 | Provision refusals — the request and token layers, then the key and topology rungs |
+| `reservations` | 8 | Reserve+Start, Cancel, Expire, Station refusal, Server-side rejections (busy, maintenance, already reserved) |
+| `security` | 26 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass, TransactionEvent, MAC verification |
+| `sessions` | 29 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
+| `tls-floor` | 10 | TLS version floor, mTLS, Expired and revoked certificates (broker CRL and local CRL), each with a positive control |
+
+Every row above is checked against the corpus by `npm run check:doc-claims`: the suite NAMES must
+be exactly the directories under `scenarios/`, and each count must be what is in that directory.
+The Coverage column is prose and is NOT checked — it is the one part of this table that can still
+go stale.
 
 Full inventory: [scenarios/SCENARIOS.md](scenarios/SCENARIOS.md)
 
@@ -232,7 +242,7 @@ npm run certs:sync       # Download sandbox certificates
 - **SDK** — All protocol types from `@ospp/protocol` (never redefined locally)
 - **MQTT 5.0** — Two topics per station (`to-server`/`to-station`), action in envelope
 - **Scenarios** — YAML-driven with template variables and captured values
-- **Linter** — 7 checks: captured vars, message direction, enum values, wait_for completeness, payload schema, multi-unit declaration, pre-empt discriminator
+- **Linter** — 8 checks: captured vars, message direction, enum values, wait_for completeness, payload schema, multi-unit declaration, pre-empt discriminator
 - **Parallel execution** — Semaphore-based, station pool allocation for sandbox
 
 ## Protocol Conformance

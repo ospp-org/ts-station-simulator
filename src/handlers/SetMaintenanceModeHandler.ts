@@ -56,7 +56,7 @@ export class SetMaintenanceModeHandler implements Handler {
           const rejected: SetMaintenanceModeResponse = {
             status: 'Rejected',
             errorCode: OsppErrorCode.BAY_BUSY,
-            errorText: 'BAY_BUSY',
+            errorText: errorName(OsppErrorCode.BAY_BUSY),
           };
           await station.sender.send<SetMaintenanceModeResponse>(
             OsppAction.SET_MAINTENANCE_MODE, MessageType.RESPONSE, rejected, envelope.messageId,
@@ -70,7 +70,7 @@ export class SetMaintenanceModeHandler implements Handler {
           const rejected: SetMaintenanceModeResponse = {
             status: 'Rejected',
             errorCode: OsppErrorCode.BAY_BUSY,
-            errorText: 'BAY_BUSY',
+            errorText: errorName(OsppErrorCode.BAY_BUSY),
           };
           await station.sender.send<SetMaintenanceModeResponse>(
             OsppAction.SET_MAINTENANCE_MODE, MessageType.RESPONSE, rejected, envelope.messageId,

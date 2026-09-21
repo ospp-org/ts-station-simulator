@@ -2,6 +2,7 @@ import {
   OsppAction,
   MessageType,
   OsppErrorCode,
+  OSPP_ERROR_REGISTRY,
   type OsppEnvelope,
   type UpdateFirmwareRequest,
   type UpdateFirmwareResponse,
@@ -19,7 +20,15 @@ export class UpdateFirmwareHandler implements Handler {
       const rejected: UpdateFirmwareResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.VERSION_ALREADY_INSTALLED,
-        errorText: 'VERSION_ALREADY_INSTALLED',
+        // `OSPP_ERROR_REGISTRY[...].text` rather than `errorName()`, and the reason is a
+        // ceiling rather than a preference: `FirmwareIntegrityCeiling.test.ts` asserts this
+        // file's imports are EXACTLY `['./Handler.js', '@ospp/protocol']`, because a new
+        // dependency is how I/O arrives here. `errorName` lives in `./bayRefusal.js` and
+        // importing it would red that guard. The registry is on the SDK this file already
+        // imports, so the text is still derived and nothing is transcribed — measured
+        // 2026-09-21, `OSPP_ERROR_REGISTRY[c].text === OsppErrorCode[c]` for 120 of 120
+        // codes, so the two spellings are one source, not two.
+        errorText: OSPP_ERROR_REGISTRY[OsppErrorCode.VERSION_ALREADY_INSTALLED].text,
       };
       await station.sender.send<UpdateFirmwareResponse>(
         OsppAction.UPDATE_FIRMWARE, MessageType.RESPONSE, rejected, envelope.messageId,
@@ -33,7 +42,8 @@ export class UpdateFirmwareHandler implements Handler {
       const rejected: UpdateFirmwareResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.ACTIVE_SESSIONS_PRESENT,
-        errorText: 'ACTIVE_SESSIONS_PRESENT',
+        // Same ceiling as above.
+        errorText: OSPP_ERROR_REGISTRY[OsppErrorCode.ACTIVE_SESSIONS_PRESENT].text,
       };
       await station.sender.send<UpdateFirmwareResponse>(
         OsppAction.UPDATE_FIRMWARE, MessageType.RESPONSE, rejected, envelope.messageId,

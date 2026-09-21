@@ -9,6 +9,7 @@ import { WaitForCompletenessCheck } from './checks/WaitForCompletenessCheck.js';
 import { PayloadSchemaCheck } from './checks/PayloadSchemaCheck.js';
 import { PreEmptDiscriminatorCheck } from './checks/PreEmptDiscriminatorCheck.js';
 import { MultiUnitDeclaredCheck } from './checks/MultiUnitDeclaredCheck.js';
+import { ErrorCodeRegistryCheck } from './checks/ErrorCodeRegistryCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -22,6 +23,7 @@ export class ScenarioLinter {
       new PayloadSchemaCheck(),
       new PreEmptDiscriminatorCheck(),
       new MultiUnitDeclaredCheck(),
+      new ErrorCodeRegistryCheck(),
     ];
   }
 

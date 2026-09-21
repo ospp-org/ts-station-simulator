@@ -115,10 +115,11 @@ const DEFAULT_MAX_IN_MEMORY = 5000;
  *
  * Placed at the MqttConnection chokepoints (`publish()` and the client's
  * 'message' event) rather than at MessageSender/MessageRouter, because those two
- * see only the frames that pass their own gates. `MessageSender.sendEnvelope()`
- * bypasses the signing guard entirely, and `MessageRouter.route()` refuses and
- * emits nothing on a parse, MAC or schema failure — a journal behind either
- * would miss exactly the frames worth measuring.
+ * see only the frames that pass their own gates: `MessageRouter.route()` refuses
+ * and emits nothing on a parse, MAC or schema failure, and the LWT never travels
+ * through `send()` at all — a journal behind either would miss exactly the frames
+ * worth measuring. (`MessageSender.sendEnvelope()` was a third reason until it was
+ * deleted as an uncalled publish path that skipped the signing guard.)
  */
 export class FrameJournal {
   private readonly entries: JournalledFrame[] = [];

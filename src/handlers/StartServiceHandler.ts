@@ -24,7 +24,7 @@ export class StartServiceHandler implements Handler {
       const response: StartServiceResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.BAY_NOT_FOUND,
-        errorText: 'BAY_NOT_FOUND',
+        errorText: errorName(OsppErrorCode.BAY_NOT_FOUND),
         // The rejection names the ordinal it refused, so an operator need not
         // correlate against the request to find out which one was wrong
         // (start-service-response.schema.json:30, REQUIRED when Rejected).
@@ -43,7 +43,7 @@ export class StartServiceHandler implements Handler {
       const response: StartServiceResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.INVALID_SERVICE,
-        errorText: 'INVALID_SERVICE',
+        errorText: errorName(OsppErrorCode.INVALID_SERVICE),
         // The rejection names the ordinal it refused, so an operator need not
         // correlate against the request to find out which one was wrong
         // (start-service-response.schema.json:30, REQUIRED when Rejected).
@@ -80,7 +80,7 @@ export class StartServiceHandler implements Handler {
       const response: StartServiceResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.PROGRAM_NOT_DECLARED,
-        errorText: 'PROGRAM_NOT_DECLARED',
+        errorText: errorName(OsppErrorCode.PROGRAM_NOT_DECLARED),
         programNumber: request.programNumber,
       };
       await station.sender.send<StartServiceResponse>(
@@ -98,7 +98,7 @@ export class StartServiceHandler implements Handler {
       const response: StartServiceResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.DURATION_INVALID,
-        errorText: 'DURATION_INVALID',
+        errorText: errorName(OsppErrorCode.DURATION_INVALID),
         // The rejection names the ordinal it refused, so an operator need not
         // correlate against the request to find out which one was wrong
         // (start-service-response.schema.json:30, REQUIRED when Rejected).

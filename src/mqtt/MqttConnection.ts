@@ -150,11 +150,14 @@ export interface MqttConnectionOptions {
    * Record every frame that crosses this connection, in both directions.
    *
    * Wired HERE and not at MessageSender/MessageRouter because this is the only
-   * pair of chokepoints that sees ALL of them. `MessageSender.sendEnvelope()`
-   * publishes without passing the signing guard, the LWT builder below publishes
+   * pair of chokepoints that sees ALL of them. The LWT builder below publishes
    * nothing at all through `send()`, and `MessageRouter.route()` refuses and emits
    * NOTHING on a parse, MAC or schema failure — so a journal at either layer would
    * be blind to precisely the frames an adversarial run exists to observe.
+   *
+   * (`MessageSender.sendEnvelope()` used to be named here as a third reason. It was
+   * deleted: an uncalled publish path that reached the broker without the §5.7
+   * signing guard. The chokepoint argument stands on the two above.)
    *
    * Omit it and this class behaves exactly as it did before the journal existed.
    */
