@@ -91,16 +91,37 @@ steps:
 
 
   # The TransactionEvent's `userId` is schema-required (transaction-event-request.schema.json)
-  # and must be the subject the grant was issued to — the per-scenario pooled identity this
-  # run is authenticated as. GET /api/v1/me names it; the sibling
-  # security/offline-fraud-rapid-transactions.yaml reaches the same value the other way, off
-  # an offline pass's `data.attributes.sub`.
+  # and it is a SUBJECT, `^sub_[a-zA-Z0-9]+$` (common/user-id.schema.json) — not a user uuid.
+  #
+  # THIS STEP USED TO READ `GET /api/v1/me` -> `data.id`, WHICH IS THE UUID. Measured
+  # 2026-09-22 on the first run that got far enough to send the frame: the server answered
+  # `Rejected`, reason `/userId: The string should match pattern: ^sub_[a-zA-Z0-9]+$`. The
+  # `/me` resource (`UserResource.php:22-27`) exposes id/name/email/phone and no subject at
+  # all, so the old capture could never have produced a conformant frame.
+  #
+  # A pass is the door that publishes one. The subject is derived from the user
+  # (`UserSubject::fromUserId`, called by both `PassIssuer:93` and
+  # `AuthorizeOfflineSessionAction:219`), so the pass minted here and the auth-form grant
+  # minted below resolve to the SAME `sub_*` for this identity — which is why reading it off
+  # the pass is not a detour. `security/offline-fraud-rapid-transactions.yaml` reaches it the
+  # same way and has been passing on it. The grant's own response does not carry it:
+  # `OfflineAuthResource` returns authId/sessionId/signedAuthorization and no `sub`.
+  #
+  # The pass is swept with this run's identity — `buildTeardownTestUsersSql` deletes
+  # `offline_passes` by user_id — so it leaves nothing behind.
   - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/me"
-    expect_status: 200
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      serviceIds:
+        - "{{serviceId_1}}"
+      maxUses: 1
+      maxTotalCredits: 100
+      durationHours: 1
+    expect_status: 201
     capture:
-      actingUserId: "data.id"
+      actingUserSub: "data.attributes.sub"
 
   # --- Mint the auth-form grant this file settles -------------------------------
   # THE PREMISE THAT KEPT THIS FILE SKIPPED WAS FALSE. It carried
@@ -146,7 +167,7 @@ steps:
       offlineTxId: "{{runOfflineTxId}}"
       authId: "{{captured.authId}}"
       sessionId: "{{captured.grantSessionId}}"
-      userId: "{{captured.actingUserId}}"
+      userId: "{{captured.actingUserSub}}"
       deviceId: "{{runDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"

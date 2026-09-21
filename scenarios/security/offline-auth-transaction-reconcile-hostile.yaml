@@ -1,4 +1,36 @@
 name: "Offline Auth-Form Reconciliation HOSTILE (foreign-key receipt -> Rejected)"
+skip: true
+skip_reason: >-
+  VERDICT SETTLED 2026-09-22: THIS FILE DOES NOT IMPLEMENT ITS OWN NAME, AND WAS PASSING ON
+  ANOTHER FILE'S BUG.
+
+  MEASURED, not read: ignoring comments and blank lines, this file and its twin
+  security/offline-auth-transaction-reconcile.yaml differ in exactly FOUR lines — the `name:`
+  and the expected `payload.status` (Accepted vs Rejected). Nothing else. There is no
+  foreign-key receipt, no foreign station, no tampered field: it sends a byte-identical frame
+  to the twin and asserts the opposite answer. Identical input cannot legitimately produce
+  both, so one of the two was always wrong.
+
+  WHY NOBODY NOTICED. Both files sourced the TransactionEvent's `userId` from
+  `GET /api/v1/me` -> `data.id`, a user uuid, where the wire schema requires a subject
+  `^sub_[a-zA-Z0-9]+$`. Every frame was refused on the pattern. The twin, expecting Accepted,
+  went red on its first ever run; THIS file, expecting Rejected, went green — on a schema
+  refusal that has nothing to do with a receipt. The single assertion it carries is
+  `payload.status == Rejected` with no reason, so a refusal for any cause at all satisfied it.
+  That is the shape this corpus keeps recording as a defect: a refusal without a discriminator
+  proves only that the endpoint answers a refusal to something.
+
+  WHAT WOULD MAKE IT RUNNABLE, stated so the cost is explicit rather than implied: a receipt
+  signed with a DIFFERENT station's ECDSA receipt key, so `OfflineAuthReceiptGate` refuses the
+  signature rather than the schema. The DSL cannot express that today — `SendStep:180-197`
+  always signs with the acting station's own registered `receiptKeyPath` and takes no override
+  — so it needs a signing-key seam in the runner plus a second provisioned station to borrow a
+  key from, and then a reason assertion pinning the receipt refusal. Both are decisions for
+  whoever owns the offline profile, not a side effect of repairing the twin.
+
+  LEFT SKIPPED rather than deleted: the branch it names — a receipt whose signature belongs to
+  another station — is real, is uncovered by anything else in the corpus, and is worth building
+  properly.
 description: >
   Boot, then send an auth-form TransactionEvent {authId, sessionId} that reconciles a
   server-signed offline-auth grant (B1) on the REAL UAT MQTT wire. The receipt body carries
@@ -91,16 +123,37 @@ steps:
 
 
   # The TransactionEvent's `userId` is schema-required (transaction-event-request.schema.json)
-  # and must be the subject the grant was issued to — the per-scenario pooled identity this
-  # run is authenticated as. GET /api/v1/me names it; the sibling
-  # security/offline-fraud-rapid-transactions.yaml reaches the same value the other way, off
-  # an offline pass's `data.attributes.sub`.
+  # and it is a SUBJECT, `^sub_[a-zA-Z0-9]+$` (common/user-id.schema.json) — not a user uuid.
+  #
+  # THIS STEP USED TO READ `GET /api/v1/me` -> `data.id`, WHICH IS THE UUID. Measured
+  # 2026-09-22 on the first run that got far enough to send the frame: the server answered
+  # `Rejected`, reason `/userId: The string should match pattern: ^sub_[a-zA-Z0-9]+$`. The
+  # `/me` resource (`UserResource.php:22-27`) exposes id/name/email/phone and no subject at
+  # all, so the old capture could never have produced a conformant frame.
+  #
+  # A pass is the door that publishes one. The subject is derived from the user
+  # (`UserSubject::fromUserId`, called by both `PassIssuer:93` and
+  # `AuthorizeOfflineSessionAction:219`), so the pass minted here and the auth-form grant
+  # minted below resolve to the SAME `sub_*` for this identity — which is why reading it off
+  # the pass is not a detour. `security/offline-fraud-rapid-transactions.yaml` reaches it the
+  # same way and has been passing on it. The grant's own response does not carry it:
+  # `OfflineAuthResource` returns authId/sessionId/signedAuthorization and no `sub`.
+  #
+  # The pass is swept with this run's identity — `buildTeardownTestUsersSql` deletes
+  # `offline_passes` by user_id — so it leaves nothing behind.
   - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/me"
-    expect_status: 200
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      serviceIds:
+        - "{{serviceId_1}}"
+      maxUses: 1
+      maxTotalCredits: 100
+      durationHours: 1
+    expect_status: 201
     capture:
-      actingUserId: "data.id"
+      actingUserSub: "data.attributes.sub"
 
   # --- Mint the auth-form grant this file settles -------------------------------
   # THE PREMISE THAT KEPT THIS FILE SKIPPED WAS FALSE. It carried
@@ -146,7 +199,7 @@ steps:
       offlineTxId: "{{runOfflineTxId}}"
       authId: "{{captured.authId}}"
       sessionId: "{{captured.grantSessionId}}"
-      userId: "{{captured.actingUserId}}"
+      userId: "{{captured.actingUserSub}}"
       deviceId: "{{runDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
