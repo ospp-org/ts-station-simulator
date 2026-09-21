@@ -188,9 +188,9 @@ against the system store, **0** against `local-mtls`'s declared `ca:`.
 The runner now resolves the target's cert block once (`ScenarioRunner.resolveConnectTls`), puts
 it on `ScenarioContext.connectTls`, and `ConnectMqttStep` reads it as its last rung — below its
 own `broker_ca_path` and below what provisioning wrote. Measured after the fix:
-`e2e/e2e-new-customer-onboarding.yaml` standalone on `local-mtls` is **29/29 steps green, 1/1
+`e2e/e2e-new-customer-onboarding.yaml` standalone on `local-mtls` is **39/39 steps green, 1/1
 scenario passed**, and `sessions/start-refused-binding-uncovered.yaml` — which had named the
-anchor per step as a workaround, and no longer does — is **23/23 green over both of its
+anchor per step as a workaround, and no longer does — is **24/24 green over both of its
 connects**.
 
 Note for anyone setting `OSPP_BROKER_DEPLOYMENT=private_ca` locally: `csms-server/.env.example`
