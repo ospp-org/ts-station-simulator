@@ -200,24 +200,28 @@ steps:
           - programNumber: 1
             label: "Basic Wash"
 
-  # `broker_ca_path` IS NAMED, and it has to be. `ProvisionStep` writes
-  # `<stationId>-broker-ca.pem` only when the provisioning response carries `brokerRootCa`,
-  # and the server emits that field ONLY in `private_ca` mode (`config/ospp.php:550-553`,
-  # `OspConfigValidator.php:121-133`). The local stack declares no `OSPP_BROKER_DEPLOYMENT`,
-  # so it runs the `public_ca` default and the field is always absent — measured: a
-  # provisioning artifacts dir here holds key, cert, chain, mqtt.json and the receipt pair,
-  # and no broker-ca. The local broker nevertheless presents a PRIVATELY issued leaf
-  # (`CN = emqx`, issuer `CN = OneStopPay MQTT CA`) ALONE, with no intermediate, so a client
-  # left on the system trust store fails it with "unable to verify the first certificate".
+  # NO `broker_ca_path`, AND THAT IS THE FIX RATHER THAN AN OMISSION. This step named one
+  # while `ConnectMqttStep` could not see the target's own anchor: it rebuilt its whole TLS
+  # config from `certs_dir` and handed it to `station.setTls()`, which REPLACES rather than
+  # merges (`MqttConnection.ts:395-401`), so everything `config/targets.yaml` declares was
+  # dropped on any connect a step performed. The runner now resolves the target's cert block
+  # once (`ScenarioRunner.resolveConnectTls`), puts it on `ScenarioContext.connectTls`, and
+  # this step reads it as its last rung — so a step-driven connect and the automatic one
+  # reach the same anchor on the same target.
   #
-  # This is the bundle `config/targets.yaml` already declares as `local-mtls`'s `ca:` —
-  # MQTT CA + Root CA. `ConnectMqttStep` does not read the target's `ca:` itself
-  # (`ScenarioContext` carries no target cert config), which is why it is named per step.
-  # Absent — on any target whose broker uses a public CA — the step fs.access-checks it and
-  # falls through to the system store (`ConnectMqttStep.ts:84-92`), so naming it costs a
-  # non-local run nothing.
+  # PROVISIONING CANNOT SUPPLY IT HERE, which is why the target has to. `ProvisionStep`
+  # writes `<stationId>-broker-ca.pem` only when the provisioning response carries
+  # `brokerRootCa`, and the server emits that field ONLY in `private_ca` mode
+  # (`CertificateManager::loadBrokerRootCa()` returns null for any other mode). Measured on
+  # the running local stack on 2026-09-21: `.env` carries no `OSPP_BROKER_DEPLOYMENT` at all,
+  # so `ospp.deployment.broker_ca_mode` is the `public_ca` default and the field is always
+  # absent — a provisioning artifacts dir here holds key, cert, chain, mqtt.json and the
+  # receipt pair, and no broker-ca. The local broker nevertheless presents a PRIVATELY issued
+  # leaf (`CN = emqx`, issuer `CN = OneStopPay MQTT CA`) ALONE, with no intermediate, so a
+  # client left on the system trust store fails it with "unable to verify the first
+  # certificate" — measured with `openssl s_client`: verify code 21 against the system store,
+  # 0 against `local-mtls`'s declared `ca:`.
   - action: connect_mqtt
-    broker_ca_path: "certs/local/broker-ca.pem"
 
   - action: send
     message: BootNotification
@@ -358,9 +362,9 @@ steps:
 
   # The certificate rotated, so the first connection's identity is stale. This is the
   # second `connect_mqtt` no other file in the corpus performs; it reads the key material
-  # the step above captured into `certs_dir`.
+  # the step above captured into `certs_dir`, and the broker anchor from the target — see
+  # the first connect for why neither is named here.
   - action: connect_mqtt
-    broker_ca_path: "certs/local/broker-ca.pem"
 
   - action: send
     message: BootNotification
@@ -508,15 +512,19 @@ steps:
       # omitted that list would be telling them to choose from a set nobody gave them, and
       # `errorCode` alone cannot see that.
       details.bayId: "{{captured.bayId_1}}"
-      # THE `station_services` UUID, NOT the `svc_…` wire id this request sent. Measured on
-      # the wire: the start body carries `service_id: svc_uncovered_<stationId>` (the shape
-      # `StartSessionRequest::rules()` enforces with `regex:/^svc_[a-z0-9_]+$/`), and the
-      # refusal answers `details.serviceId: 40e0f1da-…` — `$dto->serviceId` has been resolved
-      # to the row id by the time the 3020 guard builds `details`
-      # (`StartSessionAction.php:518`). So this is asserted against the id the creation step
-      # captured, which is the same row. Asserting the wire id here passed review and failed
-      # the wire, which is the whole reason this file had to be run.
-      details.serviceId: "{{captured.station_service_id}}"
+      # THE PUBLIC `svc_…` — the same id this request's body sends, and the same literal the
+      # creation step above asserts back. The server CHANGED this member: the refusal carried
+      # `$dto->serviceId`, the `station_services` uuid the controller had resolved `svc_*`
+      # into, and csms-server `0590a4fe` replaced it with `$pricing['serviceCode']`, which is
+      # `service_definitions.service_id` (`ServiceQueryService::getServicePricing`). Read from
+      # the writer at `8f167043`: `StartSessionAction.php:535`, inside the 3020 raise.
+      #
+      # Not this refusal alone. `8f167043` made the same correction to the two neighbouring
+      # refusals that put a service in `details` — 3019 SERVICE_NOT_BOUND and 3003
+      # SERVICE_UNAVAILABLE — so all four of the server's refusal sites now answer in the one
+      # vocabulary every outbound frame, the catalog and `common/service-id.schema.json`
+      # already speak. No other file in this corpus asserts either code.
+      details.serviceId: "svc_uncovered_{{stationId}}"
       details.programNumber: 2
       # Ascending, and pinned: `ServiceProgramResolver.php:79` orders by `program_number`,
       # and csms-server's `AnUncoveredBindingDoesNotStartTest.php:218` declares [3,1] in

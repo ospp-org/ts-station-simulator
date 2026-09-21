@@ -9,6 +9,7 @@ import type { StepDefinition } from './steps/Step.js';
 import type { ProvisioningArtifact, ScenarioContext, StepResult } from './ScenarioContext.js';
 import { createContext } from './ScenarioContext.js';
 import { Station, type Handler } from '../station/Station.js';
+import type { MqttConnectionOptions } from '../mqtt/MqttConnection.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { OsppAction } from '@ospp/protocol';
 import {
@@ -1195,6 +1196,85 @@ function journalPathFor(scenarioName: string, stationId: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Connect-time TLS resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * The TLS material EVERY connect in a scenario starts from: the target's cert block with
+ * `{{stationId}}` substituted, then the scenario's own `tls:` overrides layered on top.
+ *
+ * EXTRACTED SO THERE IS ONE RESOLUTION AND TWO READERS. It was inline in
+ * {@link createStationFromScenario}, which made it reachable only by the connect the runner
+ * performs itself. A scenario that declares `defer_mqtt_connect: true` and connects from a
+ * `connect_mqtt` step went through `station.setTls()`, which REPLACES the config rather than
+ * merging it (`MqttConnection.ts:395-401`) — so the step had to rebuild every field from
+ * `certs_dir`, and everything the target declared and provisioning does not write was lost.
+ * The broker anchor is the one that bites: over `local-mtls` the dev broker presents
+ * `CN=emqx` issued by a private `OneStopPay MQTT CA`, alone, so a client left on the system
+ * trust store fails it with "unable to verify the first certificate".
+ *
+ * `runScenario` now puts the result on `ScenarioContext.connectTls` and `ConnectMqttStep`
+ * reads it as its last rung. Pure and stationId-keyed, so calling it twice per scenario costs
+ * nothing and cannot drift: there is only one body.
+ */
+export function resolveConnectTls(
+  scenarioDef: ScenarioDefinition,
+  target: TargetConfig,
+  stationId: string,
+): MqttConnectionOptions['tls'] {
+  // Resolve {{stationId}} in all cert path fields
+  let tls = target.tls;
+  if (tls) {
+    const resolve = (s: string | undefined) =>
+      s?.replace('{{stationId}}', stationId);
+    tls = {
+      key: resolve(tls.keyPattern) ?? resolve(tls.key),
+      cert: resolve(tls.certPattern) ?? resolve(tls.cert),
+      chain: resolve(tls.chain),
+      serverCa: resolve(tls.serverCa),
+      minVersion: tls.minVersion,
+      maxVersion: tls.maxVersion,
+    };
+  }
+
+  // Per-scenario TLS-floor conformance override — layered on top of (never
+  // replacing) the target's resolved tls. See ScenarioDefinition.tls doc.
+  if (scenarioDef.tls) {
+    tls = {
+      ...tls,
+      ...(scenarioDef.tls.min_version !== undefined
+        ? { minVersion: scenarioDef.tls.min_version }
+        : {}),
+      ...(scenarioDef.tls.max_version !== undefined
+        ? { maxVersion: scenarioDef.tls.max_version }
+        : {}),
+    };
+    if (scenarioDef.tls.no_client_cert) {
+      tls = { ...tls, key: undefined, cert: undefined, chain: undefined };
+    }
+    // Per-scenario client identity override (ADR-0005 §7): feed a SPECIFIC
+    // cert/key (e.g. a revoked leaf) with `{{stationId}}` substituted. Layered
+    // after no_client_cert so the two are mutually exclusive by authoring.
+    if (
+      scenarioDef.tls.cert !== undefined ||
+      scenarioDef.tls.key !== undefined ||
+      scenarioDef.tls.chain !== undefined
+    ) {
+      const sub = (s: string | undefined): string | undefined =>
+        s?.replace('{{stationId}}', stationId);
+      tls = {
+        ...tls,
+        ...(scenarioDef.tls.key !== undefined ? { key: sub(scenarioDef.tls.key) } : {}),
+        ...(scenarioDef.tls.cert !== undefined ? { cert: sub(scenarioDef.tls.cert) } : {}),
+        ...(scenarioDef.tls.chain !== undefined ? { chain: sub(scenarioDef.tls.chain) } : {}),
+      };
+    }
+  }
+
+  return tls;
+}
+
+// ---------------------------------------------------------------------------
 // Station factory
 // ---------------------------------------------------------------------------
 
@@ -1289,54 +1369,7 @@ function createStationFromScenario(
     mqttCredentials = { username, password };
   }
 
-  // Resolve {{stationId}} in all cert path fields
-  let tls = target.tls;
-  if (tls) {
-    const resolve = (s: string | undefined) =>
-      s?.replace('{{stationId}}', stationId);
-    tls = {
-      key: resolve(tls.keyPattern) ?? resolve(tls.key),
-      cert: resolve(tls.certPattern) ?? resolve(tls.cert),
-      chain: resolve(tls.chain),
-      serverCa: resolve(tls.serverCa),
-      minVersion: tls.minVersion,
-      maxVersion: tls.maxVersion,
-    };
-  }
-
-  // Per-scenario TLS-floor conformance override — layered on top of (never
-  // replacing) the target's resolved tls. See ScenarioDefinition.tls doc.
-  if (scenarioDef.tls) {
-    tls = {
-      ...tls,
-      ...(scenarioDef.tls.min_version !== undefined
-        ? { minVersion: scenarioDef.tls.min_version }
-        : {}),
-      ...(scenarioDef.tls.max_version !== undefined
-        ? { maxVersion: scenarioDef.tls.max_version }
-        : {}),
-    };
-    if (scenarioDef.tls.no_client_cert) {
-      tls = { ...tls, key: undefined, cert: undefined, chain: undefined };
-    }
-    // Per-scenario client identity override (ADR-0005 §7): feed a SPECIFIC
-    // cert/key (e.g. a revoked leaf) with `{{stationId}}` substituted. Layered
-    // after no_client_cert so the two are mutually exclusive by authoring.
-    if (
-      scenarioDef.tls.cert !== undefined ||
-      scenarioDef.tls.key !== undefined ||
-      scenarioDef.tls.chain !== undefined
-    ) {
-      const sub = (s: string | undefined): string | undefined =>
-        s?.replace('{{stationId}}', stationId);
-      tls = {
-        ...tls,
-        ...(scenarioDef.tls.key !== undefined ? { key: sub(scenarioDef.tls.key) } : {}),
-        ...(scenarioDef.tls.cert !== undefined ? { cert: sub(scenarioDef.tls.cert) } : {}),
-        ...(scenarioDef.tls.chain !== undefined ? { chain: sub(scenarioDef.tls.chain) } : {}),
-      };
-    }
-  }
+  const tls = resolveConnectTls(scenarioDef, target, stationId);
 
   const station = new Station(config, {
     mqttUrl: target.mqttUrl,
@@ -2005,6 +2038,13 @@ export class ScenarioRunner {
       variables.set('stationId', own);
     }
     context.variables = variables;
+    // The target's cert block, resolved for THIS station and layered with the scenario's own
+    // `tls:` overrides — the same object `createStationFromScenario` builds the Station with,
+    // from the same function. Set here rather than inside the factory because a `connect_mqtt`
+    // step needs it too and `station.setTls()` replaces rather than merges; see the field's
+    // docblock on ScenarioContext. After the `owns_station` override above, so a scenario that
+    // renamed its station resolves its cert paths under the name it actually connects as.
+    context.connectTls = resolveConnectTls(scenario, target, variables.get('stationId')!);
     context.apiBaseUrl = target.apiBaseUrl;
     // Identity resolution precedence (C-018):
     //   1. scenario.auth — explicit YAML override, wins over everything. Used by

@@ -2,6 +2,7 @@ import type { OsppEnvelope } from '@ospp/protocol';
 import { StationPool } from './stations/StationPool.js';
 import { ScenarioResourceLedger } from './bootstrap/ScenarioResources.js';
 import { CookieJar } from './CookieJar.js';
+import type { MqttConnectionOptions } from '../mqtt/MqttConnection.js';
 
 /**
  * Provisioning artifact for the primary station. Populated either by
@@ -131,6 +132,22 @@ export interface ScenarioContext {
    * {@link CookieJar} for why it is opt-in and for the RFC 6265 behaviour it does NOT have.
    */
   cookies: CookieJar;
+  /**
+   * The TLS material this scenario's target declares, `{{stationId}}` resolved and the
+   * scenario's own `tls:` overrides layered on — the SAME object the runner hands the Station
+   * for the connect it performs itself. Produced by `ScenarioRunner.resolveConnectTls`.
+   *
+   * IT IS HERE BECAUSE A STEP-DRIVEN CONNECT HAD NO WAY TO SEE IT. `ConnectMqttStep` ends at
+   * `station.setTls()`, which REPLACES the config rather than merging it
+   * (`MqttConnection.ts:395-401`), so every field the step could not rebuild from `certs_dir`
+   * was dropped — and the broker anchor is not rebuildable there at all under a `public_ca`
+   * deployment, where the provisioning response carries no `brokerRootCa` and
+   * `<stationId>-broker-ca.pem` is therefore never written. The step reads this as the LAST
+   * rung, below its own `broker_ca_path` and below what provisioning wrote.
+   *
+   * Undefined for a plaintext target (`local`, `mqtt://`), which declares no cert block.
+   */
+  connectTls?: MqttConnectionOptions['tls'];
 }
 
 export interface StepResult {

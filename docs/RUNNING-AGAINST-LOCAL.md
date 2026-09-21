@@ -5,8 +5,9 @@ reason: on 2026-08-25 a single local run hit **six** blockers in a row, none of 
 in this repo or in `csms-server`, and every one cost time to attribute. They fire **in
 order** — clearing one only reveals the next — so the list is worth more than any one entry.
 
-Everything below was measured that day, against `csms-server` at `0e9f871a` with
-`@ospp/protocol 0.26.0` installed here.
+The six numbered blockers were measured that day, against `csms-server` at `0e9f871a` with
+`@ospp/protocol 0.26.0` installed here. The closed entry at the end is dated separately and
+was measured against `csms-server` at `8f167043` with `@ospp/protocol 0.39.0`.
 
 ## Why bother with local at all
 
@@ -155,12 +156,44 @@ crossed the schema rail the `v0.25.0` bump armed, rather than merely being sent.
 
 ---
 
-## Two things that will still stop you
+## One thing that will still stop you
 
-* **The self-provisioning `e2e/*` files refuse `--bootstrap-pool`** (`skip_when_pooled`, they
-  would 409 on the shared pool) and, run standalone against `local-mtls`, get through six REST
-  calls and `provision` before failing `connect_mqtt` with *"unable to verify the first
-  certificate"*. Not diagnosed further as of 2026-08-25.
 * **4 of 32 `device-management` scenarios fail locally on `403 "Testing endpoints are
   disabled"`** — `TESTING_TRIGGER_COMMAND_ENABLED` is unset on the dev stack. Environmental,
   not a defect.
+
+### Closed 2026-09-21 — the deferred connect had no broker anchor
+
+This list carried a second entry: the self-provisioning `e2e/*` files, run standalone against
+`local-mtls`, got through six REST calls and `provision` and then failed `connect_mqtt` with
+*"unable to verify the first certificate"*, **not diagnosed further as of 2026-08-25**. It is
+diagnosed and fixed; the entry is kept because the shape is the instructive part.
+
+`ConnectMqttStep` ended at `station.setTls()`, which **REPLACES** the connection's TLS config
+rather than merging it (`MqttConnection.ts:395-401`). So a connect performed by a STEP rebuilt
+every field from the `certs_dir` a `provision` step had captured, and everything
+`config/targets.yaml` declared was dropped — the broker anchor above all. The connect the
+runner performs ITSELF kept it, which is why the same target answered differently depending on
+whether the file declared `defer_mqtt_connect: true`.
+
+Provisioning could not supply the anchor either. `ProvisionStep` writes
+`<stationId>-broker-ca.pem` only when the provisioning response carries `brokerRootCa`, and
+csms-server emits that field only under `OSPP_BROKER_DEPLOYMENT=private_ca`. Measured on the
+running stack on 2026-09-21: `csms-server/.env` carries **no `OSPP_BROKER_DEPLOYMENT` at all**,
+so `ospp.deployment.broker_ca_mode` is the `public_ca` default, the field is absent and the
+file is never written — while the broker presents `CN=emqx` issued by the private
+`OneStopPay MQTT CA`, **alone**. `openssl s_client -connect localhost:8883`: verify code **21**
+against the system store, **0** against `local-mtls`'s declared `ca:`.
+
+The runner now resolves the target's cert block once (`ScenarioRunner.resolveConnectTls`), puts
+it on `ScenarioContext.connectTls`, and `ConnectMqttStep` reads it as its last rung — below its
+own `broker_ca_path` and below what provisioning wrote. Measured after the fix:
+`e2e/e2e-new-customer-onboarding.yaml` standalone on `local-mtls` is **29/29 steps green, 1/1
+scenario passed**, and `sessions/start-refused-binding-uncovered.yaml` — which had named the
+anchor per step as a workaround, and no longer does — is **23/23 green over both of its
+connects**.
+
+Note for anyone setting `OSPP_BROKER_DEPLOYMENT=private_ca` locally: `csms-server/.env.example`
+argues for it and pins `OSPP_BROKER_ROOT_CA_PATH=/var/www/html/storage/certs/ca.pem` (the MQTT
+CA, **not** the station-PKI root at `storage/keys/root-ca-cert.pem`). That would put the anchor
+in the provisioning response and take rung 2 instead of rung 3. Nothing here depends on it.
