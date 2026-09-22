@@ -86,6 +86,38 @@ description: "Boot single-bay station, report Available, then reactively drive 3
 # Declared rather than assumed: `effectiveMax` collapses to 1 for a service that is not
 # MultiUnit, and `POST /w/{slug}/process` then answers `invalid_quantity`.
 requires_multiunit_service: 3
+# THE BUDGET, DERIVED FROM THE WAITS BELOW — not a round number.
+#
+# `ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS` is 90s while the card leg alone is a 600s
+# window, so in BULK mode the runner abandoned this file mid-settlement. Bulk routes through
+# `runScenarioBounded` (ScenarioRunner.ts:2483 sequential, :2500 parallel); the single
+# `--scenario` path calls `runScenario` UNBOUNDED (cli/index.ts:394), which is why the same
+# file passed standalone on the very day the corpus reported it failed.
+#
+# MEASURED 2026-09-22, UAT corpus run 20260922T023236Z: both multiunit files went
+# `skipped -> failed` with "exceeded its 90000ms budget", and the payments they had already
+# driven reconciled to the cent against the server's records. The abandonment was the RUNNER,
+# never the server — a JS promise cannot be cancelled, so the orphaned scenario ran on and
+# finished the money correctly after the report was written (ScenarioRunner.ts:1905-1908).
+#
+# The bound must clear the SUM OF EVERY DECLARED WAIT, so that a step which legitimately
+# exhausts its own timeout reports ITS OWN error instead of being masked by ours. That is the
+# same principle the default is sized on (ScenarioRunner.ts:1896-1902).
+#
+#   [1]  wait_for BootNotification Response              15000
+#   [9]  card settlement poll {{cardSettleTimeoutMs}}     600000
+#   [10] + [16] + [22]  wait_for StartService x3         180000
+#   [13] + [19] + [25]  delay 500 x3                       1500
+#   [28] trailing delay                                   30000
+#                                        sum of waits =  826500
+#   + un-budgeted work, MEASURED on the standalone run of the same day: 4 api_calls ~1.4s,
+#     the sends/assert, and connect + provisioning hydration ~1.2s = ~3.4s total. Allowed
+#     30000 — ~9x measured — to absorb contention under `--parallel --workers 5`.
+#                                              budget =  856500
+#
+# TIED TO `cardSettleTimeoutMs=600000`, the documented attended value. That poll timeout is a
+# VARIABLE: passing a larger one makes this budget too small again, and it must move with it.
+scenario_timeout_ms: 856500
 station:
   stationId: "{{stationId}}"
   # TWO BAYS, AND ONLY BAY 1 IS DRIVEN. The count matches DEFAULT_POOL_BAYS, not the

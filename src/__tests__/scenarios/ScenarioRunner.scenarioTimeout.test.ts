@@ -320,6 +320,9 @@ describe('the legitimate overrides in the corpus', () => {
       'firmware-unexpected-version-at-boot.yaml',
       'firmware-update-full-cycle-reboot.yaml',
       'heartbeat-silence-offline-sweep.yaml',
+      // --- the two multi-unit card drives, added 2026-09-22. Argument below. ---
+      'multiunit-batch-drive.yaml',
+      'multiunit-jam-drive.yaml',
       // --- added 2026-09-11. Argument below. ---
       'reserve-bay-unanswered-compensates-with-a-cancel.yaml',
       'reserve-expire.yaml',
@@ -328,6 +331,73 @@ describe('the legitimate overrides in the corpus', () => {
       // --- added 2026-09-11. Argument below. ---
       'stop-service-unanswered-settles-as-stop-ack-lost.yaml',
     ]);
+  });
+
+  /**
+   * THE ARGUMENT FOR THE TWO MULTI-UNIT CARD DRIVES, added 2026-09-22.
+   *
+   * These are the only overrides in the corpus whose dominant wait is a HUMAN LEG, and that
+   * is the argument. Step [9] polls `GET /api/v1/admin/payments` until the intent it bought
+   * reads `succeeded`; what ends that wait is a card typed into BT's hosted form and the 3DS
+   * page behind it. The width is `--var cardSettleTimeoutMs`, documented attended at 600000,
+   * and nothing in the file can shorten it.
+   *
+   * WHY THE OVERRIDE IS NOT A JUDGEMENT CALL. The default is 90s. The card window alone is
+   * 600s, so in BULK mode the runner abandoned both files mid-settlement — measured on the
+   * UAT corpus run 20260922T023236Z, where both went `skipped -> failed` with "exceeded its
+   * 90000ms budget". The payments they had already driven reconciled to the cent against the
+   * server's own records, so the abandonment was the RUNNER, not a defect under test. The
+   * single `--scenario` path calls `runScenario` unbounded (cli/index.ts:394) and never
+   * consults this key, which is why the same two files passed standalone the same day.
+   *
+   * WHY NOT THE `2x declared + 60s` CEILING THE e2e TRIO GETS. That ceiling is computed off
+   * `ms:` delay lines, and these files are dominated by `timeout_ms:` waits instead — a
+   * delay-only sum would read 21000/31500 here and call a 600s card window unbounded. They
+   * are held to the arithmetic that fits their shape by the test below, which sums BOTH kinds
+   * and bounds the budget from both sides, so an unexamined number cannot drift upward.
+   *
+   * IF `cardSettleTimeoutMs` MOVES, THIS MUST BE RE-ARGUED. The poll timeout is a variable;
+   * a larger attended value makes these budgets too small again and the files start reporting
+   * as hangs rather than as whatever actually failed.
+   */
+  it('the two multi-unit card drives cover every wait they declare, card window included', () => {
+    // The documented attended value of `--var cardSettleTimeoutMs`. The poll declares the
+    // variable, not a literal, so the arithmetic has to resolve it the way a run does.
+    const CARD_SETTLE_MS = 600_000;
+
+    for (const [rel, expected] of [
+      ['scenarios/multiunit-e2e/multiunit-jam-drive.yaml', 756_000],
+      ['scenarios/multiunit-e2e/multiunit-batch-drive.yaml', 826_500],
+    ] as const) {
+      const file = fs.readFileSync(path.resolve(rel), 'utf8');
+      // Comments in these files quote the budget arithmetic; strip them so the sums below
+      // are read off the STEPS and cannot be satisfied by prose.
+      const body = file.split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
+
+      const m = body.match(/^scenario_timeout_ms:\s*(\d+)/m);
+      expect(m, `${rel} must declare a budget`).not.toBeNull();
+      const budget = Number(m![1]);
+
+      // Both kinds of declared wait, summed: they are serial.
+      const timeouts = [...body.matchAll(/^\s+timeout_ms:\s*(?:"?\{\{cardSettleTimeoutMs\}\}"?|(\d+))/gm)]
+        .reduce((sum, d) => sum + (d[1] === undefined ? CARD_SETTLE_MS : Number(d[1])), 0);
+      const delays = [...body.matchAll(/^\s+ms:\s*(\d+)/gm)]
+        .reduce((sum, d) => sum + Number(d[1]), 0);
+      const declared = timeouts + delays;
+
+      // The sum is pinned, so shortening a wait without revisiting the budget goes red here.
+      expect(declared, `${rel}: declared waiting moved`).toBe(expected);
+
+      // Covers every wait it declares, so a step that legitimately exhausts its own timeout
+      // reports ITS OWN error instead of being masked by the runner's.
+      expect(budget, `${rel}: budget must exceed its ${declared}ms of declared waiting`)
+        .toBeGreaterThan(declared);
+
+      // And is still a bound. 60s is the measured un-budgeted work (~3.4s of api_calls,
+      // sends and connect/provisioning hydration) with room for `--parallel` contention.
+      expect(budget, `${rel}: budget is not a bound any more`)
+        .toBeLessThanOrEqual(declared + 60_000);
+    }
   });
 
   /**
