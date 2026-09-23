@@ -44,7 +44,7 @@
 #   So the assertion is placed on the field that IS deterministic and that actually
 #   decides the money: `details.settledAs`. The server writes it at
 #   StopServiceResponseHandler.php:140 by comparing the received code against
-#   SESSION_NOT_FOUND. It reads `StationLostSession` here and `full_delivery` in the
+#   SESSION_NOT_FOUND. It reads `StationLostSession` here and `StopRefusedWhileRunning` in the
 #   sibling file. That pair — one field, two files, opposite values, one differing byte
 #   on the wire — is the proof the split exists and is driven by the code.
 #
@@ -198,7 +198,7 @@ steps:
       data.status: "completed"
 
   # ASSERTION 2 — the settlement RULE the server chose. `StationLostSession` here against
-  # `full_delivery` in stop-service-refused-while-running-bills-full.yaml, from the same
+  # `StopRefusedWhileRunning` in stop-service-refused-while-running-bills-full.yaml, from the same
   # handler, the same endpoint and the same field, differing only in the errorCode this
   # file put on the wire. A server that ignored the code would write one value for both.
   - action: api_call

@@ -53,7 +53,7 @@
 # decision from it: `details.settledAs`, which is written by comparing the code against
 # SESSION_NOT_FOUND (StopServiceResponseHandler.php:124,140).
 name: "Stop Service Refused While Running - full delivery billed"
-description: "Server dispatches StopService for an active session; the station refuses with 3007 SESSION_MISMATCH. The server must treat the wash as delivered in full - bill the whole reserved duration, refund nothing, and journal the refusal as full_delivery."
+description: "Server dispatches StopService for an active session; the station refuses with 3007 SESSION_MISMATCH. The server must treat the wash as delivered in full - bill the whole reserved duration, refund nothing, and journal the refusal as StopRefusedWhileRunning."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -215,7 +215,7 @@ steps:
       data[kind=command_refused].effectedBy: "Station"
       data[kind=command_refused].details.action: "StopService"
       data[kind=command_refused].details.errorCode: 3007
-      data[kind=command_refused].details.settledAs: "full_delivery"
+      data[kind=command_refused].details.settledAs: "StopRefusedWhileRunning"
 
   # --- Pool hygiene: the session is terminal, so only the bay is returned. ---
   - action: send
