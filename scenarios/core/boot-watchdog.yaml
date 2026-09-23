@@ -67,11 +67,23 @@ steps:
   # and nothing in the server branches on the persisted column. This is a
   # write-path assertion, not a behavioural one, and must not be read as one.
   #
-  # The behavioural split is TWO classes, not six. BootNotificationHandler.php:343
-  # preserves in-flight sessions for {Reconnect, ErrorRecovery} and force-fails
-  # them with fail_error_code 1010 for everything else. `Watchdog` is in the
-  # force-fail class; that arm is proven by boot-poweron-fails-live-session.yaml,
-  # which this file does not duplicate.
+  # The behavioural split is TWO classes, and `Watchdog` CHANGED SIDES. This comment
+  # read "BootNotificationHandler.php:343 preserves in-flight sessions for {Reconnect,
+  # ErrorRecovery} and force-fails them for everything else. `Watchdog` is in the
+  # force-fail class". csms-server X3 replaced that two-value predicate with
+  # SESSION_PRESERVING_BOOT_REASONS (BootNotificationHandler.php:102-107):
+  #
+  #   PRESERVE  PowerOn  Watchdog  ErrorRecovery  Reconnect
+  #   END       RemoteReset  ManualReset  ScheduledReset  FirmwareUpdate
+  #
+  # `Watchdog` is the watchdog 05-state-machines.md:353-354 names by name as an
+  # uncommanded reboot the server "chose" nothing about, so it PRESERVES. This file
+  # holds no live session, so nothing it asserts moved -- only the sentence describing
+  # which class the value is in, which was wrong from X3 until it was corrected here.
+  # The ending arm is proven by boot-manual-reset-fails-live-session.yaml, and the
+  # preserving arm -- the one `Watchdog` is now on -- is proven by
+  # boot-reconnect-preserves-live-session.yaml and boot-error-recovery.yaml. This file
+  # duplicates neither: it asserts the persisted column, not the session consequence.
   - action: delay
     ms: 1000
 

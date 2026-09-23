@@ -7,13 +7,44 @@
 # already did.
 #
 # FIVE of the seven are dead behind StationManagementController::findStationByOsppIdOrFail,
-# so nothing observable moved. TWO ARE NOT: `installCertificate` and
-# `triggerCertificateRenewal` never call it, and neither route carries the
+# so nothing observable moved. TWO WERE NOT: `installCertificate` and
+# `triggerCertificateRenewal` did not call it, and neither route carries the
 # `->where('stationId', 'stn_[0-9a-f]+')` constraint that the revoke route below them has
 # (whose comment says it exists precisely "so a malformed id 404s rather than reaching the
-# action"). So on these two the refusal genuinely moved:
+# action") -- that constraint is still absent, which is why `stn_ffffffffff` reaches the
+# controller at all. So on these two the refusal genuinely moved:
 #
 #     3005 BAY_NOT_FOUND / HTTP 404   ->   2001 STATION_NOT_REGISTERED / HTTP 422
+#
+# AND THEN IT MOVED A THIRD TIME, BACK TO 404 -- WITH A DIFFERENT BODY.
+#
+# csms-server `6e74a7ba` put all three certificate routes behind the door the other
+# thirty use. `installCertificate` (StationManagementController.php:898) and
+# `triggerCertificateRenewal` (:929) now call `findStationByOsppIdOrFail` as their FIRST
+# statement, before `$request->validated()` is ever read, and answer the shared
+# existence-hiding body (HidesStationExistence::stationNotFound, :95-103):
+#
+#     2001 STATION_NOT_REGISTERED / HTTP 422   ->   HTTP 404 {"message": "Station not
+#                                                   found", "station_id": "<the id sent>"}
+#
+# THE STATUS CAME BACK BUT THE BODY DID NOT. The original 404 carried
+# `error.ospp_code: 3005`; this one carries NO `error` object at all, so the two arms
+# below assert `message` rather than an OSPP code. That is the whole point of the
+# mechanism: "no such station" and "not your station" are one code path emitting one
+# body, so neither answer can be told from the other.
+#
+# NOTHING NORMATIVE MOVED. spec 07-errors.md §2.4 names no HTTP status for 2001 -- it is
+# one of the 89 of 120 codes the spec's own gate reports as NOT CLAIMED -- so the 422
+# this file used to assert was an ErrorCodeRegistry default, never a required answer.
+# The 404 is a decision about existence disclosure, taken on the HTTP surface, and the
+# Actions keep their own 2001 branch for the caller with no controller in front of it
+# (CheckKeyExpiryCommand -> TriggerCertificateRenewalAction).
+#
+# THE ORDER THE THREE REFUSALS RESOLVE IN, because this file depends on it: 403 for an
+# unauthorized caller, then 422 for a body the FormRequest rejects (the request is
+# type-hinted, so Laravel validates before the method body runs), then 404 for an id
+# nothing owns. Both arms below send a VALID body -- the same bodies that used to reach
+# the Action and earn a 2001 -- which is what carries them past the 422 to the 404.
 #
 # The full UAT suite went 128/0/16 across that change — unchanged from baseline, and NOT
 # because it was covered. No file exercised station-not-found on either route. A green run
@@ -36,8 +67,8 @@
 # because reaching it needs a REGISTERED station that is OFFLINE, and a pooled run's stations
 # are online by construction. That one stays unproven and is named here rather than left to be
 # rediscovered.
-name: "Cert Lifecycle Refused — the station is not registered (2001)"
-description: "POST install-certificate and trigger-cert-renewal naming a well-formed stationId nothing owns. Server answers 422 + error.ospp_code 2001 STATION_NOT_REGISTERED on both. The same call on this file's REAL station is 202, which is what attributes the refusal to the station id rather than to the identity, the route or the body."
+name: "Cert Lifecycle Refused — the station is not registered (404)"
+description: "POST install-certificate and trigger-cert-renewal naming a well-formed stationId nothing owns. Server answers 404 + the existence-hiding body on both. The same call on this file's REAL station is 202, which is what attributes the refusal to the station id rather than to the identity, the route or the body."
 
 # Platform-managed cert lifecycle — platform admin + omit_org_header (NULL team).
 # See certificate-install.yaml for the full rationale.
@@ -90,9 +121,14 @@ steps:
   # --- ARM 1 — install-certificate on a station nothing owns.
   #
   # `stn_ffffffffff` is well-formed for the route (no constraint) and for anything downstream,
-  # so the request passes the middleware and the FormRequest and reaches
-  # InstallCertificateAction's own lookup. A malformed id would be refused earlier and prove
-  # nothing about the branch this file is here for.
+  # so the request passes the middleware and the FormRequest and reaches the controller's
+  # `findStationByOsppIdOrFail`. A malformed id would be refused earlier and prove nothing
+  # about the branch this file is here for.
+  #
+  # `station_id` is asserted alongside `message` because it is the ONE field of the body that
+  # varies: it echoes the id the caller supplied. Pinning it proves the 404 was produced for
+  # THIS id rather than being a route that 404s for everything -- which the 202 control at the
+  # end proves from the other direction.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/stn_ffffffffff/install-certificate"
@@ -100,31 +136,35 @@ steps:
     body:
       certificateType: "StationCertificate"
       certificate: "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALRiMLAh...\n-----END CERTIFICATE-----"
-    expect_status: 422
+    expect_status: 404
     expect_body:
-      error.ospp_code: 2001
-      error.code: "STATION_NOT_REGISTERED"
+      message: "Station not found"
+      station_id: "stn_ffffffffff"
 
-  # --- ARM 2 — the same condition on the sibling route, which is a SEPARATE action with its
-  # own copy of the lookup (TriggerCertificateRenewalAction:39). One arm would leave the other
-  # asserted by assumption, and these two were renamed as two edits, not one.
+  # --- ARM 2 — the same condition on the sibling route. It is a SEPARATE controller method
+  # with its own call to the lookup (StationManagementController.php:929), and the Action
+  # behind it keeps its own copy too (TriggerCertificateRenewalAction:39), which is what the
+  # console's CheckKeyExpiryCommand still reaches. One arm would leave the other asserted by
+  # assumption, and these two moved as two edits, not one.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/stn_ffffffffff/trigger-cert-renewal"
     omit_org_header: true
     body:
       certificateType: "StationCertificate"
-    expect_status: 422
+    expect_status: 404
     expect_body:
-      error.ospp_code: 2001
-      error.code: "STATION_NOT_REGISTERED"
+      message: "Station not found"
+      station_id: "stn_ffffffffff"
 
   # --- THE CONTROL, and it is the point of the file rather than decoration.
   #
-  # Without it a 422 proves only that the endpoint answers 422 to something: a revoked
-  # identity, a wrong base URL, a body the FormRequest rejects and a retired route all produce
-  # a refusal too, and three of those four would produce it on EVERY call including this one.
-  # This call differs from arm 1 in exactly ONE field — the station id — and must be accepted.
+  # Without it a 404 proves only that the endpoint answers 404 to something: a revoked
+  # identity, a wrong base URL, a mistyped path and a retired route all produce a refusal too,
+  # and every one of those would produce it on EVERY call including this one. A 404 is a
+  # WEAKER signal than the 422 this file used to assert, precisely because it is the answer a
+  # missing route gives -- so the control matters more now, not less. This call differs from
+  # arm 1 in exactly ONE field — the station id — and must be accepted.
   #
   # Placed AFTER the refusals so a reader cannot mistake it for setup. It also re-proves, on
   # this run's own identity, the 202 that establishes the route is reachable at all — which is

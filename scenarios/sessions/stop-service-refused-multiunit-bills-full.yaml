@@ -1,0 +1,309 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_multiunit}}
+#
+# WHY THIS FILE EXISTS — the per-kind half of a money rule that is proven on ONE kind.
+#
+#   csms-server `77f9fdd6` made a refused stop settle as a DELIVERED session of its kind
+#   settles: pro-rata on delivered time for UserDuration, the WHOLE authorized amount for
+#   the two all-or-nothing kinds. Three strategies, one rule, and the corpus reaches the
+#   first one only. Measured over the 158 files that existed before this one: exactly
+#   TWO send a `StopService` Response with `status: Rejected` --
+#   stop-service-refused-while-running-bills-full.yaml (3007) and
+#   stop-service-refused-session-not-found-desync.yaml (3006) -- and BOTH book
+#   `{{serviceId_1}}` = `svc_wash_basic`, seeded PerMinute, which resolves to
+#   UserDuration. So the all-or-nothing arm of the correction -- the arm where the
+#   amount does NOT depend on how long the wash ran -- has never been on the wire. It is
+#   unit-tested and nothing else. This file is the third of 159, and the first to book a
+#   non-UserDuration kind.
+#
+# THE BRANCH REACHED, AND THE ONE LINE THAT PICKS IT
+#   StopServiceResponseHandler::handleRejected (:171-175) routes on the errorCode:
+#
+#     $refusedWhileRunning = in_array($dto->errorCode, [
+#         OsppErrorCode::BAY_NOT_FOUND->value,     // 3005
+#         OsppErrorCode::SESSION_MISMATCH->value,  // 3007
+#         OsppErrorCode::BAY_MAINTENANCE->value,   // 3011
+#     ], true);
+#
+#   Three codes in, one out. 3006 SESSION_NOT_FOUND is the fourth of the four
+#   `stop-service.md` §7 names and the one the correction deliberately did NOT move: it
+#   is the only code that says there is no session to have been running, so it keeps
+#   settling as StationLostSession. `3007` is used here for the same reason the
+#   UserDuration file uses it — it is a real station obligation (`stop-service.md` r3)
+#   the simulator does not implement (docs/CONFORMANCE-GAPS.md group D), so the file
+#   names a gap while it proves a server branch.
+#
+#   From there `completeSessionAction->execute(reason: StopRefusedWhileRunning)`
+#   (:296-300) reaches the ONE settlement authority, which picks the strategy by the
+#   session's own kind (SettlementService::strategyFor, :41-48).
+#
+# WHAT MAKES THIS A DIFFERENT KIND, AND IT IS NOT A DIFFERENT CALL
+#   The same `POST /api/v1/sessions/start` this corpus uses everywhere. The kind is a
+#   property of the CATALOG ROW, resolved server-side (StartSessionAction.php:294-296):
+#
+#     $serviceKind = $dto->overrideServiceKind          // NULL on every non-batch start
+#         ?? ServiceKind::tryFrom($pricing['serviceKind'] ?? '')
+#         ?? ServiceKind::UserDuration;
+#
+#   `svc_multiunit` is seeded `serviceKind: 'MultiUnit'`, `pricingType: 'Fixed'`,
+#   `priceCreditsFixed: 200`, `fixedDurationSeconds: 5` (uatPrivileged.ts
+#   `multiUnitSeedService`, `MULTIUNIT_UNIT_PRICE_CREDITS`, `MULTIUNIT_PULSE_SECONDS`).
+#   MultiUnitStrategy's own docblock settles the shape: "a single MultiUnit session is
+#   exactly one unit". No batch, no card, no landing page — `batch_id` is NULL, which
+#   StartSessionAction.php:648-652 names as the ordinary case ("NULL for every
+#   single-unit start").
+#
+# THE ARITHMETIC, DERIVED NOT COPIED — AND THE DURATION IS NOT THE ONE POSTED
+#   MultiUnit has `hasServerResolvedDuration() === true` (ServiceKind.php:73-79), so
+#   StartSessionAction.php:305-324 REPLACES the client's `duration_seconds` with the
+#   catalog preset. The 300 this file posts is discarded and 5 is what the session is
+#   booked for. Then pricing: the entry is `Fixed`, so the quote is the flat price,
+#   duration-independent (:334-338).
+#
+#     duration_requested   5    the preset, not the 300 posted below
+#     credits_authorized   200  priceCreditsFixed, not ceil(seconds/60 * rate)
+#
+#   On the refusal, MultiUnitStrategy -> AllOrNothingSettlement::forReason
+#   (MultiUnitStrategy.php:35), whose `StopRefusedWhileRunning` arm is
+#   `SettlementResult::fullCharge($creditsAuthorized)` (AllOrNothingSettlement.php:53-54)
+#   = charged 200, refunded 0 (SettlementResult.php:28-33).
+#
+# THE AMOUNT IS THE ATTRIBUTION, WHICH IS WHY IT IS WORTH ASSERTING TWICE OVER
+#   Both kinds would authorize the same 200 here — the price is Fixed either way — so
+#   `credits_authorized` cannot tell them apart. The SETTLEMENT can. Had the kind
+#   resolved to UserDuration (the fallback when `service_kind` is NULL), the same
+#   fixture would have taken UserDurationStrategy and billed pro-rata on a handful of
+#   delivered seconds against a 300s booking: a small charge and a large refund. 200/0
+#   is reachable ONLY through the all-or-nothing table. `duration_requested: 5` pins the
+#   same fact from the other side — 5 is the catalog preset and 300 is what this file
+#   posted, so the two together say the server resolved a server-duration kind and
+#   settled it whole.
+#
+# AND THE METER SAMPLE HERE IS DELIBERATELY IRRELEVANT
+#   The UserDuration sibling carries a MeterValues whose `2026-05-27T08:00:00.000Z`
+#   predates `started_at`, and on that file it is load-bearing: csms-server `8a2506d0`
+#   falls back to the reservation for an unusable sample instead of flooring delivered
+#   time to zero, and that fallback is what keeps its 500 a 500. The same sample is sent
+#   here and CANNOT move a byte of the money, because MultiUnitStrategy "deliberately
+#   NEVER reads `duration_actual`/elapsed" (its own docblock) — per-unit delivery is
+#   binary and time-independent. Same bytes on the wire, load-bearing on one kind and
+#   inert on the other: that contrast is the difference the all-or-nothing rule IS.
+#
+# NEITHER ASSERTED AMOUNT IS ECHOED FROM THIS FILE. 200 and 0 appear in no payload sent
+# here. `credits_charged` is written by the settlement strategy and `refund_amount` is
+# derived in SessionResource:53-56 as `credits_authorized - credits_charged`, so the two
+# are one fact stated twice — asserted together because a strategy that charged nothing
+# would satisfy neither, and one that charged half would satisfy neither.
+#
+# HONESTY ABOUT WHAT IS PROVEN. The station is a byte source: it is scripted to refuse,
+# not deciding to. This is a proof about the SERVER's settlement, not about station
+# conformance. Stated so nobody reads a green run as evidence that a station detects a
+# session mismatch.
+#
+# NOT COVERED, AND NAMED RATHER THAN LEFT TO BE FOUND: FixedDuration, the third kind.
+# It shares this exact all-or-nothing table with MultiUnit (FixedDurationStrategy.php:23
+# and MultiUnitStrategy.php:35 both call `AllOrNothingSettlement::forReason`), so the
+# arm this file lands on is the same one — but no `serviceKind: 'FixedDuration'` row has
+# ever been seeded by this corpus, so there is no fixture to book. Closing it needs a
+# seeded service, not another scenario.
+name: "Stop Service Refused While Running - MultiUnit billed whole"
+description: "Server dispatches StopService for an active MULTI-UNIT session; the station refuses with 3007 SESSION_MISMATCH. The all-or-nothing kinds bill the whole authorized amount regardless of delivered time - charge 200, refund 0, journalled StopRefusedWhileRunning."
+requires_multiunit_service: 1
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- Start a real, funded MULTI-UNIT session. `duration_seconds: 300` is posted and
+  #     DISCARDED: MultiUnit resolves its duration from the catalog (5s pulse), and the
+  #     Fixed price quotes 200 whatever the duration. The 300 is kept rather than
+  #     lowered so the assertion below has something to disprove — a server that ignored
+  #     the kind would book 300s here and the pair {5, 200} could not appear. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_multiunit}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # Mirrors the UserDuration sibling: the StartService Response and the Occupied
+  # notification are processed asynchronously, so the session must be observed ACTIVE
+  # before the stop is asked for.
+  - action: delay
+    ms: 500
+
+  - action: send
+    message: MeterValues
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      sessionId: "{{captured.sessionId}}"
+      timestamp: "2026-05-27T08:00:00.000Z"
+      values:
+        liquidMl: 500
+        energyWh: 100
+
+  - action: delay
+    ms: 1500
+
+  # PRE-CONDITION, and it is also the KIND assertion. `duration_requested` is 5 because
+  # the catalog preset replaced the 300 this file posted, and `credits_authorized` is
+  # 200 because the entry is Fixed-priced. Both are read BEFORE the refusal, so the
+  # settlement below is measured against a booking already proven to be the multi-unit
+  # one — a later reader cannot wonder whether the fixture silently fell back to
+  # UserDuration.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+      data.duration_requested: 5
+      data.credits_authorized: 200
+
+  # --- Operator asks for the stop. The server answers 200 and publishes StopService. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # --- THE REFUSAL. Schema-required for a Rejected stop: errorCode AND errorText
+  #     (stop-service-response.schema.json allOf[1]). ---
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Rejected"
+      errorCode: 3007
+      errorText: "SESSION_MISMATCH"
+
+  - action: delay
+    ms: 2000
+
+  # ASSERTION 1 — the money, and it is the whole subject of the file. A server that
+  # ignored the refusal would leave this `active`. One that treated a refused stop like
+  # a Fault would refund all 200 (that is the arm two rows below in the same table). One
+  # that settled this kind pro-rata — the defect `77f9fdd6` corrected — would charge a
+  # few seconds of delivery and refund most of it. Only the all-or-nothing table bills
+  # the authorized amount whole and returns nothing.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 200
+      data.refund_amount: 0
+
+  # ASSERTION 2 — the DECISION, not just its effect. `settledAs` is the server recording
+  # which settlement rule it picked, written by comparing this file's 3007 against
+  # SESSION_NOT_FOUND (StopServiceResponseHandler.php:221-227). The sessions row shows
+  # the outcome and cannot show which rule produced it. Identical to the UserDuration
+  # sibling's value — the LABEL is kind-blind, the AMOUNT is not, and that pair is
+  # exactly what this file adds: same decision, different arithmetic.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
+    expect_status: 200
+    expect_body:
+      data[kind=command_refused].effectedBy: "Station"
+      data[kind=command_refused].details.action: "StopService"
+      data[kind=command_refused].details.errorCode: 3007
+      data[kind=command_refused].details.settledAs: "StopRefusedWhileRunning"
+
+  # --- Pool hygiene: the session is terminal, so only the bay is returned. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

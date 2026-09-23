@@ -366,7 +366,7 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // back online afterwards. And it is SKIPPED: the local stack cannot provision, so the
     // file is linted and counted but has never been run. Its `skip:` reason carries the
     // measurement.
-    expect(files.length).toBe(158);
+    expect(files.length).toBe(159);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {

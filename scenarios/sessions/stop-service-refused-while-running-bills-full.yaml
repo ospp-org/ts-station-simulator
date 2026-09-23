@@ -2,20 +2,35 @@
 #   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
 #
 # SERVER BRANCH REACHED — and it is a MONEY branch with no scenario on it.
-#   csms-server app/Modules/Session/Handlers/StopServiceResponseHandler.php:179-182
-#     // The station refused the stop and keeps running -- it washes the full reserved
-#     // duration regardless of connectivity -- so the session delivered in full.
-#     $this->completeSessionAction->forceCompleteFullDelivery(
-#         $sessionId,
-#         "Station rejected StopService while running: {$dto->errorText} (code {$dto->errorCode})",
+#   csms-server app/Modules/Session/Handlers/StopServiceResponseHandler.php:296-300
+#     // The wash ran. Settle it through the ONE authority as a DELIVERED session of its
+#     // kind, and let the two strategies price it.
+#     $this->completeSessionAction->execute(
+#         sessionId: $sessionId,
+#         actualDurationSeconds: $session !== null ? $this->deliveredSeconds($session) : null,
+#         reason: TerminalReason::StopRefusedWhileRunning,
 #     );
 #
-#   `forceCompleteFullDelivery` (CompleteSessionAction.php:222-260) re-enters
-#   `execute()` with `actualDurationSeconds: $session->duration_requested` — the WHOLE
-#   booking — so the customer is billed for every second they reserved and refunded
-#   nothing. That is the opposite of the sibling 3006 arm, and the ONLY thing that
-#   chooses between them is the numeric errorCode on this response
-#   (StopServiceResponseHandler.php:124).
+#   IT WAS `forceCompleteFullDelivery` AND IT IS NOT ANY MORE. This header described the
+#   branch as re-entering `execute()` with `actualDurationSeconds: $session->
+#   duration_requested` — the whole booking, as minute arithmetic, for every kind alike.
+#   csms-server `77f9fdd6` replaced that call: the helper "settles through the kind-blind
+#   legacy arm of CompleteSessionAction ... so the amount was decided by a clock rather
+#   than by the service" (StopServiceResponseHandler.php:283-286). The branch now goes to
+#   the ONE settlement authority with a terminal REASON, and the amount is chosen by the
+#   session's service kind.
+#
+#   `forceCompleteFullDelivery` still exists and is still correct — for its ONE remaining
+#   caller, the offline / connection-lost sweep (FailOfflineSessionJob). It is simply no
+#   longer on this path, so a reader who followed this header into
+#   CompleteSessionAction.php was reading a mechanism this scenario does not reach.
+#
+#   WHAT DID NOT CHANGE IS THIS FILE'S TWO NUMBERS, and they now arrive by a different
+#   route — see THE ARITHMETIC below. What DID change is that the choice is no longer
+#   binary: the errorCode still selects the RULE (this arm against the 3006 sibling's),
+#   but the service KIND now selects the arithmetic inside it. This file books a
+#   PerMinute service, so it exercises the pro-rata arm of the corrected handler;
+#   stop-service-refused-multiunit-bills-full.yaml is the all-or-nothing one.
 #
 # WHY NO SCENARIO REACHED IT. Measured 2026-09-11 over all 149 files: the corpus
 # contains 104 `messageType: Response` sends and SIX of them are refusals
@@ -38,10 +53,19 @@
 # proof about the SERVER's handling, not about station conformance. It is stated here so
 # nobody later reads a green run as evidence that a station detects a bay mismatch.
 #
-# THE ARITHMETIC, DERIVED NOT COPIED. `svc_wash_basic` is seeded PerMinute at 100
-# credits/minute (uatPrivileged.ts DEFAULT_SEED_SERVICES) and the booking below is 300s,
-# so `credits_authorized` = ceil(300/60 * 100) = 500. Full delivery bills
-# duration_requested = 300s = 500 credits, refund 0. The sibling `stop-service.yaml`
+# THE ARITHMETIC, DERIVED NOT COPIED — AND IT NO LONGER RUNS THROUGH duration_requested.
+# `svc_wash_basic` is seeded PerMinute at 100 credits/minute (uatPrivileged.ts
+# DEFAULT_SEED_SERVICES) and the booking below is 300s, so `credits_authorized` =
+# ceil(300/60 * 100) = 500. PerMinute resolves to UserDuration, so the corrected handler
+# bills PRO-RATA on DELIVERED time rather than charging the reservation whole.
+#
+# Delivered time comes from the meter's last sample, and this file's sample carries a
+# literal `2026-05-27T08:00:00.000Z` that PREDATES `started_at`. A sample at or before
+# the start measures nothing, so csms-server `8a2506d0` falls back to the reservation —
+# 300s — instead of flooring to zero. Pro-rata over the full 300s is the full 500, and
+# the refund stays 0. Same two numbers, reached by a fallback rather than by a helper
+# that ignored the clock; the commit that restored the fallback names this scenario's
+# timestamp as the reason it exists. The sibling `stop-service.yaml`
 # books the SAME service for the SAME 300s and, on an Accepted stop reporting 45
 # delivered seconds, settles 75/425. Same fixture, same money in, opposite money out —
 # and the only difference on the wire is this file's `status: Rejected`.

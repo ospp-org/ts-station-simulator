@@ -1,0 +1,248 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# SERVER BRANCH REACHED
+#   csms-server app/Modules/Station/Handlers/BootNotificationHandler.php:725
+#     $preservesSession = in_array($dto->bootReason, self::SESSION_PRESERVING_BOOT_REASONS, true);
+#   and, when it is false, the sweep at :757 and the bulk UPDATE it performs at :849-852
+#     ->update(['status' => 'failed', 'fail_reason' => 'Station rebooted',
+#               'fail_error_code' => 1010, 'stopped_at' => now(), ...])
+#   followed by one SessionForceFailed per killed session (:767) ->
+#   FailSessionAction::settleForceFailed -> SettlementService::settle(ForceFailedReboot).
+#
+# THIS IS THE CONTROL FOR THE THREE PRESERVE SCENARIOS — and it had stopped being one.
+#   core/boot-reconnect-preserves-live-session.yaml, core/boot-error-recovery.yaml and
+#   this file were written as one pair plus a sibling: same station shape, same
+#   uptimeSeconds 0, same live session, same steps in the same order, ONE literal
+#   differing. The preserve arm asserted `active`, this one asserted `failed` + 1010,
+#   and the opposite server-written outcome could be attributed to the bootReason
+#   string and to nothing else.
+#
+#   THE CONTROL WENT VOID, AND SILENTLY. csms-server X3 replaced the two-value
+#   {Reconnect, ErrorRecovery} predicate with SESSION_PRESERVING_BOOT_REASONS, four of
+#   the enum's eight (BootNotificationHandler.php:102-107):
+#
+#     PRESERVE  PowerOn  Watchdog  ErrorRecovery  Reconnect
+#     END       RemoteReset  ManualReset  ScheduledReset  FirmwareUpdate
+#
+#   `PowerOn` moved to the PRESERVE side. This file kept sending it and kept asserting
+#   `failed` + 1010, so it became a scenario asserting the opposite of the server --
+#   and while it was red, the three preserve files it is the control for were proving
+#   nothing: a server that preserved EVERY session would have passed all of them.
+#
+# WHY ManualReset, OF THE FOUR THAT STILL END A SESSION.
+#   The precondition this file needs is a LIVE SESSION ON THE SERVER'S BOOKS at the
+#   moment the boot arrives. Of the four ending reasons, ManualReset is the only one
+#   that reaches that state without some party breaching a MUST:
+#
+#     RemoteReset     03-messages.md:196 -- "Reboot the server commanded via Reset
+#                     [MSG-015]". The server issued it, so 05-state-machines.md:354-356
+#                     has already applied: the Reset was refused with 3016 for carrying
+#                     active sessions, or `force: true` settled them first. A live
+#                     session here describes a server that skipped its own gate.
+#     ScheduledReset  "The station's own scheduled restart" (03-messages.md:198). No
+#                     gate, so it is reachable -- but a station scheduling a restart
+#                     through a paid wash is a station-side policy fault, which makes
+#                     the fixture argue about the station rather than the server.
+#     FirmwareUpdate  05-state-machines.md:356-357 cites §7.4: the install MUST NOT leave
+#                     `Verified` while a bay is `Occupied` or `Finishing`. A live
+#                     session at this boot is a station violating the spec.
+#     ManualReset     "A human acting at the station" (03-messages.md:197). NOT
+#                     server-commanded, so no 3016 gate stands in front of it and the
+#                     server never had the chance to settle anything. Someone pressed
+#                     the button mid-wash; the server finds out on the boot. Every
+#                     party is conformant and the session is genuinely live.
+#
+#   So ManualReset is the reason on which the server's obligation actually bites, and
+#   the one whose fixture needs no party to misbehave.
+#
+#   It does not duplicate core/boot-manual-reset.yaml. That file asserts the PERSISTED
+#   column (`data.bootReason: "ManualReset"`), an echo of the wire literal; this one
+#   asserts the SESSION CONSEQUENCE, which is derived. Same value, two different facts.
+#
+# uptimeSeconds 0 IS STILL LOAD-BEARING, AND FOR A SECOND REASON NOW.
+#   failStuckSessions only fails sessions whose `started_at` precedes
+#   `now() - uptimeSeconds` (BootNotificationHandler.php:814-823). uptime 0 puts the
+#   boot instant at `now`, so every started_at precedes it and the bootReason is the
+#   only thing left deciding the outcome. It is also what boot-notification.md:99
+#   rule 2 requires of a ManualReset: the seven real-boot reasons "carry an uptime
+#   measured from the restart they name", and rule 3 makes a reason whose uptime did
+#   NOT reset the inconsistent report a server must refuse to act on.
+#
+# WHAT THE FOUR SINGLE-BOOT FILES COVER, AND WHAT THEY DO NOT
+#   core/boot-watchdog, core/boot-manual-reset, core/boot-scheduled-reset and
+#   core/boot-firmware-update each end at `payload.status == "Accepted"` plus the
+#   echoed `bootReason` column. None of them holds a live session, so none asserts
+#   which side of the partition its value is on. This file is the only one that does.
+name: "Boot ManualReset Fails Live Session"
+description: "Control for the three preserve proofs. Identical scenario, bootReason ManualReset instead of Reconnect: ManualReset is not in SESSION_PRESERVING_BOOT_REASONS, so the server MUST force-fail the live session with fail_error_code 1010."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay available, then a live session ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 600
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # Same pre-condition assertion as the Reconnect twin, so the two start from a
+  # state the server agrees on.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The re-boot under test. ManualReset + uptime 0 — the only changed literal
+  #     against the preserve twins, which send Reconnect / ErrorRecovery here. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "ManualReset"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION. Both fields are server-written and neither appears anywhere in
+  # this scenario's own payloads:
+  #   data.status = "failed"    — the bulk UPDATE at BootNotificationHandler.php:849
+  #   data.fail_error_code 1010 — a literal in that same UPDATE (:851); the field is
+  #                               only serialised at all when the status IS failed
+  #                               (SessionResource.php:66-69), so pinning it proves
+  #                               the reboot path specifically and not some other
+  #                               route to `failed`.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.fail_error_code: 1010
+
+  # --- Pool-hygiene teardown: the session is already terminal (the server failed
+  #     it), so only the bay needs returning to Available. ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

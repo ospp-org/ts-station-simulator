@@ -20,9 +20,25 @@
 #   AllOrNothingSettlement.php:62 FULL-REFUNDS, because "a discrete unit with no
 #   confirmation is not billable".
 #
-#   Its sibling — ANY other errorCode — calls `forceCompleteFullDelivery` and bills the
-#   entire booking. Same message, same shape, same schema; opposite money. The only
-#   discriminator on the wire is the integer in `errorCode`.
+#   Its sibling is THREE codes, not "any other" — and it no longer calls
+#   `forceCompleteFullDelivery`. This line read "ANY other errorCode calls
+#   `forceCompleteFullDelivery` and bills the entire booking", and csms-server `77f9fdd6`
+#   made both halves wrong. The refused-while-running arm is now an explicit membership
+#   test over exactly three values (StopServiceResponseHandler.php:171-175):
+#
+#     3005 BAY_NOT_FOUND · 3007 SESSION_MISMATCH · 3011 BAY_MAINTENANCE
+#
+#   — the three a station that WAS running the wash can answer with. An UNRECOGNISED
+#   code no longer joins them: it carries no claim about the wash, so it falls to the
+#   same `StationLostSession` this file asserts (the `default` arm at :207 and :226).
+#   That is a real narrowing, and it means this file's arm is now the MAJORITY of the
+#   code space rather than the minority of one.
+#
+#   And the sibling settles by KIND rather than by clock: `completeSessionAction->
+#   execute(reason: StopRefusedWhileRunning)` (:296-300), which pro-rates a UserDuration
+#   session and charges an all-or-nothing one whole. Same message, same shape, same
+#   schema; opposite money. The discriminator on the wire is still the integer in
+#   `errorCode` — it just selects membership in a named set instead of not-equal-to-3006.
 #
 # WHY NO SCENARIO REACHED IT. Measured 2026-09-11 across all 149 files: StopService is
 # answered nine times in the corpus and every one is `Accepted`. Neither money arm of

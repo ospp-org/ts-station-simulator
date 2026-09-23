@@ -27,9 +27,16 @@
 #   branch again and this is exact — with `Reconnect` the uptime is never even
 #   computed, because it is an argument to the call the `if` skips.
 #
-#   core/boot-poweron-fails-live-session.yaml is this file with ONE literal
+#   core/boot-manual-reset-fails-live-session.yaml is this file with ONE literal
 #   changed. The pair is the attribution: same station, same uptime, same session,
 #   opposite server-written outcome.
+#
+#   THAT CONTROL USED TO SEND `PowerOn` AND NO LONGER CAN. csms-server X3 replaced the
+#   two-value predicate quoted above with SESSION_PRESERVING_BOOT_REASONS -- {PowerOn,
+#   Watchdog, ErrorRecovery, Reconnect} (BootNotificationHandler.php:102-107) -- which
+#   moved `PowerOn` onto THIS side. Both arms then preserved, and this file was proving
+#   nothing: a server that never failed any session would have passed it. The control
+#   now sends `ManualReset`, one of the four the same commit left on the ending side.
 name: "Boot Reconnect Preserves Live Session"
 description: "Start a session, then re-boot with bootReason Reconnect and uptimeSeconds 0. The server MUST leave the session active — the uptime layer is disarmed, so only the bootReason branch can produce that."
 station:

@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 158** across 12 categories, counted on disk
+**Total scenarios: 159** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113
@@ -104,7 +104,7 @@ position, never a substring of the file's own prose, which inflates the count by
 |---|---|
 | Carry a server-state assertion | 82 |
 | Carry an explicit ceiling label with file:line evidence | 20 |
-| Declare an exclusion the skip-age report can see (`skip` / `skip_when_pooled` / `requires_pool` / `requires_files`) | 26 rows across 21 files (3 `skip` · 11 `skip_when_pooled` · 6 `requires_pool` · 6 `requires_files`; five files declare two) |
+| Declare an exclusion the skip-age report can see (`skip` / `skip_when_pooled` / `requires_pool` / `requires_files`) | 23 rows across 18 files (4 `skip` · 4 `skip_when_pooled` · 9 `requires_pool` · 6 `requires_files`; five files declare two) |
 
 ## Branch-targeted variations
 
@@ -116,8 +116,8 @@ branch that `core/happy-boot.yaml` does not.
 
 | File | csms-server branch reached | Asserted on |
 |------|----------------------------|-------------|
-| `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:343` preserve arm (`Reconnect`) | `GET /sessions/{id}` → `status: active` |
-| `core/boot-poweron-fails-live-session` | `BootNotificationHandler.php:355` + the force-fail UPDATE at `:425` | `status: failed`, `fail_error_code: 1010` |
+| `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:725` preserve arm (`Reconnect`, one of the four in `SESSION_PRESERVING_BOOT_REASONS`) | `GET /sessions/{id}` → `status: active` |
+| `core/boot-manual-reset-fails-live-session` | `BootNotificationHandler.php:725` `$preservesSession` false + the force-fail UPDATE at `:849` | `status: failed`, `fail_error_code: 1010` |
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
 | `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |
@@ -141,7 +141,7 @@ branch that `core/happy-boot.yaml` does not.
 | Category | Count | Coverage |
 |----------|-------|----------|
 | Core | 25 | Boot (all 6 reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer, Reconnect |
-| Sessions | 29 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
+| Sessions | 30 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
 | Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
 | Device Management | 40 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
 | Security | 26 | SecurityEvent (11 types), Certificates (3), OfflinePass (3), TransactionEvent (1) |
@@ -164,7 +164,7 @@ branch that `core/happy-boot.yaml` does not.
      missing file tests, which is content work and not a number. Known members of the gap:
      `boot-rejected.yaml` has a row but no file, and
      `boot-disabled-station-boots-and-stays-gated.yaml`,
-     `boot-poweron-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
+     `boot-manual-reset-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
      have files but no row (the last two are described in the table at the top of this file
      instead). Comparing listed filenames against the tree is a different instrument from
      counting them, and it is named here rather than half-built. -->
@@ -191,7 +191,7 @@ branch that `core/happy-boot.yaml` does not.
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |
 | `core/data-transfer-response.yaml` | Data Transfer Response | Wait for DataTransfer from server | new |
 
-## Sessions (29 scenarios)
+## Sessions (30 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|

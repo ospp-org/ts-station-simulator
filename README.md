@@ -25,7 +25,7 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-158 YAML-driven test scenarios across 12 categories:
+159 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
@@ -39,7 +39,7 @@ npx simulator run --all --target sandbox
 | `provisioning` | 2 | Provision refusals — the request and token layers, then the key and topology rungs |
 | `reservations` | 8 | Reserve+Start, Cancel, Expire, Station refusal, Server-side rejections (busy, maintenance, already reserved) |
 | `security` | 26 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass, TransactionEvent, MAC verification |
-| `sessions` | 29 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
+| `sessions` | 30 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
 | `tls-floor` | 10 | TLS version floor, mTLS, Expired and revoked certificates (broker CRL and local CRL), each with a positive control |
 
 Every row above is checked against the corpus by `npm run check:doc-claims`: the suite NAMES must
