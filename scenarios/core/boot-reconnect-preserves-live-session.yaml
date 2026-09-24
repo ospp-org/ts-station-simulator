@@ -27,7 +27,7 @@
 #   branch again and this is exact — with `Reconnect` the uptime is never even
 #   computed, because it is an argument to the call the `if` skips.
 #
-#   core/boot-manual-reset-fails-live-session.yaml is this file with ONE literal
+#   core/boot-remote-reset-fails-live-session.yaml is this file with ONE literal
 #   changed. The pair is the attribution: same station, same uptime, same session,
 #   opposite server-written outcome.
 #

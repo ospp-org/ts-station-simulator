@@ -222,7 +222,7 @@ steps:
   # --- The reboot itself. RemoteReset is NOT in the preserve list
   #     (BootNotificationHandler.php:343 admits only Reconnect and ErrorRecovery),
   #     and uptimeSeconds 0 puts every earlier session inside the force-fail
-  #     window — the same setup core/boot-manual-reset-fails-live-session.yaml uses to
+  #     window — the same setup core/boot-remote-reset-fails-live-session.yaml uses to
   #     prove a live session DOES get failed here. ---
   - action: send
     message: BootNotification

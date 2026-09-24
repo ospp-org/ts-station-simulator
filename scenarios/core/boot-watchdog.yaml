@@ -80,7 +80,7 @@ steps:
   # uncommanded reboot the server "chose" nothing about, so it PRESERVES. This file
   # holds no live session, so nothing it asserts moved -- only the sentence describing
   # which class the value is in, which was wrong from X3 until it was corrected here.
-  # The ending arm is proven by boot-manual-reset-fails-live-session.yaml, and the
+  # The ending arm is proven by boot-remote-reset-fails-live-session.yaml, and the
   # preserving arm -- the one `Watchdog` is now on -- is proven by
   # boot-reconnect-preserves-live-session.yaml and boot-error-recovery.yaml. This file
   # duplicates neither: it asserts the persisted column, not the session consequence.

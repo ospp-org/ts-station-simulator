@@ -117,7 +117,7 @@ branch that `core/happy-boot.yaml` does not.
 | File | csms-server branch reached | Asserted on |
 |------|----------------------------|-------------|
 | `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:725` preserve arm (`Reconnect`, one of the four in `SESSION_PRESERVING_BOOT_REASONS`) | `GET /sessions/{id}` → `status: active` |
-| `core/boot-manual-reset-fails-live-session` | `BootNotificationHandler.php:725` `$preservesSession` false + the force-fail UPDATE at `:849` | `status: failed`, `fail_error_code: 1010` |
+| `core/boot-remote-reset-fails-live-session` | `BootNotificationHandler.php:725` `$preservesSession` false + the force-fail UPDATE at `:849` | `status: failed`, `fail_error_code: 1010` |
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
 | `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |
@@ -164,7 +164,7 @@ branch that `core/happy-boot.yaml` does not.
      missing file tests, which is content work and not a number. Known members of the gap:
      `boot-rejected.yaml` has a row but no file, and
      `boot-disabled-station-boots-and-stays-gated.yaml`,
-     `boot-manual-reset-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
+     `boot-remote-reset-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
      have files but no row (the last two are described in the table at the top of this file
      instead). Comparing listed filenames against the tree is a different instrument from
      counting them, and it is named here rather than half-built. -->

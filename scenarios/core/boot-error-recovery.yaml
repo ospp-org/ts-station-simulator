@@ -196,7 +196,7 @@ steps:
   #   data.fail_error_code — 1010 on that same UPDATE, and absent entirely unless
   #                          status is FAILED (SessionResource.php:66). Its
   #                          ABSENCE is therefore part of what 'active' asserts.
-  # The control for this assertion is boot-manual-reset-fails-live-session.yaml,
+  # The control for this assertion is boot-remote-reset-fails-live-session.yaml,
   # which is this scenario with one literal changed and expects 'failed' + 1010.
   # It sent `PowerOn` until csms-server X3 moved that value into
   # SESSION_PRESERVING_BOOT_REASONS alongside `ErrorRecovery`; a control on the same
