@@ -196,12 +196,16 @@ steps:
   #   data.fail_error_code — 1010 on that same UPDATE, and absent entirely unless
   #                          status is FAILED (SessionResource.php:66). Its
   #                          ABSENCE is therefore part of what 'active' asserts.
-  # The control for this assertion is boot-remote-reset-fails-live-session.yaml,
-  # which is this scenario with one literal changed and expects 'failed' + 1010.
-  # It sent `PowerOn` until csms-server X3 moved that value into
-  # SESSION_PRESERVING_BOOT_REASONS alongside `ErrorRecovery`; a control on the same
+  # The control for this assertion is boot-remote-reset-fails-live-session.yaml:
+  # the same live session and uptimeSeconds 0 with a session-ending bootReason, and
+  # it expects 'failed' + 1010. It is the one-literal twin of the Reconnect proof,
+  # not of this file: against this file it also differs in the station's response
+  # delays, offlineModeSupported, connectionType and pendingOfflineTransactions, none
+  # of which the outcome reads. It sent `PowerOn` until csms-server X3 moved that
+  # value into SESSION_PRESERVING_BOOT_REASONS alongside `ErrorRecovery`, then
+  # `ManualReset` until csms-server bd7f7135 moved that one too; a control on the same
   # side of the partition as the thing it controls is not one, so it now sends
-  # `ManualReset`.
+  # `RemoteReset`.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"

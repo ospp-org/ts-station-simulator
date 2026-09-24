@@ -117,7 +117,7 @@ branch that `core/happy-boot.yaml` does not.
 | File | csms-server branch reached | Asserted on |
 |------|----------------------------|-------------|
 | `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:725` preserve arm (`Reconnect`, one of the four in `SESSION_PRESERVING_BOOT_REASONS`) | `GET /sessions/{id}` → `status: active` |
-| `core/boot-remote-reset-fails-live-session` | `BootNotificationHandler.php:725` `$preservesSession` false + the force-fail UPDATE at `:849` | `status: failed`, `fail_error_code: 1010` |
+| `core/boot-remote-reset-fails-live-session` | `BootNotificationHandler.php:741` `$preservesSession` false (`RemoteReset`, one of the two reasons outside `SESSION_PRESERVING_BOOT_REASONS`) + the force-fail UPDATE at `:860-876` | `status: failed`, `fail_error_code: 1010` |
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
 | `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |

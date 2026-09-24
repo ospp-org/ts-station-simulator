@@ -36,7 +36,9 @@
 #   Watchdog, ErrorRecovery, Reconnect} (BootNotificationHandler.php:102-107) -- which
 #   moved `PowerOn` onto THIS side. Both arms then preserved, and this file was proving
 #   nothing: a server that never failed any session would have passed it. The control
-#   now sends `ManualReset`, one of the four the same commit left on the ending side.
+#   then sent `ManualReset`, until csms-server bd7f7135 moved it and `ScheduledReset`
+#   onto this side too (six of eight, BootNotificationHandler.php:131-138 at master
+#   6d220530). It now sends `RemoteReset`, one of the two that still end a session.
 name: "Boot Reconnect Preserves Live Session"
 description: "Start a session, then re-boot with bootReason Reconnect and uptimeSeconds 0. The server MUST leave the session active — the uptime layer is disarmed, so only the bootReason branch can produce that."
 station:
