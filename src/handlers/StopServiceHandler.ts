@@ -61,7 +61,7 @@ export class StopServiceHandler implements Handler {
     // Transition bay: Occupied -> Finishing -> Available
     station.setBayState(session.bayId, BayStatus.FINISHING);
 
-    // MONOTONIC, not the wall clock. `stop-service.md:47` rule 5: the station
+    // MONOTONIC, not the wall clock. `stop-service.md §6 Processing Rules` rule 5: the station
     // "MUST calculate actualDurationSeconds from the service start time to the
     // moment of deactivation, MUST measure that interval on a monotonic timer and
     // not the wall clock, and MUST round the result to the NEAREST second rather
@@ -76,7 +76,7 @@ export class StopServiceHandler implements Handler {
     // validating server drops it on ingest. Nothing downstream could have caught
     // the overcharge: the same schema gives the field no `maximum` and no
     // receiver rule cross-checks it against `startedAt`/`endedAt`
-    // (`heartbeat.md:51` rule 6).
+    // (`heartbeat.md §6 Clock Synchronization` rule 6).
     //
     // `session.startedAt` is untouched and stays the wall-clock stamp — it is
     // what gets ORDERED. It is simply no longer what gets DIFFERENCED.
@@ -113,11 +113,11 @@ export class StopServiceHandler implements Handler {
 
     // Remove session and transition bay to Available.
     //
-    // And STOP. No SessionEnded follows: session-ended.md:57 is a MUST NOT for a
+    // And STOP. No SessionEnded follows: session-ended.md §4 Reasons is a MUST NOT for a
     // session "that terminates with" a StopService command, and the RESPONSE just
     // sent is the settlement carrier — its schema REQUIRES actualDurationSeconds and
     // creditsCharged for status=Accepted, precisely so a second message is not needed.
-    // 03-messages.md:1195 records the consequence the rule exists to prevent: there is
+    // 03-messages.md §5.4, "Payload" records the consequence the rule exists to prevent: there is
     // deliberately no `Remote` reason value, because "emitting both StopService RESPONSE
     // and SessionEnded for the same stop would force double-emission ambiguity."
     //

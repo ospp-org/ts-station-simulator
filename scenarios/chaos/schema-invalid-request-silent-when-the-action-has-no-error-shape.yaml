@@ -38,7 +38,7 @@ description: "Publish a Heartbeat Request carrying a property its schema forbids
 # REQUIRED, additionalProperties:false, so the candidate payload fails validation and
 # the builder returns null. csms-server pins this as a named control
 # (tests/Feature/Protocol/RefusalReachesTheStationTest.php — "Heartbeat is still
-# SILENT, because its response cannot say no") citing spec v0.26.0 07-errors.md:492,
+# SILENT, because its response cannot say no") citing spec v0.26.0 07-errors.md §3.6 Server Errors (6xxx),
 # "a server MUST NOT answer a Heartbeat with anything but serverTime". The silence
 # this file asserts is now NORMATIVE rather than incidental — a stronger subject than
 # the one it was written for, not a weaker one.

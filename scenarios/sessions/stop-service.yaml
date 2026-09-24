@@ -140,7 +140,7 @@ steps:
       actualDurationSeconds: 45
       creditsCharged: 75
 
-  # NO SessionEnded. session-ended.md:57 — "MUST NOT emit it for one that
+  # NO SessionEnded. session-ended.md §4 Reasons — "MUST NOT emit it for one that
   # terminates with [a StopService command]". The Accepted Response above is the
   # settlement carrier; this file used to send both, and the paragraph below
   # records what that cost.

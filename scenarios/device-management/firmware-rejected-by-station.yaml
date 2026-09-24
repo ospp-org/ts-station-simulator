@@ -123,7 +123,7 @@ steps:
   # response schema requires by pattern `^[A-Z][A-Z0-9_]+$` (:22-26). Note this is
   # the OPPOSITE convention from the notification message, where errorText is free
   # prose and the spec explicitly says not to match it programmatically
-  # (update-firmware.md:42). Two fields with the same name and inverted contracts,
+  # (update-firmware.md §5 Processing Rules). Two fields with the same name and inverted contracts,
   # one message apart.
   #
   # 5017 over the alternatives on purpose: it is `Recoverable: false`

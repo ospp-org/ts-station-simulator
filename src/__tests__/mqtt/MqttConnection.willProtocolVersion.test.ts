@@ -41,7 +41,7 @@ const SPEC_WIRE_VERSION = '0.3.0';
 /**
  * The Last Will is the ONE envelope the station never publishes itself — it is
  * pre-configured at connect time and emitted by the broker on its behalf
- * (spec/03-messages.md:1251). That is exactly why it was missed: it does not go
+ * (03-messages.md §5.4, "Example"). That is exactly why it was missed: it does not go
  * through MessageSender, so it did not inherit the configured wire version and
  * silently used the SDK constant instead.
  *
@@ -144,7 +144,7 @@ describe('MqttConnection — the Last Will carries the CONFIGURED wire protocolV
     const env = willEnvelope();
 
     // Broker -> Server, published on the station's behalf, so `Server` is correct
-    // per 03-messages.md:86 and the envelope schema's own note; `lwt-` prefix per :3076.
+    // per 03-messages.md "MQTT Messages (27 actions)" and the envelope schema's own note; `lwt-` prefix per :3076.
     expect(env.action).toBe('ConnectionLost');
     expect(env.messageType).toBe('Event');
     expect(env.source).toBe('Server');

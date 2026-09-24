@@ -76,7 +76,7 @@ steps:
   #   PRESERVE  PowerOn  Watchdog  ErrorRecovery  Reconnect
   #   END       RemoteReset  ManualReset  ScheduledReset  FirmwareUpdate
   #
-  # `Watchdog` is the watchdog 05-state-machines.md:353-354 names by name as an
+  # `Watchdog` is the watchdog 05-state-machines.md §2.3 Transition Table names by name as an
   # uncommanded reboot the server "chose" nothing about, so it PRESERVES. This file
   # holds no live session, so nothing it asserts moved -- only the sentence describing
   # which class the value is in, which was wrong from X3 until it was corrected here.

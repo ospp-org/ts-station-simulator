@@ -172,7 +172,7 @@ steps:
       progress: 20
   - action: delay
     ms: 300
-  # 45, matching the spec's own worked failure form (firmware-status.md:44-65:
+  # 45, matching the spec's own worked failure form (firmware-status.md §5.1 Expected State Transition Sequence:
   # "Downloading (45%) -> Failed (errorText: ...)"). Not a round 10% mark on
   # purpose: a transfer dies where it dies, and the 10% rule is a reporting
   # cadence, not a grid the failure has to land on.
@@ -187,7 +187,7 @@ steps:
   - action: delay
     ms: 500
 
-  # `progress` OMITTED on Failed — firmware-status.md:41 requires it omitted or 0.
+  # `progress` OMITTED on Failed — firmware-status.md §5 Progress Reporting requires it omitted or 0.
   # Omitting also leaves the row holding 45, which is what the read below pins.
   - action: send
     message: FirmwareStatusNotification

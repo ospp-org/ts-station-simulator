@@ -59,7 +59,7 @@ export class TriggerMessageHandler implements Handler {
         // added to the boot payload cannot diverge on this one.
         //
         // bootReason follows from the same premise: the field is "reason the
-        // station booted" (spec/profiles/core/boot-notification.md:29) — a
+        // station booted" (boot-notification.md §3 Request Payload) — a
         // property of the last boot EPISODE, not of the send. A trigger
         // re-announces an episode rather than starting one, exactly as a
         // Rejected/Pending retry does, so the truthful value is whatever actually

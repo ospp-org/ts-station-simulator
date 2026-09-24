@@ -104,7 +104,7 @@ const POWER_ON_AT = new Date('2026-07-21T08:00:00.000Z');
 // ---------------------------------------------------------------------------
 // TWO clocks, because uptime is a DIFFERENCED duration and now measured on the
 // monotonic one (Station.poweredOnAt / currentUptimeSeconds — the same rule that
-// governs session duration, spec/profiles/core/heartbeat.md:44 rule 5, applied to
+// governs session duration, heartbeat.md §6 Clock Synchronization rule 5, applied to
 // the other differenced value on the wire).
 //
 // `vi.setSystemTime` alone no longer moves elapsed time: that is the point of the

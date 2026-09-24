@@ -19,7 +19,7 @@ description: "Register a station of this file's own, mint a token for it, and wa
 # generated per scenario and never replaced by the pool, so everything below happens to a
 # station this file created and `creates:` deletes.
 #
-# THE CHAIN IS THE SUBJECT, NOT ANY ONE CODE. spec/04-flows.md:358-367, quoted by
+# THE CHAIN IS THE SUBJECT, NOT ANY ONE CODE. 04-flows.md §2, "Single-use and idempotent retry", quoted by
 # csms-server's own tests/Feature/Provisioning/ErrorPrecedenceTest.php:
 #
 #     1. Request well-formedness         -> 400 / 4017   (provision-rejected-request-and-token)
@@ -46,7 +46,7 @@ description: "Register a station of this file's own, mint a token for it, and wa
 #
 # WHAT MAKES 4015 DIFFERENT FROM THE OTHER FOUR, and why it is last. It is the only rung that
 # depends on state the requester cannot see — the key set bound by an earlier SUCCESSFUL
-# provisioning — and `04-flows.md:369` says that is why the spec seats it last: its recovery,
+# provisioning — and `04-flows.md §2, "Single-use and idempotent retry"` says that is why the spec seats it last: its recovery,
 # obtaining a new token, is the most expensive of the eight. So this file provisions for real
 # first (the step with no `expect_status`), then retries with a SECOND key set. The second set
 # is produced by pointing `artifacts_dir` somewhere else: key reuse is decided by whether the
@@ -227,7 +227,7 @@ steps:
   # --- RUNG 8, SECOND HALF — 4015 PROVISIONING_KEY_MISMATCH. Same token, same station, same
   # declared bays; a DIFFERENT `artifacts_dir`, so the step finds no keys to reuse and
   # generates a second set. That is the whole difference, and it is the accident spec
-  # 04-flows.md:302 forbids a real station from having: "the station MUST resubmit THOSE keys
+  # 04-flows.md §2, "Error Paths" forbids a real station from having: "the station MUST resubmit THOSE keys
   # on every retry rather than generating new ones".
   - action: provision
     station_id: "{{runStationId}}"
@@ -264,7 +264,7 @@ steps:
       # per-kind rather than all-or-nothing, which two-kind drift cannot.
       details.driftedKeyKinds: ["receipt", "tls"]
       #
-      # `recoverable: false` is worth pinning on its own: spec/04-flows.md:369 seats 4015 last
+      # `recoverable: false` is worth pinning on its own: 04-flows.md §2, "Single-use and idempotent retry" seats 4015 last
       # in the chain BECAUSE its recovery is the most expensive of the eight, and a server that
       # answered this code as recoverable would be inviting exactly the retry loop the code
       # exists to stop.

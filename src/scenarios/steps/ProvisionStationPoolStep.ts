@@ -74,7 +74,7 @@ export class ProvisionStationPoolStep implements Step {
       const stationId = `${prefix}${randomHex8()}`;
       const token = tokens[i];
 
-      // Keys COMMITTED DURABLY BEFORE THE POST — spec/04-flows.md:253 step 6b.
+      // Keys COMMITTED DURABLY BEFORE THE POST — 04-flows.md §2, "Sequence Diagram" step 6b.
       // This used to generate here and write after the response, so a crash in
       // between left the server holding a cert bound to keys this process no
       // longer had, and the retry was answered 4015 (recoverable:false).

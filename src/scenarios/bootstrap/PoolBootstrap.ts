@@ -876,7 +876,7 @@ async function registerAndProvisionStation(
   // The same set, in the PROVISIONING shape: bayNumber + the programs the bay
   // physically has. Registration is the operator's declaration of the bays alone;
   // provisioning is the STATION's and carries programs with labels
-  // (§01-architecture.md:238). Derived from one `bays` so the two cannot drift.
+  // (§01-architecture.md §4.2, "Programs and Services"). Derived from one `bays` so the two cannot drift.
   // (This comment used to say registration "carries services". It never did — that
   // is the whole defect above.)
   const declaredBays = bays.map(b => ({
@@ -905,7 +905,7 @@ async function registerAndProvisionStation(
   const rawToken = requireString(pluck(tokenRes, 'data.rawToken'), 'data.rawToken');
 
   // Provision. The key set is COMMITTED DURABLY BEFORE THE POST —
-  // spec/04-flows.md:253 step 6b, "Before step 7 leaves the device, the SSP MUST
+  // 04-flows.md §2, "Sequence Diagram" step 6b, "Before step 7 leaves the device, the SSP MUST
   // commit every private key generated in steps 5-6a to non-volatile storage,
   // durably". This used to generate here and write after the response, so a
   // crash in between left the server holding a cert bound to keys the process no

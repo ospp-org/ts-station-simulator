@@ -276,7 +276,7 @@ const RECONNECT_GUARD_MS = 500;
 /**
  * MONOTONIC readings, not epoch ms — this map exists only to be SUBTRACTED from,
  * and a value that gets differenced belongs on the clock that cannot step
- * (spec/profiles/core/heartbeat.md:44 rule 5 states that for the interval that
+ * (heartbeat.md §6 Clock Synchronization rule 5 states that for the interval that
  * bills; the class is the same for every interval). On the wall clock a backwards
  * correction made `elapsed` negative, so `RECONNECT_GUARD_MS - elapsed` exceeded
  * the guard by the whole size of the correction and a 500ms wait became an

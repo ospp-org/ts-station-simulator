@@ -44,7 +44,7 @@ function makeMockStation(
         bayId: 'bay_test',
         serviceId: 'svc_test',
       // TWO anchors, because the session carries two clocks for two jobs
-      // (heartbeat.md:51 rule 6): `startedAt` is the wall-clock STAMP, and
+      // (heartbeat.md §6 Clock Synchronization rule 6): `startedAt` is the wall-clock STAMP, and
       // `startedAtMonotonicMs` is what the elapsed time is DIFFERENCED from.
       // Offset by the same amount, so this fixture still says "the wash ran for
       // startedAtOffsetMs" and the assertions below are unchanged.
@@ -115,11 +115,11 @@ describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
 
 });
 
-// spec v0.13.0 profiles/transaction/session-ended.md:57, the one RFC-2119 rule on
+// spec v0.13.0 session-ended.md §4 Reasons, the one RFC-2119 rule on
 // this: the station "MUST emit SessionEnded for every session that terminates
 // without a StopService command, and MUST NOT emit it for one that terminates with
 // one." The Accepted RESPONSE already carries the settlement (its schema REQUIRES
-// actualDurationSeconds + creditsCharged when status=Accepted), and 03-messages.md:1195
+// actualDurationSeconds + creditsCharged when status=Accepted), and 03-messages.md §5.4, "Payload"
 // records why the enum has no `Remote` value: "emitting both StopService RESPONSE and
 // SessionEnded for the same stop would force double-emission ambiguity."
 //

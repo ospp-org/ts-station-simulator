@@ -4,12 +4,12 @@ import { MessageRouter } from '../../mqtt/MessageRouter.js';
 import { conformantPayloadFor } from '../helpers/conformantPayloads.js';
 
 // ---------------------------------------------------------------------------
-// spec v0.11.0 §06-security.md:852 — "The signing path and the verification path
+// spec v0.11.0 §06-security.md §5.1 Overview — "The signing path and the verification path
 // MUST both fail closed. Neither peer may substitute an unsigned message for a
 // signed one, and neither may accept an unverified message in place of a
 // verified one."
 //
-// §06-security.md:858, receiving:
+// §06-security.md §5.1 Overview, receiving:
 //   | `mac` missing on a non-exempt message | 1013 MAC_MISSING | Reject, do not
 //     process it |
 //   | verification fails                    | 1012             | Reject |
@@ -101,7 +101,7 @@ describe('MessageRouter — inbound MAC verification', () => {
   });
 
   it('accepts the BootNotification RESPONSE unsigned — it CARRIES the key', () => {
-    // §06-security.md:827, a structural exemption: "A MAC computed with the key
+    // §06-security.md §4.8.2 Worked Example, a structural exemption: "A MAC computed with the key
     // delivered inside the same message is cryptographically void." Rejecting it
     // would make the message that delivers the key unusable, so no station could
     // ever obtain one.

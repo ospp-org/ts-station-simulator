@@ -64,7 +64,7 @@ function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station;
     startedAt: new Date(Date.now() - startedAtIsoSecondsAgo * 1000).toISOString(),
     // And the second thing it writes: the monotonic anchor the settle differences
     // from. `startedAt` is the wall-clock STAMP and is no longer the origin of
-    // any duration (heartbeat.md:51 rule 6) — but it is still asserted above as
+    // any duration (heartbeat.md §6 Clock Synchronization rule 6) — but it is still asserted above as
     // the shape the handler stores, which is what this file was written for.
     startedAtMonotonicMs: monotonicNowMs() - startedAtIsoSecondsAgo * 1000,
     durationSeconds: 300,

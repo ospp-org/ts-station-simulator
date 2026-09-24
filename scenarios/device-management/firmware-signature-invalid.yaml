@@ -1,7 +1,7 @@
 # THE IMAGE ARRIVED AND THE SIGNATURE DID NOT VERIFY — the one firmware failure
 # the spec gives a SHAPE to, not just a code, and the shape is an ABSENCE.
 #
-# `04-flows.md:1549` (TC-DM-004 Failure Criterion 7): a station whose signature
+# `04-flows.md §11, "Sequence Diagram"` (TC-DM-004 Failure Criterion 7): a station whose signature
 # check fails goes `Downloading -> Failed` with NO intervening `Downloaded`.
 # 0.20.0 made that binding by settling what `Downloaded` means — four sites had
 # defined it as checksum-only, and it now asserts the ECDSA P-256 signature
@@ -32,7 +32,7 @@
 # is not performed. That is the approximation, named.
 #
 # WHY THE ERROR CODE IS ON THE SECURITY EVENT AND NOT ON THE NOTIFICATION.
-# `update-firmware.md:42`: the station MUST report 5112 via SecurityEvent,
+# `update-firmware.md §5 Processing Rules`: the station MUST report 5112 via SecurityEvent,
 # because FirmwareStatusNotification carries no `errorCode` field at all and is
 # `additionalProperties: false` — there is physically nowhere on that message to
 # put it. Its `errorText` stays free prose, and the spec removed a conformance
@@ -166,7 +166,7 @@ steps:
   # signature-shaped `Failed`. Not written — recording it as the real fix rather
   # than claiming this comment is one.
 
-  # `progress` omitted on Failed (firmware-status.md:41), and `errorText`
+  # `progress` omitted on Failed (firmware-status.md §5 Progress Reporting), and `errorText`
   # REQUIRED on Failed (:42) — the only field this message can carry about why.
   - action: send
     message: FirmwareStatusNotification
@@ -176,7 +176,7 @@ steps:
       firmwareVersion: "{{captured.firmwareVersion}}"
       errorText: "Firmware image signature verification failed (ECDSA P-256)"
 
-  # The MUST from 06-security.md:665-679 and update-firmware.md:40 — 5112 travels
+  # The MUST from 06-security.md §4.7.2 Server-Triggered Renewal and update-firmware.md §5 Processing Rules — 5112 travels
   # on a SecurityEvent because the notification has no field for it. `Critical` is
   # the severity the error table assigns 5112 (update-firmware.md §9).
   - action: send
@@ -193,7 +193,7 @@ steps:
         reason: "signature_invalid"
 
   # The server MUST NOT answer a FirmwareStatusNotification at all — it is
-  # fire-and-forget (firmware-status.md:70) — and it must not take a failed
+  # fire-and-forget (firmware-status.md §6 Processing Rules) — and it must not take a failed
   # signature as a reason to re-issue the command, since no retry policy exists
   # in the spec. Both are covered by the same silence.
   #

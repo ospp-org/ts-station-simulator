@@ -24,7 +24,7 @@
 # CORRECTED 2026-08-13 — the header used to end: "The spec gives the STATION the
 #   refusal here (3016 ACTIVE_SESSIONS_PRESENT) and the server pre-empts it with
 #   6005 instead — a documented fidelity gap." One half of that was a misreading
-#   at the wrong altitude. 07-errors.md:332 does not OFFER 3016 to a pre-empting
+#   at the wrong altitude. 07-errors.md §3.2 Authentication & Authorization Errors (2xxx) does not OFFER 3016 to a pre-empting
 #   server, it FORBIDS it: a server that stops the command locally "MUST NOT
 #   answer with this code — it answers 6008 COMMAND_PRE_EMPTED carrying
 #   details.wouldBe: 3016". So the gap was real and 6005 was wrong, but the fix

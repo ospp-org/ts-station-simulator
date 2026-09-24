@@ -1325,7 +1325,7 @@ function createStationFromScenario(
   // survived that run are the shape to copy: they self-provision, so their declared
   // and provisioned topologies come from ONE source and cannot drift apart.
   //
-  // This is NOT the station "agreeing with the server" that §05-state-machines.md:126
+  // This is NOT the station "agreeing with the server" that §05-state-machines.md §1.4 The Restricted States
   // forbids — the provisioning artifact is the STATION's own declaration of its
   // hardware, made at provisioning time and read back from its own disk. It takes the
   // fact from itself, one step earlier. TopologyStore still owns boot-to-boot
@@ -2267,7 +2267,7 @@ export class ScenarioRunner {
         // off the wall clock. A correction landing mid-run therefore moved the
         // numbers we publish as measurements of the SERVER: a run straddling one
         // reported the correction, not the latency. Same rule as session
-        // duration (spec/profiles/core/heartbeat.md:44 rule 5), same reason.
+        // duration (heartbeat.md §6 Clock Synchronization rule 5), same reason.
         const stepStart = monotonicNowMs();
 
         // Apply template substitution to the entire step definition.

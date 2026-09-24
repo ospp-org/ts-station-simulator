@@ -170,7 +170,7 @@ export class StartServiceHandler implements Handler {
         bayId: request.bayId,
         serviceId: request.serviceId,
         // TWO clocks, read in the same breath, for two different jobs
-        // (`heartbeat.md:51` rule 6). The wall clock STAMPS: `startedAt` is an
+        // (`heartbeat.md §6 Clock Synchronization` rule 6). The wall clock STAMPS: `startedAt` is an
         // instant that gets ordered against server-side rows and is what a
         // receiver settles against when no duration ever arrives. The monotonic
         // clock MEASURES: it is the origin the session's elapsed time is

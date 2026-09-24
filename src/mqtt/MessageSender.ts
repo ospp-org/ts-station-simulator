@@ -94,7 +94,7 @@ export class MessageSender {
     // The comment this replaces said the SDK default "negotiates fine (MAJOR-0 matches
     // dev/testing/prod-example)" and told the reader to set the env only for "a server
     // pinned to a different MAJOR (e.g. UAT 1.x)". Both claims are false: negotiation is
-    // EXACT MATCH against a set (VERSIONING.md:25), the SDK's MAJOR gate
+    // EXACT MATCH against a set (VERSIONING.md "The document version, and the sites that carry it"), the SDK's MAJOR gate
     // `isCompatibleWith()` was deleted in 0.12.0, and csms-server's VersionNegotiator
     // never called it — so a shared MAJOR has never made 0.2.1 acceptable to a server
     // configured for anything else.
@@ -148,7 +148,7 @@ export class MessageSender {
     let outgoing: OsppEnvelope<T> = envelope;
 
     if (requiresMac(action, messageType, this.signingMode)) {
-      // Fail CLOSED. 06-security.md:869-873 — "No session key held for the peer
+      // Fail CLOSED. 06-security.md §5.1 Overview — "No session key held for the peer
       // -> Refuse to send. The sender MUST NOT publish the message unsigned."
       //
       // The condition used to be `sessionKey !== null && requiresMac(...)`, so a

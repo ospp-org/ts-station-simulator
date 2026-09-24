@@ -1204,7 +1204,7 @@ program
       const receiptPubPath = keyPath.replace(/-key\.pem$/, '-receipt-pub.pem');
 
       // TLS + receipt keypairs (separate keys per OSPP spec §4.3), COMMITTED
-      // DURABLY BEFORE THE POST — spec/04-flows.md:253 step 6b, "Before step 7
+      // DURABLY BEFORE THE POST — 04-flows.md §2, "Sequence Diagram" step 6b, "Before step 7
       // leaves the device, the SSP MUST commit every private key generated in
       // steps 5-6a to non-volatile storage, durably". This used to generate here
       // and write after the response: kill the process in between and the server
@@ -1220,7 +1220,7 @@ program
 
       // v0.11.0: the station DECLARES its topology here — bays, and the
       // programs each one physically has. provisioning-request.schema.json:8
-      // makes `bays` required and `bayCount` is gone. §01-architecture.md:238:
+      // makes `bays` required and `bayCount` is gone. §01-architecture.md §4.2, "Programs and Services":
       // this is the declaration that carries LABELS, because "this is the moment
       // the server creates the bay records and the moment an operator needs the
       // labels to build the service bindings".

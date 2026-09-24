@@ -11,7 +11,7 @@ description: >
   expect_body. Measured again 2026-08-13 the server answers 6008 — which does NOT vindicate
   the original comment. That comment read 6008 as CAPABILITY_NOT_SUPPORTED, a name the spec
   does not carry. Today's 6008 is COMMAND_PRE_EMPTED, the code for a command the SERVER
-  stopped locally: 07-errors.md:456 makes it a MUST here and forbids the server to answer
+  stopped locally: 07-errors.md §3.5, "5.02x — Diagnostics & Catalog Errors" makes it a MUST here and forbids the server to answer
   with the station's own code instead. The 2007 was not withdrawn — it moved into
   details.wouldBe, which is where this file now asserts it.
 station:

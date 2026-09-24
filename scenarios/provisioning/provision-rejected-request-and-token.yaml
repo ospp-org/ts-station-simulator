@@ -25,7 +25,7 @@ description: "POST /api/v1/stations/provision three times on one well-formed-but
 # would look right and match nothing.
 #
 # WHAT THE THREE CALLS PROVE TOGETHER, AND WHY THEY ARE ONE FILE.
-# spec/04-flows.md:358-367 fixes an ORDER on this door, and the order is the
+# 04-flows.md §2, "Single-use and idempotent retry" fixes an ORDER on this door, and the order is the
 # property — csms-server's own tests/Feature/Provisioning/ErrorPrecedenceTest.php
 # quotes it:
 #     1. Request well-formedness        -> 400 / 4017

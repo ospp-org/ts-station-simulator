@@ -13,7 +13,7 @@ import {
 /**
  * The provisioning key set, committed to durable storage BEFORE the request.
  *
- * spec/04-flows.md:253, step 6b:
+ * 04-flows.md §2, "Sequence Diagram", step 6b:
  *
  *   "Before step 7 leaves the device, the SSP MUST commit every private key
  *    generated in steps 5–6a to non-volatile storage, durably — the write MUST
@@ -30,7 +30,7 @@ import {
  * the process between the POST reaching the server and the response landing on
  * disk, and the server has bound cert C1 to key set K1 while the simulator
  * restarts, regenerates K2, and retries on the same token — answered 409 / 4015
- * PROVISIONING_KEY_MISMATCH, which 04-flows.md:280 marks recoverable:false and
+ * PROVISIONING_KEY_MISMATCH, which 04-flows.md §2, "Consumption Requirements" marks recoverable:false and
  * whose only recovery is an operator minting a new token out of band.
  *
  * The simulator is a test instrument, not a device, so nothing here is bricked.

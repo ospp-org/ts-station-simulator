@@ -23,7 +23,7 @@ import type { BayConfig } from '../../station/StationConfig.js';
 // it; every later boot reads it and re-declares the same thing EVEN IF the config
 // now says otherwise — because a station whose hardware has not changed must not
 // change its declaration, and a station whose hardware HAS changed needs
-// re-provisioning rather than a quiet self-correction (§05-state-machines.md:126,
+// re-provisioning rather than a quiet self-correction (§05-state-machines.md §1.4 The Restricted States,
 // "A station MUST NOT alter its declaration to match what the server expected").
 // ---------------------------------------------------------------------------
 
@@ -125,7 +125,7 @@ describe('TopologyStore — the station remembers what it declared', () => {
   });
 
   it('forget() is the re-provisioning path — the only way the declaration changes', async () => {
-    // Re-provisioning is what changes a topology (boot-notification.md:144). It
+    // Re-provisioning is what changes a topology (boot-notification.md §6.1 Topology on a First Boot). It
     // is deliberately explicit: nothing in the boot path may reach it, or the
     // station would be self-correcting again.
     const store = new TopologyStore(dir, 'stn_aaaa1111');

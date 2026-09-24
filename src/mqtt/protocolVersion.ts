@@ -8,12 +8,12 @@
  * that constant, every ConnectionLost was refused `1007 PROTOCOL_VERSION_MISMATCH`
  * and hard-failed to the DLQ — so the server never learned the station had
  * vanished, and ConnectionLost is the only trigger for orphaned-session recovery
- * (`spec/03-messages.md` §5.5, `06-security.md:831-835`).
+ * (`spec/03-messages.md` §5.5, `06-security.md §4.8.3 Relationship to RFC 8785 (JCS)`).
  *
  * THAT CONSEQUENCE IS NOW HISTORY, AND THE FUNCTION IS NOT. csms-server `089fa56a`
  * (spec `v0.31.0`, M9) made `1007` reachable ONLY from BootNotification — the
- * negotiation step used to run on every message, which broke `02-transport.md:159`'s
- * MUST NOT in one direction and `07-errors.md:284`'s "reachable only from
+ * negotiation step used to run on every message, which broke `02-transport.md §2.1 Topic Patterns`'s
+ * MUST NOT in one direction and `07-errors.md §2.4 REST API Error Response`'s "reachable only from
  * BootNotification" in the other. A will carrying a divergent version is now ACCEPTED
  * and the divergence JOURNALLED, so the DLQ half of the paragraph above describes a
  * server that no longer exists.

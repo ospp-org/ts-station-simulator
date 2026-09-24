@@ -58,7 +58,7 @@ export class ResetHandler implements Handler {
     // an operator-initiated stop — billed for what the customer received —
     // BEFORE the reboot, rather than letting the reboot abandon it.
     //
-    // One reboot operation; `force` is its only choice (reset.md:9). Hard/Soft
+    // One reboot operation; `force` is its only choice (reset.md §1 Overview). Hard/Soft
     // are deleted and force is NOT a rename of Hard — Hard meant a credential
     // wipe the protocol no longer has (§5.1).
     if (forced) {

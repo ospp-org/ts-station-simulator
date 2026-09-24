@@ -61,7 +61,7 @@ export interface SessionInfo {
   startedAt: string;
   /**
    * The monotonic reading taken at the same moment — the origin every elapsed
-   * time for this session is differenced from (`heartbeat.md:44` rule 5). Kept in
+   * time for this session is differenced from (`heartbeat.md §6 Clock Synchronization` rule 5). Kept in
    * step with Handler.ts's declaration DELIBERATELY: the two interfaces already
    * disagreed once about `startedAt` (see above) and it cost a live throw, so a
    * field added to one must be added to the other.
@@ -412,7 +412,7 @@ export class Station extends EventEmitter {
     }
     await this.connection.disconnect();
 
-    // THE KEY DIES WITH THE MQTT SESSION. `06-security.md:1070` rule 2 — "Both
+    // THE KEY DIES WITH THE MQTT SESSION. `06-security.md §5.8, "What the MAC still buys"` rule 2 — "Both
     // peers MUST discard it when the MQTT session ends — the station on
     // disconnect, the server on the LWT or on any broker-reported disconnect."
     // The server holds up its half already; this station kept a dead session's
@@ -720,8 +720,8 @@ export class Station extends EventEmitter {
    * duration: the customer receives what ran, and billing the full request would
    * charge for a wash the reset cut short.
    *
-   * "Real elapsed time" means the MONOTONIC one — `session-ended.md:61` rule 2,
-   * the same obligation StopService carries at `stop-service.md:47` rule 5. This
+   * "Real elapsed time" means the MONOTONIC one — `session-ended.md §5 Processing Rules` rule 2,
+   * the same obligation StopService carries at `stop-service.md §6 Processing Rules` rule 5. This
    * differenced the wall clock, and the `Math.max(0, ...)` below made the
    * backwards direction WORSE than it is on the StopService carrier: a -1h
    * correction produced a schema-VALID SessionEnded reporting 0 seconds and 0
@@ -738,7 +738,7 @@ export class Station extends EventEmitter {
       Math.round((monotonicNowMs() - session.startedAtMonotonicMs) / 1000),
     );
     // Station.SessionInfo carries no price; the SERVER is the authoritative
-    // billing engine (§04-flows.md:823-833) and this value is advisory. 100 cr/min
+    // billing engine (§04-flows.md "5a. Full Offline Session — BLE" / "Error Paths") and this value is advisory. 100 cr/min
     // is the same default the sim uses elsewhere.
     const creditsCharged = Math.ceil((actualDurationSeconds / 60) * 100);
 
@@ -812,7 +812,7 @@ export class Station extends EventEmitter {
       // "the declaration MUST be STABLE between boots while the hardware is
       // unchanged" (boot-notification-request.schema.json:50), and a station that
       // re-derives from config each boot is silently agreeing with whatever it is
-      // told to be, which is what §05-state-machines.md:126 forbids.
+      // told to be, which is what §05-state-machines.md §1.4 The Restricted States forbids.
       bays: await this.declaredTopology(),
       // Truthful, never a literal — the CSMS force-fails and refunds every
       // session that predates (now - uptimeSeconds). See currentUptimeSeconds().

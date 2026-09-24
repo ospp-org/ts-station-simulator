@@ -174,7 +174,7 @@ steps:
         liquidMl: 1800
         energyWh: 400
 
-  # NO SessionEnded. session-ended.md:57 — "MUST NOT emit it for one that
+  # NO SessionEnded. session-ended.md §4 Reasons — "MUST NOT emit it for one that
   # terminates with [a StopService command]". The Accepted Response above is the
   # settlement carrier; see the paragraph below for what the removed one was doing.
   #
@@ -220,7 +220,7 @@ steps:
   # happens to handle first — and this file, of all of them, is the one meant to be
   # run with MANY WORKERS, which is exactly the condition under which the loser of
   # that race stops being predictable. Station-side the fix is to send one message
-  # (session-ended.md:57 already required it); the server's dependence on arrival
+  # (session-ended.md §4 Reasons already required it); the server's dependence on arrival
   # order is a separate report.
   #
   # So a file that looked like a duplicate of the fullCharge arm is actually a

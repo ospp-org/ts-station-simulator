@@ -55,7 +55,7 @@ describe('a forced stop reports the reason that bills', () => {
       sessionId: 'sess_1', bayId: 'bay_opstop01', serviceId: 'svc_x',
       startedAt: new Date(Date.now() - 120_000).toISOString(),
       // The monotonic anchor the settle differences from — the wall-clock stamp
-      // above is no longer read for that (heartbeat.md:44 rule 5).
+      // above is no longer read for that (heartbeat.md §6 Clock Synchronization rule 5).
       startedAtMonotonicMs: monotonicNowMs() - 120_000,
       durationSeconds: 300, seq: new SequenceCounter(),
     } as never);

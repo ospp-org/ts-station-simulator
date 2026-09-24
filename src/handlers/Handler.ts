@@ -67,9 +67,9 @@ export interface SessionInfo {
   serviceId: string;
   /**
    * The WALL-CLOCK instant the session began, ISO-8601. This is a stamp, not a
-   * measurement: `heartbeat.md:51` rule 6 gives the wall clock the values that
+   * measurement: `heartbeat.md §6 Clock Synchronization` rule 6 gives the wall clock the values that
    * get ORDERED — `timestamp`, `startedAt`, `endedAt` — and it is what a receiver
-   * that never got a duration has to settle against (`heartbeat.md:48`).
+   * that never got a duration has to settle against (`heartbeat.md §6 Clock Synchronization`).
    *
    * It is NOT the origin of `actualDurationSeconds`. It was, at both sites that
    * produce that field, and that is the defect `startedAtMonotonicMs` closes.
@@ -77,8 +77,8 @@ export interface SessionInfo {
   startedAt: string;
   /**
    * The MONOTONIC reading taken at the same moment, and the only legitimate
-   * origin for this session's elapsed time — `heartbeat.md:44` rule 5,
-   * `stop-service.md:47` rule 5, `session-ended.md:61` rule 2.
+   * origin for this session's elapsed time — `heartbeat.md §6 Clock Synchronization` rule 5,
+   * `stop-service.md §6 Processing Rules` rule 5, `session-ended.md §5 Processing Rules` rule 2.
    *
    * Required, with no wall-clock fallback anywhere: a fallback would be a silent
    * route back to the wrong clock, and this simulator reached it at 2 of 2 sites
@@ -89,10 +89,10 @@ export interface SessionInfo {
   durationSeconds: number;
   seq: SequenceCounter;
   // Credits-per-minute used to compute `creditsCharged` on session end per OSPP
-  // §03-messages.md:700: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
+  // §03-messages.md §3.4 StopService: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
   // StartService Request schema does not carry pricing; sim defaults to 100 cr/min,
   // matching csms-server's typical test catalog. Server is the authoritative billing
-  // engine (§04-flows.md:823-833) — this value is advisory only.
+  // engine (§04-flows.md "5a. Full Offline Session — BLE" / "Error Paths") — this value is advisory only.
   priceCreditsPerMinute: number;
 }
 

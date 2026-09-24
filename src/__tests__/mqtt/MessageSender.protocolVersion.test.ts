@@ -9,7 +9,7 @@ import type { MqttConnection } from '../../mqtt/MqttConnection.js';
  * The comment this replaces said an unset env "negotiates on the SDK default
  * (OSPP_PROTOCOL_VERSION, MAJOR-0, matches dev/testing/prod-example)". That is the same
  * false claim MessageSender.ts already documents: negotiation is EXACT MATCH against a set
- * (VERSIONING.md:25), the SDK's MAJOR gate isCompatibleWith() was deleted in 0.12.0, and
+ * (VERSIONING.md "The document version, and the sites that carry it"), the SDK's MAJOR gate isCompatibleWith() was deleted in 0.12.0, and
  * csms-server's VersionNegotiator never called it. A shared MAJOR has never made 0.2.1
  * acceptable to a server configured for anything else.
  *

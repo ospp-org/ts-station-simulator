@@ -9,7 +9,7 @@ import { createContext } from '../../../scenarios/ScenarioContext.js';
 /*
  * CONS-132 — the key set must be on disk BEFORE the request leaves.
  *
- * spec/04-flows.md:253, step 6b:
+ * 04-flows.md §2, "Sequence Diagram", step 6b:
  *
  *   "Before step 7 leaves the device, the SSP MUST commit every private key
  *    generated in steps 5–6a to non-volatile storage, durably […] and MUST
@@ -118,10 +118,10 @@ describe('ProvisionStep — the key set is durable before the POST (CONS-132)', 
     armFetch(stationId);
     await provision(stationId);
 
-    // spec/04-flows.md:307 — "the station MUST resubmit THOSE keys on every
+    // 04-flows.md §2, "Postconditions" — "the station MUST resubmit THOSE keys on every
     // retry rather than generating new ones". A fresh receipt key is drift for a
     // bound kind, and drift on a token that already issued is 409 / 4015, which
-    // 04-flows.md:280 marks recoverable:false.
+    // 04-flows.md §2, "Consumption Requirements" marks recoverable:false.
     expect(submittedBody?.receiptSigningPublicKey).toBe(firstReceiptPub);
 
     // The CSR bytes differ per call (fresh signature), but the key inside must

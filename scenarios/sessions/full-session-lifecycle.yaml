@@ -176,7 +176,7 @@ steps:
         liquidMl: 1800
         energyWh: 400
 
-  # NO SessionEnded. session-ended.md:57 — "MUST NOT emit it for one that
+  # NO SessionEnded. session-ended.md §4 Reasons — "MUST NOT emit it for one that
   # terminates with [a StopService command]". The Accepted Response above already
   # carries the settlement.
   #

@@ -5,7 +5,7 @@
 **Denominator: 70.** Bounded on purpose — station-side **MUST refuse / MUST validate**
 obligations on **inbound Server→Station** messages, taken from the numbered processing rules of
 the **15** Server→Station actions (`07-errors.md` §4.2), the inbound transport rules of
-`02-transport.md` §3.2/§3.3/§5.2/§6.1, `06-security.md:414`, and `05-state-machines.md:135`.
+`02-transport.md` §3.2/§3.3/§5.2/§6.1, `06-security.md §3.2 Per-Message Authorization`, and `05-state-machines.md §1.4 The Restricted States`.
 Excluded, so the bound is auditable: SHOULDs, MAYs, server-side obligations, BLE/offline profile
 rules, and obligations the spec itself calls unreachable for a station with no such limit.
 
@@ -123,7 +123,7 @@ replay, so **dedup is 0 of 4**; §3.2 (`5107` — commands processed sequentiall
 10); §5.2 (discard a message older than its category's max age). `MessageRouter.route()` does a
 bare `emit` into async handlers, so commands are fully concurrent today.
 
-**P — offline.** `07-errors.md:475` (`5111 BUFFER_FULL` — refuse new StartService at ≥90 % buffer).
+**P — offline.** `07-errors.md §3.5, "5.1xx — Software Errors"` (`5111 BUFFER_FULL` — refuse new StartService at ≥90 % buffer).
 **Last, deliberately:** the offline leg is not built here.
 
 ## Two shapes that are worse than absent

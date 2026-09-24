@@ -52,7 +52,7 @@ interface ProvisioningResponseData {
  * `expect_body`) and RETURNS — it persists nothing, captures nothing and does not touch
  * `context.provisioning`, because a refused request issued no certificate and there is
  * nothing to write. The key set is still committed to disk BEFORE the request, exactly as
- * on the success path: spec/04-flows.md:253 step 6b is about what the device did before
+ * on the success path: 04-flows.md §2, "Sequence Diagram" step 6b is about what the device did before
  * the bytes left, not about what the server answered.
  *
  * KEY-SHAPE KNOBS, one per refusal that is ABOUT the keys:
@@ -133,7 +133,7 @@ export class ProvisionStep implements Step {
     context.created.recordArtifactDir(stationDir);
 
     // 1-2. TLS + receipt keypairs, COMMITTED DURABLY BEFORE THE POST.
-    // spec/04-flows.md:253 step 6b — "Before step 7 leaves the device, the SSP
+    // 04-flows.md §2, "Sequence Diagram" step 6b — "Before step 7 leaves the device, the SSP
     // MUST commit every private key generated in steps 5-6a to non-volatile
     // storage, durably". This used to generate here and write at step 4, after
     // the response: a crash in between left the server holding a cert bound to
@@ -165,7 +165,7 @@ export class ProvisionStep implements Step {
         serialNumber,
         // v0.11.0: the station DECLARES its topology — bays, and the programs
         // each one physically has. provisioning-request.schema.json:8 makes
-        // `bays` required and `bayCount` is gone. §01-architecture.md:238 — this
+        // `bays` required and `bayCount` is gone. §01-architecture.md §4.2, "Programs and Services" — this
         // is the declaration that carries LABELS, because it is "the moment the
         // server creates the bay records and the moment an operator needs the
         // labels to build the service bindings".

@@ -24,9 +24,9 @@
 # does not drive it — and until this file, nothing on the wire did.
 #
 # WHAT THE SPEC ASKS FOR HERE, and what this file does about the second half.
-# `update-firmware.md:88` — after a rollback the station MUST send a
+# `update-firmware.md §8 Rollback` — after a rollback the station MUST send a
 # BootNotification with the PREVIOUS version and `bootReason: "ErrorRecovery"`.
-# `05-state-machines.md:748` (§6.5 rule 4) — it MUST ALSO send a
+# `05-state-machines.md §6.2 States (10)` (§6.5 rule 4) — it MUST ALSO send a
 # FirmwareStatusNotification `Failed` describing the rollback reason. Both are
 # sent below, in that order. Only the first is what the server's listener reads;
 # the second arrives at a row the listener has already closed, and the file
@@ -39,14 +39,14 @@
 # simulator reports a rollback it did not perform. What the server sees is
 # complete — a disconnect, a reconnect, and a boot at the old version claiming
 # ErrorRecovery — because every input the listener reads is a field on that
-# message. The 5-minute bootloader watchdog (05-state-machines.md:706) is the
+# message. The 5-minute bootloader watchdog (05-state-machines.md §5.4 Error Recovery) is the
 # station's own timer and is not modelled at all: this file rolls back
 # immediately rather than after a watchdog expiry.
 name: "Firmware Update — Rollback Detected (rollback_detected)"
 description: >
   Full install cycle for 2.0.0, then the station reboots back onto 1.0.0 with
   bootReason ErrorRecovery and follows it with a Failed notification, as
-  update-firmware.md:88 and 05-state-machines.md:748 require. The server records
+  update-firmware.md §8 Rollback and 05-state-machines.md §6.2 States (10) require. The server records
   failure_reason `rollback_detected`, and the later Failed does not overwrite it.
 
 scenario_timeout_ms: 180000
@@ -252,7 +252,7 @@ steps:
       data[firmware_version=2.0.0].failure_reason: "rollback_detected"
 
   # The second half of what the spec asks of a rolled-back station
-  # (05-state-machines.md:748) — a Failed notification describing why.
+  # (05-state-machines.md §6.2 States (10)) — a Failed notification describing why.
   #
   # It arrives at a row that is ALREADY closed. Two behaviours are possible and
   # only one is right: the correlation query only considers UNFINISHED updates

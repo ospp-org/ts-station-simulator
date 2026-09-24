@@ -21,7 +21,7 @@ import { EventEmitter } from 'node:events';
  * one cannot silently diverge on the other.
  *
  * On bootReason: the field is "reason the station booted"
- * (spec/profiles/core/boot-notification.md:29) — a property of the last boot
+ * (boot-notification.md §3 Request Payload) — a property of the last boot
  * EPISODE, not of the send. A trigger re-announces an episode; it does not start
  * one. So the truthful value is whatever actually booted the station, which is
  * exactly what retryBoot() reports. See Station.currentBootReason.
@@ -129,7 +129,7 @@ const POWER_ON_AT = new Date('2026-07-21T08:00:00.000Z');
 // ---------------------------------------------------------------------------
 // TWO clocks, because uptime is a DIFFERENCED duration and now measured on the
 // monotonic one (Station.poweredOnAt / currentUptimeSeconds — the same rule that
-// governs session duration, spec/profiles/core/heartbeat.md:44 rule 5, applied to
+// governs session duration, heartbeat.md §6 Clock Synchronization rule 5, applied to
 // the other differenced value on the wire).
 //
 // `vi.setSystemTime` alone no longer moves elapsed time: that is the point of the
@@ -190,7 +190,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     await station.reconnectWithRenewedCertificate();
 
     // The re-handshake ends the MQTT session, so the station discards its key
-    // (06-security.md:1070 rule 2) and the reconnect's own BootNotification
+    // (06-security.md §5.8, "What the MAC still buys" rule 2) and the reconnect's own BootNotification
     // RESPONSE issues a new one (rule 4). The stubbed connection delivers no
     // response, so the re-issue is modelled here — without it this test would
     // be asserting against a station that a real server had not yet re-keyed,

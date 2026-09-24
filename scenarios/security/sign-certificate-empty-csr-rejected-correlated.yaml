@@ -87,7 +87,7 @@ steps:
   # so the only answer it can ever produce is the generic schema rejection.
   #
   # The spec's own conformance case expects something different —
-  # conformance/test-cases/security/TC-SEC-003.md:117-123 gives
+  # TC-SEC-003.md "Part C — CSR Rejection with Retry and Escalation" gives
   # `{"status":"Rejected","errorCode":4010,"errorText":"CSR_INVALID"}` — but that is
   # for a CSR which is schema-VALID and still not a usable CSR (a well-formed PEM
   # that will not parse). An empty string never reaches that code path.

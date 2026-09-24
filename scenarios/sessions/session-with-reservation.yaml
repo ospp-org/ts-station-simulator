@@ -201,10 +201,10 @@ steps:
   #
   # WHY THE MOMENT MATTERS, and why this scenario is the one that proves it.
   # The conversion is bound to the ACCEPTED StartService RESPONSE, not to the
-  # start request: spec 05-state-machines.md:501 guards `Confirmed -> Active` on
+  # start request: spec 05-state-machines.md §3.3 Transition Table guards `Confirmed -> Active` on
   # "reservationId matches; within TTL", a check the STATION performs (§4.5:519),
   # and §4.5:520 converts only "if matched". A rejected start is refunded in full
-  # and released via CancelReservation (04-flows.md:670), never converted. This
+  # and released via CancelReservation (04-flows.md §4, "Happy Path"), never converted. This
   # scenario sends `StartService Response Accepted` at step [10]; that send is the
   # trigger for everything asserted below. A sibling asserting the REJECTED arm
   # stays un-converted would be the other half of the pair.

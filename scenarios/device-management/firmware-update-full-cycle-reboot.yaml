@@ -11,11 +11,11 @@
 # `bootReason: FirmwareUpdate`, but on a DIFFERENT station with no update in
 # flight, so it proves a boot was recorded and nothing about reconciliation.
 #
-# The spec is explicit that the boot is the report (`03-messages.md:1656`):
+# The spec is explicit that the boot is the report (`03-messages.md §6.3, "Example"`):
 #   "Station reboots and comes back with a BootNotification carrying the new
 #    `firmwareVersion` — that boot, not a further FirmwareStatusNotification, is
 #    how the update's outcome is reported."
-# and `firmware-status.md:72`: "After `Installed`, the station reboots. The next
+# and `firmware-status.md §6 Processing Rules`: "After `Installed`, the station reboots. The next
 # message from the station MUST be a BootNotification with the new
 # `firmwareVersion`."
 #
@@ -211,7 +211,7 @@ steps:
 
   # ------------------------------------------------------ 4. ACCEPT THE COMMAND
   # `Accepted` is the RESPONSE's status and a station MUST NOT send it as a
-  # FirmwareStatusNotification (update-firmware.md:53-59). The server's FSM
+  # FirmwareStatusNotification (update-firmware.md §6 Download and Install Flow). The server's FSM
   # agrees and is strict here: UpdateFirmwareResponseHandler.php:89-92 calls
   # transition() and THROWS on anything but idle -> downloading.
   - action: send
@@ -222,7 +222,7 @@ steps:
 
   # ----------------------------------------------- 5. DOWNLOAD, AT SPEC CADENCE
   #
-  # `firmware-status.md:39` — "the station SHOULD send a notification at every
+  # `firmware-status.md §5 Progress Reporting` — "the station SHOULD send a notification at every
   # 10% increment of download progress (i.e., at progress values 10, 20, 30,
   # ..., 90, 100), and SHOULD send one at least every 30 seconds — whichever
   # falls sooner."
@@ -358,7 +358,7 @@ steps:
     ms: 400
 
   # ------------------------------------------------------------ 6. DOWNLOADED
-  # `progress` is OMITTED, not sent as 0. `firmware-status.md:41` — "The
+  # `progress` is OMITTED, not sent as 0. `firmware-status.md §5 Progress Reporting` — "The
   # `progress` field MUST be omitted or set to `0` when the status is
   # `Downloaded`, `Installed`, or `Failed`." Omitting is the stronger of the two
   # permitted forms and it is also what exercises the handler's nullable path
@@ -380,12 +380,12 @@ steps:
     ms: 500
 
   # ------------------------------------------------- 7. INSTALL, AT SPEC CADENCE
-  # `firmware-status.md:40` — "During `Installing`: The station SHOULD send a
+  # `firmware-status.md §5 Progress Reporting` — "During `Installing`: The station SHOULD send a
   # notification at key milestones (25%, 50%, 75%, 100%)." Five marks with 0.
   #
   # NOTE ON THE GATE, because this file deliberately does not exercise it. Spec
   # 0.20.0 moved the active-session gate onto `Verified -> Installing`
-  # (05-state-machines.md:836-845): the station MUST NOT begin installing while
+  # (05-state-machines.md §6.6 FirmwareStatusNotification Mapping): the station MUST NOT begin installing while
   # any bay is `Occupied` or `Finishing`. Both bays here are idle, so the gate is
   # open from the start and this transition is legal. A file that drove the gate
   # SHUT would have to hold a live session across the install and watch the
@@ -442,7 +442,7 @@ steps:
 
   # -------------------------------------------------------------- 8. INSTALLED
   # Sent BEFORE the reboot, "on the connection the station is about to drop"
-  # (05-state-machines.md:767). This was a decided contradiction in 0.20.0 — six
+  # (05-state-machines.md §6.3 Transition Table). This was a decided contradiction in 0.20.0 — six
   # sites said before, five said after — and "after" is unimplementable against
   # firmware-status.md §6 rule 4, which requires the next message to be a
   # BootNotification.
@@ -496,11 +496,11 @@ steps:
   # `firmwareVersion: 2.0.0` — equal to the row's target, which is the only
   # comparison that opens `activated` (HandleBootAfterFirmwareUpdate.php:56).
   # `bootReason: FirmwareUpdate` — what a station that just installed reports
-  # (05-state-machines.md:687,705; the worked example at
-  # examples/flows/12-firmware-update.md:420-440).
+  # (05-state-machines.md §5.3 Transition Table,705; the worked example at
+  # 12-firmware-update.md "Step 14: Station Sends BootNotification (22:02:33.000)").
   #
   # `uptimeSeconds: 3` rather than 0, matching that worked example: the spec
-  # requires uptime to be consistent with bootReason (boot-notification.md:96),
+  # requires uptime to be consistent with bootReason (boot-notification.md §5.2 `bootReason` — Seven Boots and One Non-Boot),
   # and a freshly rebooted station has been up for seconds, not zero. Nothing
   # branches on it here — this is conformance, not a proof.
   - action: send

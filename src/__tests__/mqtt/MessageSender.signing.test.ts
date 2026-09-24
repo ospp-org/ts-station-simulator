@@ -63,7 +63,7 @@ describe('MessageSender HMAC signing', () => {
   /*
    * This case previously asserted the opposite — "does NOT sign before a session
    * key has been acquired", passing because the envelope reached the wire with
-   * `mac` undefined. That is the fail-OPEN branch 06-security.md:869-873 forbids
+   * `mac` undefined. That is the fail-OPEN branch 06-security.md §5.1 Overview forbids
    * in terms: "No session key held for the peer -> Refuse to send. The sender
    * MUST NOT publish the message unsigned." MessageRouter::verified() already
    * failed CLOSED on the identical condition, so the two halves of §5.7

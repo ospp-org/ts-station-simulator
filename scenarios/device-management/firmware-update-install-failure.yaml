@@ -178,7 +178,7 @@ steps:
   - action: delay
     ms: 300
 
-  # Install milestones per firmware-status.md:40 (25/50/75/100). The write dies at
+  # Install milestones per firmware-status.md §5 Progress Reporting (25/50/75/100). The write dies at
   # 50 — the spec's own worked install failure is "Downloaded -> Installing (50%)
   # -> Failed (errorText: 'Write error on partition B')" (:44-65).
   - action: send
@@ -201,7 +201,7 @@ steps:
   - action: delay
     ms: 500
 
-  # `progress` omitted on Failed (firmware-status.md:41), leaving the row at 50.
+  # `progress` omitted on Failed (firmware-status.md §5 Progress Reporting), leaving the row at 50.
   - action: send
     message: FirmwareStatusNotification
     messageType: Event

@@ -29,7 +29,7 @@ description: >-
 # (`StatusNotificationHandler.php:639`) only flips the `available` column on rows that
 # already exist — its single write is the UPDATE at `:653-657` and the file contains no
 # DELETE at all — and the profile it implements says so in as many words
-# (`profiles/core/status-notification.md:39`, quoted at `StatusNotificationHandler.php:664-668`):
+# (`status-notification.md §3.1 Program Object`, quoted at `StatusNotificationHandler.php:664-668`):
 # "A program that cannot run is reported present with `available: false`, never omitted —
 # omission means the hardware changed, and that requires re-provisioning, not a status
 # report."

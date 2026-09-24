@@ -18,7 +18,7 @@ export interface BayConfig {
   bayNumber: number;
   /**
    * The PROGRAMS this bay can run — physical operations the hardware performs,
-   * and firmware constants the station owns (spec 01-architecture.md:234).
+   * and firmware constants the station owns (spec 01-architecture.md §4.2, "Programs and Services").
    *
    * Declared at provisioning and re-declared, ordinals only, at every boot. This
    * is what StatusNotification reports: a station cannot originate knowledge of a

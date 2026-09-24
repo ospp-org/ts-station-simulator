@@ -35,19 +35,19 @@
 #   moment the boot arrives. Of the four ending reasons, ManualReset is the only one
 #   that reaches that state without some party breaching a MUST:
 #
-#     RemoteReset     03-messages.md:196 -- "Reboot the server commanded via Reset
-#                     [MSG-015]". The server issued it, so 05-state-machines.md:354-356
+#     RemoteReset     03-messages.md §1.1, "REQUEST Payload" -- "Reboot the server commanded via Reset
+#                     [MSG-015]". The server issued it, so 05-state-machines.md §2.3 Transition Table
 #                     has already applied: the Reset was refused with 3016 for carrying
 #                     active sessions, or `force: true` settled them first. A live
 #                     session here describes a server that skipped its own gate.
-#     ScheduledReset  "The station's own scheduled restart" (03-messages.md:198). No
+#     ScheduledReset  "The station's own scheduled restart" (03-messages.md §1.1, "REQUEST Payload"). No
 #                     gate, so it is reachable -- but a station scheduling a restart
 #                     through a paid wash is a station-side policy fault, which makes
 #                     the fixture argue about the station rather than the server.
-#     FirmwareUpdate  05-state-machines.md:356-357 cites §7.4: the install MUST NOT leave
+#     FirmwareUpdate  05-state-machines.md §2.3 Transition Table cites §7.4: the install MUST NOT leave
 #                     `Verified` while a bay is `Occupied` or `Finishing`. A live
 #                     session at this boot is a station violating the spec.
-#     ManualReset     "A human acting at the station" (03-messages.md:197). NOT
+#     ManualReset     "A human acting at the station" (03-messages.md §1.1, "REQUEST Payload"). NOT
 #                     server-commanded, so no 3016 gate stands in front of it and the
 #                     server never had the chance to settle anything. Someone pressed
 #                     the button mid-wash; the server finds out on the boot. Every
@@ -64,7 +64,7 @@
 #   failStuckSessions only fails sessions whose `started_at` precedes
 #   `now() - uptimeSeconds` (BootNotificationHandler.php:814-823). uptime 0 puts the
 #   boot instant at `now`, so every started_at precedes it and the bootReason is the
-#   only thing left deciding the outcome. It is also what boot-notification.md:99
+#   only thing left deciding the outcome. It is also what boot-notification.md §5.2 `bootReason` — Seven Boots and One Non-Boot
 #   rule 2 requires of a ManualReset: the seven real-boot reasons "carry an uptime
 #   measured from the restart they name", and rule 3 makes a reason whose uptime did
 #   NOT reset the inconsistent report a server must refuse to act on.

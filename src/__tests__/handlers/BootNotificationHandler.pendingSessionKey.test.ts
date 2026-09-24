@@ -7,7 +7,7 @@ import { validateInbound } from '../../mqtt/inboundSchema.js';
 /*
  * A `Pending` BOOT CARRIES A SESSION KEY, AND THE STATION MUST STORE IT.
  *
- * `profiles/core/boot-notification.md:71` rule 5 — "On `Pending`: the station
+ * `boot-notification.md §5 Processing Rules` rule 5 — "On `Pending`: the station
  * MUST store the `sessionKey` — a `Pending` station answers signed commands and
  * needs it (§5.3)". §5.3 at :115 — "Every `Accepted` and every `Pending`
  * response MUST carry `sessionKey`. The requirement is unconditional and is
@@ -16,7 +16,7 @@ import { validateInbound } from '../../mqtt/inboundSchema.js';
  * not answer it — which closes the exact channel the `Pending` window exists to
  * keep open."
  *
- * `05-state-machines.md:57` says the same from the state's side: Pending "does
+ * `05-state-machines.md §1.2 States (6)` says the same from the state's side: Pending "does
  * hold a session key — the response that put it here carries one — because
  * every command it answers is signed". `Rejected` at :58 holds none, and that
  * asymmetry is the whole point — the simulator collapsed the two.
@@ -134,7 +134,7 @@ describe('a Pending boot stores its session key', () => {
   });
 
   it('CONTROL: a Rejected boot stores nothing — it holds no key, and may not', async () => {
-    // `05-state-machines.md:58` — Rejected "holds no session key, so it could
+    // `05-state-machines.md §1.2 States (6)` — Rejected "holds no session key, so it could
     // not verify one". Guards against a fix that stores unconditionally.
     const handler = new BootNotificationHandler() as unknown as Handler;
     const station = makeContext();
@@ -151,7 +151,7 @@ describe('a Pending boot stores its session key', () => {
 
     await handler.handle(rejectedBoot(), station);
 
-    // Discarding is tied to the MQTT session ending (06-security.md:1070),
+    // Discarding is tied to the MQTT session ending (06-security.md §5.8, "What the MAC still buys"),
     // not to a boot verdict — see Station.disconnect.
     expect(station.sessionKey).toBe(ACCEPTED_KEY);
   });

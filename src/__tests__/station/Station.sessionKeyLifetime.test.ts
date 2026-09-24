@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 /*
  * THE SESSION KEY LIVES EXACTLY AS LONG AS THE MQTT SESSION.
  *
- * `06-security.md:1070` rule 2 — "Both peers MUST discard it when the MQTT
+ * `06-security.md §5.8, "What the MAC still buys"` rule 2 — "Both peers MUST discard it when the MQTT
  * session ends — the station on disconnect, the server on the LWT or on any
  * broker-reported disconnect."
  *
@@ -87,7 +87,7 @@ describe('session key lifetime', () => {
   it('CONTROL: the key is held while the session is alive', async () => {
     station.sessionKey = KEY;
 
-    // `06-security.md:1072` rule 3 — a peer MUST NOT expire the key while the
+    // `06-security.md §5.8, "What the MAC does NOT buy"` rule 3 — a peer MUST NOT expire the key while the
     // MQTT session is alive. Without this control, "always null" would pass.
     expect(station.sessionKey).toBe(KEY);
   });

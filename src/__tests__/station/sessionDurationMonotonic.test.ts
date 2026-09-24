@@ -21,14 +21,14 @@ import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
  * ONE field, TWO clocks, and the simulator was reading the wrong one at both of
  * the two sites that produce it.
  *
- * spec/profiles/core/heartbeat.md:44 rule 5, present since the first tag
+ * heartbeat.md §6 Clock Synchronization rule 5, present since the first tag
  * (v0.1.0-draft.1): "Clock adjustments MUST NOT affect the duration of active
  * sessions. The station MUST track session elapsed time using a monotonic timer,
  * not the wall clock." Restated on both carriers of the field it exists for —
- * spec/profiles/transaction/stop-service.md:47 rule 5 and
- * spec/profiles/transaction/session-ended.md:61 rule 2.
+ * stop-service.md §6 Processing Rules rule 5 and
+ * session-ended.md §5 Processing Rules rule 2.
  *
- * heartbeat.md:51 rule 6 draws the line these tests police: "The wall clock's job
+ * heartbeat.md §6 Clock Synchronization rule 6 draws the line these tests police: "The wall clock's job
  * in a session is to stamp values that get ORDERED — the envelope `timestamp`,
  * `startedAt`, `endedAt`; the monotonic timer's job is to produce the one that
  * gets DIFFERENCED." So `startedAt` must stay a real wall-clock instant AND the
@@ -48,7 +48,7 @@ import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
 
 // A +1h step is the ordinary shape of the fault: a station whose time source is a
 // network the operator does not control (cellular NITZ, NTP over a metered link)
-// acquiring a fix mid-wash. heartbeat.md:51 names exactly that station.
+// acquiring a fix mid-wash. heartbeat.md §6 Clock Synchronization names exactly that station.
 const WALL_START_MS = Date.parse('2026-03-29T00:59:40.000Z');
 const REAL_ELAPSED_MS = 40_000;
 const JUMP_MS = 3_600_000;
@@ -251,7 +251,7 @@ describe('the instrument: a planted wall-clock step, and a monotonic clock that 
 });
 
 // ===========================================================================
-// 1. StopService RESPONSE — stop-service.md:47 rule 5.
+// 1. StopService RESPONSE — stop-service.md §6 Processing Rules rule 5.
 // ===========================================================================
 describe('StopService RESPONSE — actualDurationSeconds survives a clock correction', () => {
   it('a +1h wall-clock step mid-session does not change the reported duration', async () => {
@@ -371,7 +371,7 @@ describe('the wire timestamp stays REAL time — heartbeat.md:51 rule 6', () => 
 });
 
 // ===========================================================================
-// 3. SessionEnded EVENT — session-ended.md:61 rule 2. The SECOND site.
+// 3. SessionEnded EVENT — session-ended.md §5 Processing Rules rule 2. The SECOND site.
 // ===========================================================================
 function makeStationConfig(): StationConfig {
   return {

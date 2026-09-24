@@ -44,7 +44,7 @@
 # waiting to install: if the row is exactly `downloaded` AND either `scheduled_at`
 # is in the future or some bay is `occupied`/`finishing`, the gate is shut, the
 # row is spared entirely and `gate_opened_at` is cleared (:78-88, :161-191). Spec
-# `firmware-status.md:71` — "Measure the five minutes from the later of the last
+# `firmware-status.md §6 Processing Rules` — "Measure the five minutes from the later of the last
 # notification and the moment the gate opens." This file parks the row at
 # `downloading`, not `downloaded`, with both bays idle and no `scheduledAt`, so
 # the exemption cannot apply and the plain clock runs. The exemption's own proof

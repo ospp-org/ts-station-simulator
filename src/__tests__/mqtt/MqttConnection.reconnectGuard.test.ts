@@ -116,7 +116,7 @@ describe('MqttConnection — clean disconnect + reconnect guard (alignment v0.4.
   // -------------------------------------------------------------------------
   // The guard is a DIFFERENCED duration — "how long since this stationId last
   // disconnected" — so it belongs on the monotonic clock for the same reason
-  // session duration does (spec/profiles/core/heartbeat.md:44 rule 5 states the
+  // session duration does (heartbeat.md §6 Clock Synchronization rule 5 states the
   // rule for the field that bills; the class is the same wherever an interval is
   // subtracted). On the wall clock a correction did not merely mis-measure it: a
   // backwards step made `elapsed` NEGATIVE, so `RECONNECT_GUARD_MS - elapsed`

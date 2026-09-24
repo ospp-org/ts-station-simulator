@@ -116,7 +116,7 @@ steps:
   # THE DISCRIMINATOR — the server's own persisted record, not the response this file sent.
   # Live since csms-server fixed ChangeConfigurationHandler to read results[] (2026-08-10).
   # RebootRequired is a SUCCESS status: the value IS persisted and takes effect on the next
-  # boot (spec/08-configuration.md:58, Processing Rule 7). The server records that as
+  # boot (08-configuration.md §1.4 Mutability, Processing Rule 7). The server records that as
   # `mutability: static`, which is the sole observable separating this file from
   # change-configuration-accepted.
   - action: delay

@@ -43,7 +43,7 @@ export class MessageRouter extends EventEmitter {
   /**
    * The session key the station currently holds, or null before boot.
    *
-   * spec v0.11.0 §06-security.md:852 — "The signing path and the verification
+   * spec v0.11.0 §06-security.md §5.1 Overview — "The signing path and the verification
    * path MUST both fail closed." This router used to parse an envelope and emit
    * it with no MAC check of any kind, so the simulator executed any command that
    * was valid JSON with an `action` field. As a conformance instrument that made
@@ -153,7 +153,7 @@ export class MessageRouter extends EventEmitter {
   }
 
   /**
-   * Fail closed, per §06-security.md:858. A refused message is neither emitted
+   * Fail closed, per §06-security.md §5.1 Overview. A refused message is neither emitted
    * NOR buffered — `drainBuffered()` is what scenario `wait_for` steps read, so
    * leaving a forgery there would let a scenario assert on it and pass.
    *

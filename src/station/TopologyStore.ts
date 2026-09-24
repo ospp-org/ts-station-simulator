@@ -29,7 +29,7 @@ interface StoredTopology {
  * config file rather than the station.
  *
  * First boot writes; every later boot reads and re-declares the SAME thing even
- * if the config now says otherwise. §05-state-machines.md:126 is the reason: "A
+ * if the config now says otherwise. §05-state-machines.md §1.4 The Restricted States is the reason: "A
  * station MUST NOT alter its declaration to match what the server expected. The
  * declaration describes hardware; silently agreeing would hide a real hardware
  * change." A station that re-derives from config each boot is doing exactly that

@@ -25,7 +25,7 @@ description: "Send a BootNotification with `firmwareVersion` omitted. Server ans
 #
 # A REAL OPEN QUESTION UPSTREAM, recorded because a future reader will hit it: the
 # spec contradicts itself on whether a malformed boot should be answered AT ALL —
-# profiles/core/boot-notification.md:88 says drop, §2.1 says respond. csms-server
+# boot-notification.md §5.1 Capability Semantics — absence means NOT STATED says drop, §2.1 says respond. csms-server
 # responds, and its handler comment explicitly declines to settle it there
 # (docs/KNOWN-ISSUES.md). If that is ever resolved towards "drop", this file becomes
 # an expect_silence file, not a deleted one.

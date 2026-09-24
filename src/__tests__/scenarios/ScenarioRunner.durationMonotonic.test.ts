@@ -15,7 +15,7 @@ import {
  * we publish as measurements OF THE SERVER — the run would have reported the
  * correction rather than the latency, and nothing in the report says which.
  *
- * Same rule as the billed duration (`spec/profiles/core/heartbeat.md:44` rule 5),
+ * Same rule as the billed duration (`heartbeat.md §6 Clock Synchronization` rule 5),
  * for the same reason: an interval is a DIFFERENCE, and a difference of two wall
  * clock readings is only as stable as the clock between them.
  *
