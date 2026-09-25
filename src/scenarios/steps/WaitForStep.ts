@@ -2,6 +2,7 @@ import { OsppAction, MessageType, type OsppEnvelope } from '@ospp/protocol';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
+import { logSafePayload } from '../../protocol/redactUploadUrl.js';
 
 const ACTION_MAP: ReadonlyMap<string, OsppAction> = new Map(
   Object.entries(OsppAction).map(([, value]) => [value, value]),
@@ -103,8 +104,11 @@ function refusalNote(
     .slice(mark)
     .filter((v) => v.action === action && (!messageType || v.messageType === messageType));
   if (since.length === 0) return '';
+  // The payload through logSafePayload: this text is printed and written into the JSON and
+  // JUnit reports, and a refused GetDiagnostics would otherwise copy its single-use upload
+  // token into all three.
   const rendered = since
-    .map((v) => `${v.schemaKey}: ${v.errors.join('; ')} | payload=${JSON.stringify(v.payload)}`)
+    .map((v) => `${v.schemaKey}: ${v.errors.join('; ')} | payload=${JSON.stringify(logSafePayload(v.payload))}`)
     .join(' || ');
   // Say which of the two actually happened. Under `warn` the message was
   // delivered and this note is a bystander observation; only under `strict` is

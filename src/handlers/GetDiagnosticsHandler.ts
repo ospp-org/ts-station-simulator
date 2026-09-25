@@ -10,6 +10,7 @@ import {
 import { OsppErrorCode } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { errorName } from './bayRefusal.js';
+import { redactUploadUrl } from '../protocol/redactUploadUrl.js';
 
 export class GetDiagnosticsHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -51,9 +52,13 @@ export class GetDiagnosticsHandler implements Handler {
       envelope.messageId,
     );
 
+    // Redacted, because this line is printed on every accepted request and the URL is a
+    // credential: csms-server mints it with a single-use upload token in the path, and an
+    // operator's presigned URL carries its signature in the query. The host and path shape stay,
+    // which is what a failed upload is debugged from.
     console.log(
       '[GetDiagnostics] Accepted — upload to %s, file: %s',
-      request.uploadUrl,
+      redactUploadUrl(request.uploadUrl),
       fileName,
     );
 
