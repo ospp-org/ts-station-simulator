@@ -24,6 +24,7 @@
  */
 import { OsppAction, MessageType, type OsppEnvelope } from '@ospp/protocol';
 import { SchemaValidator } from '@ospp/protocol/server';
+import { logSafePayload } from '../protocol/redactUploadUrl.js';
 
 /**
  * What the router does with a message whose payload does not match its schema.
@@ -257,11 +258,15 @@ const PAYLOAD_ECHO_LIMIT = 2000;
  *
  * Truncation is ANNOUNCED rather than silent: a clipped payload that reads as
  * complete is how a report gets filed against the wrong field.
+ *
+ * A GetDiagnostics `uploadUrl` is echoed redacted. The bug report this text is
+ * meant for would otherwise carry a single-use upload token (see
+ * redactUploadUrl); every other byte is echoed as before.
  */
 export function echoPayload(payload: unknown): string {
   let json: string;
   try {
-    json = JSON.stringify(payload) ?? String(payload);
+    json = JSON.stringify(logSafePayload(payload)) ?? String(payload);
   } catch {
     return '<unserialisable payload>';
   }

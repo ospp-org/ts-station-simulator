@@ -1,4 +1,5 @@
 import { getNestedValue } from './ApiCallStep.js';
+import { logSafeValue } from '../../protocol/redactUploadUrl.js';
 import type { Step, StepDefinition } from './Step.js';
 import type { ScenarioContext } from '../ScenarioContext.js';
 import type { Station } from '../../station/Station.js';
@@ -128,6 +129,10 @@ export class AssertStep implements Step {
     }
 
     const actual = getNestedValue(subject, subjectField);
+    // What the failure messages below PRINT. The comparisons keep reading `actual`: a GetDiagnostics
+    // uploadUrl is redacted only on its way into the text, which is printed and written into the
+    // JSON and JUnit reports, because it carries a single-use upload token (see redactUploadUrl).
+    const shown = logSafeValue(field, actual);
 
     if (definition.exists !== undefined) {
       const shouldExist = definition.exists as boolean;
@@ -140,7 +145,7 @@ export class AssertStep implements Step {
       }
       if (!shouldExist && doesExist) {
         throw new Error(
-          `Assertion failed: expected field "${field}" to not exist, but got ${JSON.stringify(actual)}`,
+          `Assertion failed: expected field "${field}" to not exist, but got ${JSON.stringify(shown)}`,
         );
       }
     }
@@ -149,7 +154,7 @@ export class AssertStep implements Step {
       const expected = definition.equals;
       if (!deepEqual(actual, expected)) {
         throw new Error(
-          `Assertion failed: expected "${field}" to equal ${JSON.stringify(expected)}, but got ${JSON.stringify(actual)}` +
+          `Assertion failed: expected "${field}" to equal ${JSON.stringify(expected)}, but got ${JSON.stringify(shown)}` +
             refusalContext(subject),
         );
       }
@@ -160,7 +165,7 @@ export class AssertStep implements Step {
       const actualStr = String(actual);
       if (!actualStr.includes(expected)) {
         throw new Error(
-          `Assertion failed: expected "${field}" to contain "${expected}", but got "${actualStr}"`,
+          `Assertion failed: expected "${field}" to contain "${expected}", but got "${String(shown)}"`,
         );
       }
     }
