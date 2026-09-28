@@ -14,8 +14,9 @@
 #        SessionEndReason::OPERATOR_STOPPED => $this->autonomousComplete($dto, TerminalReason::OperatorDisabled),
 #      No scenario in the corpus sends this reason. The 30 SessionEnded events across
 #      107 files are Local (12), TimerExpired (10), LocalOutOfCredit (2), Fault (2),
-#      Deauthorized (2), UnexpectedDisconnect (1), EXPIRED (1). The arm that bills a
-#      wash an operator cut short had never been exercised.
+#      Deauthorized (2), UnexpectedDisconnect (1), EXPIRED (1). The arm that settles a
+#      wash an operator cut short (OperatorDisabled, by service kind) had never been
+#      exercised.
 #
 #   3. app/Modules/Station/Handlers/BootNotificationHandler.php:355 — the post-reset
 #      boot, which force-fails every session still in {pending, authorized, active,
@@ -26,10 +27,14 @@
 #   reset-request.schema.json: "True: the station settles every active session under
 #   the operator-disable policy FIRST … and only then reboots." The two routes to the
 #   same fact settle DIFFERENTLY: the settle-first arrives as SessionEnded/OperatorStopped
-#   and completes the session pro-rata on what ran; if it is skipped or lost, the
-#   RemoteReset boot force-fails it as ForceFailedReboot instead. So the ordering IS
-#   the invariant, and the last assertion is what pins it — the session must survive
-#   the reboot as `completed`, not be rewritten to `failed`.
+#   and completes the session, which the server settles by service kind — for the
+#   service this file books, `{{serviceId_1}}` (the pool seeds svc_wash_basic with no
+#   service_kind, which the server resolves to UserDuration), pro-rata on the delivered
+#   time the station reports; a FixedDuration or MultiUnit session would be refunded in
+#   full (04-flows.md §6 "Settlement by Service Kind"). If the settle-first is skipped
+#   or lost, the RemoteReset boot force-fails it as ForceFailedReboot instead. So the
+#   ordering IS the invariant, and the last assertion is what pins it — the session
+#   must survive the reboot as `completed`, not be rewritten to `failed`.
 #
 # WHAT THE FORCED-NESS DOES NOT DO, once the station accepts
 #   ResetResponseHandler.php:72 dispatches StationReset(stationId, forced) — and
@@ -209,9 +214,11 @@ steps:
   # ASSERTION 2 — server-written status. `completed` is the autonomousComplete arm;
   # the Fault arm would write `failed`, and a reason the handler did not recognise
   # would leave it `active`. (It does NOT discriminate OperatorStopped from Local —
-  # both complete, and they diverge only in the low-delivery floor, whose value is
-  # tariff-dependent and so not safe to pin across targets. Assertion 3 is what
-  # makes this file about OperatorStopped specifically.)
+  # both complete, and on this file's UserDuration service both settle pro-rata on
+  # delivered time with no low-delivery floor, so even the amount would not tell them
+  # apart. They diverge only on the all-or-nothing kinds: Local is a full charge,
+  # OperatorStopped a full refund. Assertion 3 is what makes this file about
+  # OperatorStopped specifically.)
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"

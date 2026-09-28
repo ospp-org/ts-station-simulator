@@ -55,8 +55,13 @@ export class ResetHandler implements Handler {
 
     // "Force is not a licence to drop a session on the floor; it is a licence to
     // end it without waiting." So a forced reset SETTLES every running session as
-    // an operator-initiated stop — billed for what the customer received —
-    // BEFORE the reboot, rather than letting the reboot abandon it.
+    // an operator-initiated stop BEFORE the reboot, rather than letting the reboot
+    // abandon it: stopped, metered from the time actually delivered, and reported
+    // as SessionEnded / OperatorStopped with that time and the credits it earned.
+    // What the customer pays is the server's decision, by service kind — pro-rata
+    // on delivered time for UserDuration, a full refund for FixedDuration and
+    // MultiUnit (04-flows.md §6 "Settlement by Service Kind"). The station does
+    // not know the kind and decides no money; its report is the same either way.
     //
     // One reboot operation; `force` is its only choice (reset.md §1 Overview). Hard/Soft
     // are deleted and force is NOT a rename of Hard — Hard meant a credential

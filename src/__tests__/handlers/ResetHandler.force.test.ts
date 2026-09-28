@@ -7,15 +7,20 @@ import {
 import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
 
 // ---------------------------------------------------------------------------
-// spec v0.11.0 reset-request.schema.json, `force`:
+// spec v0.44.0 reset-request.schema.json, `force` (the refusal and the settle-first
+// ordering are unchanged since v0.11.0, the text this file first quoted; 0.44.0
+// replaced its billing clause with the server's settlement by service kind):
 //
 //   "Omitted or false: the station REFUSES if any bay has an active session,
-//    answering 3016 ACTIVE_SESSIONS_PRESENT … True: the station settles every
-//    active session under the operator-disable policy FIRST — the session is
-//    stopped, metered and reported exactly as an operator-initiated stop, so the
-//    customer is billed for what they received — and only then reboots. Force is
-//    not a licence to drop a session on the floor; it is a licence to end it
-//    without waiting."
+//    answering 3016 ACTIVE_SESSIONS_PRESENT, and the operator stops the sessions
+//    or waits. True: the station settles every active session under the
+//    operator-disable policy FIRST (04-flows.md, 'The operator-disable policy') —
+//    the session is stopped, metered from the time ACTUALLY DELIVERED, and
+//    reported as SessionEnded with reason OperatorStopped, which the server
+//    settles by service kind (pro-rata on delivered time for UserDuration, a full
+//    refund for FixedDuration and MultiUnit; 04-flows.md, 'Settlement by Service
+//    Kind') — and only then reboots. Force is not a licence to drop a session on
+//    the floor; it is a licence to end it without waiting."
 //
 // The handler refused 3016 whenever `station.sessions.size > 0`, UNCONDITIONALLY,
 // and read `force` only afterwards — on the path that a running session can never
@@ -78,9 +83,10 @@ describe('ResetHandler — force is what it does to a RUNNING session', () => {
   });
 
   it('FORCED with a session running: accepted, and the session is SETTLED first', async () => {
-    // "not a licence to drop a session on the floor" — the customer is billed for
-    // what they received, so the session must be settled as an operator stop
-    // BEFORE the reboot, not abandoned by it.
+    // "not a licence to drop a session on the floor" — the session must be
+    // settled as an operator stop BEFORE the reboot, not abandoned by it: its
+    // SessionEnded / OperatorStopped report of the delivered time is what the
+    // server settles by service kind.
     const { station, sent, sessions, stopped } = makeStation(2);
 
     await new ResetHandler().handle(envelope(true), station);

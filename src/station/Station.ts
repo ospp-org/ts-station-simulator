@@ -754,14 +754,19 @@ export class Station extends EventEmitter {
   /**
    * Settle one running session as an OPERATOR-INITIATED stop and report it.
    *
-   * reset-request.schema.json, `force`: the station "settles every active session
-   * under the operator-disable policy FIRST — the session is stopped, metered and
-   * reported exactly as an operator-initiated stop, so the customer is billed for
-   * what they received — and only then reboots."
+   * reset-request.schema.json (spec v0.44.0), `force`: the station "settles every
+   * active session under the operator-disable policy FIRST (04-flows.md, 'The
+   * operator-disable policy') — the session is stopped, metered from the time
+   * ACTUALLY DELIVERED, and reported as SessionEnded with reason OperatorStopped,
+   * which the server settles by service kind (pro-rata on delivered time for
+   * UserDuration, a full refund for FixedDuration and MultiUnit; 04-flows.md,
+   * 'Settlement by Service Kind') — and only then reboots."
    *
    * Metered from the session's real elapsed time, not from its requested
-   * duration: the customer receives what ran, and billing the full request would
-   * charge for a wash the reset cut short.
+   * duration: the report states what ran, and reporting the full request would
+   * claim a wash the reset cut short — the delivered time is what the server
+   * bills a UserDuration session on. The station does not know the kind and
+   * decides no money; its report is the same whatever the kind.
    *
    * "Real elapsed time" means the MONOTONIC one — `session-ended.md §5 Processing Rules` rule 2,
    * the same obligation StopService carries at `stop-service.md §6 Processing Rules` rule 5. This
@@ -789,10 +794,10 @@ export class Station extends EventEmitter {
 
     // A bay-transition hiccup must not abort the reboot. The forced reset
     // iterates every running session, and the settle's job is to REPORT the
-    // session so the customer is billed for what they received — losing that
-    // report because a bay was already Available would be the "drop it on the
-    // floor" the clause rules out, and it would strand the remaining sessions
-    // too.
+    // session — the delivered time the server then settles by service kind.
+    // Losing that report because a bay was already Available would be the "drop
+    // it on the floor" the clause rules out, and it would strand the remaining
+    // sessions too.
     try {
       // Occupied -> Finishing -> Available, the same two steps StopServiceHandler
       // takes. The FSM has no direct Occupied -> Available edge, and a live
@@ -817,11 +822,14 @@ export class Station extends EventEmitter {
       {
         sessionId: session.sessionId,
         bayId: session.bayId,
-        // spec v0.11.1 03-messages.md §5.4 — the only reason that bills a NON-ZERO
-        // amount for a session the station did not run to completion, which is
-        // exactly what a forced reset produces. This was `Deauthorized` until the
-        // member existed, and that carries "Session MUST be billed at zero" — so
-        // every forced reset delivered a wash and charged nothing for it.
+        // 03-messages.md §5.4 (spec v0.44.0) — the member for a session an operator
+        // ended deliberately (a forced Reset, a station disable), which is exactly
+        // what a forced reset produces. It carries the delivered time; the server
+        // settles it by service kind — pro-rata on delivered time for UserDuration,
+        // a full refund for FixedDuration and MultiUnit. This was `Deauthorized`
+        // until the member existed, and that carries "Session MUST be billed at
+        // zero" — so every forced reset erased the delivered time a UserDuration
+        // session is billed on, and charged nothing for a wash it delivered.
         reason: SessionEndReason.OPERATOR_STOPPED,
         actualDurationSeconds,
         creditsCharged,

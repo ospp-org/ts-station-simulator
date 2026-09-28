@@ -20,8 +20,12 @@
 #
 # So the differential moved axis. It is no longer "does the boot succeed" — it
 # always does — it is "does the station still earn nothing while disabled". This
-# file now asserts the two gates ADR-0004 leaves holding that line, which is what
-# csms-server's own DisabledStationBootsAndStaysGatedTest covers server-side:
+# file now asserts the two gates ADR-0004 leaves holding that line. Server-side,
+# csms-server's DisabledStationBootsAndStaysGatedTest pins the boot and asserts only
+# that a start on the booted disabled station THROWS; the answer this file asserts
+# on POST /sessions/start — 409, errorCode 3003, details.cause "disabled",
+# details.reason "station_disabled", "Station is disabled" — is pinned by
+# tests/Feature/Session/DisabledStationRefusesNewStartsTest.php:
 #
 #   disabled  -> boot Accepted, and POST /sessions/start refused
 #                409 / 3003 SERVICE_UNAVAILABLE, details.cause "disabled",
