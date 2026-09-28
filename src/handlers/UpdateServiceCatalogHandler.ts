@@ -68,15 +68,21 @@ export class UpdateServiceCatalogHandler implements Handler {
     }
 
     // Update local service config on each bay to reflect the new catalog
+    const services = request.services.map(svc => ({
+      serviceId: svc.serviceId,
+      serviceName: svc.serviceName,
+      available: svc.available,
+    }));
     for (const bay of station.config.bays) {
-      bay.services = request.services.map(svc => ({
-        serviceId: svc.serviceId,
-        serviceName: svc.serviceName,
-        available: svc.available,
-      }));
+      bay.services = services.map(svc => ({ ...svc }));
     }
 
     station.currentCatalogVersion = request.catalogVersion;
+
+    // RULE 5: kept where the next process of this station finds it, BEFORE the Accepted goes out -
+    // an Accepted is the server's licence never to push this catalog again (PublishFirstCatalogOnBoot
+    // pushes only to a station that never held one).
+    await station.persistCatalog?.(request.catalogVersion, services);
 
     const response: UpdateServiceCatalogResponse = {
       status: 'Accepted',

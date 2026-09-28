@@ -52,7 +52,6 @@ const STATION_ID = 'stn_cafe0001';
 const BAY_ID = 'bay_cafe0001';
 
 type StationInstance = InstanceType<typeof Station>;
-type Restorable = { restoreCatalog?: () => Promise<boolean> };
 
 /** One process's station, as `connect` builds it (persistCatalog) or as a scenario does (not). */
 function power(persistCatalog: boolean): StationInstance {
@@ -157,7 +156,7 @@ describe('connect mode: the catalog a station accepted survives its restart', ()
     expect((await startAnswer(before, 'svc_foam_deluxe')).status).toBe('Accepted');
 
     const after = power(true);
-    await (after as unknown as Restorable).restoreCatalog?.();
+    expect(await after.restoreCatalog()).toBe(true);
 
     const answer = await startAnswer(after, 'svc_foam_deluxe');
     expect(answer.errorCode, 'the restarted station refused the service it had accepted').not.toBe(OsppErrorCode.INVALID_SERVICE);
@@ -168,7 +167,7 @@ describe('connect mode: the catalog a station accepted survives its restart', ()
     await publishCatalog(power(true));
 
     const after = power(true);
-    await (after as unknown as Restorable).restoreCatalog?.();
+    expect(await after.restoreCatalog()).toBe(true);
 
     expect(after.currentCatalogVersion).toBe('7');
   });
