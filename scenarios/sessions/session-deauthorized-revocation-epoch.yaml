@@ -1,11 +1,75 @@
-# Placeholders overridable via --var KEY=VALUE on `simulator run`:
-#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
-# Example — bind to real CSMS state for Phase 3/4 coverage:
-#   simulator run --scenario scenarios/sessions/session-deauthorized-revocation-epoch.yaml --target uat \
-#     --station stn_realstation \
-#     --var bayId_1=bay_realbay001 --var serviceId_1=svc_wash_basic
+# Placeholders: {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}} — all hydrated by
+# the pooled bootstrap, which this file requires (see `requires_pool`). Run alone with:
+#   simulator run --scenario scenarios/sessions/session-deauthorized-revocation-epoch.yaml \
+#     --target uat --bootstrap-pool --pool-size 1
 name: "Session Deauthorized via RevocationEpoch Bump"
-description: "Mid-session RevocationEpoch bump (via ChangeConfiguration) invalidates the offline pass under which session was authorized. Station emits SessionEnded with reason Deauthorized; spec v0.4.0 mandates creditsCharged: 0 + security audit on csms-server."
+description: "Mid-session, the tenant revokes its offline-pass epoch (POST /admin/offline-passes/epochs/revoke) and the server pushes the new RevocationEpoch to the station as ChangeConfiguration. The station ends the session Deauthorized; the server settles it failed with a full refund (creditsCharged 0) and a reason that names the revocation."
+# ── THE BUMP GOES THROUGH THE EPOCH REVOKE ROUTE, since csms-server b0235a9f (2026-09-25) ──────
+#
+# This file used to bump the epoch by WRITING the key: POST /api/v1/testing/trigger-command with
+# ChangeConfiguration RevocationEpoch=1. b0235a9f made RevocationEpoch server-managed
+# (ConfigRegistry.php:637, `serverManaged: true`), and WriteConfigurationAction.php:73-84 now
+# refuses an OPERATOR-origin write of such a key on every door that reaches it — console POST,
+# admin PUT and the testing route — with 5108 CONFIGURATION_KEY_READONLY, which the testing route
+# answers as 403. MEASURED on UAT: the corpus run results/uat-25a89fd7-20260928T055130Z and a
+# single re-run (results/reaudit-red-revocation-20260928T094554Z) both stopped at that step with
+#   403 {"error_code":"CONFIGURATION_KEY_READONLY","ospp_error_code":5108,
+#        "reason":"Configuration key 'RevocationEpoch' is managed by the server ..."}
+#
+# The key is the server's to push, from two places: PushEpochToStationsListener on every
+# revocation (EpochRevoked, from RevokeEpochAction) and IncludeEpochInBootListener on every boot.
+# So the bump is now what an operator really does to revoke: POST
+# /api/v1/admin/offline-passes/epochs/revoke {reason} (dashboard.php:223-224), which increments
+# the tenant's epoch, pushes ChangeConfiguration RevocationEpoch=<new epoch> to every ONLINE
+# station of that organization, and revokes the organization's passes issued under an older epoch.
+#
+# ── WHO CALLS IT: the run's tenant_owner ──────────────────────────────────────────────────────
+#
+# The route asks `permission:offline_passes.revoke` in the organization context and
+# OfflinePassPolicy::revokeEpoch asks it again (permissionForActiveOrganization). tenant_owner
+# and tenant_admin hold it (RolesAndPermissionsSeeder.php:501 and :547);
+# tenant_operator, the pool's per-scenario identity, does not (:559-581). The one tenant_owner a
+# pooled run mints is its ephemeral owner, published as SIM_POOL_OWNER_* — hence `auth:` and
+# `requires_pool` below.
+#
+# `auth:` is file-wide, so the owner also STARTS the session, and the owner's wallet is the one
+# RegisterAction opened at 0: a card-free start is refused 402 / 4001 when the balance is below
+# the authorization (StartSessionAction). The `fund_wallet` step below funds it once, by the
+# owner's own uuid, with the amount derived from the station's catalog. Two alternatives were
+# measured and refused:
+#   - a customer this file registers (`creates: user`, as start-refused-binding-uncovered.yaml
+#     does) on a POOL station: the settled session's refund is written by the settlement relay
+#     every 30 s (routes/console.php:165-168) as a `refunds` row plus a wallet bookkeeping intent
+#     (ProcessRefundAction::getOrCreatePaymentIntentId), and the scenario-level teardown of a
+#     created user deletes by user_id without the station-scoped `refunds` sweep, so whether it
+#     FK-aborts would depend on whether the relay ran in the last two seconds of the file;
+#   - the platform admin: not a member of the run's organization and not funded either.
+# The owner's session sits on a pool bay, so the POOL teardown removes it exactly as it removed the
+# tenant_operator's before: refunds and sessions by bay, then the owner's intents, wallet entries
+# and wallet in the identity sweep. `fundWalletByUserId` funds only a wallet still at
+# RegisterAction's 0 and throws otherwise, so this is the one file that may fund the run's owner;
+# a second one would be refused loudly rather than overwrite.
+#
+# ── WHAT THE BUMP REACHES BESIDES THIS FILE ──────────────────────────────────────────────────
+#
+# The epoch is per organization, and a pooled run is ONE organization. So in a `--parallel` run
+# the push also reaches every other pool station online at that instant, and every offline pass
+# of the run's organization issued before it is revoked. MEASURED over the 159 files on
+# 2026-09-28: 6 issue offline passes (all security/offline-*), 3 wait for a ChangeConfiguration
+# Request (device-management/change-configuration-*), 0 assert its silence. In sorted order the
+# nearest of them is 20 files before this one and the change-configuration trio 85; in the corpus
+# run of that day this file ran 05:58:59-05:59:04 and the last of the nine had ended at 05:58:26.
+# An unsolicited ChangeConfiguration is already what every station declaring device management
+# receives at each boot (the replay drained below), and no scenario answers or waits for it. A new
+# file that waits for ChangeConfiguration or holds a pass, placed near this one, would share the
+# organization's epoch with it — that is the dependency to keep in view.
+requires_pool: >-
+  The epoch revoke route asks offline_passes.revoke, which the pool's per-scenario tenant_operator
+  does not hold; the only identity that does is the ephemeral tenant_owner a bootstrapped run mints
+  and deletes.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -37,22 +101,17 @@ steps:
         bleSupported: false
         offlineModeSupported: true
         meterValuesSupported: true
-        # THE REASON THIS FILE WAS FAILING, and it was never a server defect.
+        # LOAD-BEARING, and now for the push rather than for a write. The server delivers the
+        # epoch as ChangeConfiguration through WriteConfigurationAction, whose capability gate
+        # (:128-137) refuses a station whose device_management_supported is not true before
+        # anything is published; PushEpochToStationsListener logs that and moves on. Without this
+        # declaration the revocation below would never reach the wire.
         #
-        # Step 8 drives the RevocationEpoch bump through
-        # POST /testing/trigger-command with command ChangeConfiguration. That
-        # endpoint refuses with 422 COMMAND_NOT_SUPPORTED 2007 "Station does not
-        # support device management" unless the station has declared the
-        # capability — so the scenario died three steps before the SessionEnded
-        # it exists to test, and the failure named device management rather than
-        # anything about revocation.
-        #
-        # The flag is STICKY per station (BootNotificationHandler §5.1 rule 2
-        # leaves an unstated capability OUT of the update, so a prior value
-        # survives). On a long-lived reused station this file inherited `true`
-        # from a sibling and passed; on a fresh pool station it starts NULL and
-        # the latent gap surfaces. Declaring it here is what makes the file
-        # independent of run order. Same fix as get-configuration.yaml.
+        # It was first added for the testing route this file used to call, which refused with
+        # 422 COMMAND_NOT_SUPPORTED 2007 "Station does not support device management" unless it
+        # was declared. The flag is STICKY per station (BootNotificationHandler §5.1 rule 2 leaves
+        # an unstated capability OUT of the update), so on a long-lived reused station this file
+        # once inherited `true` from a sibling; declaring it keeps the file independent of order.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -66,6 +125,21 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # --- The boot REPLAY of the organization's current epoch, drained here on purpose.
+  # IncludeEpochInBootListener pushes RevocationEpoch=<current> at every boot, unconditionally
+  # (measured: 52 ms after the Boot Response on the re-run above). `wait_for` resolves with the
+  # NEWEST buffered match and drains the rest (MessageRouter.drainBuffered), so if this replay were
+  # still buffered when the revocation's push is awaited below, that wait could resolve on the
+  # replay whenever the push had not landed yet. Taking it here leaves the later wait only the push.
+  - action: wait_for
+    message: ChangeConfiguration
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.keys.0.key"
+    equals: "RevocationEpoch"
+
   # --- Bay Available ---
   - action: send
     message: StatusNotification
@@ -77,6 +151,19 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  # --- The owner's wallet, funded once (see the header). `GET /me` names the uuid the wallet is
+  # keyed on; `fund_wallet` derives the amount from this station's published catalog.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      owner_id: "data.id"
+
+  - action: fund_wallet
+    user_id: "{{captured.owner_id}}"
+
   # --- Trigger StartService via API ---
   - action: api_call
     method: POST
@@ -116,29 +203,49 @@ steps:
       programs:
         - programNumber: 1
           available: false
-  # --- Mid-session: trigger RevocationEpoch bump via ChangeConfiguration.
-  # OSPP spec ch.08 §5 defines the station-side config key as
-  # `RevocationEpoch` (PascalCase). The OfflinePass JSON field is the
-  # lowercase `revocationEpoch` — different identifier. Server pushes
-  # the new epoch. NOTE: no ChangeConfigurationHandler runs in scenario mode
-  # (ScenarioRunner.ts:766-769), so nothing persists it onto the station's
-  # currentRevocationEpoch and no ChangeConfiguration RESPONSE is ever sent —
-  # the server's pendingCommand for it stays unresolved. The epoch push is
-  # observed on the wire, not round-tripped. ---
+
+  # --- Mid-session: the tenant revokes its epoch. OSPP spec ch.08 §5 defines the station-side
+  # config key as `RevocationEpoch` (PascalCase); the OfflinePass JSON field is the lowercase
+  # `revocationEpoch` — a different identifier. The answer carries the new epoch
+  # (DashboardOfflinePassController::revokeEpoch). NOTE: no ChangeConfigurationHandler runs in
+  # scenario mode, so nothing persists the pushed value onto the station's currentRevocationEpoch
+  # and no ChangeConfiguration RESPONSE is ever sent — the server's command for it stays pending.
+  # The push is observed on the wire, not round-tripped.
   - action: api_call
     method: POST
-    url: "{{target_url}}/api/v1/testing/trigger-command/{{stationId}}"
+    url: "{{target_url}}/api/v1/admin/offline-passes/epochs/revoke"
     body:
-      command: "ChangeConfiguration"
-      payload:
-        key: "RevocationEpoch"
-        value: "1"
-    expect_status: 202
+      reason: "sim revocation-epoch deauthorization on {{stationId}}"
+    expect_status: 200
+    expect_body:
+      success: true
+    capture:
+      new_epoch: "newEpoch"
 
   - action: wait_for
     message: ChangeConfiguration
     messageType: Request
     timeout_ms: 15000
+    capture:
+      pushed_epoch: "payload.keys.0.value"
+
+  - action: assert
+    field: "payload.keys.0.key"
+    equals: "RevocationEpoch"
+
+  # THE PUSH IS THIS REVOCATION'S, not a replay: the value on the wire names the epoch row this
+  # file's revocation wrote, and that row's epoch is the one the revoke answered with. The
+  # selector matches the pushed STRING against the row's number textually (getNestedValue compares
+  # String(field)), and the whole-token `{{captured.new_epoch}}` keeps the answer's number, so the
+  # one line ties the wire, the record and the response together. The reason ties the row to this
+  # file. The boot replay's value (the epoch before the bump) has no row with this reason.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/epochs"
+    expect_status: 200
+    expect_body:
+      "data[epoch={{captured.pushed_epoch}}].epoch": "{{captured.new_epoch}}"
+      "data[epoch={{captured.pushed_epoch}}].reason": "sim revocation-epoch deauthorization on {{stationId}}"
 
   # Nothing auto-accepts: no ChangeConfiguration RESPONSE is sent and the
   # station's currentRevocationEpoch is never updated. Plain wait.
@@ -219,6 +326,9 @@ steps:
   # revocation. Also not asserted: the security audit record the description
   # mentions — it is not exposed on this endpoint, and no assertion here reaches
   # it. Measured on UAT 2026-08-10.
+  #
+  # Read as the session's own user — the owner that started it. GET /api/v1/sessions/{id} is
+  # self-only (SessionController.php:199-205 answers 403 SESSION_MISMATCH to anyone else).
   - action: delay
     ms: 1000
 
