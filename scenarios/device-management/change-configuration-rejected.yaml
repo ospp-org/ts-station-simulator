@@ -39,7 +39,50 @@
 #   payload.keys has exactly one element here because the PUT sends one key, so index 0 is
 #   deterministic (unlike data.bays, which is unordered — see maintenance-mode-on.yaml).
 name: "Change Configuration Rejected"
-description: "Change a readonly configuration key and receive Rejected status"
+description: "On a station this file registers, provisions and connects: change a readonly configuration key and receive Rejected status; the server records the refusal and applies nothing."
+# ── A STATION OF ITS OWN, and why a pool station cannot hold this file's precondition ─────────
+#
+# The discriminator at the foot of this file reads the station's APPLIED configuration:
+# `value: ""` and `changed_by: null`, i.e. "nothing was ever adopted on this key". That is a
+# property of the STATION, not of this run of the file, and a pool station is leased to one
+# scenario after another without being reset (StationPoolAllocator, ScenarioRunner.ts:1663-1694,
+# is mutual exclusion and nothing more). change-configuration-accepted.yaml and
+# change-configuration-reboot-required.yaml PUT the same key and value and answer Accepted /
+# RebootRequired, and ChangeConfigurationHandler's accepted path writes `value` and `changed_by`
+# (:288, :292), while a rejection only closes the request (`resolveDesired`, called at :200,
+# updates desired_status and desired_resolved_at and nothing else).
+#
+# MEASURED on UAT, corpus run results/uat-25a89fd7-20260928T055130Z: Accepted leased stn_506a54dd
+# at 05:52:46.840Z and this file leased the SAME station at 05:52:49.681Z (their frame journals,
+# tests/artifacts/journal/change-configuration-{accepted,rejected}--stn-506a54dd--*), so step [9]
+# read `value: "30"` with `changed_by: sim-worker-…-35` (Accepted's identity) beside this file's
+# own `desired_by: sim-worker-…-37` and `desired_status: "rejected"`. The server was right: a
+# rejected change applies nothing, and what was applied before stays. Of the 24 kept result files
+# (results/*.json) that contain this scenario, 21 passed; of the 3 reds this is the only one at
+# step [9] (the other two are a 401 login and a missing certificate). Whether it passed depended on
+# which station the siblings had been handed — order, not construction.
+#
+# `owns_station` makes the precondition true by construction: the runner takes no pool lease and
+# resolves {{stationId}} to a fresh per-scenario id, which this file registers, provisions,
+# connects and boots, so no other file has ever written its configuration. It sits in the run's
+# organization, so the ephemeral tenant_owner (SIM_POOL_OWNER_*) is the identity: registering a
+# station and minting its provisioning token ask stations.create and
+# stations.manage_provisioning_tokens, which tenant_operator does not hold. Same recipe as
+# catalog-publish-refused-two-ways-under-one-code.yaml; the station and location are declared in
+# `creates:` and removed by the scenario's own teardown.
+requires_pool: >-
+  Registering a station of its own and minting its provisioning token ask stations.create and
+  stations.manage_provisioning_tokens, which the pool's per-scenario tenant_operator does not hold;
+  the only identity that does is the ephemeral tenant_owner a bootstrapped run mints and deletes.
+owns_station: >-
+  The assertions read the station's APPLIED configuration (value "" and changed_by null), which on a
+  pool station is whatever the last lessee applied: change-configuration-accepted and
+  -reboot-required write the same key and value, and on 2026-09-28 Accepted leased the station this
+  file got three seconds before it.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
+defer_mqtt_connect: true
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -49,6 +92,67 @@ station:
     accept_rate: 1.0
     response_delay_ms: [50, 200]
 steps:
+  # ── A station of this file's own: the org, a location, the station, its provisioning ──────
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Change configuration rejected {{stationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+        - bayNumber: 2
+    expect_status: 201
+    creates:
+      station: "data.station_id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "change configuration rejected"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+
+  - action: connect_mqtt
+
   - action: send
     message: BootNotification
     payload:
@@ -138,9 +242,19 @@ steps:
   # asked for, and that the request is closed rather than still in flight — the distinction
   # `desired_status` exists to make (StationConfigurationResource.php:37-43).
   #
-  # PRECONDITION unchanged: a station with no prior station_configurations rows — i.e. run
-  # this with `--bootstrap-pool`, or on a station that has not run the accepted /
-  # reboot-required variants. `data.0.*` is the only row on such a station.
+  # THE PRECONDITION, AND BOTH HALVES OF WHAT THIS PARAGRAPH USED TO SAY WERE FALSE. It read:
+  # "a station with no prior station_configurations rows — i.e. run this with
+  # `--bootstrap-pool`, or on a station that has not run the accepted / reboot-required
+  # variants. `data.0.*` is the only row on such a station."
+  #   - `--bootstrap-pool` does not give it: pool stations are shared in turn, and on
+  #     2026-09-28 Accepted had applied "30" to this file's station three seconds earlier.
+  #     `owns_station` (header) is what gives it now.
+  #   - it is not the only row: every boot of a station declaring device management replays
+  #     the organization's epoch as ChangeConfiguration RevocationEpoch
+  #     (IncludeEpochInBootListener), which records a `RevocationEpoch` row desired by
+  #     `system` — the second row of the failing body. The list is ordered by key
+  #     (ReadConfigurationAction.php:105), so index 0 was right by the alphabet rather than
+  #     by construction; the row is addressed by its key below, as the two siblings address it.
   - action: delay
     ms: 1500
 
@@ -149,25 +263,26 @@ steps:
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/config"
     expect_status: 200
     expect_body:
-      data.0.key: "HeartbeatIntervalSeconds"
+      data[key=HeartbeatIntervalSeconds].key: "HeartbeatIntervalSeconds"
       # What was ASKED. Echoes the PUT above, so on its own it proves only that the request
       # was recorded.
-      data.0.desired_value: "30"
+      data[key=HeartbeatIntervalSeconds].desired_value: "30"
       # THE REFUSAL. Reachable only from ChangeConfigurationHandler reading a `Rejected`
       # result out of the station's Response — the half this scenario sends nothing to
       # produce, and the one field that separates a refused change from one still pending.
-      data.0.desired_status: "rejected"
+      data[key=HeartbeatIntervalSeconds].desired_status: "rejected"
       # APPLIED state, and it must stay empty: the station rejected the key, so nothing was
       # ever adopted. `''` rather than null is the resource's compatibility coalesce
       # (StationConfigurationResource.php:23-30), not a value.
-      data.0.value: ""
+      data[key=HeartbeatIntervalSeconds].value: ""
       # The applied-side discriminator. `changed_by` has NO column default and is written in
-      # exactly one place — `ChangeConfigurationHandler.php:226`, the ACCEPTED path, together
-      # with the real value. Null here therefore means that path never ran.
-      data.0.changed_by: null
+      # exactly one place — `ChangeConfigurationHandler.php:292`, the ACCEPTED path, together
+      # with the real value. Null here therefore means that path never ran ON THIS STATION,
+      # which only a station of this file's own can promise.
+      data[key=HeartbeatIntervalSeconds].changed_by: null
       # Bounded rather than pinned — the timestamp is server-generated. Its PRESENCE is the
       # claim ("the request left pending"); 300s is slack for a loaded UAT, not a measurement.
-      data.0.desired_resolved_at:
+      data[key=HeartbeatIntervalSeconds].desired_resolved_at:
         is_recent: 300
   #
   # TWO FIELDS DELIBERATELY NOT ASSERTED, measured 2026-08-14 rather than reasoned about.

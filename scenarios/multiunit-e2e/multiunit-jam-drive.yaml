@@ -229,6 +229,9 @@ description: "Boot single-bay station, report Available, then answer 2 server-pu
 #     pooled mode this file is designed for, the per-scenario `tenant_operator` is a member
 #     and this is a non-issue; it only bites in the `--station` mode used to get past the
 #     credential problem above.
+#     NO LONGER TRUE since csms-server c1b7c433 (2026-09-25): membership is not enough any
+#     more, the list asks payments.view, which tenant_operator does not hold — so this file
+#     authenticates as the run's tenant_owner. See the block above `station:`.
 #
 # UN-SKIP WHEN STEP 9 OBSERVES THE PUSH — in the same commit as the run that proves it.
 #
@@ -282,22 +285,35 @@ requires_multiunit_service: 2
 # TIED TO `cardSettleTimeoutMs=600000`, the documented attended value. That poll timeout is a
 # VARIABLE: passing a larger one makes this budget too small again, and it must move with it.
 scenario_timeout_ms: 786000
-# The gate, and it is ONE LINE so that lifting it is a deliberate act.
+# WHO READS THE PAYMENT — the run's tenant_owner, since csms-server c1b7c433 (2026-09-25).
 #
-# NOT `skip_when_pooled` any more: this file now needs a BOOTSTRAPPED pool, because that is
-# where the bay slug and the MultiUnit catalog entry come from, and a key that skips it in
-# exactly that mode would mean it can never run at all.
+# THIS BLOCK USED TO ARGUE THE OPPOSITE, and was right when it was written: "NOT `requires_pool`
+# either ... What this file needs from a pool is FIXTURES, not that identity". It sat above a
+# one-line skip gate that has since been lifted, so the gate and its skip reason were already gone;
+# the identity half of the argument is what c1b7c433 ended.
 #
-# NOT `requires_pool` either, and the corpus gate that says so is right. That key means "this
-# file authenticates as the run's ephemeral tenant_owner" — an IDENTITY the bootstrap mints
-# and destroys — and `ScenarioRunner.requiresPool.test.ts` enforces the pairing with an
-# `auth:` block naming SIM_POOL_OWNER_*. What this file needs from a pool is FIXTURES, not
-# that identity, and borrowing the key would have made the gate mean less for the four files
-# that do use it correctly. The precondition is stated here and in the skip reason instead.
+# Steps [7] and [9] read GET /api/v1/admin/payments. c1b7c433 gave that list the permission its
+# detail route already asked for: PaymentIntentPolicy::viewAny (:30) now answers
+# `organizationIdsWherePermitted($user, 'payments.view') !== []`, where it used to admit any active
+# member. The pool's per-scenario identity is `tenant_operator`, which has never held payments.view
+# (RolesAndPermissionsSeeder.php:559-581, and at 8a2506d0 before the change), so step [7] answered
+# 403 "This action is unauthorized." — measured in the UAT corpus run
+# results/uat-25a89fd7-20260928T055130Z and again alone (results/reaudit-red-jam-20260928T094626Z).
 #
-# `not-applicable` rather than `inconclusive` leaves the UAT run's exit code exactly where it
-# is. The honest kind is arguable — the thing this file exists to prove IS unavailable — but
-# moving it changes what --require-conclusive reports, and that is a separate decision.
+# tenant_owner, tenant_admin and tenant_billing hold payments.view (:497, :544, :592); the only one a
+# pooled run mints is its ephemeral tenant_owner, published as SIM_POOL_OWNER_*, and the controller
+# then lists the rows of the organizations where the permission is held — the run's, whose bay the
+# intent references. `auth:` is file-wide and the bearer rides on every api_call, but the three
+# webpay calls go to web routes that carry only throttles (routes/web.php:19-31), whose controller
+# reads no user (PaymentLandingController: 0 user reads) and whose default guard is the session one
+# (`auth.defaults.guard` = web on UAT), so the two payments reads are the only calls it changes.
+requires_pool: >-
+  Steps [7] and [9] read GET /api/v1/admin/payments, which requires payments.view since csms-server
+  c1b7c433. The pool's per-scenario tenant_operator does not hold it; the only identity that does is
+  the ephemeral tenant_owner a bootstrapped run mints and deletes.
+auth:
+  email_env: SIM_POOL_OWNER_EMAIL
+  password_env: SIM_POOL_OWNER_PASSWORD
 station:
   # TWO bays, and only bay 1 is driven. The count matches DEFAULT_POOL_BAYS, not the
   # subject: `csms-server` compares the DECLARED boot topology against the PROVISIONED
@@ -493,12 +509,13 @@ steps:
   # station and the MQTT path, three steps and one subsystem from the intent that never
   # left `pending`. Measured 2026-08-27: `unit_batches` held ZERO rows and the newest
   # `payment_intents` row on UAT was from 2026-07-02. This fails in 100ms and says so.
-  # THE LIST AND NOT `GET /admin/payments/{id}`, MEASURED: the single-payment show answers
-  # 403 to the per-scenario `tenant_operator` this file runs as, while the index — the same
-  # route prefix, the same middleware — answers 200, because it scopes by organisation
-  # rather than authorising the row. Step [7] above already proves the identity can read
-  # this door. Asking the wrong one would have turned a payment assertion into a
-  # permissions one.
+  # THE LIST AND NOT `GET /admin/payments/{id}`. The reason first recorded here no longer
+  # holds: the show answered 403 to the per-scenario `tenant_operator` while the index answered
+  # 200, because the index scoped by organisation rather than asking payments.view.
+  # csms-server c1b7c433 made the index ask it too, which is why this file now runs as the
+  # tenant_owner (see `auth:` in the header) — and to that identity both doors answer. The list
+  # stays because step [7] already proves this identity reads it, and because of the paragraph
+  # below.
   #
   # NO `status=` FILTER, deliberately. Filtering to `succeeded` and finding nothing reports
   # `undefined`, which says only that the row is not in a list it may never have been in.
