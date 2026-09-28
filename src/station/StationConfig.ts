@@ -11,6 +11,14 @@ export interface StationConfig {
   timezone: string;
   bays: BayConfig[];
   behavior: BehaviorConfig;
+  /**
+   * Keep the service catalog this station accepts on disk, beside its certificates, and hold it again
+   * after a restart (Station.restoreCatalog) - what update-service-catalog.md rule 5 obliges a real
+   * station to do. `connect` sets it: it runs one long-lived station whose restart is a real one. A
+   * scenario run does not: its pooled stations are shared by many scenarios in one process tree, each
+   * of which builds its own bays and must not inherit another's catalog.
+   */
+  persistCatalog?: boolean;
 }
 
 export interface BayConfig {

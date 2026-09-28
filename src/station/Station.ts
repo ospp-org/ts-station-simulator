@@ -9,6 +9,7 @@ import {
   recordHeartbeatPublished,
 } from './heartbeatStats.js';
 import { TopologyStore, type DeclaredBay } from './TopologyStore.js';
+import { CatalogStore } from './CatalogStore.js';
 import type {
   OsppEnvelope,
   BootNotificationRequest,
@@ -37,7 +38,7 @@ import { MessageRouter } from '../mqtt/MessageRouter.js';
 import { resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { MessageSender } from '../mqtt/MessageSender.js';
 import type { FrameJournal } from '../mqtt/FrameJournal.js';
-import type { StationConfig } from './StationConfig.js';
+import type { ServiceConfig, StationConfig } from './StationConfig.js';
 import { StationLifecycle } from './StationLifecycle.js';
 
 export interface Handler {
@@ -692,6 +693,48 @@ export class Station extends EventEmitter {
     }
 
     return new TopologyStore(dir, this.config.stationId).declare(this.config.bays);
+  }
+
+  /**
+   * Hold again the catalog this station last accepted, before it boots - what a real station reads
+   * back from NVS at power-on (update-service-catalog.md rule 5). Only when the config asks for it
+   * (`persistCatalog`, connect mode) and the station has a certificate directory to keep it in.
+   * Returns whether a catalog was restored; a station that never accepted one keeps its seed and
+   * reports `''` as it always has.
+   */
+  async restoreCatalog(): Promise<boolean> {
+    const store = this.catalogStore();
+    if (store === null) {
+      return false;
+    }
+
+    const stored = await store.load();
+    if (stored === null) {
+      return false;
+    }
+
+    for (const bay of this.config.bays) {
+      bay.services = stored.services.map(svc => ({ ...svc }));
+    }
+    this.currentCatalogVersion = stored.catalogVersion;
+
+    return true;
+  }
+
+  /** StationContext.persistCatalog: the catalog just accepted, kept for the next process. */
+  async persistCatalog(catalogVersion: string, services: ServiceConfig[]): Promise<void> {
+    await this.catalogStore()?.save(catalogVersion, services);
+  }
+
+  /** Where this station keeps its catalog - null when it keeps none (a scenario's station, a unit test's). */
+  catalogStore(): CatalogStore | null {
+    if (this.config.persistCatalog !== true) {
+      return null;
+    }
+
+    const dir = this.topologyDir();
+
+    return dir === null ? null : new CatalogStore(dir, this.config.stationId);
   }
 
   /** Alongside the station's certificates — the state it already keeps on disk. */

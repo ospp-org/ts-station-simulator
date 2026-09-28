@@ -24,6 +24,11 @@ export interface StationContext {
    * value as `previousCatalogVersion`; see the field's docblock on `Station`.
    */
   currentCatalogVersion: string;
+  /**
+   * Keep the catalog just accepted where the next process of this station will find it (Station,
+   * when its config asks for it - connect mode). Optional: a handler test's hand-built context has none.
+   */
+  persistCatalog?(catalogVersion: string, services: import('../station/StationConfig.js').ServiceConfig[]): Promise<void>;
   sessionKey: string | null;
   /**
    * The device-held private key (PKCS8 PEM) minted for an in-flight certificate

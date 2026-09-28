@@ -979,6 +979,9 @@ program
             meterValuesIntervalSec: 30,
             autoRetryBoot: true,
           },
+          // The catalog this station accepts is kept beside its certificates and held again at the
+          // next start (update-service-catalog.md rule 5): the server does not push it twice.
+          persistCatalog: true,
         },
         {
           mqttUrl: effectiveMqttUrl,
@@ -988,6 +991,17 @@ program
           ...(journal ? { journal } : {}),
         },
       );
+
+      // Before the boot: a real station reads its catalog back from NVS at power-on. Without it a
+      // restarted station sold only its seed and refused every published service 3004.
+      if (await station.restoreCatalog()) {
+        console.log(chalk.gray(
+          `  Catalog ${station.currentCatalogVersion} restored from ${station.catalogStore()?.path}: ` +
+            bays[0].services.map(svc => svc.serviceId).join(', '),
+        ));
+      } else {
+        console.log(chalk.gray('  No catalog kept for this station yet; it holds its seed until the server publishes one.'));
+      }
 
       // Register ALL handlers (cast needed: handlers use StationContext, registerHandler expects Station Handler)
       const reg = (a: typeof OsppAction[keyof typeof OsppAction], h: unknown) =>
