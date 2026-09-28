@@ -35,6 +35,33 @@ function makeEnvelope(keys: Array<{ key: string; value: string }>): OsppEnvelope
   };
 }
 
+describe('ChangeConfigurationHandler — RevocationEpoch, by the name the spec gives it (CW95)', () => {
+  // The spec names the key RevocationEpoch (spec 08-configuration.md, section 3, row 24, at v0.43.0;
+  // @ospp/protocol ConfigKey.REVOCATION_EPOCH), and csms-server pushes it by that name at every boot
+  // (IncludeEpochInBootListener) and on every bump (PushEpochToStationsListener). The handler compared
+  // `revocationEpoch`, so the push was answered Accepted and never applied (UAT, 2026-09-28:
+  // "[ChangeConfiguration] Accepted 1 configuration changes: RevocationEpoch=0").
+  const handler = new ChangeConfigurationHandler();
+
+  it('applies RevocationEpoch as the server sends it', async () => {
+    const { station } = makeMockStation();
+    await handler.handle(makeEnvelope([{ key: 'RevocationEpoch', value: '5' }]), station);
+    expect(station.currentRevocationEpoch).toBe(5);
+  });
+
+  it('applies RevocationEpoch alongside other keys', async () => {
+    const { station } = makeMockStation();
+    await handler.handle(
+      makeEnvelope([
+        { key: 'HeartbeatIntervalSec', value: '60' },
+        { key: 'RevocationEpoch', value: '7' },
+      ]),
+      station,
+    );
+    expect(station.currentRevocationEpoch).toBe(7);
+  });
+});
+
 describe('ChangeConfigurationHandler — v0.4.0 revocationEpoch sniff', () => {
   const handler = new ChangeConfigurationHandler();
 
