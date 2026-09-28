@@ -1,19 +1,39 @@
-name: "Diagnostics Refused — the one instant the validator allows and the action does not, then the one already running"
-description: "Request diagnostics with startTime EQUAL to endTime: the FormRequest permits it (after_or_equal) and the action refuses it, 422 + ospp_code 5020 INVALID_TIME_WINDOW, with nothing on the wire. Widen the window by one hour and the identical request is 202 and reaches the station. Then, with that upload still unfinished, a second request is refused 409 + 5107 OPERATION_IN_PROGRESS."
-# ARM 1 IS A DISAGREEMENT BETWEEN TWO LAYERS, and it is exactly one instant wide.
+name: "Diagnostics Refused — an equal window at the door, then the one already running"
+description: "Request diagnostics with startTime EQUAL to endTime: the door refuses it (after:startTime since csms-server d1b89feb), 422 with Laravel's validation error on endTime and no ospp code, and nothing reaches the wire. Widen the window by one hour and the identical request is 202 and reaches the station. Then, with that upload still unfinished, a second request is refused 409 + 5107 OPERATION_IN_PROGRESS."
+# ARM 1 — AN EQUAL WINDOW, REFUSED AT THE DOOR.
 #
-#   GetDiagnosticsRequest.php:32-36   'endTime' => ['nullable','date','after_or_equal:startTime']
-#   RequestDiagnosticsAction.php:91   if ($start !== null && $end !== null && $start >= $end)
+#   GetDiagnosticsRequest.php:55      'endTime' => ['nullable', new IsoDate, 'after:startTime']
+#   RequestDiagnosticsAction.php:108  if ($startTime !== null && $endTime !== null && $startTime >= $endTime)
+#                                     -> 5020 INVALID_TIME_WINDOW (:111)
 #
-# `after_or_equal` ADMITS equality; `>=` REFUSES it. For every other pair of timestamps the two
-# layers agree — endTime before startTime is caught by the FormRequest as a Laravel 422 with no
-# ospp code, endTime after startTime passes both. The single point where they disagree is
-# `startTime == endTime`, and it is the ONLY input for which this action's 5020 can ever fire.
-# That is what the first arm below sends.
+# UNTIL csms-server d1b89feb (2026-09-25) THIS ARM STOOD ON A DISAGREEMENT BETWEEN THOSE TWO LINES.
+# The request rule was `after_or_equal:startTime`, which ADMITTED equality while the action's `>=`
+# refused it, so `startTime == endTime` was the one input that reached the action's own 5020, answered
+# 422 with `error.ospp_code: 5020` / `error.code: INVALID_TIME_WINDOW`. The scenario's name described
+# that instant ("the one instant the validator allows and the action does not") and changes with it.
 #
-# So this file is not merely covering a code; it is standing on the one input that proves the
-# action's own guard is load-bearing rather than a duplicate of the request rule above it.
-# Widen the window and the same request is accepted, which is the control.
+# d1b89feb made the door strict, so the equal window is now refused by the FormRequest, before the
+# controller runs, as Laravel's validation error on `endTime`:
+#
+#   422 {"message":"The end time field must be a date after start time.",
+#        "errors":{"endTime":["The end time field must be a date after start time."]}}
+#
+# Laravel's shape and not an OSPP Error Object, because this route carries no OsppErrorSurface
+# (bootstrap/app.php:176-179 hands an uncovered route's ValidationException back to Laravel).
+# MEASURED on UAT: the corpus run results/uat-25a89fd7-20260928T055130Z and a single re-run of this
+# file against csms-server 25a89fd7 both failed the old assertion with exactly that body.
+#
+# THE ACTION'S 5020 IS NO LONGER REACHABLE OVER HTTP for an equal or inverted window. The fleet door
+# moved in the same commit (DashboardDeviceController.php:313, `after:start_time`), and the two doors
+# are the action's only callers. So arm 1 now proves the DOOR's refusal, not the action's guard.
+#
+# WHAT ARM 1 ASSERTS, AND WHY NOT THE MESSAGE. The status, exactly one validation message on `endTime`,
+# and the ABSENCE of `error` (the envelope the action's 5020 was answered in) and of
+# `errors.startTime` / `errors.uploadUrl`. The message itself is a Laravel translation string, and
+# pinning it would make a message-catalogue change read as a server regression — the same choice
+# firmware-nonconformant-command-reaches-the-wire.yaml makes for its 422s. What attributes the refusal
+# to the WINDOW rather than to the date FORMAT (IsoDate sits on the same field) is the control: it
+# changes only the hour of `endTime`, and the same door accepts it.
 #
 # ARM 2 IS THE ONE THAT WOULD HAVE BITTEN A LATER SCENARIO. `5107 OPERATION_IN_PROGRESS` needs
 # an unfinished diagnostics upload — and creating one is exactly how a file leaves a station
@@ -22,16 +42,19 @@ description: "Request diagnostics with startTime EQUAL to endTime: the FormReque
 # opens is therefore DRIVEN TO `Uploaded` before the file ends, and the closing GET asserts it
 # — which both frees the station and proves arm 2's precondition was real rather than assumed.
 #
-# TWO OF THE SEVEN EXITS ARE DEAD AND ARE NOT ATTEMPTED, measured rather than skipped quietly:
-#   :45 STATION_NOT_REGISTERED — every caller resolves the station and 404s first
-#                                (StationManagementController:277-288 on the per-station route,
-#                                Station::findOrFail on the fleet one).
-#   :83 VALIDATION_ERROR       — `url:https` in the FormRequest pre-empts the action's own
-#                                uploadUrl check on both routes.
-# The capability gate (:71) is proved at a different site by
+# THREE OF THE SEVEN EXITS ARE DEAD AND ARE NOT ATTEMPTED, measured rather than skipped quietly
+# (RequestDiagnosticsAction.php line numbers at csms-server 25a89fd7):
+#   :54  STATION_NOT_REGISTERED — every caller resolves the station and 404s first
+#                                 (findStationByOsppIdOrFail, StationManagementController.php:703,
+#                                 on the per-station route; resolveAndAuthorizeTargets on the fleet one).
+#   :101 VALIDATION_ERROR       — `url:https` in the FormRequest pre-empts the action's own
+#                                 uploadUrl check on both routes.
+#   :111 INVALID_TIME_WINDOW    — `after:startTime` / `after:start_time` pre-empt it on both routes
+#                                 since d1b89feb; arm 1 below is where that is measured.
+# The capability gate (:80) is proved at a different site by
 # maintenance-refused-capability-not-declared.yaml; the seven copies are indistinguishable on
 # the wire, so a second proof of the same triple here would add a site and no discrimination.
-# `6003 STATION_OFFLINE` (:53) is left to a file whose subject is being offline.
+# `6003 STATION_OFFLINE` (:62) is left to a file whose subject is being offline.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -77,9 +100,9 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- ARM 1 — THE ZERO-WIDTH WINDOW. Identical timestamps: admitted by `after_or_equal`,
-  # refused by `>=`. A window that ran BACKWARDS would be a Laravel 422 with no ospp code,
-  # which is a different refusal from a different layer and would not exercise this guard.
+  # --- ARM 1 — THE ZERO-WIDTH WINDOW. Identical timestamps: refused by the door's
+  # `after:startTime` (GetDiagnosticsRequest.php:55) before the controller runs, so the answer is
+  # Laravel's validation error on `endTime` and the action's 5020 is never reached. See the header.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/diagnostics"
@@ -89,8 +112,16 @@ steps:
       endTime: "2026-01-01T00:00:00Z"
     expect_status: 422
     expect_body:
-      error.ospp_code: 5020
-      error.code: "INVALID_TIME_WINDOW"
+      # ONE message, on the end of the window. The field has no `bail`, so Laravel runs every rule
+      # on it (Validator::shouldStopValidating): a malformed date would fail IsoDate AND `after`
+      # (two messages), while an equal, well-formed one fails `after` alone.
+      errors.endTime.length: 1
+    expect_body_absent:
+      # The OSPP envelope the action's own 5020 was answered in — present until d1b89feb.
+      - "error"
+      # The other two fields are conformant, so they carry no message: the refusal is the window's.
+      - "errors.startTime"
+      - "errors.uploadUrl"
 
   # NOTHING WAS PUBLISHED. The guard runs before the command is built, so a GetDiagnostics
   # arriving here would mean the station was asked to collect over a window the server had
