@@ -1,11 +1,14 @@
 name: "Soft Reset"
 description: >
-  Soft reset: the server publishes Reset REQUEST and this scenario observes it.
-  KNOWN GAP — no Reset RESPONSE is ever sent and the station never disconnects.
-  Scenario mode registers no ResetHandler (ScenarioRunner.ts:766-769), so the prior
-  "handler accepts, disconnects, reconnects, auto-boots" was describing a handler that
-  does not run. The server-side pendingCommand for this Reset is therefore never resolved.
-  What IS proven: the server dispatches Reset to a station that declared the profile.
+  The unforced reset, on a station this file gives no session: the admin reset route is asked for
+  force: false, the station answers the Reset Accepted and boots again with bootReason
+  RemoteReset. OSPP has one reset operation, a reboot, and force is its only choice
+  (reset-request.schema.json has no other member); Hard and Soft are gone from the protocol, and
+  the file keeps its name so corpus results compare across runs. Asserted: the station_reset
+  journal row the Response writes, carrying this Reset's messageId and details.forced false, and
+  the post-reset boot recorded as RemoteReset. Unforced, the reset is one the server refuses to
+  dispatch while the station has a live session (6008, details.wouldBe 3016), and its listener
+  settles nothing.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -36,11 +39,13 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
-        # device_management_supported === true, and NULL is "not stated" and withheld too
-        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
-        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
-        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        # Required: `ResetStationAction::execute` refuses the Reset with 6008 COMMAND_PRE_EMPTED,
+        # details.wouldBe 2007, unless device_management_supported === true, and NULL is "not
+        # stated" and withheld too (boot-notification.md, "Capability Semantics — absence means
+        # NOT STATED"). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10, when that refusal was still a bare 2007: without this, this file
+        # failed on a FRESH pool station — it only ever passed by inheriting the flag from a
+        # sibling on a reused station.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -58,25 +63,27 @@ steps:
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/reset"
     body:
-      type: "Soft"
+      force: false
     expect_status: 202
 
   - action: wait_for
     message: Reset
     messageType: Request
     timeout_ms: 15000
+    capture:
+      resetMessageId: "messageId"
 
-  # ANSWER IT. Scenario mode registers no ResetHandler, so if this file does not send the
-  # Response nobody does: the server's pending command is left to expire on its Redis TTL
-  # and the round trip the file is named for never completes.
-  # Note what this Response leaves behind. ResetResponseHandler resolves the pending command,
-  # writes a `station_reset` row to the station journal, readable at
-  # GET /api/v1/admin/stations/{stationId}/journal, and dispatches StationReset, whose one
-  # listener, SettleSessionsOnForcedReset, acts only on a FORCED reset. This one is not
-  # forced: the admin reset route validates `force` alone, so the `type` above is dropped
-  # and `force` defaults to false. So the Response does write something queryable - the
-  # journal row, with `details.forced: false` - and this file does not assert it; what it
-  # asserts is the post-reset boot below.
+  # ANSWER IT. Scenario mode registers no Reset handler (createStationFromScenario registers
+  # BootNotificationHandler alone), so if this file does not send the Response nobody does. An
+  # unanswered Reset stays `pending` in csms-server's `pending_commands` until, past its timeout
+  # (30 s for Reset in `ospp.command_timeouts`), the scheduled command:check-timeouts
+  # (CommandTimeoutScanner) expires it, journals it as `command_expired` and compensates
+  # nothing; for those 30 s StartSessionAction refuses a start on this station with 3002
+  # (`PendingCommandRegistry::hasOutstanding`). The Reset round trip would never complete.
+  # Answered, the Response is what `ResetResponseHandler::handle` resolves: it writes a
+  # `station_reset` row to the station journal with this Reset's messageId and `details.forced`
+  # false, read back at the end of this file, and dispatches StationReset. The event's one
+  # listener, SettleSessionsOnForcedReset, returns on an unforced reset.
   - action: send
     message: Reset
     messageType: Response
@@ -88,7 +95,8 @@ steps:
   - action: delay
     ms: 500
 
-  # Per spec reset.md §5.4-5, station MUST send BootNotification post-reset.
+  # reset.md, "Processing Rules": after restarting, the station MUST send a BootNotification
+  # with bootReason RemoteReset.
   # autoBoot was removed from sim (commit ac9b2e8) — scenarios must send explicitly.
   - action: send
     message: BootNotification
@@ -111,11 +119,13 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
-        # device_management_supported === true, and NULL is "not stated" and withheld too
-        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
-        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
-        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        # Required: `ResetStationAction::execute` refuses the Reset with 6008 COMMAND_PRE_EMPTED,
+        # details.wouldBe 2007, unless device_management_supported === true, and NULL is "not
+        # stated" and withheld too (boot-notification.md, "Capability Semantics — absence means
+        # NOT STATED"). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10, when that refusal was still a bare 2007: without this, this file
+        # failed on a FRESH pool station — it only ever passed by inheriting the flag from a
+        # sibling on a reused station.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -129,10 +139,11 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # THE ASSERTION, server-recorded. The post-reset boot must be attributed to the reset:
-  # BootNotificationHandler persists boot_reason, and Admin\StationResource:32-33 /
-  # StationManagementController:264-265 expose it. If the Reset round trip above had not
-  # completed, or the station had not re-booted, this reads the earlier PowerOn instead.
+  # THE REBOOT, server-recorded. The post-reset boot must be attributed to the reset:
+  # `BootNotificationHandler::handle` persists boot_reason and
+  # `StationManagementController::showStation` returns it as data.bootReason. Had the station
+  # not booted again, this would read the PowerOn above. The value is what the station
+  # reported; the journal row read after it is what shows the server handled the Response.
   - action: delay
     ms: 1000
 
@@ -142,3 +153,18 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "RemoteReset"
+
+  # THE ROUND TRIP, server-recorded. `ResetResponseHandler::handle` writes one `station_reset`
+  # row per Accepted Reset, and only after it has resolved the pending command, so this row
+  # exists only if the Response above reached the server and matched this Reset. The journal
+  # route lists a station's rows newest first, and a pool station is leased to one scenario
+  # after another with their rows kept, so the row is pinned by this Reset's messageId (the
+  # Response carries the Request's) before `details.forced` is read off it: false, because the
+  # pending command was registered with the force the route was given.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=station_reset"
+    expect_status: 200
+    expect_body:
+      data[kind=station_reset].details.messageId: "{{captured.resetMessageId}}"
+      data[kind=station_reset].details.forced: false

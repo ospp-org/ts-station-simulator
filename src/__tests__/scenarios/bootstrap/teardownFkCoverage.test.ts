@@ -14,39 +14,55 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  * commit #3: offline_passes-before-users missing). Both slipped because the unit
  * tests asserted SQL TEXT, not the FK GRAPH.
  *
- * The SCHEMA_FK_GRAPH constant below is a hand-curated snapshot of the live UAT
- * `pg_constraint` table for the entity types this teardown touches, captured
- * 2026-06-02 via:
+ * THE SNAPSHOT. SCHEMA_FK_GRAPH below was regenerated on 2026-09-29 from csms-server master
+ * 87164f7d: its 190 migrations applied to an empty database, and every foreign key read from
+ * pg_constraint with
  *
- *   docker exec -i csms-postgres-uat psql -U csms_uat -d csms_uat -t -c "
- *     SELECT con.conname, cls.relname AS child, att.attname AS column,
- *            par.relname AS parent, con.confdeltype
+ *   psql -AtF '|' -c "
+ *     SELECT par.relname AS parent, chi.relname AS child,
+ *            (SELECT string_agg(a.attname, ',' ORDER BY k.n)
+ *               FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, n)
+ *               JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) AS columns,
+ *            (SELECT string_agg(a.attname, ',' ORDER BY k.n)
+ *               FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, n)
+ *               JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum) AS parent_columns,
+ *            CASE con.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+ *                 WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END,
+ *            con.conname, con.condeferrable, con.condeferred
  *     FROM pg_constraint con
- *     JOIN pg_class cls ON cls.oid = con.conrelid
+ *     JOIN pg_class chi ON chi.oid = con.conrelid
  *     JOIN pg_class par ON par.oid = con.confrelid
- *     JOIN pg_attribute att ON att.attnum = con.conkey[1] AND att.attrelid = con.conrelid
- *     WHERE con.contype = 'f' AND par.relname IN
- *       ('users','wallets','sessions','reservations','stations','bays','locations',
- *        'service_definitions')
- *     ORDER BY par.relname, cls.relname;"
+ *     WHERE con.contype = 'f' AND con.conparentid = 0
+ *     ORDER BY 1, 2, 6;"
  *
- * Regenerate when csms-server's migrations add a new NO-ACTION FK pointing at any
- * of these parents — the test below will then red-fail (asserting the teardown
- * doesn't cover the new child) until both this snapshot and `buildTeardownTestUsersSql`
- * / `buildTeardownSql` are updated. That's the CI-time safety net commit #3 lacked.
+ * 75 foreign keys: 44 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
+ * and NOT DEFERRABLE. The snapshot has an entry for every table the teardown deletes from -
+ * both halves, buildTeardownSql and buildTeardownTestUsersSql, 36 tables - holding every FK that
+ * points at that table; an empty entry is a table no FK points at. 65 of the 75 are listed here.
+ * The other 10:
  *
- * Why hand-curated vs. live introspection: the test must run in CI without a live
+ *   - 9 point at tables the teardown never deletes from: permissions (2), roles (2),
+ *     station_models (2) and station_services (3). The checks read DELETE statements, so an
+ *     entry for a table the teardown reaches only through a cascade could not be checked.
+ *   - 1 is platform_settlement_ledger's reference to itself; see the note at its entry.
+ *
+ * `con.conparentid = 0` leaves out partition clones. security_events is partitioned by month,
+ * and every partition carries a copy of security_events_station_id_fkey whose conparentid names
+ * the parent table's FK - 4 of them in that database, security_events_2026_09 to _12. The
+ * partitions are created by the migration that creates security_events (the month it runs and
+ * the three after) and daily by ospp:security:manage-partitions, so their names follow the
+ * calendar; the FK on security_events is the edge, and it is listed under stations.
+ *
+ * Regenerate when csms-server's migrations add or change a foreign key into a table the
+ * teardown deletes from, and whenever the teardown starts deleting from a table it did not
+ * (the last describe below fails until that table has an entry). After a regeneration the
+ * checks below fail for every NO ACTION child the teardown does not delete first, until
+ * `buildTeardownTestUsersSql` / `buildTeardownSql` do. That's the CI-time safety net commit #3
+ * lacked.
+ *
+ * Why a snapshot and not live introspection: the test must run in CI without a live
  * Postgres (the F-PROC-1 doc commits to "pure static analysis on generated SQL +
- * schema graph, no live Postgres at test runtime"). The snapshot is the contract;
- * a future `scripts/regenerate-fk-graph.ts` could automate the refresh from a dev
- * machine with SSH access.
- *
- * RE-DERIVED 2026-09-29 FROM csms-server's MIGRATIONS for five parents - users, sessions,
- * payment_intents, refunds and unit_batches - by reading every REFERENCES, constrained() and
- * foreign() in an up() body, with the renames and drops that followed applied (token_batches
- * became unit_batches; the FK on offline_auth_grants.reconciled_session_id was dropped). Read
- * at csms-server master aadea673, plus 2026_09_29_000002_create_session_settlement_retries_table,
- * which was not yet on master that day. The other parents below were not re-derived then.
+ * schema graph, no live Postgres at test runtime"). The snapshot is the contract.
  */
 
 type OnDelete = 'NO ACTION' | 'CASCADE' | 'SET NULL' | 'RESTRICT';
@@ -57,15 +73,14 @@ interface FkEdge {
 }
 
 const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
-  // 15 FKs point at users (re-derived 2026-09-29, see the docblock): 2 CASCADE, removed with
-  // the user; 1 SET NULL, nulled with the user; 12 NO ACTION, each of which blocks the users
-  // delete until its rows are gone. invitations.revoked_by, unit_batches.user_id and
-  // session_settlement_retries.settled_by_user_id are the three the earlier 12 lacked.
+  // 15 FKs point at users: 12 NO ACTION, each of which blocks the users delete until its rows
+  // are gone; 2 CASCADE (api_keys, refresh_tokens), removed with the user; 1 SET NULL
+  // (session_settlement_retries.settled_by_user_id), nulled with the user.
   users: [
-    { child: 'offline_auth_grants',        column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'api_keys',                   column: 'user_id',            onDelete: 'CASCADE'   },
     { child: 'invitations',                column: 'invited_by',         onDelete: 'NO ACTION' },
     { child: 'invitations',                column: 'revoked_by',         onDelete: 'NO ACTION' },
+    { child: 'offline_auth_grants',        column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'offline_passes',             column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'offline_transactions',       column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'organization_members',       column: 'user_id',            onDelete: 'NO ACTION' },
@@ -78,100 +93,147 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'vehicles',                   column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'wallets',                    column: 'user_id',            onDelete: 'NO ACTION' },
   ],
-  // wallets has ONE NO ACTION child — easy to miss, blew up commit #3's teardown
-  // at the wallets-delete step if wallet_entries was non-empty.
+  // 1 FK points at wallets, NO ACTION — easy to miss, blew up commit #3's teardown at the
+  // wallets-delete step if wallet_entries was non-empty.
   wallets: [
     { child: 'wallet_entries', column: 'wallet_id', onDelete: 'NO ACTION' },
   ],
-  // 4 FKs point at sessions (re-derived 2026-09-29): 3 NO ACTION, which must go before the
-  // sessions delete, and session_settlement_retries.session_id, which references
-  // sessions.session_id ON DELETE CASCADE. offline_auth_grants.reconciled_session_id was a
-  // NO ACTION child until 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id
-  // dropped its FK and retyped the column to the varchar business id.
+  // 4 FKs point at sessions: 3 NO ACTION, which must go before the sessions delete, and
+  // session_settlement_retries.session_id, which references sessions.session_id (not id) ON
+  // DELETE CASCADE. offline_auth_grants.reconciled_session_id was a NO ACTION child until
+  // 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id dropped its FK and
+  // retyped the column to the varchar business id.
   sessions: [
-    { child: 'refunds',                    column: 'session_id',            onDelete: 'NO ACTION' },
     { child: 'offline_transactions',       column: 'reconciled_session_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'session_id',            onDelete: 'NO ACTION' },
+    { child: 'refunds',                    column: 'session_id',            onDelete: 'NO ACTION' },
     { child: 'session_settlement_retries', column: 'session_id',            onDelete: 'CASCADE'   },
   ],
+  // 1 FK points at reservations, NO ACTION.
   reservations: [
     { child: 'sessions', column: 'reservation_id', onDelete: 'NO ACTION' },
   ],
-  // 4 FKs point at payment_intents (re-derived 2026-09-29), all NO ACTION. sessions carries a
-  // payment_intent_id column with no FK, so it is not among them.
+  // 4 FKs point at payment_intents, all NO ACTION. sessions carries a payment_intent_id column
+  // with no FK, so it is not among them.
   payment_intents: [
     { child: 'payment_ledger',             column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'refunds',                    column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'unit_batches',               column: 'payment_intent_id', onDelete: 'NO ACTION' },
   ],
-  // 2 FKs point at refunds (re-derived 2026-09-29), both NO ACTION.
+  // 2 FKs point at refunds, both NO ACTION.
   refunds: [
     { child: 'payment_ledger',             column: 'refund_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'refund_id', onDelete: 'NO ACTION' },
   ],
-  // 1 FK points at unit_batches (re-derived 2026-09-29; the table was created as token_batches
-  // by 2026_07_08_000001 and renamed by 2026_07_09_000003, its FKs with it).
+  // 1 FK points at unit_batches, NO ACTION. The table was created as token_batches by
+  // 2026_07_08_000001 and renamed by 2026_07_09_000003, its FKs with it (they keep their
+  // token_batches_ names).
   unit_batches: [
     { child: 'sessions', column: 'batch_id', onDelete: 'NO ACTION' },
   ],
-  // NOT LISTED, on purpose: platform_settlement_ledger.reverses_settlement_id references
-  // platform_settlement_ledger itself (NO ACTION). A table-order check cannot express a
-  // self-reference, since no delete can precede itself. What keeps it from blocking: a
-  // reversal row copies its settlement's payment_intent_id and session_id
-  // (SettlementReversalRecorder), so a statement that reaches a settlement by either key
-  // reaches its reversals in the same statement, and NO ACTION is checked at the end of it.
+  // 1 FK points at platform_settlement_ledger, and it is NOT LISTED, on purpose:
+  // platform_settlement_ledger.reverses_settlement_id references platform_settlement_ledger
+  // itself (NO ACTION). A table-order check cannot express a self-reference, since no delete
+  // can precede itself. What keeps it from blocking: a reversal row copies its settlement's
+  // payment_intent_id and session_id (SettlementReversalRecorder), so a statement that reaches
+  // a settlement by either key reaches its reversals in the same statement, and NO ACTION is
+  // checked at the end of it.
+  platform_settlement_ledger: [],
+  // 10 FKs point at stations: 7 NO ACTION; station_services CASCADE; security_events and
+  // station_journal SET NULL, which neither block nor cascade - the delete nulls the key and the
+  // row stays, so buildTeardownSql deletes both itself. (The 4 partition clones of the
+  // security_events FK are left out; see the docblock.)
   stations: [
-    { child: 'offline_auth_grants',    column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'bays',                   column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'diagnostics_uploads',    column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'firmware_updates',       column: 'station_id', onDelete: 'NO ACTION' },
+    { child: 'offline_auth_grants',    column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'offline_transactions',   column: 'station_id', onDelete: 'NO ACTION' },
+    { child: 'security_events',        column: 'station_id', onDelete: 'SET NULL'  },
     { child: 'service_catalogs',       column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'station_configurations', column: 'station_id', onDelete: 'NO ACTION' },
+    { child: 'station_journal',        column: 'station_id', onDelete: 'SET NULL'  },
     { child: 'station_services',       column: 'station_id', onDelete: 'CASCADE'   },
-    { child: 'security_events',        column: 'station_id', onDelete: 'SET NULL'  },
   ],
+  // 6 FKs point at bays: 3 NO ACTION; bay_programs and bay_services CASCADE; station_journal
+  // SET NULL.
   bays: [
+    { child: 'bay_programs',         column: 'bay_id', onDelete: 'CASCADE'   },
     { child: 'bay_services',         column: 'bay_id', onDelete: 'CASCADE'   },
     { child: 'offline_transactions', column: 'bay_id', onDelete: 'NO ACTION' },
     { child: 'reservations',         column: 'bay_id', onDelete: 'NO ACTION' },
     { child: 'sessions',             column: 'bay_id', onDelete: 'NO ACTION' },
+    { child: 'station_journal',      column: 'bay_id', onDelete: 'SET NULL'  },
   ],
+  // 1 FK points at locations, NO ACTION.
   locations: [
     { child: 'stations', column: 'location_id', onDelete: 'NO ACTION' },
   ],
+  // 1 FK points at service_definitions.
   service_definitions: [
     // RESTRICT acts identical to NO ACTION for the blocking question — but the
     // teardown deliberately orphan-sweeps service_definitions LAST (after stations
     // cascade-removes station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
-  // organizations: 10 FKs. `corporate_policies` was an 11th until csms-server
-  // 2026_09_04_000003_drop_corporate_policies_table DROPPED the table (ADR-0012) — the FK went
-  // with it, so it is removed here rather than left as a NO ACTION child that cannot block.
-  // (10 captured 2026-06-15 via pg_constraint + offline_auth_grants,
-  // table added 0.6.2/B1 after that capture — exactly the "regenerate" case in the top docstring).
-  // The 5 CASCADE children are auto-removed by the org delete (stations, offline_passes, roles,
-  // model_has_roles, service_definitions); the 5 NO ACTION children must be deleted first or the
-  // org delete FK-blocks. The ephemeral-org teardown (Direction B) deletes the org last.
+  // 14 FKs point at organizations: 7 NO ACTION, each of which must be deleted first or the org
+  // delete FK-blocks; 7 CASCADE, removed by the org delete. The ephemeral-org teardown
+  // (Direction B) deletes the org last. corporate_policies.organization_id went with its table
+  // (2026_09_04_000003_drop_corporate_policies_table, ADR-0012).
   organizations: [
-    { child: 'offline_auth_grants',  column: 'organization_id', onDelete: 'NO ACTION' },
-    { child: 'stations',             column: 'organization_id', onDelete: 'CASCADE'   },
-    { child: 'offline_passes',       column: 'organization_id', onDelete: 'CASCADE'   },
-    { child: 'roles',                column: 'organization_id', onDelete: 'CASCADE'   },
-    { child: 'model_has_roles',      column: 'organization_id', onDelete: 'CASCADE'   },
-    { child: 'service_definitions',  column: 'organization_id', onDelete: 'CASCADE'   },
-    { child: 'organization_members', column: 'organization_id', onDelete: 'NO ACTION' },
-    { child: 'locations',            column: 'organization_id', onDelete: 'NO ACTION' },
-    { child: 'sessions',             column: 'organization_id', onDelete: 'NO ACTION' },
-    { child: 'invitations',          column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'invitations',                column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'locations',                  column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'model_has_roles',            column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'offline_auth_grants',        column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'offline_passes',             column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'organization_members',       column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'platform_settlement_ledger', column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'revocation_epochs',          column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'roles',                      column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'service_definitions',        column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'sessions',                   column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'station_models',             column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'stations',                   column: 'organization_id', onDelete: 'CASCADE'   },
+    { child: 'tenant_payment_credentials', column: 'organization_id', onDelete: 'NO ACTION' },
   ],
-  // roles: 2 FKs, both CASCADE via the org→roles cascade (no explicit DELETE FROM roles needed).
-  roles: [
-    { child: 'model_has_roles',      column: 'role_id', onDelete: 'CASCADE' },
-    { child: 'role_has_permissions', column: 'role_id', onDelete: 'CASCADE' },
+  // 2 FKs point at offline_passes: offline_transactions NO ACTION, offline_pass_consumptions
+  // CASCADE.
+  offline_passes: [
+    { child: 'offline_pass_consumptions', column: 'offline_pass_id', onDelete: 'CASCADE'   },
+    { child: 'offline_transactions',      column: 'offline_pass_id', onDelete: 'NO ACTION' },
   ],
+  // 2 FKs point at provisioning_tokens, both CASCADE.
+  provisioning_tokens: [
+    { child: 'provisioning_bound_bays', column: 'provisioning_token_id', onDelete: 'CASCADE' },
+    { child: 'provisioning_bound_keys', column: 'provisioning_token_id', onDelete: 'CASCADE' },
+  ],
+  // 1 FK points at certificates, SET NULL.
+  certificates: [
+    { child: 'provisioning_tokens', column: 'issued_certificate_id', onDelete: 'SET NULL' },
+  ],
+  // No FK points at any of these 20, so nothing can block their deletes (the FKs they carry
+  // as children are in the entries above).
+  diagnostics_uploads: [],
+  firmware_updates: [],
+  invitations: [],
+  meter_values: [],
+  model_has_permissions: [],
+  model_has_roles: [],
+  offline_auth_grants: [],
+  offline_transactions: [],
+  organization_members: [],
+  payment_ledger: [],
+  pending_commands: [],
+  security_event_dedup: [],
+  security_events: [],
+  service_catalogs: [],
+  settlement_outbox: [],
+  station_configurations: [],
+  station_journal: [],
+  tenant_payment_credentials: [],
+  vehicles: [],
+  wallet_entries: [],
 };
 
 /** Full-coverage handle — every optional path populated so buildTeardownSql emits everything. */
@@ -241,8 +303,8 @@ function reverseGraphChecks(sql: string, label: string): void {
             childAt,
             `'DELETE FROM ${edge.child}' (line ${childAt}) must run BEFORE ` +
             `'DELETE FROM ${parent}' (line ${parentAt}) — Postgres evaluates FK ` +
-            `constraints at statement time, not at COMMIT (default DEFERRABLE INITIALLY ` +
-            `IMMEDIATE), so order is load-bearing inside the transaction.`,
+            `constraints at statement time, not at COMMIT (every FK in the snapshot is NOT ` +
+            `DEFERRABLE), so order is load-bearing inside the transaction.`,
           ).toBeLessThan(parentAt);
         },
       );
@@ -324,6 +386,15 @@ const NOT_KEYED_IN_THE_USER_SWEEP: Record<string, string> = {
   // the swept user's, and selecting sessions by reservation would reach past the swept users.
   'reservations <- sessions.reservation_id':
     "a session is reached by its own user_id, never through a reservation",
+  // The child is the pass holder's own row, so its user_id reaches it. csms-server writes
+  // offline_transactions in one place, Reconciler::persistTransaction (through
+  // OfflineTransactionRepository::createOrUpdate), and writes user_id there as the user_id of
+  // the very pass offline_pass_id names: TransactionEventResolver::resolve takes both from the
+  // pass (OfflinePassQueryService::resolveUuid and ::resolveUserIdFromPass) and ignores the
+  // station's userId. offline_passes.user_id is written when the pass is issued and never
+  // updated, so the user_id arm deletes every transaction that names a swept user's pass.
+  'offline_passes <- offline_transactions.offline_pass_id':
+    "an offline transaction is reached by its own user_id, which is the user_id of its pass",
 };
 
 /** The WHERE clause of the one `DELETE FROM <table> WHERE ...;` in `stmts`, or undefined. */
@@ -390,5 +461,34 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
     for (const key of Object.keys(NOT_KEYED_IN_THE_USER_SWEEP)) {
       expect(edges.has(key), `${key} is exempted but no longer in SCHEMA_FK_GRAPH`).toBe(true);
     }
+  });
+});
+
+/**
+ * CW121 — THE SNAPSHOT HAS AN ENTRY FOR EXACTLY THE TABLES THE TEARDOWN DELETES FROM.
+ *
+ * Every check above asks only about parents that have an entry: a table the teardown deletes
+ * from with no entry is skipped without a word, whatever points at it. offline_passes,
+ * provisioning_tokens and certificates, all three deleted by the teardown, had no entry until
+ * the 2026-09-29 regeneration, so the FK from offline_transactions to offline_passes was never
+ * checked. So the DELETE targets of both halves are read from the SQL they build and held equal
+ * to the snapshot's parents: a new target fails here until pg_constraint has been read for it,
+ * and an entry for a table the teardown no longer deletes fails as stale.
+ */
+describe('teardown FK coverage — the snapshot has an entry for every table the teardown deletes from (CW121)', () => {
+  const targets = (sql: string): string[] => [...sql.matchAll(/DELETE FROM (\w+)/g)].map((m) => m[1]);
+  const deleted = [...new Set([
+    ...targets(buildTeardownSql(fullHandle())),
+    ...targets(buildTeardownTestUsersSql(['sim-worker-test-0@test.local'], { protectedEmails: [] }).join('\n')),
+  ])].sort();
+  const parents = Object.keys(SCHEMA_FK_GRAPH).sort();
+
+  it('every table either half deletes from has an entry, and every entry is a table one of them deletes from', () => {
+    const unlisted = deleted.filter((t) => !parents.includes(t));
+    const stale = parents.filter((p) => !deleted.includes(p));
+    expect(
+      { unlisted, stale },
+      `${deleted.length} tables deleted by the teardown, ${parents.length} entries in SCHEMA_FK_GRAPH`,
+    ).toEqual({ unlisted: [], stale: [] });
   });
 });

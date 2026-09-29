@@ -16,8 +16,8 @@
 #   2. app/Modules/DeviceManagement/Handlers/ResetResponseHandler.php, the Accepted arm of
 #      `ResetResponseHandler::handle`, and app/Listeners/SettleSessionsOnForcedReset.php,
 #      `SettleSessionsOnForcedReset::handle`, the one listener of the StationReset that arm
-#      dispatches. Reached by the Reset RESPONSE below and asserted nowhere in this file;
-#      see WHAT THE FORCED-NESS DOES.
+#      dispatches. Reached by the Reset RESPONSE below; the journal row, the StopService and
+#      the `stopping` state they leave are asserted, see WHAT THE FORCED-NESS DOES.
 #
 #   3. app/Modules/Session/Handlers/SessionEndedHandler.php, the OPERATOR_STOPPED arm of the
 #      reason match in `SessionEndedHandler::handle`
@@ -57,21 +57,30 @@
 #   returns on an unforced reset; on a forced one it runs StopAllStationSessionsAction,
 #   which stops every ACTIVE session on the station as an operator stop:
 #   `StopSessionAction::execute` moves the session to `stopping` with stop_origin Operator
-#   and publishes a StopService. So when the Response is processed before the SessionEnded
-#   below (it is sent first), the session is already `stopping` when that
-#   SessionEnded/OperatorStopped arrives, and `SessionEndedHandler::handle` completes it on
-#   the same OperatorDisabled arm it uses for an `active` one. The StopService is never
-#   answered: scenario mode registers no StopService handler, and no step here waits for it.
+#   and only then publishes a StopService naming it, so a StopService on the wire means the
+#   row already reads `stopping`. This file waits for that StopService before it sends the
+#   SessionEnded below, so the session is `stopping` when that SessionEnded/OperatorStopped
+#   arrives, and `SessionEndedHandler::handle` completes it on the same OperatorDisabled arm
+#   it uses for an `active` one.
 #
-#   This file still asserts `force` on the REQUEST, and none of those consequences: not the
-#   journal row, not the `stopping` state, not the StopService. The request is where the
-#   forced-ness reaches the wire, and every consequence above is keyed on that same value,
-#   so a Reset that went out unforced turns all of them into the unforced ones. The two
-#   `completed` assertions below do not pin the listener either: the station's own
-#   settle-first completes the session whether or not the listener ran. csms-server pins
-#   the listener in tests/Feature/Session/ForcedResetSettlesAsOperatorStopTest.php.
+#   THE STOPSERVICE IS NOT ANSWERED. Scenario mode registers no StopService handler and no step
+#   here answers it: an answer would be settled by StopServiceResponseHandler, a path this file
+#   is not about. Unanswered, it stays `pending` until its timeout (10 s for StopService in
+#   csms-server's `ospp.command_timeouts`); the scheduled command:check-timeouts
+#   (CommandTimeoutScanner) then journals a `command_expired` row for it and runs its StopService
+#   arm, `FailSessionAction::execute`, which writes nothing to a session already terminal. The
+#   steps between the StopService and the SessionEnded are one assert and one GET, so the session
+#   is `completed` well inside those 10 s.
+#
+#   What this file asserts of all that: `force` on the REQUEST (ASSERTION 1), the StopService
+#   naming this session (ASSERTION 1a) and the session `stopping` (ASSERTION 1b), both before
+#   the station's own SessionEnded, and this Reset's `station_reset` row with `details.forced`
+#   true (ASSERTION 2a). The two `completed` assertions do not pin the listener: the station's
+#   own settle-first completes the session whether or not the listener ran, because `active` to
+#   `completed` is a valid transition too. csms-server pins the listener in
+#   tests/Feature/Session/ForcedResetSettlesAsOperatorStopTest.php.
 name: "Reset Forced Settles Session As Operator Stop"
-description: "Forced Reset with a live session: the server must send force:true, the settle-first SessionEnded/OperatorStopped must complete the session, and the post-reset RemoteReset boot must not rewrite it to failed."
+description: "Forced Reset with a live session: the server must send force:true, stop the session as an operator stop once the station accepts (a StopService naming it, the session stopping) and journal a forced station_reset row; the settle-first SessionEnded/OperatorStopped must complete the session, and the post-reset RemoteReset boot must not rewrite it to failed."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -107,9 +116,9 @@ steps:
         # device_management_supported === true, and that gate runs BEFORE the same method's
         # active-session pre-flight — so without this the file dies at the wrong
         # gate and never reaches the forced-reset branch it exists to test. NULL is "not
-        # stated" and is withheld too (boot-notification.md §5.1, "Capability Semantics —
-        # absence means NOT STATED"). Declared at boot, matching
-        # change-configuration-accepted.yaml:33; no admin call sets it in this corpus.
+        # stated" and is withheld too (boot-notification.md, "Capability Semantics —
+        # absence means NOT STATED"). Declared at boot, as change-configuration-accepted.yaml's
+        # boot declares it; no admin call sets it in this corpus.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -196,13 +205,17 @@ steps:
     message: Reset
     messageType: Request
     timeout_ms: 15000
+    capture:
+      resetMessageId: "messageId"
 
   # ASSERTION 1 — server-produced. `force` on the wire comes from
   # ResetRequestDto::toPayload(); nothing in this scenario's MQTT payloads carries
-  # it. It discriminates against the failure this arc's csms-server twin still has:
-  # DashboardStationController::reset validates a `type` of soft/hard, discards it,
-  # and builds the DTO from an unvalidated `force` — so a caller asking for a hard
-  # reset gets force:false. Pinning the field is how a scenario would catch that.
+  # it. It is the trigger route's `force: true` arriving intact:
+  # `TriggerCommandController::dispatchReset` validates `force` alone and builds the DTO
+  # from what it validated, as the admin and dashboard doors do through ResetStationRequest
+  # (`StationManagementController::resetStation`, `DashboardStationController::reset`).
+  # `ResetStationAction::execute` registers the pending command from the same `$dto->force`,
+  # and every consequence asserted below is keyed on that value.
   - action: assert
     field: "payload.force"
     equals: true
@@ -212,6 +225,32 @@ steps:
     messageType: Response
     payload:
       status: "Accepted"
+
+  # ASSERTION 1a — the forced reset's operator stop reaches the wire. Accepting the forced
+  # Reset makes `ResetResponseHandler::handle` dispatch StationReset, and its listener,
+  # SettleSessionsOnForcedReset, stops the active session through StopAllStationSessionsAction
+  # and `StopSessionAction::execute`, which publishes a StopService naming it. Waited for HERE,
+  # before the SessionEnded below, so the order of the two is fixed: the Response has been
+  # handled and the listener has run before the station reports its own settle.
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.sessionId"
+    equals: "{{captured.sessionId}}"
+
+  # ASSERTION 1b — server-written status. `StopSessionAction::execute` commits `stopping` with
+  # stop_origin Operator before it publishes, so the StopService above means this row already
+  # reads `stopping`. Had the pending command been registered unforced, the listener would have
+  # returned and the row would still read `active`.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "stopping"
 
   # --- The settle-first the schema mandates: every active session ends under the
   #     operator-disable policy BEFORE the reboot. ---
@@ -257,6 +296,20 @@ steps:
     expect_status: 200
     expect_body:
       data.status: "completed"
+
+  # ASSERTION 2a — the journal row of this Reset. `ResetResponseHandler::handle` writes one
+  # `station_reset` row per Accepted Reset, after resolving the pending command, with the
+  # Reset's messageId and the `forced` that command was registered with. The journal route
+  # lists a station's rows newest first, and a pool station is leased to one scenario after
+  # another with their rows kept, so the row is pinned by this Reset's messageId (the
+  # Response carries the Request's) before `details.forced` is read off it.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=station_reset"
+    expect_status: 200
+    expect_body:
+      data[kind=station_reset].details.messageId: "{{captured.resetMessageId}}"
+      data[kind=station_reset].details.forced: true
 
   # --- The reboot itself. RemoteReset is NOT in the preserve list
   #     (`BootNotificationHandler::SESSION_PRESERVING_BOOT_REASONS`),
