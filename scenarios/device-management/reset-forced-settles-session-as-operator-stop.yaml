@@ -4,13 +4,16 @@
 # REQUIRES TESTING_TRIGGER_COMMAND_ENABLED=true on the target (default false).
 #
 # SERVER BRANCHES REACHED — three, in order
-#   1. app/Modules/DeviceManagement/Actions/ResetStationAction.php:100-112
+#   1. app/Modules/DeviceManagement/Actions/ResetStationAction.php,
+#      `ResetStationAction::execute`
 #        $message = MessageBuilder::request('Reset')->withPayload($dto->toPayload())->build();
-#      `force: true` short-circuits the active-session pre-flight at :91 (`! $dto->force`),
-#      so the command actually reaches the wire. ResetRequestDto::toPayload() is
-#      `['force' => $this->force]` — the ONLY place the forced-ness becomes observable.
+#      `force: true` short-circuits the active-session pre-flight in the same method
+#      (`! $dto->force`), so the command actually reaches the wire.
+#      ResetRequestDto::toPayload() is `['force' => $this->force]` — the ONLY place the
+#      forced-ness becomes observable.
 #
-#   2. app/Modules/Session/Handlers/SessionEndedHandler.php:111
+#   2. app/Modules/Session/Handlers/SessionEndedHandler.php, the OPERATOR_STOPPED arm of the
+#      reason match in `SessionEndedHandler::handle`
 #        SessionEndReason::OPERATOR_STOPPED => $this->autonomousComplete($dto, TerminalReason::OperatorDisabled),
 #      No scenario in the corpus sends this reason. The 30 SessionEnded events across
 #      107 files are Local (12), TimerExpired (10), LocalOutOfCredit (2), Fault (2),
@@ -18,10 +21,11 @@
 #      wash an operator cut short (OperatorDisabled, by service kind) had never been
 #      exercised.
 #
-#   3. app/Modules/Station/Handlers/BootNotificationHandler.php:355 — the post-reset
+#   3. app/Modules/Station/Handlers/BootNotificationHandler.php,
+#      `BootNotificationHandler::failStuckSessions` — the post-reset
 #      boot, which force-fails every session still in {pending, authorized, active,
 #      stopping}. Reached here deliberately as a NEGATIVE: by then the session is
-#      terminal, so the predicate at :420-424 must no longer match it.
+#      terminal, so that method's live-status predicate must no longer match it.
 #
 # WHAT THIS IS ACTUALLY ABOUT — the money, not the reboot
 #   reset-request.schema.json: "True: the station settles every active session under
@@ -37,7 +41,7 @@
 #   must survive the reboot as `completed`, not be rewritten to `failed`.
 #
 # WHAT THE FORCED-NESS DOES NOT DO, once the station accepts
-#   ResetResponseHandler.php:72 dispatches StationReset(stationId, forced) — and
+#   `ResetResponseHandler::handle` dispatches StationReset(stationId, forced) — and
 #   StationReset has ZERO listeners anywhere in the server. So `force` is carried
 #   faithfully to an event nobody consumes: after the response, the server behaves
 #   identically forced or not. That is why this file asserts `force` on the REQUEST
@@ -75,11 +79,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: ResetStationAction.php:59 refuses with COMMAND_NOT_SUPPORTED (2007)
-        # unless device_management_supported === true, and that gate runs BEFORE the
-        # active-session pre-flight at :91 — so without this the file dies at the wrong
+        # Required: `ResetStationAction::execute` refuses the command unless
+        # device_management_supported === true, and that gate runs BEFORE the same method's
+        # active-session pre-flight — so without this the file dies at the wrong
         # gate and never reaches the forced-reset branch it exists to test. NULL is "not
-        # stated" and is withheld too (OSPP §5.1 rule 3). Declared at boot, matching
+        # stated" and is withheld too (boot-notification.md §5.1, "Capability Semantics —
+        # absence means NOT STATED"). Declared at boot, matching
         # change-configuration-accepted.yaml:33; no admin call sets it in this corpus.
         deviceManagementSupported: true
       networkInfo:
@@ -227,7 +232,7 @@ steps:
       data.status: "completed"
 
   # --- The reboot itself. RemoteReset is NOT in the preserve list
-  #     (BootNotificationHandler.php:343 admits only Reconnect and ErrorRecovery),
+  #     (`BootNotificationHandler::SESSION_PRESERVING_BOOT_REASONS`),
   #     and uptimeSeconds 0 puts every earlier session inside the force-fail
   #     window — the same setup core/boot-remote-reset-fails-live-session.yaml uses to
   #     prove a live session DOES get failed here. ---
@@ -252,9 +257,10 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Restated on the post-reset boot. Not strictly required — §5.1 rule 2 leaves an
-        # unstated capability OUT of the update, so the value from the PowerOn boot above
-        # survives (BootNotificationHandler.php:184-190) — but a real station declares its
+        # Restated on the post-reset boot. Not strictly required — boot-notification.md
+        # §5.1, "Capability Semantics — absence means NOT STATED", leaves an unstated
+        # capability OUT of the update, so the value from the PowerOn boot above survives
+        # (`BootNotificationHandler::handle`) — but a real station declares its
         # capabilities on every boot, and restating it keeps this file independent of that
         # rule rather than silently relying on it.
         deviceManagementSupported: true
