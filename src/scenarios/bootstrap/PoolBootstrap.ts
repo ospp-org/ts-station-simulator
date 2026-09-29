@@ -415,8 +415,8 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
   const certPattern = target.tls?.certPattern ?? target.tls?.cert ?? keyPattern.replace(/-key\.pem$/, '.pem');
   const certPath = sub(certPattern);
   // The per-station chain the runner presents as `station_ca_chain`
-  // (`TargetConfig.tls.chain`, mapped from `certs.station_ca_chain` at
-  // `cli/index.ts:484`).
+  // (`TargetConfig.tls.chain`, mapped from `certs.station_ca_chain` by `toRunnerTarget`
+  // in `cli/config.ts`).
   //
   // `tls.chain` COMES FIRST, and the order is the whole point. This line read
   // `target.tls?.serverCa ?? …` and was documented as "serverCa doubles as the
@@ -426,7 +426,7 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
   // green run took the fallback, so the configured branch was never exercised.
   //
   // On any target that DOES set `ca:`, `serverCa` resolves to it
-  // (`cli/config.ts:129` maps `certs.server_ca ?? certs.ca`), and for
+  // (`loadTarget` in `cli/config.ts` maps `certs.server_ca ?? certs.ca`), and for
   // `local-mtls`/`local-crl`/`sandbox` that file is SHARED and station-agnostic:
   // `certs/local/broker-ca.pem`, the bundle the client verifies the BROKER with.
   // Bootstrapping one station then overwrote the trust anchor with that
@@ -526,7 +526,8 @@ export const POOL_OWNER_PASSWORD_ENV = 'SIM_POOL_OWNER_PASSWORD';
  * `UAT_E2E_PLATFORM_ADMIN_*`, a `platform_admin` that is deliberately a member of no
  * organization, so it holds no tenant permission either; `service-catalog-update.yaml` spent
  * two revisions establishing that. `tenant_owner` holds both
- * (RolesAndPermissionsSeeder.php:369,372), and this run MINTS one — for exactly these
+ * (the `$tenantOwnerPerms` list of RolesAndPermissionsSeeder::assignPermissionsToRoles), and
+ * this run MINTS one — for exactly these
  * endpoints — and then threw the password away.
  *
  * WHAT THIS IS NOT. It is not a new identity, not a new grant and not a seeded account: it
@@ -862,7 +863,7 @@ async function registerAndProvisionStation(
   // Register (sets is_active=true, creates bay rows). Record the id immediately
   // so teardown removes it even if a later step throws.
   // No `services:` here. Registration writes NOTHING into the services tier — the Brief L
-  // decision at `RegisterStationAction.php:16-21` — and csms-server `dbc45f7` now says so out
+  // decision in `RegisterStationAction`'s class docblock — and csms-server `dbc45f7` now says so out
   // loud: `'bays.*.services' => ['prohibited']`, 422 naming the three routes that do create a
   // service. Until then the field was accepted and silently dropped, so this block had been
   // declaring a catalog that was never written, on every bootstrapped station, unnoticed.
@@ -1035,9 +1036,12 @@ export async function teardownPool(
  * (pg_constraint + information_schema), NOT assumptions:
  *
  *  - `stations.id` is uuid; `stations.station_id` is the varchar business key.
- *  - Of all FKs referencing stations/bays, ONLY `station_services(→stations)` and
- *    `bay_services(→bays)` are ON DELETE CASCADE (and `security_events` is SET
- *    NULL); every other child is NO ACTION → must be deleted explicitly.
+ *  - Of the 16 FKs referencing stations/bays, 3 are ON DELETE CASCADE -
+ *    `station_services(→stations)`, `bay_programs(→bays)` and `bay_services(→bays)` - and
+ *    3 SET NULL - `security_events(→stations)` and `station_journal(→stations, →bays)`;
+ *    the other 10 are NO ACTION → must be deleted explicitly. A station_services row
+ *    the stations CASCADE removes is itself RESTRICTed by `sessions.service_id` and
+ *    `offline_transactions.service_id`, so both go before the stations delete.
  *  - `sessions` has NO `station_id` column — it references a bay via `bay_id`
  *    (and an org via `organization_id`); reach it through bays only.
  *  - `reservations`/`offline_transactions` reference `bays.id` (uuid) via
@@ -1070,7 +1074,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //
   // WHY THE WIDENING EXISTS. `locations.organization_id` is `REFERENCES organizations(id)`
   // with no ON DELETE clause — NO ACTION — while `stations.organization_id` is ON DELETE
-  // CASCADE (`2026_05_01_060003_add_organization_id_to_stations.php:24`). So a leftover
+  // CASCADE (`stations_organization_id_foreign`, added with cascadeOnDelete() by the up() of
+  // `2026_05_01_060003_add_organization_id_to_stations`). So a leftover
   // station cannot block `DELETE FROM organizations` and a leftover LOCATION can. This
   // deleted exactly one location, `handle.locationId`, the one the bootstrap made — but
   // every pool-compatible scenario carrying `creates: location` makes another inside the
@@ -1090,6 +1095,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // `stationArray` arm stays independent of the `stations` table being present.
   const orRunOrgStationBizId = runOrg
     ? ` OR station_id IN (SELECT station_id FROM stations WHERE organization_id = ${runOrg})`
+    : '';
+  // Offline transactions that name one of the org's passes. `DELETE FROM organizations` cascades
+  // to offline_passes, and offline_transactions.offline_pass_id is NO ACTION, so a surviving
+  // transaction naming one of them blocks the org delete — and one can sit at a station outside
+  // the run: csms-server's Reconciler::persistTransaction stores a rejected transaction without
+  // the RevalidationGate check of the pass's organization against the station's, and the
+  // dashboard issues a pass to a user who need not be a member, so neither the station arms below
+  // nor the user sweep need reach it. A pass of the minted org is this run's by construction.
+  const orRunOrgPass = runOrg
+    ? ` OR offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = ${runOrg})`
     : '';
 
   // Resolve this run's uuid sets from the varchar business station_id.
@@ -1111,13 +1126,20 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
 
   // Topological delete order over the AUTHORITATIVE FK graph (pg_constraint,
   // verified — not assumed; an earlier hand-guessed order shipped a bug that
-  // only surfaced against real session rows in a live run). Parent ← child:
-  //   sessions     ← refunds.session_id, offline_transactions.reconciled_session_id
+  // only surfaced against real session rows in a live run; the snapshot the checks read is
+  // SCHEMA_FK_GRAPH in teardownFkCoverage.test.ts). Parent ← its NO ACTION children, then
+  // in parentheses the FKs of every other kind:
+  //   sessions     ← refunds.session_id, platform_settlement_ledger.session_id,
+  //                  offline_transactions.reconciled_session_id
+  //                  (+ session_settlement_retries CASCADE, on sessions.session_id)
   //   reservations ← sessions.reservation_id
-  //   bays         ← reservations, sessions, offline_transactions (+ bay_services CASCADE)
-  //   stations     ← bays, service_catalogs, offline_transactions, station_configurations,
-  //                  firmware_updates, diagnostics_uploads (+ station_services CASCADE,
-  //                  security_events SET NULL — swept explicitly below, see the note there)
+  //   bays         ← reservations, sessions, offline_transactions (+ bay_programs and
+  //                  bay_services CASCADE, station_journal SET NULL)
+  //   stations     ← bays, service_catalogs, offline_transactions, offline_auth_grants,
+  //                  station_configurations, firmware_updates, diagnostics_uploads
+  //                  (+ station_services CASCADE, whose rows sessions.service_id and
+  //                  offline_transactions.service_id RESTRICT; security_events and
+  //                  station_journal SET NULL — swept explicitly below, see the notes there)
   //   locations    ← stations
   // certificates/provisioning_tokens carry a *varchar* station_id with NO FK —
   // removed by business id so re-provisioning can't collide on their unique rows.
@@ -1153,16 +1175,18 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
-    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
+    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess})${orRunOrgPass};`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
     // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
     // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
     // retyped the column to the varchar session id.) Scoped by station_id (run-ephemeral →
-    // catches every run grant, never touches another run's). Placed BEFORE stations (here)
-    // and before the appended users/organizations deletes, so no parent delete FK-blocks on
-    // a leftover grant. Mirrors offline_transactions (swept in both the station- and
-    // user-scoped teardowns).
-    `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
+    // never touches another run's) and by the minted org: csms-server's
+    // AuthorizeOfflineSessionAction::execute writes the caller's organization and the station the
+    // request names and compares neither, so a grant of the run org can sit at a station outside
+    // the run, and it blocks the org delete. Placed BEFORE stations (here) and before the
+    // appended users/organizations deletes, so no parent delete FK-blocks on a leftover grant.
+    // Mirrors offline_transactions (swept in both the station- and user-scoped teardowns).
+    `DELETE FROM offline_auth_grants WHERE station_id IN (${sids})${orRunOrgOwned};`,
     // meter_values carries NO foreign key at all — neither to `bays` nor to `sessions` — so
     // it never blocks a delete and was never noticed by the FK-coverage walk. It is swept
     // HERE because both scoping subqueries resolve through rows the next statements remove.
@@ -1202,11 +1226,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // 9 544 of them naming a station that no longer exists.
     `DELETE FROM pending_commands WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
     // security_events + its dedup key. NOT covered by the FK discipline above: the FK is
-    // ON DELETE SET NULL (the only one in the schema besides
-    // provisioning_tokens.issued_certificate_id), so deleting the station does not block and
-    // does not cascade — it silently NULLs station_id and the audit rows survive with no
-    // owner. `teardownFkCoverage.test.ts` cannot catch this either: it walks NO-ACTION FKs,
-    // i.e. the ones that would FAIL loudly, and SET NULL is precisely the case that does not.
+    // ON DELETE SET NULL (one of the schema's 6, with station_journal's two,
+    // provisioning_tokens.issued_certificate_id, stations.station_model_id and
+    // session_settlement_retries.settled_by_user_id), so deleting the station does not block
+    // and does not cascade — it silently NULLs station_id and the audit rows survive with no
+    // owner. `teardownFkCoverage.test.ts` cannot catch this either: it walks the FKs that
+    // would FAIL loudly — NO ACTION and RESTRICT, and the CASCADE edges down to them — and SET
+    // NULL is precisely the case that does not.
     // Measured 2026-08-10: 38 of 38 rows in security_events were orphaned this way.
     // Harmless while the eleven security-event scenarios wrote nothing (their hardcoded
     // eventIds were deduped away since 2026-06-15); now that they write a row per run, this
@@ -1272,8 +1298,9 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
   //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
   //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
-  //   - The org's NO-ACTION children (organization_members, invitations) are deleted before
-  //     the org (FK-safe; pg_constraint-verified 2026-06-15). `corporate_policies` WAS in this
+  //   - Of the org's 7 NO-ACTION children, organization_members, invitations and
+  //     tenant_payment_credentials are deleted here, before the org (FK-safe;
+  //     pg_constraint-verified 2026-06-15, and again 2026-09-29). `corporate_policies` WAS in this
   //     list and is gone: csms-server ADR-0012 retired the surface and
   //     2026_09_04_000003_drop_corporate_policies_table DROPPED the table, so the DELETE
   //     referenced a relation that no longer exists. Because the whole teardown is one
@@ -1282,11 +1309,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //     paragraphs down. Measured on UAT 2026-09-06: 3 orphaned Sim Pool orgs and 7 orphaned
   //     stations from three runs. Dropping the statement is safe rather than merely necessary:
   //     the bootstrap never creates a corporate policy, so on an environment that still has the
-  //     table there is no row for this org to FK-block on. `locations` +
-  //     `sessions` (also NO-ACTION → organizations) were already removed by the station/location
-  //     path above. DELETE FROM organizations then CASCADE-removes the per-org cloned `roles`
-  //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
-  //     `service_definitions`, `offline_passes`, and any remaining `stations`.
+  //     table there is no row for this org to FK-block on. The other four were already
+  //     removed above: `locations` and `offline_auth_grants` by their org arms, `sessions` with
+  //     the run's bays (csms-server writes no sessions.organization_id), and
+  //     `platform_settlement_ledger` with the run's intents. DELETE FROM organizations then
+  //     CASCADE-removes its 7 CASCADE children: the per-org cloned `roles` (+ their
+  //     model_has_roles + role_has_permissions), `model_has_roles`, `revocation_epochs`,
+  //     `service_definitions` (whose RESTRICT child station_services went with the stations),
+  //     `offline_passes` (whose NO-ACTION child offline_transactions went above, by the pass
+  //     arm), `station_models` (+ station_model_programs; stations.station_model_id is SET NULL),
+  //     and any remaining `stations`.
   if (handle.ephemeralOwnerEmail) {
     lines.push(...buildTeardownTestUsersSql([handle.ephemeralOwnerEmail]));
   }
