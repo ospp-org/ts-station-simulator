@@ -104,12 +104,14 @@ steps:
 
   # --- FIRST PUBLISH. The version is CAPTURED rather than pinned to a literal.
   #
-  #     The sibling service-catalog-update.yaml asserts `catalogVersion: "2"` on the
-  #     grounds that a fresh pool station holds "1". That is true of a station no other
-  #     scenario has published to — but a pooled run shares 5 stations across the whole
-  #     corpus, and there are now TWO files that publish. If the allocator hands both the
-  #     same station, whichever runs second starts at "2" and a literal "2" fails for a
-  #     fixture reason that has nothing to do with the branch under test.
+  #     The sibling service-catalog-update.yaml asserted `catalogVersion: "2"` on a pool
+  #     station, on the grounds that a fresh pool station holds "1". That is true of a station
+  #     no other scenario has published to — but a pooled run shares 5 stations across the
+  #     whole corpus, and this file publishes too. On 2026-09-29 the allocator handed both
+  #     files the same station, this one ran first and left it a version ahead, and the
+  #     sibling's literal "2" read "3" for a fixture reason that had nothing to do with the
+  #     branch under test. The sibling now owns its station (`owns_station`), so the two can
+  #     no longer meet on one.
   #
   #     Capturing sidesteps that entirely, and it is also the more honest assertion: the
   #     property is "the refused publish advanced NOTHING", which is a statement about two

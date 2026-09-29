@@ -110,14 +110,69 @@ description: "Publish the station's catalog through the only door that exists, a
 #
 # It was proven once before, on the wire, against the local stack at `cc92bfc` — 7/7 steps,
 # `catalogVersion "2"`, `previousCatalogVersion "1"`, `serviceCount 4` — which is what made
-# the steps below worth keeping intact rather than deleting.
+# those steps worth keeping rather than deleting. They are kept for what they prove, not for
+# those numbers: since 2026-09-29 they run on a station this file owns, where the first
+# version is "1" and the version it replaced is "" (next section).
+#
+# ── IT OWNS ITS STATION, 2026-09-29 — A POOL STATION'S VERSION IS SHARED STATE ───────────
+#
+# UNTIL THIS CHANGE the file ran on a POOL station and asserted `catalogVersion "2"`: the
+# bootstrap seeds `current_catalog_version = '1'` on every pool station and the first publish
+# increments it. That is true only of a pool station no other file has published to, and one
+# other file does publish to pool stations: catalog-refused-keeps-the-previous-one.yaml, whose
+# second publish is answered Accepted and so advances the same column. The release corpus of
+# 2026-09-29 (csms-server 387ebe1f on UAT, 150 passed / 1 failed / 8 skipped) failed exactly
+# here — `expected body "catalogVersion" to equal "2", but got "3"` on stn_e60fd49a, the pool
+# station that file had run on less than two minutes earlier. Two controls placed the cause
+# in the fixture and not in the catalog: this file alone, `--bootstrap-pool --pool-size 1`,
+# passed; the pair in that order, `--workers 1` on `--pool-size 1`, reproduced "3".
+#
+# THE SHARED STATE IS REMOVED, NOT THE ASSERTION. Capturing the version, as the refusal twin
+# does, would have tolerated the sharing and given up what an absolute number proves: that
+# the server starts a station's sequence where it should. `owns_station` keeps
+# the number knowable instead — the station below is registered, provisioned, connected and
+# booted by this file inside the run's organisation, so no other file has published to it.
+#
+# WHAT IS TRUE ON A STATION OF ITS OWN, each read off the server rather than chosen:
+#   - `stations.current_catalog_version` starts NULL. Registration does not write it, the
+#     bootstrap seeds pool stations only, and the one writer on this path is the Accepted arm
+#     of `UpdateServiceCatalogResponseHandler`. So the first publish claims "1" — the NULL arm
+#     of `UpdateServiceCatalogAction::dispatch`.
+#   - The station answering it has never held a catalog, so the version it replaced is "".
+#     update-service-catalog-response.schema.json names the empty string "the legitimate value
+#     for a station that has never held a catalog".
+#   - The services are this file's own. The pool's seeded services are put onto pool stations
+#     only, and they cannot be created here under their own ids either: service ids are unique
+#     per ORGANISATION, the run's organisation already holds them, and a second create answers
+#     422 SERVICE_ID_TAKEN. So the two services below carry ids scoped to this station, and
+#     each is bound to the program its bay declared at provisioning.
+#
+# THE ORDER IS LOAD-BEARING: boot first, services after. `PublishFirstCatalogOnBoot` sends a
+# station its first catalog when it boots with `current_catalog_version` NULL and something
+# publishable. Bound before the boot, the services would go out as catalog "1" by that
+# listener, and the publish below would claim "1" again while that request was still
+# unanswered — two requests carrying one version. Booted with no service, the station is sent
+# nothing, and the only UpdateServiceCatalog it receives is the one the publish below sends.
+#
+# NOT THE e2e SHAPE that "AND IT IS UNDER A PERMISSION" above rejected: no customer is
+# registered and no organisation is created. The station is registered inside the run's organisation by the
+# run's own tenant_owner, the identity the `auth:` block below already names.
 requires_pool: >-
-  POST .../catalog/publish authorizes `catalog.manage`, held by tenant_owner and by no
-  identity that exists outside a bootstrapped run — the pool's ephemeral owner is minted and
-  deleted per run, so there is no account to seed or to source from a secrets file.
+  POST .../catalog/publish, creating a service and binding it authorize `catalog.manage`;
+  a new service's price also asks `pricing.manage`, and minting this file's provisioning
+  token asks `stations.manage_provisioning_tokens`. All three are held by tenant_owner and by
+  no identity that exists outside a bootstrapped run — the pool's ephemeral owner is minted
+  and deleted per run, so there is no account to seed or to source from a secrets file.
+owns_station: >-
+  The catalog version is per station and only moves forward, so the absolute version this
+  file asserts is true only of a station no other file has published to. Pool stations are
+  shared, and catalog-refused-keeps-the-previous-one.yaml leaves the one it runs on a version
+  ahead: on 2026-09-29 the two met on one pool station and this file read "3" where it
+  asserted "2". A station this file registers itself has been published to by no one else.
 auth:
   email_env: SIM_POOL_OWNER_EMAIL
   password_env: SIM_POOL_OWNER_PASSWORD
+defer_mqtt_connect: true
 
 station:
   stationId: "{{stationId}}"
@@ -128,6 +183,70 @@ station:
     accept_rate: 1.0
     response_delay_ms: [50, 200]
 steps:
+  # --- THE STATION THIS FILE OWNS. Registered in the run's organisation, provisioned, connected
+  #     and booted before anything is published — every step up to the boot is precondition. ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/locations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      name: "Catalog update {{stationId}}"
+      address: "Strada Simulare 1, Bucuresti"
+      latitude: 44.4268
+      longitude: 26.1025
+      city: "Bucharest"
+      country: "RO"
+    expect_status: 201
+    creates:
+      location: "data.id"
+    capture:
+      location_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      locationId: "{{captured.location_id}}"
+      bays:
+        - bayNumber: 1
+        - bayNumber: 2
+    expect_status: 201
+    creates:
+      station: "data.station_id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/provisioning-tokens"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      note: "service catalog update"
+    expect_status: 201
+    capture:
+      provisioning_token: "data.rawToken"
+
+  # `bay_count: 2` declares program 1 on each bay — the ordinal both bindings below name.
+  # `bindProgram` refuses an ordinal the bay never declared, so this is what makes them bindable.
+  - action: provision
+    token_var: "provisioning_token"
+    serial_number: "{{serialNumber}}"
+    bay_count: 2
+
+  - action: connect_mqtt
+
   - action: send
     message: BootNotification
     payload:
@@ -149,11 +268,12 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: this file drives a capability-gated Device Management action, which
-        # refuses COMMAND_NOT_SUPPORTED (2007) unless device_management_supported === true.
-        # NULL is "not stated" and withheld too (OSPP §5.1 rule 3). Measured 2026-08-10:
-        # without this the file fails 2007 on a FRESH pool station — it only ever passed by
-        # inheriting the flag from a sibling scenario on a reused station.
+        # Required: the publish below is a capability-gated Device Management action, and
+        # `UpdateServiceCatalogAction::publish` pre-empts it — 409 COMMAND_PRE_EMPTED / 6008,
+        # `wouldBe` 2007, reason `device_management_not_declared` — unless
+        # device_management_supported === true. NULL is "not stated" and withheld too
+        # (boot-notification.md §5.1, "Capability Semantics — absence means NOT STATED"). The
+        # station is new, so this boot is the only thing that has ever declared it.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -161,49 +281,95 @@ steps:
   - action: wait_for
     message: BootNotification
     messageType: Response
-    timeout_ms: 10000
+    timeout_ms: 15000
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
 
+  # --- TWO SERVICES, EACH BOUND, AFTER THE BOOT (the header says why after). The ids carry the
+  #     station id because service ids are unique per organisation. The prices differ, so each
+  #     by-name assertion further down can only be met by the service it names. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      serviceId: "svc_wash_{{stationId}}"
+      serviceName: "Basic Wash"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 100
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "svc_wash_{{stationId}}"
+    capture:
+      wash_service_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.wash_service_id}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      bayId: "{{captured.bayId_1}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 1
+      binding.programNumber: 1
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      serviceId: "svc_dry_{{stationId}}"
+      serviceName: "Dry"
+      serviceKind: "UserDuration"
+      pricingType: "PerMinute"
+      priceCreditsPerMinute: 50
+      available: true
+    expect_status: 201
+    expect_body:
+      data.serviceId: "svc_dry_{{stationId}}"
+    capture:
+      dry_service_id: "data.id"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/services/{{captured.dry_service_id}}/binding"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      bayId: "{{captured.bayId_2}}"
+      programNumber: 1
+    expect_status: 201
+    expect_body:
+      binding.bayNumber: 2
+      binding.programNumber: 1
+
   # NO BODY — the route takes none and would ignore one. The catalog it ships is the one the
-  # server already holds, which on a bootstrapped pool station is the four seeded services,
-  # each bound to its bay's lowest declared program by the bootstrap's own step 3
-  # (`uatPrivileged.ts`, `INSERT INTO bay_services … MIN(bp.program_number)`).
+  # server holds for this station: the two services created and bound just above.
   #
-  # `withheld: []` is the assertion `expect_status: 202` cannot make. Publish does not refuse
-  # a catalog over an unbound service — it ships what is sellable and NAMES the rest — so a
-  # bootstrap that stopped writing bindings would still answer 202 here with every service
-  # withheld and dispatch a catalog of nothing.
-  #
-  # THE OTHER DIRECTION — a service that stopped being seeded at all — WAS `serviceCount: 4`,
-  # AND THAT SHAPE IS WITHDRAWN. A total is a claim about the whole world, so it makes this
-  # file fail whenever ANY other file causes an extra service to exist. That is not a
-  # hypothetical: `svc_multiunit` is seeded when a scenario declares
-  # `requires_multiunit_service`, and `uatPrivileged.ts` reasons that keeping it out of
-  # DEFAULT_SEED_SERVICES leaves "the default world at four services". Under `--all` there is
-  # no default world — something always declares it — and this file reddened on 2026-08-27
-  # with `expected 4, got 5` for a fixture reason, naming a catalog defect that did not exist.
-  #
-  # Replaced by ASSERTION 3 below: each service this file depends on is named INDIVIDUALLY on
-  # the wire. That keeps exactly the property the count was protecting — a service silently
-  # dropped from the seed still fails — while being indifferent to services other scenarios
-  # asked for, which this file has no business ruling on.
+  # `withheld: []` is the assertion `expect_status: 202` cannot make. Publish does not refuse a
+  # catalog over one service it cannot describe — it ships what is sellable and NAMES the rest —
+  # so a 202 alone would not notice that one of the two bindings above had been dropped.
   #
   # ASSERTION 1 — the version is SERVER-GENERATED, and that is established rather than
-  # assumed. UpdateServiceCatalogAction:80-83:
+  # assumed. `UpdateServiceCatalogAction::dispatch`, under a lock on the station row:
   #
-  #   $current = $station->current_catalog_version;
   #   $nextVersion = ($current === null) ? '1' : (string) ((int) $current + 1);
   #
   # monotonic integer-as-string, per station, derived from the row. This request sends no
   # version and CANNOT send one, so the value is genuinely derived and not a restatement.
   #
-  # Why "2" and not "1": the pool bootstrap seeds `current_catalog_version = '1'` at
-  # provisioning (`uatPrivileged.ts` step 5, scoped to stations where it IS NULL), so a fresh
-  # pool station's first publish increments 1 -> 2. If this ever fails with "1" the bootstrap
-  # stopped seeding; with "3" or higher the station is not fresh and the run is reusing state.
+  # Why "1": this station's `current_catalog_version` is NULL (header, last section), so this
+  # publish is its first version. "2" or higher would mean an Accepted catalog had been
+  # persisted for this station before this step, which nothing in this file does.
   #
   # The key is `catalogVersion`, camelCase — this response is
   # `StationServiceCatalogController::publish`, NOT the retired route's flat snake_case
@@ -211,9 +377,11 @@ steps:
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/catalog/publish"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
     expect_status: 202
     expect_body:
-      catalogVersion: "2"
+      catalogVersion: "1"
       withheld: []
 
   - action: wait_for
@@ -230,39 +398,42 @@ steps:
   # neither supplied by this scenario.
   - action: assert
     field: "payload.catalogVersion"
-    equals: "2"
+    equals: "1"
 
-  # ASSERTION 3 — the seeded services are on the wire, BY NAME AND NOT BY COUNT.
+  # ASSERTION 3 — the services this file created are on the wire, BY NAME AND NOT BY COUNT.
   #
   # Each entry is selected out of `payload.services` by its own `serviceId`, so the assertion
   # is blind to how many other services the array carries and to what order the server put
-  # them in. A missing service resolves to `undefined` and fails naming itself; an extra one
-  # (`svc_multiunit`, or whatever a later scenario needs) changes nothing here.
+  # them in. A missing service resolves to `undefined` and fails naming itself.
   #
-  # `pricingType` rather than a restatement of the id: matching on `serviceId` and then
-  # asserting `serviceId` would pass on anything the selector found, which is only the
-  # selector agreeing with itself. `PerMinute` is what the bootstrap seeds
-  # (DEFAULT_SEED_SERVICES, all four at 100 credits/minute), so this fails both when a
-  # service stops being seeded and when it is seeded with the wrong shape.
+  # A count was the assertion once — `serviceCount: 4`, on a pool station — and it was
+  # withdrawn on 2026-08-27, when a pool station carrying a fifth service another file had
+  # asked for read 5. No other file can add a service to this station, but the by-name form is
+  # still the stronger one: it names WHICH service is missing where a count says only that one is.
   #
-  # The array selector reaches `assert` because AssertStep now shares ApiCallStep's resolver;
-  # its own copy split on `.` and could only index arrays by POSITION, which for an unordered
+  # `pricingType` and the price rather than a restatement of the id: matching on `serviceId`
+  # and then asserting `serviceId` would pass on anything the selector found, which is only the
+  # selector agreeing with itself. The two prices differ, so an item carrying the other
+  # service's price fails.
+  #
+  # The array selector reaches `assert` because AssertStep shares ApiCallStep's resolver; its
+  # own copy split on `.` and could only index arrays by POSITION, which for an unordered
   # collection pins whichever element the database returned first.
   - action: assert
-    field: "payload.services[serviceId=svc_wash_basic].pricingType"
+    field: "payload.services[serviceId=svc_wash_{{stationId}}].pricingType"
     equals: "PerMinute"
 
   - action: assert
-    field: "payload.services[serviceId=svc_wash_premium].pricingType"
+    field: "payload.services[serviceId=svc_wash_{{stationId}}].priceCreditsPerMinute"
+    equals: 100
+
+  - action: assert
+    field: "payload.services[serviceId=svc_dry_{{stationId}}].pricingType"
     equals: "PerMinute"
 
   - action: assert
-    field: "payload.services[serviceId=svc_dry].pricingType"
-    equals: "PerMinute"
-
-  - action: assert
-    field: "payload.services[serviceId=svc_vacuum].pricingType"
-    equals: "PerMinute"
+    field: "payload.services[serviceId=svc_dry_{{stationId}}].priceCreditsPerMinute"
+    equals: 50
 
   # `correlationId` is what makes this a ROUND TRIP rather than a message shouted at a server
   # that will drop it. UpdateServiceCatalogResponseHandler:32 resolves the pending command by
@@ -275,9 +446,10 @@ steps:
     correlationId: "{{captured.catalog_msg_id}}"
     payload:
       status: "Accepted"
-      # REQUIRED on the Accepted arm since spec v0.25.0. "1" and not "1.0.0": catalog versions
-      # in this system are monotonic integers-as-strings, and "1" is what the bootstrap wrote
-      # into `stations.current_catalog_version` — i.e. what this station actually held before
-      # the publish above. The old literal was coherent with no version this server can ever
-      # produce, and it only ever passed because nothing read it.
-      previousCatalogVersion: "1"
+      # REQUIRED on the Accepted arm (the schema's allOf), and "" is the value that is TRUE
+      # here: this station has never held a catalog, and the schema names the empty string as
+      # the value for exactly that. `UpdateServiceCatalogResponseHandler` reads it as a value,
+      # not as an absence, and compares it against its own tracked version with NULL read as
+      # "" — so the two agree and no disagreement is logged. On the pool station this file
+      # used to run on, "1" was the true answer, because the bootstrap had seeded it.
+      previousCatalogVersion: ""
