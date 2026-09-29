@@ -561,12 +561,18 @@ const NOT_KEYED_IN_THE_USER_SWEEP: Record<string, string> = {
     "an offline transaction is reached by its own user_id, which is the user_id of its pass",
 };
 
-/** The WHERE clause of the first `DELETE FROM <table> WHERE ...;` in `stmts`, with its index, or undefined. */
-function deletePredicate(stmts: string[], table: string): { at: number; where: string } | undefined {
-  const re = new RegExp(`^DELETE FROM ${table} WHERE (.*);$`);
+/**
+ * The WHERE clause of the first `DELETE FROM <table> [<alias>] WHERE ...;` in `stmts`, with its
+ * index and alias, or undefined.
+ */
+function deletePredicate(
+  stmts: string[],
+  table: string,
+): { at: number; where: string; alias?: string } | undefined {
+  const re = new RegExp(`^DELETE FROM ${table}(?: (?!WHERE\\b)(\\w+))? WHERE (.*);$`);
   for (let at = 0; at < stmts.length; at++) {
     const m = re.exec(stmts[at]);
-    if (m) return { at, where: m[1] };
+    if (m) return { at, where: m[2], alias: m[1] };
   }
   return undefined;
 }
@@ -619,13 +625,30 @@ interface RowSet {
   table: string;
   wheres: string[];
   lit?: string;
+  /** The alias the parent delete gives its table (`DELETE FROM service_definitions sd`). */
+  alias?: string;
 }
 
 /** The arms over `column` that select the rows of a child pointing at the rows of `set` through its `ref` column. */
 function pointingAt(set: RowSet, column: string, ref: string): string[] {
-  const arms = set.wheres.map((w) => `${column} IN (SELECT ${ref} FROM ${set.table} WHERE ${w})`);
+  const from = set.alias !== undefined ? `${set.table} ${set.alias}` : set.table;
+  const arms = set.wheres.map((w) => `${column} IN (SELECT ${ref} FROM ${from} WHERE ${w})`);
   if (set.lit !== undefined && ref === 'id') arms.push(`${column} = ${set.lit}`);
   return arms;
+}
+
+/**
+ * True when the parent delete's own WHERE keeps every row the child references out of the
+ * delete: a top-level `NOT EXISTS (SELECT 1 FROM <child> <a> WHERE <a>.<column> = <parent>.<ref>)`,
+ * as the orphan-sweep of service_definitions has for station_services. No row it deletes is then
+ * referenced through that edge, whatever the child's own deletes select.
+ */
+function guardedAgainst(where: string, parentRef: string, edge: FkEdge): boolean {
+  const ref = edge.references ?? 'id';
+  const guard = new RegExp(
+    `^NOT EXISTS \\(SELECT 1 FROM ${edge.child} (\\w+) WHERE \\1\\.${edge.column} = ${parentRef}\\.${ref}\\)$`,
+  );
+  return splitTopLevel(where, ' AND ').some((conjunct) => guard.test(conjunct));
 }
 
 /**
@@ -642,6 +665,8 @@ interface RowRequirement {
   target: string;
   edge: FkEdge;
   arms: string[];
+  /** Met by the parent delete itself: see {@link guardedAgainst}. */
+  guarded: boolean;
 }
 
 /**
@@ -661,7 +686,8 @@ function rowRequirements(stmts: string[], exempt: Record<string, string>): RowRe
         const arms = pointingAt(set, edge.column, edge.references ?? 'id');
         if (BLOCKING.has(edge.onDelete)) {
           const key = orderingKey({ parent, path, edge });
-          if (!(key in exempt)) requirements.push({ key, parent, path, target: set.table, edge, arms });
+          const guarded = path.length === 0 && guardedAgainst(found.where, found.alias ?? parent, edge);
+          if (!(key in exempt)) requirements.push({ key, parent, path, target: set.table, edge, arms, guarded });
         } else if (edge.onDelete === 'CASCADE' && edge.child !== parent && !path.includes(edge.child)) {
           const preempted = stmts
             .slice(0, found.at)
@@ -670,7 +696,12 @@ function rowRequirements(stmts: string[], exempt: Record<string, string>): RowRe
         }
       }
     };
-    walk({ table: parent, wheres: [found.where], lit: /^id = ('(?:[^']|'')*')$/.exec(found.where)?.[1] }, []);
+    walk({
+      table: parent,
+      wheres: [found.where],
+      lit: /^id = ('(?:[^']|'')*')$/.exec(found.where)?.[1],
+      alias: found.alias,
+    }, []);
   }
   return requirements;
 }
@@ -680,9 +711,10 @@ function deletesOf(stmts: string[], table: string): string[] {
   return stmts.filter((s) => new RegExp(`^DELETE FROM ${table}(?![A-Za-z0-9_])`).test(s));
 }
 
-/** True when one of the child's deletes in `stmts` meets the requirement. */
+/** True when the parent delete is guarded, or one of the child's deletes in `stmts` meets the requirement. */
 function rowMet(stmts: string[], r: RowRequirement): boolean {
-  return deletesOf(stmts, r.edge.child).some((s) => disjunctsOf(s, r.edge.child).some((d) => r.arms.includes(d)));
+  return r.guarded ||
+    deletesOf(stmts, r.edge.child).some((s) => disjunctsOf(s, r.edge.child).some((d) => r.arms.includes(d)));
 }
 
 /** The name of a row requirement's case: the one it has always had for an edge into the parent itself. */
@@ -733,6 +765,179 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
       expect(edges.has(key), `${key} is exempted but no longer in SCHEMA_FK_GRAPH`).toBe(true);
     }
   });
+});
+
+/**
+ * THE POOL HALF, ROW BY ROW.
+ *
+ * The user sweep has had the row check since CW109; the other half of the teardown, the
+ * statements buildTeardownSql emits itself, had only the table-level one. This is the same check
+ * over the pool half alone: a handle with the run's organization, location, stations and seeded
+ * services and no user to sweep, so that every statement below is one buildTeardownSql writes.
+ *
+ * Its first reading, 2026-09-29: 34 requirements, 20 met, 14 not. Each of the 14 was read against
+ * csms-server master d9d860fd's writers of the child column. 11 cannot happen under those writers
+ * and are listed below with the writer that rules them out. 2 can, and are asked below: an
+ * offline_auth_grants row of the run organization at a station outside the run
+ * (AuthorizeOfflineSessionAction::execute writes the caller's organization and the station the
+ * request names, and compares neither), and an offline_transactions row naming a pass of the run
+ * organization at a station outside the run (IssueOfflinePassAction::execute writes the request's
+ * organization; Reconciler::persistTransaction stores a rejected transaction without the
+ * RevalidationGate check of the pass's organization against the station's, and the dashboard
+ * issues a pass to a user who need not be a member, so neither the station arms nor the user
+ * sweep need reach it). 1 can, and needs a decision before it can be closed
+ * (OPEN_IN_THE_POOL_HALF).
+ */
+const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
+  // No writer sets the column. SettlementLedgerRecorder::record, the one writer of settlement
+  // rows, writes session_id null (the session starts after the settlement commits), and
+  // SettlementReversalRecorder::record copies the settlement's session_id into its reversal;
+  // FiscalOutboxRelay::issue saves only fiscal_status and fiscal_document_id.
+  'sessions <- platform_settlement_ledger.session_id':
+    'no csms-server writer sets platform_settlement_ledger.session_id: a settlement writes null and a reversal copies it',
+  // WebPaymentOrchestrator::initiateUnitBatch, the one writer of unit_batches, creates the batch
+  // with bay_id the intent's metadata.bay_id, which PaymentLandingController::process wrote from the
+  // same bay business id as the intent's reference_id; neither column is updated afterwards.
+  'payment_intents <- unit_batches.payment_intent_id':
+    "a batch's bay_id is its intent's reference_id, so the bay arm reaches every batch of a run intent",
+  // ProcessRefundAction::execute writes the only payment_ledger rows, for a processor refund alone
+  // (willCallProcessor: an intent with a processor_transaction_id), with the refund's own
+  // payment_intent_id. A refund of a run-bay session is against that session's own intent - the
+  // session_payment intent PaymentLandingController::process wrote with the bay's business id as
+  // reference_id, a run intent, since a web-payment session starts on that bay - or, when it has
+  // none, against the intent getOrCreatePaymentIntentId mints (processor 'wallet', no
+  // processor_transaction_id), which never gets a payment_ledger row.
+  'refunds <- payment_ledger.refund_id':
+    "a payment_ledger row names its refund's own intent, and a refund the refunds delete reaches by session alone is on a wallet intent, which has none",
+  // SettlementReversalRecorder::record writes the only rows with a refund_id, called by
+  // ProcessRefundAction::finalizeSettlement with the refund's own payment_intent_id, and writes
+  // nothing unless that intent has a settlement row - which SettlementLedgerRecorder::record writes
+  // for session_payment intents alone - copying the settlement's payment_intent_id. A refund the
+  // refunds delete reaches by session alone is on a minted 'session_wallet' intent (entry above):
+  // no settlement, no reversal.
+  'refunds <- platform_settlement_ledger.refund_id':
+    "a reversal names its refund's own intent, which has a settlement only when it is a session_payment intent, and those of run-bay sessions are run intents",
+  // StartSessionAction::execute is the one insert of sessions, and a batch_id reaches it only on the
+  // web-payment path, always with the bay the batch was created on: initiateUnitBatch dispatches
+  // unit 1 with the bay it wrote into the batch, UnitBatchCoordinator::dispatchUnit with
+  // $batch->bay_id, StartServiceRetryJob re-dispatches both unchanged; bays.bay_id is unique, and
+  // neither column is updated.
+  'unit_batches <- sessions.batch_id':
+    "a batch's sessions start on the batch's bay, which the bay arm covers",
+  // Reconciler::persistTransaction writes service_id and station_id from one
+  // TransactionEventResolver::resolve, which resolves the service with
+  // StationQueryService::resolveServiceUuid scoped to that station; a rewrite of a pending_sync row
+  // resolves both again, together.
+  'stations -> station_services <- offline_transactions.service_id':
+    "an offline transaction's service is resolved on its own station, which the station arm covers",
+  // Both start paths resolve the service on the bay's own station (SessionController::start and
+  // SessionCommandAdapter::startSessionForWebPayment call resolveServiceUuid with the bay's
+  // station_id), StartSessionAction::execute refuses a service with no bay_services binding on the
+  // bay (ServiceProgramResolver::resolve), and no writer updates sessions.service_id.
+  'stations -> station_services <- sessions.service_id':
+    "a session's service is one of its bay's station, which the bay arm covers",
+  // StationManagementController::registerStation refuses a location outside the caller's
+  // organization, which BelongsToTenant writes as the station's organization_id; no writer updates
+  // stations.location_id, trg_refuse_station_org_reassignment refuses any change of
+  // stations.organization_id, and UpdateLocationAction never writes locations.organization_id. The
+  // locations this delete removes - the run location and the run organization's - are all in the
+  // run organization, so every station at one of them is a run-organization station.
+  'locations <- stations.location_id':
+    "a station's location is in the station's own organization, and the stations delete's organization arm removes every run-organization station",
+  // SettlementLedgerRecorder::record writes organization_id from the intent's
+  // metadata.organization_id, which PaymentLandingController::process takes from the bay's station
+  // (StationQueryService::findBayWithStationInfo) as it writes that bay's business id as the
+  // reference_id; a reversal copies its settlement's. A station's organization cannot change, a bay
+  // never moves station, and no production code deletes a bay row (DeleteStationAction retires
+  // them), so the bay is still listed when the run's bays are read.
+  'organizations <- platform_settlement_ledger.organization_id':
+    "a ledger row's organization is its intent's bay's, so a run-organization row names a run intent, which the payment_intent_id arm covers",
+  // Every writer pairs a station with a definition of the station's own organization:
+  // UpdateServiceCatalogResponseHandler::handleAccepted (resolveOrCreateDefinition with
+  // $station->organization_id) and StationServiceCatalogController::store; neither column is
+  // rewritten, and a station's organization cannot change. This bootstrap's seed
+  // (buildSeedCatalogSql) pairs the run's stations with the run organization's definitions.
+  'organizations -> service_definitions <- station_services.service_definition_id':
+    "a station's services name its own organization's definitions, and go with the run-organization stations in the stations delete's CASCADE",
+  // No writer sets the column: StartSessionAction::execute, the one insert of sessions, writes no
+  // organization_id, 2026_05_28_053346_add_session_org_attribution_and_org_wallet_type added it
+  // nullable with no default, and no update, trigger or hook writes it (only test factories do).
+  'organizations <- sessions.organization_id':
+    'no csms-server writer sets sessions.organization_id',
+};
+
+/**
+ * Requirements of the pool half that CAN go unmet under csms-server's writers, and whose fix needs
+ * a decision this change does not make. The row check leaves them out, and a case below holds each
+ * one still asked and still unmet, so that closing it fails that case until the entry goes.
+ */
+const OPEN_IN_THE_POOL_HALF: Record<string, string> = {
+  // StartSessionAction::execute checks a request's reservation against the bay only when the bay
+  // is reserved - SessionStateMachine::validateBayForStart allows an available bay outright - and
+  // resolves the id through ReservationQueryService::resolveUuid, which filters by the id alone.
+  // So a session started on another, available bay can carry the id of a reservation on a run bay,
+  // and it blocks DELETE FROM reservations, while the pool half reaches sessions by the run's bays
+  // only. No scenario does it today: of the 3 scenario files that pass a reservation_id to a start,
+  // 2 pass the one they captured on the bay they start on and 1 an id nothing owns. Closing it means
+  // choosing: delete the sessions that name a run-bay reservation wherever they run (and with them
+  // what reads through the sessions delete), have csms-server refuse a reservation that is not the
+  // bay's, or keep the gap - the user sweep keeps it (NOT_KEYED_IN_THE_USER_SWEEP).
+  'reservations <- sessions.reservation_id':
+    'a session on another, available bay can name a run-bay reservation; closing it needs a decision on how far the sessions delete reaches',
+};
+
+/** The pool half alone: {@link fullHandle} with no identity, created user or ephemeral owner. */
+function poolHalfStatements(): string[] {
+  const handle: PoolBootstrapHandle = { ...fullHandle(), ephemeralOwnerEmail: undefined, identityCredentials: [] };
+  return buildTeardownSql(handle).split('\n').filter((s) => s !== 'BEGIN;' && s !== 'COMMIT;');
+}
+
+describe('teardown FK coverage — the pool half reaches every row that points at what it removes', () => {
+  const stmts = poolHalfStatements();
+
+  it('the handle builds the pool half alone, and the row check reads the WHERE of every DELETE in it', () => {
+    const deletes = stmts.filter((s) => s.startsWith('DELETE FROM '));
+    const unread = deletes.filter((s) => {
+      const table = /^DELETE FROM (\w+)/.exec(s)?.[1] ?? '';
+      return deletePredicate([s], table) === undefined;
+    });
+    expect(unread, `${deletes.length} DELETE statements in the pool half`).toEqual([]);
+    expect(deletes.length).toBeGreaterThan(0);
+    expect(deletes.filter((s) => s.startsWith('DELETE FROM users'))).toEqual([]);
+  });
+
+  it('every exempted key is still a requirement the pool half gives rise to', () => {
+    const keys = new Set(rowRequirements(stmts, {}).map((r) => r.key));
+    for (const key of Object.keys(NOT_KEYED_IN_THE_POOL_HALF)) {
+      expect(keys.has(key), `${key} is exempted but the pool half no longer asks it`).toBe(true);
+    }
+  });
+
+  it('every key left open is still asked by the pool half and still unmet', () => {
+    const unmet = new Set(unmetRows(stmts, {}));
+    for (const key of Object.keys(OPEN_IN_THE_POOL_HALF)) {
+      expect(
+        unmet.has(key),
+        `${key} is listed as open but the pool half meets it now (or no longer asks it): ` +
+        `take it out of OPEN_IN_THE_POOL_HALF`,
+      ).toBe(true);
+    }
+  });
+
+  for (const r of rowRequirements(stmts, { ...NOT_KEYED_IN_THE_POOL_HALF, ...OPEN_IN_THE_POOL_HALF })) {
+    const { parent, target, edge } = r;
+    it(rowCaseName(r), () => {
+      expect(
+        rowMet(stmts, r),
+        (deletesOf(stmts, edge.child).length === 0
+          ? `the pool half has no DELETE FROM ${edge.child}`
+          : `no DELETE FROM ${edge.child} of the pool half has an arm over ${edge.column} that selects ` +
+            `the ${target} rows DELETE FROM ${parent} removes`) +
+        `, so a row of ${edge.child} pointing at one of them blocks DELETE FROM ${parent} ` +
+        `(${edge.child}.${edge.column} -> ${target}, ON DELETE ${edge.onDelete})`,
+      ).toBe(true);
+    });
+  }
 });
 
 /**
@@ -810,6 +1015,21 @@ describe('teardown FK coverage — the checks follow CASCADE edges and treat RES
     const preempted = ["DELETE FROM stations WHERE station_id = 'stn_x' OR organization_id = 'org-x';", ...alone];
     expect(unmetRows(alone, {})).toContain('organizations -> stations <- bays.station_id');
     expect(unmetRows(preempted, {})).not.toContain('organizations -> stations <- bays.station_id');
+  });
+
+  it('the row check reads an aliased delete, and its NOT EXISTS guard meets the edge it names and only that', () => {
+    const guarded = [
+      "DELETE FROM service_definitions sd WHERE sd.organization_id = 'org-x' AND NOT EXISTS " +
+      '(SELECT 1 FROM station_services ss WHERE ss.service_definition_id = sd.id);',
+    ];
+    const unguarded = ["DELETE FROM service_definitions sd WHERE sd.organization_id = 'org-x';"];
+    const key = 'service_definitions <- station_services.service_definition_id';
+    expect(rowRequirements(unguarded, {}).map((r) => r.key)).toContain(key);
+    expect(unmetRows(unguarded, {})).toContain(key);
+    expect(unmetRows(guarded, {})).not.toContain(key);
+    // The guard names station_services.service_definition_id; it says nothing of another edge.
+    const where = deletePredicate(guarded, 'service_definitions')?.where ?? '';
+    expect(guardedAgainst(where, 'sd', { child: 'sessions', column: 'service_id', onDelete: 'RESTRICT' })).toBe(false);
   });
 
   it('a conjoined arm does not stand in for the rows a CASCADE reaches', () => {
