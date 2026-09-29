@@ -67,9 +67,14 @@ steps:
   # ANSWER IT. Scenario mode registers no ResetHandler, so if this file does not send the
   # Response nobody does: the server's pending command is left to expire on its Redis TTL
   # and the round trip the file is named for never completes.
-  # Note what this Response does and does not leave behind — ResetResponseHandler resolves
-  # the pending command, logs, and dispatches StationReset, which has ZERO listeners. So the
-  # Response itself writes NOTHING queryable; what is assertable is the post-reset boot below.
+  # Note what this Response leaves behind. ResetResponseHandler resolves the pending command,
+  # writes a `station_reset` row to the station journal, readable at
+  # GET /api/v1/admin/stations/{stationId}/journal, and dispatches StationReset, whose one
+  # listener, SettleSessionsOnForcedReset, acts only on a FORCED reset. This one is not
+  # forced: the admin reset route validates `force` alone, so the `type` above is dropped
+  # and `force` defaults to false. So the Response does write something queryable - the
+  # journal row, with `details.forced: false` - and this file does not assert it; what it
+  # asserts is the post-reset boot below.
   - action: send
     message: Reset
     messageType: Response

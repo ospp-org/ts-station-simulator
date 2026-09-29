@@ -308,8 +308,12 @@ steps:
   # ANSWER IT, for the reason soft-reset.yaml gives at its own Response: scenario mode
   # registers no ResetHandler, so an unanswered command is left for its Redis TTL to expire
   # and this file would hand the pool a station with a command still in flight.
-  # ResetResponseHandler resolves the pending command and dispatches StationReset, which has
-  # zero listeners — so the Response writes nothing queryable and disturbs no later scenario.
+  # ResetResponseHandler resolves the pending command, writes a `station_reset` row to the
+  # station journal and dispatches StationReset. The event's one listener,
+  # SettleSessionsOnForcedReset, acts only on a forced reset, and this one is unforced
+  # (`payload: {}`); the 202 above already says the pre-flight found no live session to
+  # settle anyway. So the Response writes one journal row, with `details.forced: false`,
+  # and changes no session or bay state a later scenario on this station could trip on.
   - action: send
     message: Reset
     messageType: Response
