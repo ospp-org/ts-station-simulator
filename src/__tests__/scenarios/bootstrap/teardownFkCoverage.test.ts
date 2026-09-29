@@ -272,43 +272,60 @@ function deleteAt(sql: string, table: string): number {
   return -1;
 }
 
+/** One ordering the P1 check asks of a piece of SQL: `edge.child` is deleted before `parent`. */
+interface Ordering {
+  parent: string;
+  /** The line of the first `DELETE FROM <parent>`. */
+  parentAt: number;
+  edge: FkEdge;
+}
+
 /**
- * The P1 check over one piece of SQL: for every parent it deletes from, every NO-ACTION FK
- * child must also be deleted, and the child delete must come BEFORE the parent's delete.
- * (CASCADE auto-handles itself; SET NULL doesn't block; RESTRICT is treated like NO ACTION
+ * The orderings the P1 check asks of one piece of SQL: for every parent it deletes from, every
+ * NO-ACTION FK child must also be deleted, and the child delete must come BEFORE the parent's
+ * delete. (CASCADE auto-handles itself; SET NULL doesn't block; RESTRICT is treated like NO ACTION
  * but is currently only present on service_definitions, where the teardown deliberately
  * defers the orphan-sweep until AFTER stations cascade-removes station_services — that
  * ordering is covered by a separate test in PoolBootstrap.test.ts.)
  */
-function reverseGraphChecks(sql: string, label: string): void {
+function blockingOrderings(sql: string): Ordering[] {
+  const orderings: Ordering[] = [];
   for (const [parent, edges] of Object.entries(SCHEMA_FK_GRAPH)) {
     const parentAt = deleteAt(sql, parent);
     if (parentAt < 0) continue; // this SQL doesn't touch this parent — nothing to assert
     for (const edge of edges) {
       if (edge.onDelete !== 'NO ACTION') continue;
-      it(
-        `[${parent}] DELETE FROM ${edge.child} ` +
-        `(FK: ${edge.child}.${edge.column} → ${parent}, ON DELETE NO ACTION) ` +
-        `must run before DELETE FROM ${parent}`,
-        () => {
-          const childAt = deleteAt(sql, edge.child);
-          expect(
-            childAt,
-            `${label} is missing 'DELETE FROM ${edge.child}' — without it, ` +
-            `'DELETE FROM ${parent}' will be FK-blocked at runtime by ` +
-            `${edge.child}.${edge.column} → ${parent}.id (ON DELETE NO ACTION). ` +
-            `This is the exact failure class that shipped twice already; close it now.`,
-          ).toBeGreaterThanOrEqual(0);
-          expect(
-            childAt,
-            `'DELETE FROM ${edge.child}' (line ${childAt}) must run BEFORE ` +
-            `'DELETE FROM ${parent}' (line ${parentAt}) — Postgres evaluates FK ` +
-            `constraints at statement time, not at COMMIT (every FK in the snapshot is NOT ` +
-            `DEFERRABLE), so order is load-bearing inside the transaction.`,
-          ).toBeLessThan(parentAt);
-        },
-      );
+      orderings.push({ parent, parentAt, edge });
     }
+  }
+  return orderings;
+}
+
+/** The P1 check over one piece of SQL, one case per ordering {@link blockingOrderings} asks. */
+function reverseGraphChecks(sql: string, label: string): void {
+  for (const { parent, parentAt, edge } of blockingOrderings(sql)) {
+    it(
+      `[${parent}] DELETE FROM ${edge.child} ` +
+      `(FK: ${edge.child}.${edge.column} → ${parent}, ON DELETE NO ACTION) ` +
+      `must run before DELETE FROM ${parent}`,
+      () => {
+        const childAt = deleteAt(sql, edge.child);
+        expect(
+          childAt,
+          `${label} is missing 'DELETE FROM ${edge.child}' — without it, ` +
+          `'DELETE FROM ${parent}' will be FK-blocked at runtime by ` +
+          `${edge.child}.${edge.column} → ${parent}.id (ON DELETE NO ACTION). ` +
+          `This is the exact failure class that shipped twice already; close it now.`,
+        ).toBeGreaterThanOrEqual(0);
+        expect(
+          childAt,
+          `'DELETE FROM ${edge.child}' (line ${childAt}) must run BEFORE ` +
+          `'DELETE FROM ${parent}' (line ${parentAt}) — Postgres evaluates FK ` +
+          `constraints at statement time, not at COMMIT (every FK in the snapshot is NOT ` +
+          `DEFERRABLE), so order is load-bearing inside the transaction.`,
+        ).toBeLessThan(parentAt);
+      },
+    );
   }
 }
 
@@ -417,40 +434,68 @@ function selectsThrough(stmt: string, column: string, parent: string, parentWher
   return false;
 }
 
+/** One row requirement: every `edge.child` row pointing at a `parent` row the delete removes goes first. */
+interface RowRequirement {
+  /** `<parent> <- <child>.<column>`, the form the exemption lists use. */
+  key: string;
+  parent: string;
+  parentWhere: string;
+  edge: FkEdge;
+}
+
+/** The row requirements of `stmts`: one per NO ACTION edge into a parent it deletes, less `exempt`. */
+function rowRequirements(stmts: string[], exempt: Record<string, string>): RowRequirement[] {
+  const requirements: RowRequirement[] = [];
+  for (const [parent, edges] of Object.entries(SCHEMA_FK_GRAPH)) {
+    const parentWhere = deletePredicate(stmts, parent);
+    if (parentWhere === undefined) continue; // the statements don't delete this parent
+    for (const edge of edges) {
+      if (edge.onDelete !== 'NO ACTION') continue;
+      const key = `${parent} <- ${edge.child}.${edge.column}`;
+      if (key in exempt) continue;
+      requirements.push({ key, parent, parentWhere, edge });
+    }
+  }
+  return requirements;
+}
+
+/** Every `DELETE FROM <table>` statement of `stmts`. */
+function deletesOf(stmts: string[], table: string): string[] {
+  return stmts.filter((s) => new RegExp(`^DELETE FROM ${table}(?![A-Za-z0-9_])`).test(s));
+}
+
+/** True when one of the child's deletes in `stmts` meets the requirement. */
+function rowMet(stmts: string[], r: RowRequirement): boolean {
+  return deletesOf(stmts, r.edge.child).some((s) => selectsThrough(s, r.edge.column, r.parent, r.parentWhere));
+}
+
 describe('teardown FK coverage — the user sweep reaches every row that points at what it deletes (CW109)', () => {
   const stmts = buildTeardownTestUsersSql(
     ['sim-worker-test-0@test.local', 'sim-worker-test-1@test.local'],
     { protectedEmails: [] },
   );
 
-  for (const [parent, edges] of Object.entries(SCHEMA_FK_GRAPH)) {
-    const parentWhere = deletePredicate(stmts, parent);
-    if (parentWhere === undefined) continue; // the sweep doesn't delete this parent
-    for (const edge of edges) {
-      if (edge.onDelete !== 'NO ACTION') continue;
-      const key = `${parent} <- ${edge.child}.${edge.column}`;
-      if (key in NOT_KEYED_IN_THE_USER_SWEEP) continue;
-      it(
-        `[${parent}] DELETE FROM ${edge.child} selects through ${edge.child}.${edge.column} ` +
-        `and the ${parent} delete's own predicate`,
-        () => {
-          const childStmts = stmts.filter((s) =>
-            new RegExp(`^DELETE FROM ${edge.child}(?![A-Za-z0-9_])`).test(s));
-          expect(
-            childStmts.length,
-            `the user sweep has no DELETE FROM ${edge.child}, so DELETE FROM ${parent} is ` +
-            `FK-blocked by any row of ${edge.child} whose ${edge.column} names a swept row of ${parent}`,
-          ).toBeGreaterThan(0);
-          expect(
-            childStmts.some((s) => selectsThrough(s, edge.column, parent, parentWhere)),
-            `DELETE FROM ${edge.child} does not select through ${edge.column}: a row of ` +
-            `${edge.child} whose ${edge.column} names a row of ${parent} this sweep deletes survives it, and ` +
-            `DELETE FROM ${parent} is FK-blocked (${edge.child}.${edge.column} → ${parent}, ` +
-            `ON DELETE NO ACTION)`,
-          ).toBe(true);
-        },
-      );
-    }
+  for (const r of rowRequirements(stmts, NOT_KEYED_IN_THE_USER_SWEEP)) {
+    const { parent, edge } = r;
+    it(
+      `[${parent}] DELETE FROM ${edge.child} selects through ${edge.child}.${edge.column} ` +
+      `and the ${parent} delete's own predicate`,
+      () => {
+        const childStmts = deletesOf(stmts, edge.child);
+        expect(
+          childStmts.length,
+          `the user sweep has no DELETE FROM ${edge.child}, so DELETE FROM ${parent} is ` +
+          `FK-blocked by any row of ${edge.child} whose ${edge.column} names a swept row of ${parent}`,
+        ).toBeGreaterThan(0);
+        expect(
+          rowMet(stmts, r),
+          `DELETE FROM ${edge.child} does not select through ${edge.column}: a row of ` +
+          `${edge.child} whose ${edge.column} names a row of ${parent} this sweep deletes survives it, and ` +
+          `DELETE FROM ${parent} is FK-blocked (${edge.child}.${edge.column} → ${parent}, ` +
+          `ON DELETE NO ACTION)`,
+        ).toBe(true);
+      },
+    );
   }
 
   it('every edge exempted from the predicate check is still an edge of the snapshot', () => {
