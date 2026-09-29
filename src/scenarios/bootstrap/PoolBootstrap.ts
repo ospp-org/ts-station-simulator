@@ -1148,8 +1148,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // units that never started, so it has no session to be found by.
     `DELETE FROM refunds WHERE session_id IN (${sess}) OR payment_intent_id IN (${runIntents});`,
     // settlement_outbox (CW110): a row per settlement that owed a refund (aggregate_type
-    // 'session', aggregate_id the session's varchar session_id) and per settled card payment
-    // (aggregate_type 'payment_intent', aggregate_id the intent's id). No foreign key, so it
+    // 'session', aggregate_id the session's varchar session_id) and per settled web payment
+    // (aggregate_type 'payment_intent', aggregate_id the intent's id as text). No foreign key, so it
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),

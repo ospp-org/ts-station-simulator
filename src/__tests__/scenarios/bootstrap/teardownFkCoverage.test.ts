@@ -282,8 +282,8 @@ describe('teardown FK coverage — P1 reverse-graph static check', () => {
  * `creates: user` customer whose wallet session was refunded anywhere else leaves a refund
  * that points at the synthetic intent `ProcessRefundAction::getOrCreatePaymentIntentId` minted
  * for that session - processor 'wallet', user_id the session's user, reference_type
- * 'session_wallet' - and `refunds_payment_intent_id_fkey` blocks the sweep's payment_intents
- * delete, rolling the whole teardown back.
+ * 'session_wallet' - and with no refunds delete in the sweep, `refunds_payment_intent_id_fkey`
+ * blocked its payment_intents delete and rolled the whole teardown back.
  */
 describe('teardown FK coverage — the user sweep alone (CW109)', () => {
   const sql = buildTeardownTestUsersSql(
@@ -299,9 +299,9 @@ describe('teardown FK coverage — the user sweep alone (CW109)', () => {
  *
  * The reverse-graph check is TABLE-level: it proves a `DELETE FROM <child>` exists and runs
  * first, not that it reaches the child rows that point at the parent rows being deleted. The
- * user sweep's invitations delete passes it for invitations.revoked_by while it selects only
+ * user sweep's invitations delete passed it for invitations.revoked_by while selecting only
  * by invited_by and email, so an invitation a swept user revoked, sent by someone else to
- * someone else, still blocks the users delete.
+ * someone else, would still have blocked the users delete.
  *
  * So each NO ACTION edge into a parent the user sweep deletes is also checked by predicate: the
  * child's delete must select through that edge's column and the parent delete's own WHERE,
@@ -314,7 +314,8 @@ describe('teardown FK coverage — the user sweep alone (CW109)', () => {
 const NOT_KEYED_IN_THE_USER_SWEEP: Record<string, string> = {
   // The child is another identity's row: an offline transaction carries its own user_id, and the
   // sweep reaches it by that. At csms-server master aadea673 nothing in app/ writes this column
-  // (OfflineTransaction lists it as fillable; no code assigns it), so no row can hold it.
+  // (OfflineTransaction lists it as fillable; no code assigns it), so nothing in the server
+  // fills it today.
   'sessions <- offline_transactions.reconciled_session_id':
     'an offline transaction is reached by its own user_id, never through a session',
   // The child is a session, and a session is reached by its own user_id (and its batch). The

@@ -1217,7 +1217,8 @@ export function buildSeedTestUsersSql(
  * (the varchar `sess_` id, not the uuid), event SessionCompleted or SessionFailed, whenever a
  * settlement leaves a refund; `SettlementFiscalEmitter` records aggregate_type
  * 'payment_intent' with aggregate_id = payment_intents.id as text, event
- * 'FiscalDocumentRequested', for a settled card payment. The table carries no foreign key
+ * 'FiscalDocumentRequested', for a settled web payment (an intent with reference_type
+ * 'session_payment' whose platform_settlement_ledger row exists). The table carries no foreign key
  * (2026_07_14_000002_create_settlement_outbox_table), so a row never blocks a teardown, and
  * none ever removed one: they stayed behind naming sessions and intents that no longer exist.
  *
@@ -1265,18 +1266,19 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *   synthetic intent `ProcessRefundAction` mints for it (processor 'wallet', user_id the
  *   session's user, reference_type 'session_wallet'), so `refunds_payment_intent_id_fkey`
  *   rolled the whole teardown back. The trail is now deleted here, each statement selecting
- *   through the column that points at what the next statement deletes, and nothing reached
- *   any other way: the users' intents, their batches (bought by them or on one of their
+ *   through the column that points at the rows a later statement deletes, and nothing
+ *   reached any other way: the users' intents, their batches (bought by them or on one of their
  *   intents), their sessions (theirs or a child of one of their batches — a batch child is
  *   started with the batch's own user_id, so that arm reaches no session the user_id arm
  *   could not; it is there so the unit_batches delete stays FK-safe without relying on
  *   that), the refunds of those intents or sessions, and the ledger rows of all three.
  *
  *   NOT REACHED, deliberately: rows that belong to another identity and merely point at a
- *   swept user's row. A session naming a swept user's reservation (the start gate matches a
- *   reservation by id alone) and an offline transaction naming a swept user's session as
- *   `reconciled_session_id` (no csms-server code writes that column) are left to their own
- *   owners' sweeps.
+ *   swept user's row. A session naming a swept user's reservation
+ *   (`SessionStateMachine::validateReservedBayForStart` matches a reservation by its id
+ *   alone, not by its owner) and an offline transaction naming a swept user's session as
+ *   `reconciled_session_id` (nothing in csms-server's app/ writes that column at master
+ *   aadea673) are left to their own owners' sweeps.
  *
  *   Spatie tracks role + permission grants via two polymorphic tables
  *   (`model_has_roles`, `model_has_permissions`) — there's no actual FK on `model_id`,

@@ -109,7 +109,8 @@ describe('teardown — the money path', () => {
  * 'session', aggregate_id = sessions.session_id (the varchar `sess_` id), event SessionCompleted
  * or SessionFailed, whenever the settlement leaves a refund; `SettlementFiscalEmitter` records
  * aggregate_type 'payment_intent', aggregate_id = payment_intents.id as text, event
- * 'FiscalDocumentRequested', for a settled card payment. The table carries no foreign key
+ * 'FiscalDocumentRequested', for a settled web payment (an intent with reference_type
+ * 'session_payment' whose platform_settlement_ledger row exists). The table carries no foreign key
  * (2026_07_14_000002_create_settlement_outbox_table), so its rows never block a teardown and
  * were never deleted by one: every settled run left them naming sessions and intents that no
  * longer exist.
