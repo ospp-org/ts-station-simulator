@@ -36,9 +36,10 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  *     ORDER BY 1, 2, 6;"
  *
  * 75 foreign keys: 44 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
- * and NOT DEFERRABLE. The same query was run again on 2026-09-29 against a database migrated
+ * and NOT DEFERRABLE. The same query, run again on 2026-09-29 against a database migrated
  * from master d9d860fd, whose database/migrations is the same tree as 87164f7d's
- * (b0c5887b64ff052a37c97ec5a5395a918e04d1f7): the same 75 rows. The snapshot has an entry for
+ * (b0c5887b64ff052a37c97ec5a5395a918e04d1f7), returned the same 75 rows; the entries for the
+ * 14 tables reached only through a CASCADE were read from it. The snapshot has an entry for
  * every table the teardown removes rows from - the 36 tables both halves, buildTeardownSql and
  * buildTeardownTestUsersSql, delete from, and the 14 their deletes reach only through ON DELETE
  * CASCADE, 50 tables - holding every FK that points at that table; an empty entry is a table no
@@ -802,19 +803,23 @@ const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
     "a batch's bay_id is its intent's reference_id, so the bay arm reaches every batch of a run intent",
   // ProcessRefundAction::execute writes the only payment_ledger rows, for a processor refund alone
   // (willCallProcessor: an intent with a processor_transaction_id), with the refund's own
-  // payment_intent_id. A refund of a run-bay session is against that session's own intent - the
+  // payment_intent_id. A refund the refunds delete removes by its intent names a run intent, and
+  // so does its payment_ledger row. One it removes by its session is a refund of a run-bay session,
+  // which ProcessRefundAction::execute raises against the session's own intent - the
   // session_payment intent PaymentLandingController::process wrote with the bay's business id as
   // reference_id, a run intent, since a web-payment session starts on that bay - or, when it has
   // none, against the intent getOrCreatePaymentIntentId mints (processor 'wallet', no
-  // processor_transaction_id), which never gets a payment_ledger row.
+  // processor_transaction_id), which never gets a payment_ledger row. (The callers that pass an
+  // intent - an admin refund, a batch tail, a failed start - pass no session.)
   'refunds <- payment_ledger.refund_id':
     "a payment_ledger row names its refund's own intent, and a refund the refunds delete reaches by session alone is on a wallet intent, which has none",
   // SettlementReversalRecorder::record writes the only rows with a refund_id, called by
   // ProcessRefundAction::finalizeSettlement with the refund's own payment_intent_id, and writes
   // nothing unless that intent has a settlement row - which SettlementLedgerRecorder::record writes
   // for session_payment intents alone - copying the settlement's payment_intent_id. A refund the
-  // refunds delete reaches by session alone is on a minted 'session_wallet' intent (entry above):
-  // no settlement, no reversal.
+  // refunds delete removes by its intent names a run intent, and so does its reversal; one it
+  // removes by its session alone is on a minted 'session_wallet' intent (entry above): no
+  // settlement, no reversal.
   'refunds <- platform_settlement_ledger.refund_id':
     "a reversal names its refund's own intent, which has a settlement only when it is a session_payment intent, and those of run-bay sessions are run intents",
   // StartSessionAction::execute is the one insert of sessions, and a batch_id reaches it only on the
