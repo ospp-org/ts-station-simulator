@@ -1036,9 +1036,12 @@ export async function teardownPool(
  * (pg_constraint + information_schema), NOT assumptions:
  *
  *  - `stations.id` is uuid; `stations.station_id` is the varchar business key.
- *  - Of all FKs referencing stations/bays, ONLY `station_services(→stations)` and
- *    `bay_services(→bays)` are ON DELETE CASCADE (and `security_events` is SET
- *    NULL); every other child is NO ACTION → must be deleted explicitly.
+ *  - Of the 16 FKs referencing stations/bays, 3 are ON DELETE CASCADE -
+ *    `station_services(→stations)`, `bay_programs(→bays)` and `bay_services(→bays)` - and
+ *    3 SET NULL - `security_events(→stations)` and `station_journal(→stations, →bays)`;
+ *    the other 10 are NO ACTION → must be deleted explicitly. A station_services row
+ *    the stations CASCADE removes is itself RESTRICTed by `sessions.service_id` and
+ *    `offline_transactions.service_id`, so both go before the stations delete.
  *  - `sessions` has NO `station_id` column — it references a bay via `bay_id`
  *    (and an org via `organization_id`); reach it through bays only.
  *  - `reservations`/`offline_transactions` reference `bays.id` (uuid) via
@@ -1123,13 +1126,20 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
 
   // Topological delete order over the AUTHORITATIVE FK graph (pg_constraint,
   // verified — not assumed; an earlier hand-guessed order shipped a bug that
-  // only surfaced against real session rows in a live run). Parent ← child:
-  //   sessions     ← refunds.session_id, offline_transactions.reconciled_session_id
+  // only surfaced against real session rows in a live run; the snapshot the checks read is
+  // SCHEMA_FK_GRAPH in teardownFkCoverage.test.ts). Parent ← its NO ACTION children, then
+  // in parentheses the FKs of every other kind:
+  //   sessions     ← refunds.session_id, platform_settlement_ledger.session_id,
+  //                  offline_transactions.reconciled_session_id
+  //                  (+ session_settlement_retries CASCADE, on sessions.session_id)
   //   reservations ← sessions.reservation_id
-  //   bays         ← reservations, sessions, offline_transactions (+ bay_services CASCADE)
-  //   stations     ← bays, service_catalogs, offline_transactions, station_configurations,
-  //                  firmware_updates, diagnostics_uploads (+ station_services CASCADE,
-  //                  security_events SET NULL — swept explicitly below, see the note there)
+  //   bays         ← reservations, sessions, offline_transactions (+ bay_programs and
+  //                  bay_services CASCADE, station_journal SET NULL)
+  //   stations     ← bays, service_catalogs, offline_transactions, offline_auth_grants,
+  //                  station_configurations, firmware_updates, diagnostics_uploads
+  //                  (+ station_services CASCADE, whose rows sessions.service_id and
+  //                  offline_transactions.service_id RESTRICT; security_events and
+  //                  station_journal SET NULL — swept explicitly below, see the notes there)
   //   locations    ← stations
   // certificates/provisioning_tokens carry a *varchar* station_id with NO FK —
   // removed by business id so re-provisioning can't collide on their unique rows.
@@ -1216,11 +1226,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // 9 544 of them naming a station that no longer exists.
     `DELETE FROM pending_commands WHERE station_id = ANY(${stationArray})${orRunOrgStationBizId};`,
     // security_events + its dedup key. NOT covered by the FK discipline above: the FK is
-    // ON DELETE SET NULL (the only one in the schema besides
-    // provisioning_tokens.issued_certificate_id), so deleting the station does not block and
-    // does not cascade — it silently NULLs station_id and the audit rows survive with no
-    // owner. `teardownFkCoverage.test.ts` cannot catch this either: it walks NO-ACTION FKs,
-    // i.e. the ones that would FAIL loudly, and SET NULL is precisely the case that does not.
+    // ON DELETE SET NULL (one of the schema's 6, with station_journal's two,
+    // provisioning_tokens.issued_certificate_id, stations.station_model_id and
+    // session_settlement_retries.settled_by_user_id), so deleting the station does not block
+    // and does not cascade — it silently NULLs station_id and the audit rows survive with no
+    // owner. `teardownFkCoverage.test.ts` cannot catch this either: it walks the FKs that
+    // would FAIL loudly — NO ACTION and RESTRICT, and the CASCADE edges down to them — and SET
+    // NULL is precisely the case that does not.
     // Measured 2026-08-10: 38 of 38 rows in security_events were orphaned this way.
     // Harmless while the eleven security-event scenarios wrote nothing (their hardcoded
     // eventIds were deduped away since 2026-06-15); now that they write a row per run, this
@@ -1286,8 +1298,9 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
   //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
   //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
-  //   - The org's NO-ACTION children (organization_members, invitations) are deleted before
-  //     the org (FK-safe; pg_constraint-verified 2026-06-15). `corporate_policies` WAS in this
+  //   - Of the org's 7 NO-ACTION children, organization_members, invitations and
+  //     tenant_payment_credentials are deleted here, before the org (FK-safe;
+  //     pg_constraint-verified 2026-06-15, and again 2026-09-29). `corporate_policies` WAS in this
   //     list and is gone: csms-server ADR-0012 retired the surface and
   //     2026_09_04_000003_drop_corporate_policies_table DROPPED the table, so the DELETE
   //     referenced a relation that no longer exists. Because the whole teardown is one
@@ -1296,11 +1309,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //     paragraphs down. Measured on UAT 2026-09-06: 3 orphaned Sim Pool orgs and 7 orphaned
   //     stations from three runs. Dropping the statement is safe rather than merely necessary:
   //     the bootstrap never creates a corporate policy, so on an environment that still has the
-  //     table there is no row for this org to FK-block on. `locations` +
-  //     `sessions` (also NO-ACTION → organizations) were already removed by the station/location
-  //     path above. DELETE FROM organizations then CASCADE-removes the per-org cloned `roles`
-  //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
-  //     `service_definitions`, `offline_passes`, and any remaining `stations`.
+  //     table there is no row for this org to FK-block on. The other four were already
+  //     removed above: `locations` and `offline_auth_grants` by their org arms, `sessions` with
+  //     the run's bays (csms-server writes no sessions.organization_id), and
+  //     `platform_settlement_ledger` with the run's intents. DELETE FROM organizations then
+  //     CASCADE-removes its 7 CASCADE children: the per-org cloned `roles` (+ their
+  //     model_has_roles + role_has_permissions), `model_has_roles`, `revocation_epochs`,
+  //     `service_definitions` (whose RESTRICT child station_services went with the stations),
+  //     `offline_passes` (whose NO-ACTION child offline_transactions went above, by the pass
+  //     arm), `station_models` (+ station_model_programs; stations.station_model_id is SET NULL),
+  //     and any remaining `stations`.
   if (handle.ephemeralOwnerEmail) {
     lines.push(...buildTeardownTestUsersSql([handle.ephemeralOwnerEmail]));
   }
