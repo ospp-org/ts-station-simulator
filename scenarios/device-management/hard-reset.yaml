@@ -38,11 +38,13 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
-        # device_management_supported === true, and NULL is "not stated" and withheld too
-        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
-        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
-        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        # Required: `ResetStationAction::execute` refuses the Reset with 6008 COMMAND_PRE_EMPTED,
+        # details.wouldBe 2007, unless device_management_supported === true, and NULL is "not
+        # stated" and withheld too (boot-notification.md, "Capability Semantics — absence means
+        # NOT STATED"). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10, when that refusal was still a bare 2007: without this, this file
+        # failed on a FRESH pool station — it only ever passed by inheriting the flag from a
+        # sibling on a reused station.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -72,11 +74,11 @@ steps:
 
   # ANSWER IT. Scenario mode registers no Reset handler (createStationFromScenario registers
   # BootNotificationHandler alone), so if this file does not send the Response nobody does. An
-  # unanswered Reset stays `pending` in csms-server's `pending_commands` until its timeout (30 s
-  # for Reset in `ospp.command_timeouts`); until then StartSessionAction refuses a start on this
-  # station with 3002 (`PendingCommandRegistry::hasOutstanding`), and after it the scheduled
-  # command:check-timeouts (CommandTimeoutScanner) expires the command, journals it as
-  # `command_expired` and compensates nothing. The Reset round trip would never complete.
+  # unanswered Reset stays `pending` in csms-server's `pending_commands` until, past its timeout
+  # (30 s for Reset in `ospp.command_timeouts`), the scheduled command:check-timeouts
+  # (CommandTimeoutScanner) expires it, journals it as `command_expired` and compensates
+  # nothing; for those 30 s StartSessionAction refuses a start on this station with 3002
+  # (`PendingCommandRegistry::hasOutstanding`). The Reset round trip would never complete.
   # Answered, the Response is what `ResetResponseHandler::handle` resolves: it writes a
   # `station_reset` row to the station journal with this Reset's messageId and `details.forced`
   # true, read back at the end of this file, and dispatches StationReset. The event's one
@@ -93,7 +95,8 @@ steps:
   - action: delay
     ms: 500
 
-  # Per spec reset.md §5.4-5, station MUST send BootNotification post-reset.
+  # reset.md, "Processing Rules": after restarting, the station MUST send a BootNotification
+  # with bootReason RemoteReset.
   # autoBoot was removed from sim (commit ac9b2e8) — scenarios must send explicitly.
   - action: send
     message: BootNotification
@@ -116,11 +119,13 @@ steps:
         bleSupported: false
         offlineModeSupported: false
         meterValuesSupported: true
-        # Required: ResetStationAction.php:59 refuses COMMAND_NOT_SUPPORTED (2007) unless
-        # device_management_supported === true, and NULL is "not stated" and withheld too
-        # (OSPP §5.1 rule 3). Declared at boot like every other device-management scenario.
-        # Measured 2026-08-10: without this, this file fails 2007 on a FRESH pool station —
-        # it only ever passed by inheriting the flag from a sibling on a reused station.
+        # Required: `ResetStationAction::execute` refuses the Reset with 6008 COMMAND_PRE_EMPTED,
+        # details.wouldBe 2007, unless device_management_supported === true, and NULL is "not
+        # stated" and withheld too (boot-notification.md, "Capability Semantics — absence means
+        # NOT STATED"). Declared at boot like every other device-management scenario.
+        # Measured 2026-08-10, when that refusal was still a bare 2007: without this, this file
+        # failed on a FRESH pool station — it only ever passed by inheriting the flag from a
+        # sibling on a reused station.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
@@ -134,10 +139,11 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # THE ASSERTION, server-recorded. The post-reset boot must be attributed to the reset:
-  # BootNotificationHandler persists boot_reason, and Admin\StationResource:32-33 /
-  # StationManagementController:264-265 expose it. If the Reset round trip above had not
-  # completed, or the station had not re-booted, this reads the earlier PowerOn instead.
+  # THE REBOOT, server-recorded. The post-reset boot must be attributed to the reset:
+  # `BootNotificationHandler::handle` persists boot_reason and
+  # `StationManagementController::showStation` returns it as data.bootReason. Had the station
+  # not booted again, this would read the PowerOn above. The value is what the station
+  # reported; the journal row read after it is what shows the server handled the Response.
   - action: delay
     ms: 1000
 

@@ -116,9 +116,9 @@ steps:
         # device_management_supported === true, and that gate runs BEFORE the same method's
         # active-session pre-flight — so without this the file dies at the wrong
         # gate and never reaches the forced-reset branch it exists to test. NULL is "not
-        # stated" and is withheld too (boot-notification.md §5.1, "Capability Semantics —
-        # absence means NOT STATED"). Declared at boot, matching
-        # change-configuration-accepted.yaml:33; no admin call sets it in this corpus.
+        # stated" and is withheld too (boot-notification.md, "Capability Semantics —
+        # absence means NOT STATED"). Declared at boot, as change-configuration-accepted.yaml's
+        # boot declares it; no admin call sets it in this corpus.
         deviceManagementSupported: true
       networkInfo:
         connectionType: "Ethernet"
