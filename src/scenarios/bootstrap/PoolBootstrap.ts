@@ -1091,6 +1091,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const orRunOrgStationBizId = runOrg
     ? ` OR station_id IN (SELECT station_id FROM stations WHERE organization_id = ${runOrg})`
     : '';
+  // Offline transactions that name one of the org's passes. `DELETE FROM organizations` cascades
+  // to offline_passes, and offline_transactions.offline_pass_id is NO ACTION, so a surviving
+  // transaction naming one of them blocks the org delete — and one can sit at a station outside
+  // the run: csms-server's Reconciler::persistTransaction stores a rejected transaction without
+  // the RevalidationGate check of the pass's organization against the station's, and the
+  // dashboard issues a pass to a user who need not be a member, so neither the station arms below
+  // nor the user sweep need reach it. A pass of the minted org is this run's by construction.
+  const orRunOrgPass = runOrg
+    ? ` OR offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = ${runOrg})`
+    : '';
 
   // Resolve this run's uuid sets from the varchar business station_id.
   const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned}`;
@@ -1153,16 +1163,18 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
-    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
+    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess})${orRunOrgPass};`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
     // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
     // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
     // retyped the column to the varchar session id.) Scoped by station_id (run-ephemeral →
-    // catches every run grant, never touches another run's). Placed BEFORE stations (here)
-    // and before the appended users/organizations deletes, so no parent delete FK-blocks on
-    // a leftover grant. Mirrors offline_transactions (swept in both the station- and
-    // user-scoped teardowns).
-    `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
+    // never touches another run's) and by the minted org: csms-server's
+    // AuthorizeOfflineSessionAction::execute writes the caller's organization and the station the
+    // request names and compares neither, so a grant of the run org can sit at a station outside
+    // the run, and it blocks the org delete. Placed BEFORE stations (here) and before the
+    // appended users/organizations deletes, so no parent delete FK-blocks on a leftover grant.
+    // Mirrors offline_transactions (swept in both the station- and user-scoped teardowns).
+    `DELETE FROM offline_auth_grants WHERE station_id IN (${sids})${orRunOrgOwned};`,
     // meter_values carries NO foreign key at all — neither to `bays` nor to `sessions` — so
     // it never blocks a delete and was never noticed by the FK-coverage walk. It is swept
     // HERE because both scoping subqueries resolve through rows the next statements remove.
