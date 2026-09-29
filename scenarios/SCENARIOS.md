@@ -124,8 +124,8 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/start-refused-binding-uncovered` | `StartSessionAction.php:507` uncovered-binding guard | `409` + `errorCode 3020`, `details.declaredPrograms`, and no session row |
 | `sessions/meter-values-seqno-gap-still-ingested` | `MeterValuesHandler.php:112` gap check | the three `meter_values` rows the server wrote |
 | `sessions/meter-values-seqno-out-of-order-still-ingested` | `MeterValuesHandler.php:112` + the watermark rule at `:126` | four rows — the repeated ordinal is not deduplicated |
-| `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction.php:91` pre-flight | `409` + `ospp_code 6005`, and no Reset on the wire |
-| `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction.php:100`, `SessionEndedHandler.php:111`, `BootNotificationHandler.php:355` | server-sent `force: true`; `completed`, surviving the reboot |
+| `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction::execute`, its active-session pre-flight | `409` + `ospp_code 6008` with `details.wouldBe 3016`, and no Reset on the wire |
+| `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction::execute`, `SettleSessionsOnForcedReset::handle`, the OPERATOR_STOPPED arm of `SessionEndedHandler::handle`, `BootNotificationHandler::failStuckSessions` | server-sent `force: true`; a StopService naming the session and the session `stopping` before the station's settle; the `station_reset` row with `forced: true`; `completed`, surviving the reboot |
 | `sessions/session-rejected-insufficient-balance` | `StartSessionAction.php:241-250` money gate | `402` + `ospp_code 4001`, and the `500` the server derived from a `300`s request — on an identity it declares unfunded (`wallet_balance: 0`) |
 
 ## Summary
@@ -239,8 +239,8 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/change-configuration-accepted.yaml` | Change Config Accepted | Config key changed successfully | migrated |
 | `device-management/change-configuration-reboot-required.yaml` | Change Config Reboot Required | Config change needs reboot | new |
 | `device-management/change-configuration-rejected.yaml` | Change Config Rejected | Readonly key rejected (5108) | new |
-| `device-management/soft-reset.yaml` | Soft Reset | Reset Soft → reboot → re-register | migrated |
-| `device-management/hard-reset.yaml` | Hard Reset | Reset Hard → full restart → re-register | new |
+| `device-management/soft-reset.yaml` | Soft Reset | Unforced Reset → Accepted → reboot as RemoteReset; the `station_reset` row with `forced: false` | migrated |
+| `device-management/hard-reset.yaml` | Hard Reset | Forced Reset of a station this file starts no session on → Accepted → reboot as RemoteReset; the `station_reset` row with `forced: true` | new |
 | `device-management/trigger-message-heartbeat.yaml` | Trigger Heartbeat | TriggerMessage → Heartbeat sent | migrated |
 | `device-management/trigger-message-status.yaml` | Trigger StatusNotification | TriggerMessage → StatusNotification sent | new |
 | `device-management/trigger-message-boot.yaml` | Trigger BootNotification | TriggerMessage → BootNotification sent | new |
