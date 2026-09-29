@@ -448,13 +448,17 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     // session's refund raises against the intent minted for it. The money trail now goes
     // first, sessions before unit_batches (sessions.batch_id) and unit_batches before
     // payment_intents (unit_batches.payment_intent_id).
-    expect(stmts).toHaveLength(18);
+    //
+    // CW110: settlement_outbox carries no FK, so it blocks nothing, but its rows are found
+    // through the sessions and intents they name, so its delete precedes both.
+    expect(stmts).toHaveLength(19);
     const tables = [
       'offline_auth_grants',
       'wallet_entries',
       'payment_ledger',
       'platform_settlement_ledger',
       'refunds',
+      'settlement_outbox',
       // `offline_transactions` BEFORE `offline_passes`: the transaction carries a
       // NO-ACTION FK `offline_pass_id` -> `offline_passes.id`, so deleting the pass
       // first FK-blocks whenever one user both holds a pass and settled a transaction
