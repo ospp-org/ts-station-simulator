@@ -415,8 +415,8 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
   const certPattern = target.tls?.certPattern ?? target.tls?.cert ?? keyPattern.replace(/-key\.pem$/, '.pem');
   const certPath = sub(certPattern);
   // The per-station chain the runner presents as `station_ca_chain`
-  // (`TargetConfig.tls.chain`, mapped from `certs.station_ca_chain` at
-  // `cli/index.ts:484`).
+  // (`TargetConfig.tls.chain`, mapped from `certs.station_ca_chain` by `toRunnerTarget`
+  // in `cli/config.ts`).
   //
   // `tls.chain` COMES FIRST, and the order is the whole point. This line read
   // `target.tls?.serverCa ?? …` and was documented as "serverCa doubles as the
@@ -426,7 +426,7 @@ export function certPathsFor(target: TargetConfig, stationId: string): CertPaths
   // green run took the fallback, so the configured branch was never exercised.
   //
   // On any target that DOES set `ca:`, `serverCa` resolves to it
-  // (`cli/config.ts:129` maps `certs.server_ca ?? certs.ca`), and for
+  // (`loadTarget` in `cli/config.ts` maps `certs.server_ca ?? certs.ca`), and for
   // `local-mtls`/`local-crl`/`sandbox` that file is SHARED and station-agnostic:
   // `certs/local/broker-ca.pem`, the bundle the client verifies the BROKER with.
   // Bootstrapping one station then overwrote the trust anchor with that
@@ -526,7 +526,8 @@ export const POOL_OWNER_PASSWORD_ENV = 'SIM_POOL_OWNER_PASSWORD';
  * `UAT_E2E_PLATFORM_ADMIN_*`, a `platform_admin` that is deliberately a member of no
  * organization, so it holds no tenant permission either; `service-catalog-update.yaml` spent
  * two revisions establishing that. `tenant_owner` holds both
- * (RolesAndPermissionsSeeder.php:369,372), and this run MINTS one — for exactly these
+ * (the `$tenantOwnerPerms` list of RolesAndPermissionsSeeder::assignPermissionsToRoles), and
+ * this run MINTS one — for exactly these
  * endpoints — and then threw the password away.
  *
  * WHAT THIS IS NOT. It is not a new identity, not a new grant and not a seeded account: it
@@ -862,7 +863,7 @@ async function registerAndProvisionStation(
   // Register (sets is_active=true, creates bay rows). Record the id immediately
   // so teardown removes it even if a later step throws.
   // No `services:` here. Registration writes NOTHING into the services tier — the Brief L
-  // decision at `RegisterStationAction.php:16-21` — and csms-server `dbc45f7` now says so out
+  // decision in `RegisterStationAction`'s class docblock — and csms-server `dbc45f7` now says so out
   // loud: `'bays.*.services' => ['prohibited']`, 422 naming the three routes that do create a
   // service. Until then the field was accepted and silently dropped, so this block had been
   // declaring a catalog that was never written, on every bootstrapped station, unnoticed.
@@ -1070,7 +1071,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //
   // WHY THE WIDENING EXISTS. `locations.organization_id` is `REFERENCES organizations(id)`
   // with no ON DELETE clause — NO ACTION — while `stations.organization_id` is ON DELETE
-  // CASCADE (`2026_05_01_060003_add_organization_id_to_stations.php:24`). So a leftover
+  // CASCADE (`stations_organization_id_foreign`, added with cascadeOnDelete() by the up() of
+  // `2026_05_01_060003_add_organization_id_to_stations`). So a leftover
   // station cannot block `DELETE FROM organizations` and a leftover LOCATION can. This
   // deleted exactly one location, `handle.locationId`, the one the bootstrap made — but
   // every pool-compatible scenario carrying `creates: location` makes another inside the
