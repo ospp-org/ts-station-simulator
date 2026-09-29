@@ -217,8 +217,9 @@ export interface PoolBootstrapHandle {
    * The runner's IdentityPoolAllocator hands these out single-use (never reused within the
    * run) so each scenario drives its own server-side `session-mutate` bucket. Teardown
    * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
-   * sessions, reservations, payment_intents, vehicles, organization_members, invitations,
-   * Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
+   * sessions, reservations, payment_intents with their refunds, ledger rows and
+   * unit_batches, vehicles, organization_members, invitations, Spatie roles+perms) — see
+   * `buildTeardownTestUsersSql` for the coverage rationale.
    *
    * Carries the seeded `walletBalance` and, for the ones a scenario's `wallet_balance:`
    * declaration asked for, `declared: true`. Both are load-bearing at the allocator, so the

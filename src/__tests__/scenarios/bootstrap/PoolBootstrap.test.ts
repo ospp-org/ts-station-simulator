@@ -525,7 +525,8 @@ describe('buildTeardownSql — identity-pool sweep integrated', () => {
         { email: 'sim-worker-abc-1@test.local', password: 'p' },
       ],
     }));
-    // Full FK coverage: all 13 user-side DELETEs land in the integrated transaction.
+    // Full FK coverage: the user-side DELETEs land in the integrated transaction (the full
+    // per-statement list is pinned in the buildTeardownTestUsersSql describe above).
     for (const tbl of [
       'wallet_entries', 'offline_passes', 'offline_transactions', 'payment_intents',
       'reservations', 'vehicles', 'organization_members', 'wallets', 'invitations',
