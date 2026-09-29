@@ -1207,6 +1207,32 @@ export function buildSeedTestUsersSql(
 }
 
 /**
+ * Delete the `settlement_outbox` rows of the sessions and payment intents a teardown is about
+ * to delete (CW110), given the WHERE clauses of its own `DELETE FROM sessions` and
+ * `DELETE FROM payment_intents`. Emitted BEFORE both: the rows are found through the
+ * sessions and intents they name.
+ *
+ * What csms-server writes there, read from the writers: `CompleteSessionAction` and
+ * `FailSessionAction` record aggregate_type 'session' with aggregate_id = sessions.session_id
+ * (the varchar `sess_` id, not the uuid), event SessionCompleted or SessionFailed, whenever a
+ * settlement leaves a refund; `SettlementFiscalEmitter` records aggregate_type
+ * 'payment_intent' with aggregate_id = payment_intents.id as text, event
+ * 'FiscalDocumentRequested', for a settled card payment. The table carries no foreign key
+ * (2026_07_14_000002_create_settlement_outbox_table), so a row never blocks a teardown, and
+ * none ever removed one: they stayed behind naming sessions and intents that no longer exist.
+ *
+ * `id::text` on the intent side, never a cast of aggregate_id to uuid: a session row's
+ * aggregate_id is a `sess_` id, and SQL does not promise to test aggregate_type first.
+ */
+export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhere: string): string {
+  return (
+    `DELETE FROM settlement_outbox WHERE ` +
+    `(aggregate_type = 'session' AND aggregate_id IN (SELECT session_id FROM sessions WHERE ${sessionsWhere})) ` +
+    `OR (aggregate_type = 'payment_intent' AND aggregate_id IN (SELECT id::text FROM payment_intents WHERE ${intentsWhere}));`
+  );
+}
+
+/**
  * Build the per-run identity-teardown SQL. Drops all user-side state scoped to the run's
  * stamped emails. Idempotent — re-running on already-empty state matches zero rows. Returns
  * the DELETE statements (no BEGIN/COMMIT) so the caller can fold them into a larger
@@ -1269,21 +1295,22 @@ export function buildSeedTestUsersSql(
  *   3. payment_ledger             (NO ACTION → payment_intents, refunds)
  *   4. platform_settlement_ledger (NO ACTION → payment_intents, refunds, sessions)
  *   5. refunds                    (NO ACTION → payment_intents, sessions)
- *   6. offline_transactions       (NO ACTION → users; → offline_passes, so before 7)
- *   7. offline_passes             (NO ACTION → users)   ← commit #3 missed this; blew up
- *   8. sessions                   (NO ACTION → users, unit_batches)
- *   9. unit_batches               (NO ACTION → users, payment_intents)
- *  10. payment_intents            (NO ACTION → users)
- *  11. reservations               (NO ACTION → users; sessions.reservation_id, so after 8)
- *  12. vehicles                   (NO ACTION → users)
- *  13. organization_members       (NO ACTION → users)
- *  14. wallets                    (NO ACTION → users; depends on wallet_entries gone first)
- *  15. invitations                (NO ACTION → users via invited_by and revoked_by)
- *  16. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
- *  17. model_has_permissions      (Spatie, polymorphic — same)
- *  18. users                      (api_keys + refresh_tokens auto-cascade with this)
+ *   6. settlement_outbox          (no FK; names sessions and intents — CW110)
+ *   7. offline_transactions       (NO ACTION → users; → offline_passes, so before 8)
+ *   8. offline_passes             (NO ACTION → users)   ← commit #3 missed this; blew up
+ *   9. sessions                   (NO ACTION → users, unit_batches)
+ *  10. unit_batches               (NO ACTION → users, payment_intents)
+ *  11. payment_intents            (NO ACTION → users)
+ *  12. reservations               (NO ACTION → users; sessions.reservation_id, so after 9)
+ *  13. vehicles                   (NO ACTION → users)
+ *  14. organization_members       (NO ACTION → users)
+ *  15. wallets                    (NO ACTION → users; depends on wallet_entries gone first)
+ *  16. invitations                (NO ACTION → users via invited_by and revoked_by)
+ *  17. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
+ *  18. model_has_permissions      (Spatie, polymorphic — same)
+ *  19. users                      (api_keys + refresh_tokens auto-cascade with this)
  *
- * Statements 3-5 select through intents, sessions and refunds that statements 8-10 remove,
+ * Statements 3-6 select through intents, sessions and refunds that statements 9-11 remove,
  * so they have to run while those rows still exist. The reverse-graph static check
  * (`teardownFkCoverage.test.ts`) fails CI if the schema gains a new NO-ACTION FK that
  * this list doesn't cover.
@@ -1349,7 +1376,10 @@ export function buildTeardownTestUsersSql(
     `DELETE FROM payment_ledger WHERE payment_intent_id IN (${userIntents}) OR refund_id IN (${userRefunds});`,
     `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${userIntents}) OR session_id IN (${userSessions}) OR refund_id IN (${userRefunds});`,
     `DELETE FROM refunds WHERE ${refundsWhere};`,
-    // 5-13. The NO-ACTION FKs that point at users.id directly, with unit_batches between
+    // 5. settlement_outbox (CW110) — no FK, so it blocks nothing, but its rows name the
+    //    users' sessions and intents and are found through them, so it goes before both.
+    buildSettlementOutboxDeleteSql(sessionsWhere, intentsWhere),
+    // 6-14. The NO-ACTION FKs that point at users.id directly, with unit_batches between
     //       sessions (sessions.batch_id → unit_batches) and payment_intents
     //       (unit_batches.payment_intent_id → payment_intents).
     // ORDER CORRECTED 2026-09-13: transactions BEFORE passes. `offline_transactions`
@@ -1371,19 +1401,19 @@ export function buildTeardownTestUsersSql(
     `DELETE FROM vehicles WHERE user_id IN (${userIds});`,
     `DELETE FROM organization_members WHERE user_id IN (${userIds});`,
     `DELETE FROM wallets WHERE user_id IN (${userIds});`,
-    // 14. invitations — invited_by and revoked_by (both NO ACTION → users) plus email match
+    // 15. invitations — invited_by and revoked_by (both NO ACTION → users) plus email match
     //     (defense-in-depth for any never-accepted invite addressed to a stamped sim-worker
     //     email). revoked_by came with csms-server's
     //     2026_09_25_100001_add_name_and_answer_columns_to_invitations; without it here, an
     //     invitation a swept user revoked but neither sent nor received blocks the users delete.
     `DELETE FROM invitations WHERE invited_by IN (${userIds}) OR revoked_by IN (${userIds}) OR email = ANY(${emailArr});`,
-    // 15-16. Spatie polymorphic — model_id is just a uuid column with no real FK, but
+    // 16-17. Spatie polymorphic — model_id is just a uuid column with no real FK, but
     //        these rows ARE state we seeded (or could have seeded), so sweep to avoid
     //        orphans. CASCADE-style behavior would have been server-side but isn't, so
     //        we own it client-side.
     `DELETE FROM model_has_roles WHERE model_id IN (${userIds});`,
     `DELETE FROM model_has_permissions WHERE model_id IN (${userIds});`,
-    // 17. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
+    // 18. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
     //     session_settlement_retries.settled_by_user_id is nulled (SET NULL).
     `DELETE FROM users WHERE email = ANY(${emailArr});`,
   ];
