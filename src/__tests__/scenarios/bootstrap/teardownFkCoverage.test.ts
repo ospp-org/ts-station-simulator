@@ -301,6 +301,25 @@ function blockingOrderings(sql: string): Ordering[] {
   return orderings;
 }
 
+/**
+ * How the checks name an ordering: `<parent> <- <child>.<column>` for an edge into the table the
+ * statement deletes from, `<parent> -> <t1> -> ... -> <tn> <- <child>.<column>` for an edge into a
+ * table the statement reaches through the CASCADE edges parent -> t1 -> ... -> tn.
+ */
+function orderingKey(o: Ordering): string {
+  return `${o.parent} <- ${o.edge.child}.${o.edge.column}`;
+}
+
+/** The keys of the orderings `sql` does not meet. */
+function unmetOrderings(sql: string): string[] {
+  return blockingOrderings(sql)
+    .filter((o) => {
+      const childAt = deleteAt(sql, o.edge.child);
+      return childAt < 0 || childAt >= o.parentAt;
+    })
+    .map(orderingKey);
+}
+
 /** The P1 check over one piece of SQL, one case per ordering {@link blockingOrderings} asks. */
 function reverseGraphChecks(sql: string, label: string): void {
   for (const { parent, parentAt, edge } of blockingOrderings(sql)) {
@@ -469,6 +488,11 @@ function rowMet(stmts: string[], r: RowRequirement): boolean {
   return deletesOf(stmts, r.edge.child).some((s) => selectsThrough(s, r.edge.column, r.parent, r.parentWhere));
 }
 
+/** The keys of the row requirements `stmts` does not meet, named as {@link orderingKey} names them. */
+function unmetRows(stmts: string[], exempt: Record<string, string>): string[] {
+  return rowRequirements(stmts, exempt).filter((r) => !rowMet(stmts, r)).map((r) => r.key);
+}
+
 describe('teardown FK coverage — the user sweep reaches every row that points at what it deletes (CW109)', () => {
   const stmts = buildTeardownTestUsersSql(
     ['sim-worker-test-0@test.local', 'sim-worker-test-1@test.local'],
@@ -506,6 +530,49 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
     for (const key of Object.keys(NOT_KEYED_IN_THE_USER_SWEEP)) {
       expect(edges.has(key), `${key} is exempted but no longer in SCHEMA_FK_GRAPH`).toBe(true);
     }
+  });
+});
+
+/**
+ * CASCADE AND RESTRICT, PUT TO THE CHECKS ABOVE - POSITIVE CONTROLS.
+ *
+ * A delete removes its own rows and every row an ON DELETE CASCADE edge reaches from them, and a
+ * row removed by a cascade is blocked by its own NO ACTION and RESTRICT children exactly as a row
+ * the statement names. organizations -> offline_passes is CASCADE and
+ * offline_transactions.offline_pass_id -> offline_passes is NO ACTION, so DELETE FROM
+ * organizations fails while an offline transaction names one of the organization's passes, and it
+ * fails whether or not any statement names offline_passes. RESTRICT blocks as NO ACTION does; the
+ * one difference, that RESTRICT cannot be deferred, is moot while every FK in the snapshot is NOT
+ * DEFERRABLE.
+ *
+ * Each planted teardown below holds one such edge, and each check must report it by the key
+ * {@link orderingKey} gives it.
+ */
+describe('teardown FK coverage — the checks follow CASCADE edges and treat RESTRICT as blocking (positive controls)', () => {
+  const planted = (...stmts: string[]): string => ['BEGIN;', ...stmts, 'COMMIT;'].join('\n');
+
+  it('the P1 check reports offline_transactions before an organizations delete, through the offline_passes CASCADE', () => {
+    expect(unmetOrderings(planted("DELETE FROM organizations WHERE id = 'org-x';")))
+      .toContain('organizations -> offline_passes <- offline_transactions.offline_pass_id');
+  });
+
+  it('the P1 check reports station_services before a service_definitions delete (RESTRICT)', () => {
+    expect(unmetOrderings(planted("DELETE FROM service_definitions WHERE organization_id = 'org-x';")))
+      .toContain('service_definitions <- station_services.service_definition_id');
+  });
+
+  it('the P1 check reports sessions before a stations delete, through the station_services CASCADE (RESTRICT)', () => {
+    expect(unmetOrderings(planted("DELETE FROM stations WHERE station_id = 'stn_x';")))
+      .toContain('stations -> station_services <- sessions.service_id');
+  });
+
+  it("the row check reports an offline_transactions delete that misses the passes an organizations delete cascades to", () => {
+    const stmts = [
+      "DELETE FROM offline_transactions WHERE station_id IN (SELECT id FROM stations WHERE organization_id = 'org-x');",
+      "DELETE FROM organizations WHERE id = 'org-x';",
+    ];
+    expect(unmetRows(stmts, {}))
+      .toContain('organizations -> offline_passes <- offline_transactions.offline_pass_id');
   });
 });
 
