@@ -434,15 +434,31 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     expect(buildTeardownTestUsersSql([])).toEqual([]);
   });
 
-  it('emits 14 DELETEs covering offline_auth_grants + wallet_entries + all 10 NO-ACTION user FKs + Spatie + users', () => {
+  it('emits one DELETE per table, children first: the money trail, every NO-ACTION user FK, Spatie, users', () => {
     const stmts = buildTeardownTestUsersSql(['e1@t', 'e2@t']);
-    // Children before parents: offline_auth_grants → wallet_entries → (NO-ACTION FKs) →
-    // Spatie (2) → users. The reverse-graph static check (teardownFkCoverage.test.ts) is the
-    // authoritative contract — this test just pins the count + the per-statement table targets.
-    expect(stmts).toHaveLength(14);
+    // Children before parents: offline_auth_grants → wallet_entries → the money trail of the
+    // users' intents and sessions → (NO-ACTION FKs) → Spatie (2) → users. The reverse-graph
+    // static check (teardownFkCoverage.test.ts) is the authoritative contract — this test just
+    // pins the count + the per-statement table targets.
+    //
+    // REWRITTEN for CW109. It pinned 14 statements with payment_intents fifth and no refunds,
+    // payment_ledger, platform_settlement_ledger or unit_batches delete: the list in which
+    // refunds_payment_intent_id_fkey blocks the payment_intents delete whenever a swept user
+    // holds a refund the pool half of the teardown did not reach, such as the one a wallet
+    // session's refund raises against the intent minted for it. The money trail now goes
+    // first, sessions before unit_batches (sessions.batch_id) and unit_batches before
+    // payment_intents (unit_batches.payment_intent_id).
+    //
+    // CW110: settlement_outbox carries no FK, so it blocks nothing, but its rows are found
+    // through the sessions and intents they name, so its delete precedes both.
+    expect(stmts).toHaveLength(19);
     const tables = [
       'offline_auth_grants',
       'wallet_entries',
+      'payment_ledger',
+      'platform_settlement_ledger',
+      'refunds',
+      'settlement_outbox',
       // `offline_transactions` BEFORE `offline_passes`: the transaction carries a
       // NO-ACTION FK `offline_pass_id` -> `offline_passes.id`, so deleting the pass
       // first FK-blocks whenever one user both holds a pass and settled a transaction
@@ -452,8 +468,9 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
       // which is why nothing else caught the swap.
       'offline_transactions',
       'offline_passes',
-      'payment_intents',
       'sessions',
+      'unit_batches',
+      'payment_intents',
       'reservations',
       'vehicles',
       'organization_members',
@@ -512,7 +529,8 @@ describe('buildTeardownSql — identity-pool sweep integrated', () => {
         { email: 'sim-worker-abc-1@test.local', password: 'p' },
       ],
     }));
-    // Full FK coverage: all 13 user-side DELETEs land in the integrated transaction.
+    // Full FK coverage: the user-side DELETEs land in the integrated transaction (the full
+    // per-statement list is pinned in the buildTeardownTestUsersSql describe above).
     for (const tbl of [
       'wallet_entries', 'offline_passes', 'offline_transactions', 'payment_intents',
       'reservations', 'vehicles', 'organization_members', 'wallets', 'invitations',

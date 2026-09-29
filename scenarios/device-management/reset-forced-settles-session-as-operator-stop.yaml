@@ -3,16 +3,23 @@
 #
 # REQUIRES TESTING_TRIGGER_COMMAND_ENABLED=true on the target (default false).
 #
-# SERVER BRANCHES REACHED — three, in order
+# SERVER BRANCHES REACHED — four, in order
 #   1. app/Modules/DeviceManagement/Actions/ResetStationAction.php,
 #      `ResetStationAction::execute`
 #        $message = MessageBuilder::request('Reset')->withPayload($dto->toPayload())->build();
 #      `force: true` short-circuits the active-session pre-flight in the same method
 #      (`! $dto->force`), so the command actually reaches the wire.
-#      ResetRequestDto::toPayload() is `['force' => $this->force]` — the ONLY place the
-#      forced-ness becomes observable.
+#      ResetRequestDto::toPayload() is `['force' => $this->force]` — where the forced-ness
+#      reaches the wire; what it leaves once the station accepts is under WHAT THE
+#      FORCED-NESS DOES below.
 #
-#   2. app/Modules/Session/Handlers/SessionEndedHandler.php, the OPERATOR_STOPPED arm of the
+#   2. app/Modules/DeviceManagement/Handlers/ResetResponseHandler.php, the Accepted arm of
+#      `ResetResponseHandler::handle`, and app/Listeners/SettleSessionsOnForcedReset.php,
+#      `SettleSessionsOnForcedReset::handle`, the one listener of the StationReset that arm
+#      dispatches. Reached by the Reset RESPONSE below and asserted nowhere in this file;
+#      see WHAT THE FORCED-NESS DOES.
+#
+#   3. app/Modules/Session/Handlers/SessionEndedHandler.php, the OPERATOR_STOPPED arm of the
 #      reason match in `SessionEndedHandler::handle`
 #        SessionEndReason::OPERATOR_STOPPED => $this->autonomousComplete($dto, TerminalReason::OperatorDisabled),
 #      No scenario in the corpus sends this reason. The 30 SessionEnded events across
@@ -21,7 +28,7 @@
 #      wash an operator cut short (OperatorDisabled, by service kind) had never been
 #      exercised.
 #
-#   3. app/Modules/Station/Handlers/BootNotificationHandler.php,
+#   4. app/Modules/Station/Handlers/BootNotificationHandler.php,
 #      `BootNotificationHandler::failStuckSessions` — the post-reset
 #      boot, which force-fails every session still in {pending, authorized, active,
 #      stopping}. Reached here deliberately as a NEGATIVE: by then the session is
@@ -40,12 +47,29 @@
 #   ordering IS the invariant, and the last assertion is what pins it — the session
 #   must survive the reboot as `completed`, not be rewritten to `failed`.
 #
-# WHAT THE FORCED-NESS DOES NOT DO, once the station accepts
-#   `ResetResponseHandler::handle` dispatches StationReset(stationId, forced) — and
-#   StationReset has ZERO listeners anywhere in the server. So `force` is carried
-#   faithfully to an event nobody consumes: after the response, the server behaves
-#   identically forced or not. That is why this file asserts `force` on the REQUEST
-#   (where it is real) and not on any consequence of the response (where there is none).
+# WHAT THE FORCED-NESS DOES, once the station accepts
+#   `ResetResponseHandler::handle` reads `force` back from the pending command it resolves
+#   (`ResetStationAction::execute` registered it from the same `$dto->force` it put on the
+#   wire) and writes a `station_reset` row to the station journal, readable at
+#   GET /api/v1/admin/stations/{stationId}/journal, whose reason and `details.forced`
+#   differ between a forced and an unforced reboot. It then dispatches
+#   StationReset(stationId, forced). The event's one listener, SettleSessionsOnForcedReset,
+#   returns on an unforced reset; on a forced one it runs StopAllStationSessionsAction,
+#   which stops every ACTIVE session on the station as an operator stop:
+#   `StopSessionAction::execute` moves the session to `stopping` with stop_origin Operator
+#   and publishes a StopService. So when the Response is processed before the SessionEnded
+#   below (it is sent first), the session is already `stopping` when that
+#   SessionEnded/OperatorStopped arrives, and `SessionEndedHandler::handle` completes it on
+#   the same OperatorDisabled arm it uses for an `active` one. The StopService is never
+#   answered: scenario mode registers no StopService handler, and no step here waits for it.
+#
+#   This file still asserts `force` on the REQUEST, and none of those consequences: not the
+#   journal row, not the `stopping` state, not the StopService. The request is where the
+#   forced-ness reaches the wire, and every consequence above is keyed on that same value,
+#   so a Reset that went out unforced turns all of them into the unforced ones. The two
+#   `completed` assertions below do not pin the listener either: the station's own
+#   settle-first completes the session whether or not the listener ran. csms-server pins
+#   the listener in tests/Feature/Session/ForcedResetSettlesAsOperatorStopTest.php.
 name: "Reset Forced Settles Session As Operator Stop"
 description: "Forced Reset with a live session: the server must send force:true, the settle-first SessionEnded/OperatorStopped must complete the session, and the post-reset RemoteReset boot must not rewrite it to failed."
 station:
@@ -218,12 +242,15 @@ steps:
 
   # ASSERTION 2 — server-written status. `completed` is the autonomousComplete arm;
   # the Fault arm would write `failed`, and a reason the handler did not recognise
-  # would leave it `active`. (It does NOT discriminate OperatorStopped from Local —
-  # both complete, and on this file's UserDuration service both settle pro-rata on
-  # delivered time with no low-delivery floor, so even the amount would not tell them
-  # apart. They diverge only on the all-or-nothing kinds: Local is a full charge,
-  # OperatorStopped a full refund. Assertion 3 is what makes this file about
-  # OperatorStopped specifically.)
+  # would leave it live: `stopping`, once the forced reset's operator stop has run (see
+  # WHAT THE FORCED-NESS DOES in the header). (It does NOT discriminate OperatorStopped
+  # from Local — both complete, and on this file's UserDuration service both settle
+  # pro-rata on delivered time with no low-delivery floor, so even the amount would not
+  # tell them apart. They diverge only on the all-or-nothing kinds: Local is a full
+  # charge, OperatorStopped a full refund. Once that operator stop has run they do not
+  # diverge even there, because its stop_origin Operator makes
+  # `Session::resolveTerminalReason` turn a Local into OperatorDisabled too. Assertion 3
+  # is what makes this file about OperatorStopped specifically.)
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"

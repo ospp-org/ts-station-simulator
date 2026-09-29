@@ -19,6 +19,7 @@ import {
   setOfflineEnabled,
   seedServiceCatalog,
   seedTestUsers,
+  buildSettlementOutboxDeleteSql,
   buildTeardownTestUsersSql,
   DEFAULT_IDENTITY_WALLET_CREDITS,
   DEFAULT_SEED_SERVICES,
@@ -217,8 +218,9 @@ export interface PoolBootstrapHandle {
    * The runner's IdentityPoolAllocator hands these out single-use (never reused within the
    * run) so each scenario drives its own server-side `session-mutate` bucket. Teardown
    * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
-   * sessions, reservations, payment_intents, vehicles, organization_members, invitations,
-   * Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
+   * sessions, reservations, payment_intents with their refunds, ledger rows and
+   * unit_batches, vehicles, organization_members, invitations, Spatie roles+perms) — see
+   * `buildTeardownTestUsersSql` for the coverage rationale.
    *
    * Carries the seeded `walletBalance` and, for the ones a scenario's `wallet_balance:`
    * declaration asked for, `declared: true`. Both are load-bearing at the allocator, so the
@@ -1100,7 +1102,12 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // the organisation is sometimes REUSED rather than minted, so an org-scoped delete could
   // reach another run's intents.
   const bayBizIds = `SELECT bay_id FROM bays WHERE station_id IN (${sids})`;
-  const runIntents = `SELECT id FROM payment_intents WHERE reference_id IN (${bayBizIds})`;
+  // The WHERE clauses of this teardown's own sessions and payment_intents deletes, written once
+  // so that every earlier statement reading through those rows reads exactly the rows the two
+  // deletes remove (the settlement_outbox sweep below, CW110).
+  const runSessionsWhere = `bay_id IN (${bays})`;
+  const runIntentsWhere = `reference_id IN (${bayBizIds})`;
+  const runIntents = `SELECT id FROM payment_intents WHERE ${runIntentsWhere}`;
 
   // Topological delete order over the AUTHORITATIVE FK graph (pg_constraint,
   // verified — not assumed; an earlier hand-guessed order shipped a bug that
@@ -1140,13 +1147,21 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // Widened from session_id alone: a BATCH tail refund is raised against the intent for
     // units that never started, so it has no session to be found by.
     `DELETE FROM refunds WHERE session_id IN (${sess}) OR payment_intent_id IN (${runIntents});`,
+    // settlement_outbox (CW110): a row per settlement that owed a refund (aggregate_type
+    // 'session', aggregate_id the session's varchar session_id) and per settled web payment
+    // (aggregate_type 'payment_intent', aggregate_id the intent's id as text). No foreign key, so it
+    // never blocked this transaction and nothing here ever removed it. Before the sessions and
+    // payment_intents deletes below, because it finds its rows through them.
+    buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
     `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
-    // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations, stations,
-    // sessions (reconciled_session_id) — no ON DELETE CASCADE. Scoped by station_id (run-
-    // ephemeral → catches every run grant, never touches another run's). Placed BEFORE
-    // sessions/stations (here) and before the appended users/organizations deletes, so no
-    // parent delete FK-blocks on a leftover grant. Mirrors offline_transactions (swept in
-    // both the station- and user-scoped teardowns).
+    // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
+    // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
+    // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
+    // retyped the column to the varchar session id.) Scoped by station_id (run-ephemeral →
+    // catches every run grant, never touches another run's). Placed BEFORE stations (here)
+    // and before the appended users/organizations deletes, so no parent delete FK-blocks on
+    // a leftover grant. Mirrors offline_transactions (swept in both the station- and
+    // user-scoped teardowns).
     `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
     // meter_values carries NO foreign key at all — neither to `bays` nor to `sessions` — so
     // it never blocks a delete and was never noticed by the FK-coverage walk. It is swept
@@ -1154,10 +1169,10 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // Measured on UAT 2026-09-21: 2 723 rows, of which 2 721 name a bay that no longer
     // exists — every full run since the table was added has left its samples behind.
     `DELETE FROM meter_values WHERE bay_id IN (${bays}) OR session_id IN (${sess});`,
-    `DELETE FROM sessions WHERE bay_id IN (${bays});`,
+    `DELETE FROM sessions WHERE ${runSessionsWhere};`,
     // After sessions (which reference it) and before payment_intents (which it references).
     `DELETE FROM unit_batches WHERE bay_id IN (${bayBizIds});`,
-    `DELETE FROM payment_intents WHERE reference_id IN (${bayBizIds});`,
+    `DELETE FROM payment_intents WHERE ${runIntentsWhere};`,
     `DELETE FROM reservations WHERE bay_id IN (${bays});`,
     `DELETE FROM service_catalogs WHERE station_id IN (${sids});`,
     `DELETE FROM station_configurations WHERE station_id IN (${sids});`,
