@@ -208,8 +208,11 @@ steps:
   #
   # The cause is the same one stop-service.yaml records, and this is the second
   # independent file to show it: settlement happens on the STOP, not on the
-  # SessionEnded. This scenario calls POST /sessions/{id}/stop (:156) and answers
-  # with actualDurationSeconds 60, so the operator-stop path bills delivered time
+  # SessionEnded. This scenario calls POST /sessions/{id}/stop (:156) — the
+  # CUSTOMER's stop (VoluntaryStop), not an operator's — and answers with
+  # actualDurationSeconds 60, so on the UserDuration service this file books
+  # (`{{serviceId_1}}`: the pool seeds svc_wash_basic with no service_kind, which
+  # the server resolves to UserDuration) that stop bills delivered time pro-rata
   # — ceil(60/60 * 100) = 100 against 500 authorized, refund 400. The SessionEnded
   # arrived to find the session already terminal and never chose an arm. The wire
   # said TimerExpired; the money said voluntary stop.
@@ -224,8 +227,9 @@ steps:
   # order is a separate report.
   #
   # So a file that looked like a duplicate of the fullCharge arm is actually a
-  # second witness for the operator-stop arm — which is worth more, because that
-  # arm had exactly one file until now.
+  # second witness for the customer's-stop arm (VoluntaryStop, pro-rata on a
+  # UserDuration service) — which is worth more, because that arm had exactly one
+  # file until now.
   #
   # refund_amount 400 is derived (SessionResource:53-56) and appears in no
   # message this scenario sends: the non-echoed half, since 100 coincides with

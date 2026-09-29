@@ -166,16 +166,20 @@ steps:
   # The expectation here was 500: this file used to append a SessionEnded with
   # reason "TimerExpired", and TimerExpired routes to fullCharge($authorized),
   # which on a 300s booking at 100 cr/min is 500. Measured on UAT 2026-08-10 the
-  # server charged 75, so the operator-stop path does NOT take the TimerExpired
-  # arm at all.
+  # server charged 75, so the customer's stop does NOT take the TimerExpired arm
+  # at all.
   #
   # The mechanism, and it is the finding: settlement happens on the STOP, not on
-  # the SessionEnded. This scenario answers POST /sessions/{id}/stop with a
-  # StopService Response carrying actualDurationSeconds 45, and that path settles
-  # PRO-RATA on delivered time — ceil(45/60 * 100) = 75, refund 425. The
-  # SessionEnded arrived to find the session already terminal, so its reason never
-  # got to choose an arm. The wire said TimerExpired and the money said voluntary
-  # stop; the money is what happened.
+  # the SessionEnded. This scenario answers POST /sessions/{id}/stop — the
+  # CUSTOMER's stop (the app route, stop_origin `user`, settled as VoluntaryStop),
+  # not an operator's — with a StopService Response carrying actualDurationSeconds
+  # 45, and on the UserDuration service this file books (`{{serviceId_1}}`: the
+  # pool seeds svc_wash_basic with no service_kind, which the server resolves to
+  # UserDuration) that stop settles PRO-RATA on delivered time —
+  # ceil(45/60 * 100) = 75, refund 425. The SessionEnded arrived to find the
+  # session already terminal, so its reason never got to choose an arm. The wire
+  # said TimerExpired and the money said voluntary stop; the money is what
+  # happened.
   #
   # THAT IS WHY THE SessionEnded IS GONE. It was never inert — it was a second,
   # DISAGREEING settlement instruction that lost a race it could have won. The
@@ -186,7 +190,8 @@ steps:
   # message is the fix; the server-side order dependence is reported separately.
   #
   # So this file is NOT a second copy of the fullCharge arm, which is what it
-  # looked like from its reason literal. It is the operator-stop arm.
+  # looked like from its reason literal. It is the customer's-stop arm
+  # (VoluntaryStop), pro-rata because the service is UserDuration.
   # session-timeout-timer-expired remains the fullCharge proof — and it is a
   # legal one, because a timer expiry terminates WITHOUT a StopService.
   #
@@ -196,9 +201,10 @@ steps:
   # this scenario sends — that is the non-echoed half.
   #
   # NOT asserted, because it is not exposed: sessions.stop_origin, the column that
-  # records that this stop came from an operator rather than the station. It is on
-  # the table and absent from SessionResource, so the field that would name this
-  # path directly is unreadable.
+  # records WHO asked for the stop — `user` here (the customer), `operator` for the
+  # console's per-session stop, a station disable or a forced reset. It is on the
+  # table and absent from SessionResource, so the field that would name this path
+  # directly is unreadable.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"

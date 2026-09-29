@@ -20,26 +20,33 @@
 #
 # So the differential moved axis. It is no longer "does the boot succeed" — it
 # always does — it is "does the station still earn nothing while disabled". This
-# file now asserts the two gates ADR-0004 leaves holding that line, which is what
-# csms-server's own DisabledStationBootsAndStaysGatedTest covers server-side:
+# file now asserts the two gates ADR-0004 leaves holding that line. Server-side,
+# csms-server's DisabledStationBootsAndStaysGatedTest pins the boot and asserts only
+# that a start on the booted disabled station THROWS; the answer this file asserts
+# on POST /sessions/start — 409, errorCode 3003, details.cause "disabled",
+# details.reason "station_disabled", "Station is disabled" — is pinned by
+# tests/Feature/Session/DisabledStationRefusesNewStartsTest.php:
 #
 #   disabled  -> boot Accepted, and POST /sessions/start refused
-#                502 / 6003 STATION_OFFLINE "Station is disabled"  (ADR-0003 §2.1,
-#                StartSessionAction.php:71-73 — the shared chokepoint for
-#                webpay + app/RFID)
+#                409 / 3003 SERVICE_UNAVAILABLE, details.cause "disabled",
+#                "Station is disabled"  (ADR-0003 §2.1, StartSessionAction — the
+#                shared chokepoint for webpay + app/RFID)
 #   re-enabled -> boot Accepted, and the SAME start now succeeds
 #
 # Both halves are needed. Asserting only the refusal would pass against a server
 # that refused every start for any reason; asserting only the success would pass
 # against one with no gate at all. Disable is reversible, and this proves it.
 #
-# NOTE the refusal is asserted on ospp_code AND message. 6003 STATION_OFFLINE is
-# shared between "disabled by an operator" and "genuinely unreachable" — the
-# comment at StartSessionAction.php:69 records that the distinction is surfaced in
-# the dashboard, not in the protocol reject — so the code alone does not prove
-# WHICH. The message does.
+# NOTE the refusal is asserted on the code, the discriminator AND the message.
+# Until csms-server's HS2 (2026-09-28) this was 502 / 6003 STATION_OFFLINE, shared
+# between "disabled by an operator" and "genuinely unreachable", so only the message
+# could say WHICH — and 6003 told a caller a CONNECTED station was not connected.
+# The server now answers what spec 07-errors.md §3.3 says: 3003 with the REQUIRED
+# `details.cause` discriminator, whose `disabled` branch is "an operator or a
+# tenant-lifecycle rule disabled it, and it clears only by operator action".
+# `details.reason` names the rule, `station_disabled`.
 name: "Disabled station boots and stays gated (ADR-0004 §4.2 / ADR-0003 §2.1)"
-description: "Disable via PATCH /admin/stations/{id}/active: the boot is ACCEPTED (deliberate, 67aab07) while POST /sessions/start is refused 502/6003 'Station is disabled'. Re-enable and the same start succeeds — the reversibility ADR-0003 promises."
+description: "Disable via PATCH /admin/stations/{id}/active: the boot is ACCEPTED (deliberate, 67aab07) while POST /sessions/start is refused 409/3003 cause disabled, 'Station is disabled'. Re-enable and the same start succeeds — the reversibility ADR-0003 promises."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -137,9 +144,11 @@ steps:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
       duration_seconds: 300
-    expect_status: 502
+    expect_status: 409
     expect_body:
-      errorCode: 6003
+      errorCode: 3003
+      details.cause: "disabled"
+      details.reason: "station_disabled"
       errorDescription: "Station is disabled"
 
   # ---- Re-enable ----

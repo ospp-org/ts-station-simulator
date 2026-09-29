@@ -18,7 +18,7 @@ of things that have to be true, so the next run's failures mean something.
 
 | variable | needed by | notes |
 |---|---|---|
-| `OSPP_PROTOCOL_VERSION` | **every scenario** | Must be a member of the server's `supported_versions` set. Negotiation is **exact match** (`VERSIONING.md "The document version, and the sites that carry it"`) — a shared MAJOR implies nothing, and the SDK's MAJOR gate was deleted in 0.12.0. The SDK default is `0.2.1`; spec v0.11.1 mandates **`0.3.0`** on the wire (176 value sites). **Set it explicitly** until the SDK default is corrected, which needs an SDK release. Get it wrong and every boot is refused `1007`. |
+| `OSPP_PROTOCOL_VERSION` | **every scenario** — as an override; unset is correct | The wire version must be a member of the server's `supported_versions` set. Negotiation is **exact match** (`VERSIONING.md "The document version, and the sites that carry it"`) — a shared MAJOR implies nothing, and the SDK's MAJOR gate was deleted in 0.12.0. The SDK default (`@ospp/protocol` `OSPP_PROTOCOL_VERSION`) is **`0.3.0`**, the `ProtocolVersion` value spec `08-configuration.md` gives, since `@ospp/protocol` 0.15.0; with the env unset, `src/mqtt/protocolVersion.ts` puts that default on every envelope, the Last-Will included. **Leave it unset** unless the target is pinned to another version. Set it wrong and every boot is refused `1007`. |
 | `UAT_EMAIL` / `UAT_PASSWORD` | **must be SET in every mode; the VALUE matters only in `--station`** | Two different things, and conflating them costs a run either way. **Set:** `resolveEnvVarsDeep` walks all of `config/targets.yaml` at load and throws `Environment variable UAT_EMAIL is not set` on any unresolved `${…}` (`cli/config.ts:54-62`), before a single scenario runs — including under `--bootstrap-pool`, which does not use the identity at all. An empty string satisfies it (the check is `=== undefined`). **Value:** in `--bootstrap-pool` it is never authenticated with — a scenario with no `auth:` block resolves to `undefined` and the caller falls through to the per-scenario pool worker, so the `target.credentials` fallback is *structurally unreachable* while the allocator is active (`ScenarioRunner.ts:502-510`), and the builder authenticates as the platform admin and mints its own ephemeral `tenant_owner` (`PoolBootstrap.ts:304-324`). So a stale value that 401s is harmless in pooled mode, and an *unset* one is fatal in every mode. The repo `.env` values are stale; exporting the platform-admin pair into both is the simplest thing that is correct everywhere. This row used to read "needed by any scenario with an `api_call`", which explains neither half. |
 | `UAT_E2E_PLATFORM_ADMIN_EMAIL` / `_PASSWORD` | `--bootstrap-pool` itself, the `security` suite, the three `e2e/*` | Any scenario declaring an `auth` override startup-**fails** the entire run without these, before a single scenario executes — and so does the pool builder, which authenticates as this account to mint its ephemeral `tenant_owner` (`PoolBootstrap.platformAdminCredsFromEnv`). They live in `~/.config/osp-e2e-secrets.env`. The values there are **single-quoted**: `set -a; source` strips them for you and is the documented way in; extracting a line by hand (`cut -d=`) does not, and the login then 422s with "The email field must be a valid email address". |
 | ↳ **what this account can and cannot do** | read before attributing a `403` | It is a **`platform_admin`**, not a super-admin — `E2EBootstrapSeeder`'s DEFAULT role. Measured on UAT 2026-08-25: `GET /api/v1/me/permissions` returns exactly **13** entries, all `platform.*`. So it creates organisations and reads any station, and it holds **no tenant-prefixed permission at all**. `StationPolicy::checkTenantPermission`'s platform-tier override admits `platform_super_admin` and says in its own comment that `platform_admin` "remains rejected". Every tenant-scoped route is a 403 for it, `catalog.manage` included — which is why `device-management/service-catalog-update` is skipped `inconclusive` (`5490a21`) and why the three `e2e/*` files log in as the customer they registered and replace the JWT before doing anything tenant-scoped. |
@@ -269,13 +269,22 @@ mutates the station and fails before restoring hands the next scenario a dirty s
 
 Live instance, and currently the only one: `core/boot-disabled-station-boots-and-stays-gated`
 disables the station via `PATCH /admin/stations/{id}/active` and re-enables it near the end.
-On the happy path it restores. If it fails in between, the station stays disabled and every
-later scenario on it fails `502 STATION_OFFLINE` — which is what happened on the 2026-08-07
-run and cost `core/data-transfer-response` a failure that had nothing to do with it.
+On the happy path it restores. If it fails in between, the station stays disabled (it still
+boots, ADR-0004 §4.2): every later start on it is refused with `409 / 3003 SERVICE_UNAVAILABLE`,
+`details.cause: "disabled"`, and every command the server does not still deliver to a disabled
+station with `409 / 6008 COMMAND_PRE_EMPTED`, `details.reason: "station_disabled"`. The server
+still delivers seven — StopService, TriggerCertificateRenewal, CertificateInstall,
+CancelReservation, GetConfiguration, GetDiagnostics and TriggerMessage — and a ChangeConfiguration
+it pushes itself (csms-server `MqttStationGateway`), so a scenario that sends only those passes.
+Until csms-server's HS2 (2026-09-28) both answered
+`502 / 6003 STATION_OFFLINE` — which is what the 2026-08-07 run saw, and what cost
+`core/data-transfer-response` a failure that had nothing to do with it.
 
 There is no per-scenario teardown/`finally` in the DSL, so a scenario cannot self-heal.
-Until there is, when a run shows a cluster of `502 STATION_OFFLINE`, check `is_active`
-before reading anything into them:
+Until there is, when a run shows a cluster of `3003` with `cause: "disabled"` or `6008` with
+`reason: "station_disabled"`, a station was left disabled; check `is_active` before reading
+anything into them. A `502 / 6003 STATION_OFFLINE` cluster is no longer this symptom: since
+HS2 it is the answer for a station that is genuinely not connected.
 
 ```sql
 SELECT station_id, is_active FROM stations WHERE station_id = 'stn_…';
@@ -320,7 +329,10 @@ so the auto-stop races the very condition that makes `StopService` unpublishable
 kick immediately below it *is* wrapped best-effort, for exactly this reason.
 
 Symptom when it happens: the disable half-applies, the caller sees only "Server Error",
-and every later scenario on that station fails `502 STATION_OFFLINE`. On the 2026-08-07
+and every later start on that station, and every command the server does not still deliver to
+a disabled station, is refused as a disabled station's is — since csms-server's HS2 (2026-09-28), `409 / 3003` `cause: "disabled"` on a start and
+`409 / 6008` `reason: "station_disabled"` on a command; before HS2 both were
+`502 STATION_OFFLINE`, which is what the runs below saw. On the 2026-08-07
 re-run this single defect accounted for **all three** `core` failures — the disable
 scenario itself, plus `data-transfer-response` and `reconnect-recovery` downstream of the
 station being left disabled. It reproduces only when the station has an in-flight session
@@ -330,8 +342,10 @@ at disable time, which is why the same scenario passes standalone.
 at `StopAllStationSessionsAction.php:67`, confirmed present INSIDE the running `csms-app-uat`
 container (not merely in git). The 116-scenario run of 2026-08-10 showed zero
 `502 STATION_OFFLINE` and zero stations left disabled. Keep the paragraph above as the
-explanation of a real failure mode, but do NOT attribute a fresh `502` cluster to it without
-re-checking `is_active` first.
+explanation of a real failure mode, but do NOT attribute a fresh cluster of `3003`
+`cause: "disabled"` / `6008` `station_disabled` refusals to it without re-checking
+`is_active` first — and do not read a fresh `502 / 6003` cluster as this symptom: since HS2 a
+connected disabled station answers 3003 / 6008, and 6003 means the station is not connected.
 
 ---
 

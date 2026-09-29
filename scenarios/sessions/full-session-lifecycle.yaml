@@ -213,10 +213,14 @@ steps:
   # exactly what TimerExpired fullCharge would have. 100 either way — which is
   # precisely why a wrong attribution could sit here unfalsified.
   #
-  # What this file actually proves, and it is worth keeping: the operator-stop arm
-  # at 100% delivery. Its siblings cover the same arm at partial delivery (45/300
-  # -> 75; 60/300 -> 100), so the three together pin the pro-rata curve at both
-  # ends. session-timeout-timer-expired remains the sole fullCharge proof — legally,
+  # What this file actually proves, and it is worth keeping: the customer's-stop
+  # arm at 100% delivery — POST /sessions/{id}/stop is the CUSTOMER's stop
+  # (VoluntaryStop), not an operator's, and it settles pro-rata because the service
+  # this file books is UserDuration (`{{serviceId_1}}`: the pool seeds
+  # svc_wash_basic with no service_kind, which the server resolves to UserDuration).
+  # Its siblings cover the same arm at partial delivery (45/300 -> 75; 60/300 ->
+  # 100), so the three together pin the pro-rata curve at both ends.
+  # session-timeout-timer-expired remains the sole fullCharge proof — legally,
   # because a timer expiry terminates WITHOUT a StopService and so is the one shape
   # entitled to send SessionEnded at all.
   #

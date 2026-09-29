@@ -15,12 +15,16 @@ import { BayStatus, createEnvelope, MessageSource, OSPP_PROTOCOL_VERSION } from 
 //
 // SDK 0.13.0 shipped the member and the pin fired, which is what it was for.
 // What remains is the assertion that matters: a forced stop reports the reason
-// that BILLS, not the one that mandates zero.
+// that carries the DELIVERED time, not the one that mandates zero.
 //
-// spec v0.11.1 03-messages.md §5.4 — `OperatorStopped` is the only member that
-// bills a non-zero amount for a session the station did not run to completion.
-// `Deauthorized`, which reads as the nearest alternative, carries "Session MUST
-// be billed at zero"; a station using it delivers a wash and charges nothing.
+// 03-messages.md §5.4 (spec v0.44.0) — `OperatorStopped` is the member for a
+// session an operator ended deliberately: it reports the `actualDurationSeconds`
+// delivered and the `creditsCharged` those seconds earned, and the server settles
+// it by service kind (pro-rata on delivered time for UserDuration, a full refund
+// for FixedDuration and MultiUnit). The station does not know the kind and
+// decides no money. `Deauthorized`, which reads as the nearest alternative,
+// carries "Session MUST be billed at zero"; a station using it erases the
+// delivered time a UserDuration session is billed on.
 // ---------------------------------------------------------------------------
 
 function makeConfig(): StationConfig {
@@ -36,7 +40,7 @@ function makeConfig(): StationConfig {
   } as unknown as StationConfig;
 }
 
-describe('a forced stop reports the reason that bills', () => {
+describe('a forced stop reports OperatorStopped with the delivered time', () => {
   it('emits OperatorStopped, not Deauthorized', async () => {
     const station = new Station(makeConfig(), {} as never);
     const sent: Record<string, unknown>[] = [];
@@ -64,7 +68,9 @@ describe('a forced stop reports the reason that bills', () => {
 
     expect(sent[0].reason).toBe(SessionEndReason.OPERATOR_STOPPED);
     expect(sent[0].reason).not.toBe(SessionEndReason.DEAUTHORIZED);
-    // Billed for what was delivered: 120s at the advisory 100 cr/min.
+    // The delivered-time figure the station reports: 120s at the advisory
+    // 100 cr/min. Advisory only — what the customer pays is the server's
+    // settlement by service kind, not this number.
     expect(sent[0].creditsCharged).toBe(200);
   });
 
