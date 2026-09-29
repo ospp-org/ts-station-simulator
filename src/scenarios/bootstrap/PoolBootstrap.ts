@@ -1154,12 +1154,14 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
     `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
-    // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations, stations,
-    // sessions (reconciled_session_id) — no ON DELETE CASCADE. Scoped by station_id (run-
-    // ephemeral → catches every run grant, never touches another run's). Placed BEFORE
-    // sessions/stations (here) and before the appended users/organizations deletes, so no
-    // parent delete FK-blocks on a leftover grant. Mirrors offline_transactions (swept in
-    // both the station- and user-scoped teardowns).
+    // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
+    // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
+    // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
+    // retyped the column to the varchar session id.) Scoped by station_id (run-ephemeral →
+    // catches every run grant, never touches another run's). Placed BEFORE stations (here)
+    // and before the appended users/organizations deletes, so no parent delete FK-blocks on
+    // a leftover grant. Mirrors offline_transactions (swept in both the station- and
+    // user-scoped teardowns).
     `DELETE FROM offline_auth_grants WHERE station_id IN (${sids});`,
     // meter_values carries NO foreign key at all — neither to `bays` nor to `sessions` — so
     // it never blocks a delete and was never noticed by the FK-coverage walk. It is swept
