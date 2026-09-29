@@ -1,11 +1,14 @@
 name: "Soft Reset"
 description: >
-  Soft reset: the server publishes Reset REQUEST and this scenario observes it.
-  KNOWN GAP — no Reset RESPONSE is ever sent and the station never disconnects.
-  Scenario mode registers no ResetHandler (ScenarioRunner.ts:766-769), so the prior
-  "handler accepts, disconnects, reconnects, auto-boots" was describing a handler that
-  does not run. The server-side pendingCommand for this Reset is therefore never resolved.
-  What IS proven: the server dispatches Reset to a station that declared the profile.
+  The unforced reset, on a station this file gives no session: the admin reset route is asked for
+  force: false, the station answers the Reset Accepted and boots again with bootReason
+  RemoteReset. OSPP has one reset operation, a reboot, and force is its only choice
+  (reset-request.schema.json has no other member); Hard and Soft are gone from the protocol, and
+  the file keeps its name so corpus results compare across runs. Asserted: the station_reset
+  journal row the Response writes, carrying this Reset's messageId and details.forced false, and
+  the post-reset boot recorded as RemoteReset. Unforced, the reset is one the server refuses to
+  dispatch while the station has a live session (6008, details.wouldBe 3016), and its listener
+  settles nothing.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -58,25 +61,27 @@ steps:
     method: POST
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/reset"
     body:
-      type: "Soft"
+      force: false
     expect_status: 202
 
   - action: wait_for
     message: Reset
     messageType: Request
     timeout_ms: 15000
+    capture:
+      resetMessageId: "messageId"
 
-  # ANSWER IT. Scenario mode registers no ResetHandler, so if this file does not send the
-  # Response nobody does: the server's pending command is left to expire on its Redis TTL
-  # and the round trip the file is named for never completes.
-  # Note what this Response leaves behind. ResetResponseHandler resolves the pending command,
-  # writes a `station_reset` row to the station journal, readable at
-  # GET /api/v1/admin/stations/{stationId}/journal, and dispatches StationReset, whose one
-  # listener, SettleSessionsOnForcedReset, acts only on a FORCED reset. This one is not
-  # forced: the admin reset route validates `force` alone, so the `type` above is dropped
-  # and `force` defaults to false. So the Response does write something queryable - the
-  # journal row, with `details.forced: false` - and this file does not assert it; what it
-  # asserts is the post-reset boot below.
+  # ANSWER IT. Scenario mode registers no Reset handler (createStationFromScenario registers
+  # BootNotificationHandler alone), so if this file does not send the Response nobody does. An
+  # unanswered Reset stays `pending` in csms-server's `pending_commands` until its timeout (30 s
+  # for Reset in `ospp.command_timeouts`); until then StartSessionAction refuses a start on this
+  # station with 3002 (`PendingCommandRegistry::hasOutstanding`), and after it the scheduled
+  # command:check-timeouts (CommandTimeoutScanner) expires the command, journals it as
+  # `command_expired` and compensates nothing. The Reset round trip would never complete.
+  # Answered, the Response is what `ResetResponseHandler::handle` resolves: it writes a
+  # `station_reset` row to the station journal with this Reset's messageId and `details.forced`
+  # false, read back at the end of this file, and dispatches StationReset. The event's one
+  # listener, SettleSessionsOnForcedReset, returns on an unforced reset.
   - action: send
     message: Reset
     messageType: Response
@@ -142,3 +147,18 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "RemoteReset"
+
+  # THE ROUND TRIP, server-recorded. `ResetResponseHandler::handle` writes one `station_reset`
+  # row per Accepted Reset, and only after it has resolved the pending command, so this row
+  # exists only if the Response above reached the server and matched this Reset. The journal
+  # route lists a station's rows newest first, and a pool station is leased to one scenario
+  # after another with their rows kept, so the row is pinned by this Reset's messageId (the
+  # Response carries the Request's) before `details.forced` is read off it: false, because the
+  # pending command was registered with the force the route was given.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=station_reset"
+    expect_status: 200
+    expect_body:
+      data[kind=station_reset].details.messageId: "{{captured.resetMessageId}}"
+      data[kind=station_reset].details.forced: false
