@@ -1320,8 +1320,10 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *  18. model_has_permissions      (Spatie, polymorphic — same)
  *  19. users                      (api_keys + refresh_tokens auto-cascade with this)
  *
- * Statements 3-6 select through intents, sessions and refunds that statements 9-11 remove,
- * so they have to run while those rows still exist. The reverse-graph static check
+ * Statements 3-6 select through intents and sessions, which statements 9-11 remove (a session
+ * is found through its batch, which statement 10 removes), and statements 3 and 4 through
+ * refunds as well, which statement 5 removes; so each has to run while the rows it selects
+ * through still exist. The reverse-graph static check
  * (`teardownFkCoverage.test.ts`) fails CI if the schema gains a new NO-ACTION FK that
  * this list doesn't cover.
  */
