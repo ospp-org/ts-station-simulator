@@ -1269,11 +1269,18 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     );
   }
 
-  // Per-worker identity sweep — drop the four-tier user state for every seeded sim-worker.
+  // Per-worker identity sweep - drop every seeded sim-worker and the rows found through it.
   // Scoped strictly to THIS run's stamped emails so no real user can ever be touched. The
-  // order mirrors a reverse of the seed (children before parents): model_has_roles →
-  // organization_members → wallets → users. Same pattern as setOfflineEnabled reset (which
-  // we don't issue when identityPoolSize > 0 — UAT_EMAIL stays untouched in that mode).
+  // statements are buildTeardownTestUsersSql's, children before parents, in the order it
+  // writes them (pinned statement by statement in PoolBootstrap.test.ts):
+  // offline_auth_grants -> wallet_entries -> payment_ledger -> platform_settlement_ledger ->
+  // refunds -> settlement_outbox -> offline_transactions -> offline_passes -> sessions ->
+  // unit_batches -> payment_intents -> reservations -> vehicles -> organization_members ->
+  // wallets -> invitations -> model_has_roles -> model_has_permissions -> users. Not the
+  // seed's order reversed: model_has_roles has no FK on model_id, so it blocks no user
+  // delete, and it goes after the members and the wallets. The offline_enabled reset below
+  // is scoped the same way and is not issued when identityPoolSize > 0, so UAT_EMAIL stays
+  // untouched in that mode.
   if (handle.identityCredentials && handle.identityCredentials.length > 0) {
     const seededEmails = handle.identityCredentials.map((c) => c.email);
     lines.push(...buildTeardownTestUsersSql(seededEmails));

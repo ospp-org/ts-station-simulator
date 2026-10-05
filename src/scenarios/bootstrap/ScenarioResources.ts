@@ -25,14 +25,23 @@ import { runUatSql, uatDbConfigFromEnv, type UatDbConfig } from './uatPrivileged
  * `E2E Org …` organizations, one per standalone run since 2026-07-30, each with its
  * station, location and (where the run got that far) its customer.
  *
- * WHAT IT DOES NOT DO — guess. Deleting an organization CASCADEs: its cloned Spatie
- * roles, its members, its service definitions and any remaining station go with it. A
- * cleanup that inferred ownership from a naming convention (`E2E Org %`) or from a
- * captured variable that merely LOOKS like an org id would eventually cascade a real
- * tenant away. So nothing is inferred. A step declares what it created, the ledger
- * records the value the SERVER answered with, and teardown deletes that id and no
- * other. A scenario that declares nothing is torn down not at all — which is the
- * honest outcome, not a silent one.
+ * WHAT IT DOES NOT DO — guess. Deleting an organization CASCADEs to its cloned Spatie
+ * roles, its `model_has_roles` rows, its service definitions, station models, offline
+ * passes and revocation epochs, and any remaining station. Its members do not go with
+ * it: `organization_members.organization_id` is NO ACTION, like the `organization_id` of
+ * `invitations`, `locations`, `sessions`, `offline_auth_grants`,
+ * `platform_settlement_ledger` and `tenant_payment_credentials`, so a member row left
+ * behind blocks the delete. {@link buildTeardownSql} deletes the members itself: the
+ * memberships of each declared user by user id, in the user sweep, then every member row
+ * of the declared organization by organization id, before the organizations delete. (The
+ * schema read here is the organizations entry of SCHEMA_FK_GRAPH in
+ * `teardownFkCoverage.test.ts`; buildTeardownSql's Direction B paragraph says where each
+ * of the other NO ACTION children goes.) A cleanup that inferred ownership from a naming
+ * convention (`E2E Org %`) or from a captured variable that merely LOOKS like an org id
+ * would eventually cascade a real tenant away. So nothing is inferred. A step declares
+ * what it created, the ledger records the value the SERVER answered with, and teardown
+ * deletes that id and no other. A scenario that declares nothing is torn down not at
+ * all — which is the honest outcome, not a silent one.
  *
  * The SQL is not written here. {@link buildTeardownSql} is the single FK-ordered
  * builder, verified against `pg_constraint` and guarded by `teardownFkCoverage.test.ts`;
