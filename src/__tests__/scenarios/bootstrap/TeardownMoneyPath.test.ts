@@ -94,7 +94,7 @@ describe('teardown — the money path', () => {
     const stmt = sql.slice(at('payment_intents'), sql.indexOf(';', at('payment_intents')));
     expect(stmt).toContain('SELECT bay_id FROM bays');
     // The only organisation named anywhere in the transaction is the one this run
-    // created — 28 scopes at the time of writing, every one of them that id.
+    // created: at least one `organization_id = '...'` scope, and every one names that id.
     const scoped = [...sql.matchAll(/organization_id = '([^']+)'/g)].map((m) => m[1]);
     expect(scoped.length).toBeGreaterThan(0);
     expect([...new Set(scoped)]).toEqual(['org-1']);

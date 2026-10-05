@@ -359,9 +359,10 @@ describe('buildSeedTestUsersSql — per-worker identity seed', () => {
 });
 
 describe('buildSeedTestUsersSql — wallet funding (the money gate fixture)', () => {
-  // StartSessionAction.php:241-250 refuses a card-free start when the wallet does not cover
-  // creditsAuthorized (402 INSUFFICIENT_BALANCE / 4001). Every identity this file seeds is a
-  // caller of POST /sessions/start, so the seeded balance IS the corpus's ability to run.
+  // The wallet check in csms-server's StartSessionAction::execute refuses a card-free start
+  // when the wallet does not cover creditsAuthorized (402 INSUFFICIENT_BALANCE / 4001). Every
+  // identity this file seeds is a caller of POST /sessions/start, so the seeded balance IS
+  // the corpus's ability to run.
 
   it('the default is DERIVED from the server ceiling and the seed catalog, not chosen', () => {
     // ceil(600 / 60) * 100 — MAX_SESSION_DURATION_SECONDS against the priciest seeded
@@ -600,8 +601,8 @@ describe('certPathsFor', () => {
  *
  * Measured 2026-08-17: bootstrapping one station against `local-mtls` DELETED
  * `certs/local/broker-ca.pem`. `certPathsFor` resolved the station's chain
- * destination from `serverCa`, `cli/config.ts:129` maps `serverCa` to the
- * target's `certs.ca`, and for that target `ca` is the shared, station-agnostic
+ * destination from `serverCa`, `loadTarget` in `cli/config.ts` maps `serverCa` to
+ * the target's `certs.ca`, and for that target `ca` is the shared, station-agnostic
  * bundle the CLIENT verifies the BROKER with. The chain was written over it and
  * teardown then removed it — and `certs/` is gitignored, so nothing restored it.
  *

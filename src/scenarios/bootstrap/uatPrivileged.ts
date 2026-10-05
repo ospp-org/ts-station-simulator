@@ -121,11 +121,12 @@ export function _readProtectedEmailsForTesting(
  * that needs a provisioned station — reachable on UAT and nowhere else.
  *
  * That is a real ceiling rather than a preference. UAT deploys with
- * `git pull origin master --ff-only` (`csms-server/scripts/deploy-uat.sh:121`),
- * so it can only ever run code that is already on trunk AND already deployed;
- * on 2026-08-17 it sat 15 commits behind, missing two migrations. A server
- * change therefore has no wire-reachable target until someone deploys it, and
- * "prove it on the wire" and "do not deploy" could not both be satisfied.
+ * `git pull origin master --ff-only` (the "Pulling latest code..." step of
+ * `csms-server/scripts/deploy-uat.sh`), so it can only ever run code that is
+ * already on trunk AND already deployed; on 2026-08-17 it sat 15 commits behind,
+ * missing two migrations. A server change therefore has no wire-reachable target
+ * until someone deploys it, and "prove it on the wire" and "do not deploy" could
+ * not both be satisfied.
  * The local dev stack bind-mounts the working tree, so it runs the code under
  * test with no deploy at all — it just could not be bootstrapped.
  *
@@ -289,10 +290,12 @@ export type SeededServiceKind = 'UserDuration' | 'FixedDuration' | 'MultiUnit';
 
 /**
  * Canonical default service set used by the per-run pool bootstrap. Matches the runner's
- * `defaultServices` map (`ScenarioRunner.ts:374`) so `{{serviceId_1..4}}` resolves to a real
- * `station_services` row on every bootstrapped station. Names match what the runner emits
- * in outbound payloads (`PoolBootstrap.ts:386` + `ScenarioRunner.ts:483-487` for serviceId_1;
- * canonical extensions for 2..4).
+ * `defaultServices` list in `generateVariables` (ScenarioRunner.ts) so `{{serviceId_1..4}}`
+ * resolves to a real `station_services` row on every bootstrapped station. Names match the
+ * service `createStationFromScenario` (ScenarioRunner.ts) gives every bay of a scenario's
+ * station for serviceId_1; canonical extensions for 2..4. The pool's own station
+ * registration, `registerAndProvisionStation` (PoolBootstrap.ts), named the same service
+ * until csms-server refused `bays.*.services` at registration; it declares no service now.
  */
 export const DEFAULT_SEED_SERVICES: ReadonlyArray<SeededService> = [
   { serviceId: 'svc_wash_basic',   serviceName: 'Basic Wash',   pricingType: 'PerMinute', priceCreditsPerMinute: 100 },
@@ -362,9 +365,10 @@ export function multiUnitSeedService(maxUnitQuantity: number): SeededService {
 // ---------------------------------------------------------------------------
 
 /**
- * The server's ceiling on a REST-started session, in seconds. `config/ospp.php:230`
- * (`OSPP_MAX_SESSION_DURATION_SECONDS`, default 600) and re-enforced at the request layer,
- * `StartSessionRequest.php:56` `'max:'.(int) config('ospp.max_session_duration_seconds', 600)`.
+ * The server's ceiling on a REST-started session, in seconds. `max_session_duration_seconds`
+ * in `config/ospp.php` (`OSPP_MAX_SESSION_DURATION_SECONDS`, default 600) and re-enforced at
+ * the request layer, by the `duration_seconds` rule of `StartSessionRequest::rules()`,
+ * `'max:'.(int) config('ospp.max_session_duration_seconds', 600)`.
  * A per-station `station_configurations` row can LOWER it; nothing can raise it past the
  * request rule, so no `POST /sessions/start` can ever authorize more than this many seconds.
  */
@@ -372,7 +376,8 @@ export const MAX_SESSION_DURATION_SECONDS = 600;
 
 /**
  * Credits a single `POST /sessions/start` would authorize for {@link service} at the server's
- * maximum accepted duration. Mirrors `StartSessionAction.php:205-209` exactly:
+ * maximum accepted duration. Mirrors the live quote of the `$creditsAuthorized` assignment in
+ * `StartSessionAction::execute` exactly:
  *
  *   creditsAuthorized = pricingType === 'Fixed'
  *       ? priceCreditsFixed
@@ -408,20 +413,22 @@ export function deriveRequiredWalletCredits(services: ReadonlyArray<SeededServic
  * rather than chosen: the largest single authorization the server can accept against the
  * seeded catalog (`ceil(600/60) × 100`). Recomputes itself if either input moves.
  *
- * WHY THIS IS THE FIX. `StartSessionAction.php:241-250` refuses a card-free start when
- * `walletQuery->getBalance() < $creditsAuthorized` — 402 `INSUFFICIENT_BALANCE` / ospp_code
- * 4001. `SessionController::start` builds the DTO with `userId` set and `paymentIntentId`
- * null, so EVERY REST start enters that gate. Seeding at balance 0 (which this file did
- * until now) meant the corpus had coherently built a world where sessions start without
- * money, because the server used to permit it. The gate is correct; the fixture was wrong.
+ * WHY THIS IS THE FIX. The wallet check in `StartSessionAction::execute` refuses a card-free
+ * start when `walletQuery->getBalance() < $creditsAuthorized` — 402 `INSUFFICIENT_BALANCE` /
+ * ospp_code 4001. `SessionController::start` builds the DTO with `userId` set and
+ * `paymentIntentId` null, so EVERY REST start enters that gate. Seeding at balance 0 (which
+ * this file did until now) meant the corpus had coherently built a world where sessions
+ * start without money, because the server used to permit it. The gate is correct; the
+ * fixture was wrong.
  *
  * WHY THE MAXIMUM OF ONE START AND NOT THE SUM OF A SCENARIO'S STARTS. The online session
- * path never debits the wallet: `CompleteSessionAction.php:133-139` writes the
- * `sessions.credits_charged` COLUMN and nothing else, and the only two `WalletDebitInterface`
- * consumers in the whole server are in the Offline module (`AuthorizeOfflineSessionAction`,
- * `Reconciler`). A funded balance is therefore never drawn down by an online session, so the
- * second and sixth start in a scenario are checked against the same undiminished number as
- * the first. The requirement is a MAXIMUM, not a running total.
+ * path never debits the wallet: the `updateWithOptimisticLock` call in
+ * `CompleteSessionAction::execute` writes the `sessions.credits_charged` COLUMN and nothing
+ * else, and the only two `WalletDebitInterface` consumers in the whole server are in the
+ * Offline module (`AuthorizeOfflineSessionAction`, `Reconciler`). A funded balance is
+ * therefore never drawn down by an online session, so the second and sixth start in a
+ * scenario are checked against the same undiminished number as the first. The requirement
+ * is a MAXIMUM, not a running total.
  *
  * WHY NOT A LARGE ROUND NUMBER. A comfortable 1_000_000 would pass everything including a
  * scenario whose subject IS the refusal — it would fund the very thing under test and report
@@ -429,10 +436,10 @@ export function deriveRequiredWalletCredits(services: ReadonlyArray<SeededServic
  * genuinely wants a different balance now has to say so: `wallet_balance:` in its YAML
  * (see `ScenarioDefinition.wallet_balance`), never inherited from this default.
  *
- * Offline pass ISSUANCE is not a consumer of this number: `IssueOfflinePassAction.php:92-101`
- * refuses only `balance < 0`, so 0 already satisfied it. The claim at
- * `docs/RUNNING-AGAINST-UAT.md` that the 2 offline-pass scenarios fail on wallet balance is
- * stale on both halves — see that file's own correction.
+ * Offline pass ISSUANCE is not a consumer of this number: the wallet check in
+ * `IssueOfflinePassAction::execute` refuses only `balance < 0`, so 0 already satisfied it.
+ * The claim at `docs/RUNNING-AGAINST-UAT.md` that the 2 offline-pass scenarios fail on
+ * wallet balance is stale on both halves — see that file's own correction.
  */
 export const DEFAULT_IDENTITY_WALLET_CREDITS: number =
   deriveRequiredWalletCredits(DEFAULT_SEED_SERVICES);
@@ -485,10 +492,10 @@ export async function readStationCatalogServices(
  * and overwrote ten wallets, three of them legitimately non-zero. "Fund at INSERT" removed that
  * hazard by construction — an INSERT cannot reach a row the run did not create.
  *
- * A scenario that registers its own customer cannot use that shape: `RegisterAction.php:49`
- * already inserted the wallet, at balance 0, before the scenario gets control. The wallet row
- * is not ours to create. So the hazard is removed by construction a different way, and it is
- * the WHERE clause that does it:
+ * A scenario that registers its own customer cannot use that shape: the `wallets` insert in
+ * `RegisterAction::createAccount` already wrote the wallet, at balance 0, before the scenario
+ * gets control. The wallet row is not the run's to create. So the hazard is removed by
+ * construction a different way, and it is the WHERE clause that does it:
  *
  *   - The key is `wallets.user_id`, a uuid PRIMARY KEY value the server returned to THIS run
  *     in the registration response seconds earlier. A pattern can match a row you did not
@@ -1100,9 +1107,9 @@ function groupByBalance(identities: ReadonlyArray<SeededIdentity>): Map<number, 
  *      issuance) may read or debit the wallet, and a missing row would 500 there. The
  *      balance is per-identity ({@link identities}), defaulting to
  *      {@link DEFAULT_IDENTITY_WALLET_CREDITS} — see 2b.
- *   2b. `wallet_entries` — one `credit` row per FUNDED identity, mirroring
- *      `WalletSeeder.php:36-46` (type `credit`, `balance_after` = the seeded balance,
- *      `reference_type` 'bonus'). Nothing in the server reconciles `wallets.balance`
+ *   2b. `wallet_entries` — one `credit` row per FUNDED identity, mirroring the initial
+ *      credit entry `WalletSeeder::run` inserts (type `credit`, `balance_after` = the seeded
+ *      balance, `reference_type` 'bonus'). Nothing in the server reconciles `wallets.balance`
  *      against `SUM(wallet_entries)` — `verifyBalanceChain()` has one caller and it is a
  *      test — so this row is not needed to make the balance READ. It is written because
  *      the next real `WalletLedger` operation computes its own `balance_after` from the
@@ -1111,14 +1118,15 @@ function groupByBalance(identities: ReadonlyArray<SeededIdentity>): Map<number, 
  *      true balances BECAUSE the ledger still carried them. Skipped when the balance is 0
  *      (`CHECK (amount > 0)` on the table, and there is nothing to record).
  *   3. `organization_members` — links the user to {@link orgId} with role `tenant_operator`.
- *      The Spatie tenant_operator role doesn't carry `sessions.start` (per RolesAndPermissions
- *      Seeder.php:349-368), but the session-mutate routes are gated only on `auth.jwt +
- *      idempotency.required + throttle:session-mutate` — no Spatie permission check — so
- *      any authenticated identity works. tenant_operator is the principled non-owner role.
- *   4. `model_has_roles` — mirrors `MemberObserver::assignSpatieRole` (`MemberObserver.php:
- *      141-149`) which itself bypasses Eloquent with a raw `DB::table()->updateOrInsert`.
+ *      The Spatie tenant_operator role doesn't carry `sessions.start` (per its
+ *      `syncPermissions` list in `RolesAndPermissionsSeeder::assignPermissionsToRoles`), but
+ *      the session-mutate routes are gated only on `auth.jwt + idempotency.required +
+ *      throttle:session-mutate` — no Spatie permission check — so any authenticated
+ *      identity works. tenant_operator is the principled non-owner role.
+ *   4. `model_has_roles` — mirrors `MemberObserver::assignSpatieRole`, which itself
+ *      bypasses Eloquent with a raw `DB::table('model_has_roles')->updateOrInsert`.
  *      Looks up the per-org `tenant_operator` role row; the per-org variant must exist
- *      (`MemberObserver.php:175-201` resolves it scoped to the org).
+ *      (`MemberObserver::resolveSpatieRole` resolves it scoped to the org).
  *
  * All four are scoped by the email set, so re-running on a previously-seeded set is a no-op.
  *
