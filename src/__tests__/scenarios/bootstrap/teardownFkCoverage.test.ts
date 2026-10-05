@@ -546,9 +546,10 @@ const NOT_KEYED_IN_THE_USER_SWEEP: Record<string, string> = {
   'sessions <- offline_transactions.reconciled_session_id':
     'an offline transaction is reached by its own user_id, never through a session',
   // The child is a session, and a session is reached by its own user_id (and its batch). The
-  // start gate matches a reservation by its id alone (SessionStateMachine::
-  // validateReservedBayForStart), so a session naming a swept user's reservation need not be
-  // the swept user's, and selecting sessions by reservation would reach past the swept users.
+  // start gate matches a reservation by its id and its bay, never by its user
+  // (StartSessionAction::execute, through ReservationQueryService::resolveUuidOnBay since
+  // csms-server e3b6d149), so a session naming a swept user's reservation need not be the swept
+  // user's, and selecting sessions by reservation would reach past the swept users.
   'reservations <- sessions.reservation_id':
     "a session is reached by its own user_id, never through a reservation",
   // The child is the pass holder's own row, so its user_id reaches it. csms-server writes
@@ -788,6 +789,10 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
  * issues a pass to a user who need not be a member, so neither the station arms nor the user
  * sweep need reach it). 1 can, and needs a decision before it can be closed
  * (OPEN_IN_THE_POOL_HALF).
+ *
+ * The decision was taken on 2026-10-05: csms-server refuses a start that names a reservation not
+ * made for its bay (e3b6d149), so the open one cannot happen under its writers either, and it is
+ * listed below with them: 12 cannot happen, 2 are asked and met, none is open.
  */
 const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
   // No writer sets the column. SettlementLedgerRecorder::record, the one writer of settlement
@@ -869,6 +874,15 @@ const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
   // nullable with no default, and no update, trigger or hook writes it (only test factories do).
   'organizations <- sessions.organization_id':
     'no csms-server writer sets sessions.organization_id',
+  // StartSessionAction::execute, the one writer of sessions.reservation_id, resolves the request's
+  // reservation on the bay the start names (ReservationQueryService::resolveUuidOnBay, csms-server
+  // e3b6d149) and refuses one made for another bay with 3012 RESERVATION_NOT_FOUND; a session's
+  // bay_id is written at its insert and never updated. So a session naming a run-bay reservation is
+  // itself on that run bay, and the sessions delete reaches it by the bay. Open until then: the start
+  // gate allowed an available bay outright and resolved the id alone, so a session on another,
+  // available bay could carry a run-bay reservation's id.
+  'reservations <- sessions.reservation_id':
+    "a session names only a reservation made for its own bay, so a run-bay reservation's sessions are on the run bays the sessions delete reaches",
 };
 
 /**
@@ -877,18 +891,8 @@ const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
  * one still asked and still unmet, so that closing it fails that case until the entry goes.
  */
 const OPEN_IN_THE_POOL_HALF: Record<string, string> = {
-  // StartSessionAction::execute checks a request's reservation against the bay only when the bay
-  // is reserved - SessionStateMachine::validateBayForStart allows an available bay outright - and
-  // resolves the id through ReservationQueryService::resolveUuid, which filters by the id alone.
-  // So a session started on another, available bay can carry the id of a reservation on a run bay,
-  // and it blocks DELETE FROM reservations, while the pool half reaches sessions by the run's bays
-  // only. No scenario does it today: of the 3 scenario files that pass a reservation_id to a start,
-  // 2 pass the one they captured on the bay they start on and 1 an id nothing owns. Closing it means
-  // choosing: delete the sessions that name a run-bay reservation wherever they run (and with them
-  // what reads through the sessions delete), have csms-server refuse a reservation that is not the
-  // bay's, or keep the gap - the user sweep keeps it (NOT_KEYED_IN_THE_USER_SWEEP).
-  'reservations <- sessions.reservation_id':
-    'a session on another, available bay can name a run-bay reservation; closing it needs a decision on how far the sessions delete reaches',
+  // None is open. The one listed here until 2026-10-05, reservations <- sessions.reservation_id, is
+  // in NOT_KEYED_IN_THE_POOL_HALF since csms-server refuses a reservation not made for the start's bay.
 };
 
 /** The pool half alone: {@link fullHandle} with no identity, created user or ephemeral owner. */
