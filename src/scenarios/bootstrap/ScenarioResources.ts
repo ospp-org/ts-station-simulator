@@ -30,10 +30,12 @@ import { runUatSql, uatDbConfigFromEnv, type UatDbConfig } from './uatPrivileged
  * passes and revocation epochs, and any remaining station. Its members do not go with
  * it: `organization_members.organization_id` is NO ACTION, like the `organization_id` of
  * `invitations`, `locations`, `sessions`, `offline_auth_grants`,
- * `platform_settlement_ledger` and `tenant_payment_credentials`, so a member row left
- * behind blocks the delete. {@link buildTeardownSql} deletes the members itself: the
- * memberships of each declared user by user id, in the user sweep, then every member row
- * of the declared organization by organization id, before the organizations delete. (The
+ * `platform_settlement_ledger`, `tenant_payment_credentials` and, since csms-server's
+ * monthly settlement (G12), `settlement_adjustments`, `tenant_settlement_terms` and
+ * `tenant_statements`, so a member row left behind blocks the delete. {@link buildTeardownSql}
+ * deletes the members itself: the memberships of each declared user by user id, in the
+ * user sweep, then every member row of the declared organization by organization id,
+ * before the organizations delete. (The
  * schema read here is the organizations entry of SCHEMA_FK_GRAPH in
  * `teardownFkCoverage.test.ts`; buildTeardownSql's Direction B paragraph says where each
  * of the other NO ACTION children goes.) A cleanup that inferred ownership from a naming

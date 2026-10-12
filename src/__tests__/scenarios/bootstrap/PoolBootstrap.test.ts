@@ -49,6 +49,25 @@ describe('buildTeardownSql', () => {
     expect(sql).not.toContain('offline_enabled');
   });
 
+  /**
+   * csms-server's closed-statement guard (G12) refuses to delete a monthly statement, or a ledger
+   * row or an adjustment one holds, unless the transaction has set ospp.purge_test_data to 'on';
+   * the application never sets it. The teardown sets it for its own transaction alone - SET LOCAL,
+   * which ends at COMMIT or at the rollback of a failed statement - and before its first delete.
+   */
+  it('sets ospp.purge_test_data for its own transaction alone, as the statement right after BEGIN', () => {
+    const full = handle({
+      orgId: 'org-1', createdOrgId: 'org-1', ephemeralOwnerEmail: 'owner@t', locationId: 'loc-1',
+      stationIds: ['stn_x'], identityCredentials: [{ email: 'e@t', password: 'p' }],
+      createdUserEmails: ['c@t'],
+    });
+    for (const sql of [buildTeardownSql(handle()), buildTeardownSql(full)]) {
+      const lines = sql.split('\n');
+      expect(lines.slice(0, 2)).toEqual(['BEGIN;', "SET LOCAL ospp.purge_test_data = 'on';"]);
+      expect(lines.filter((l) => l.includes('purge_test_data'))).toHaveLength(1);
+    }
+  });
+
   it('includes the offline reset only when an email was enabled', () => {
     expect(buildTeardownSql(handle())).not.toContain('UPDATE users');
     const sql = buildTeardownSql(handle({ offlineEnabledEmail: 'e2e@x.dev' }));
@@ -452,12 +471,18 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     //
     // CW110: settlement_outbox carries no FK, so it blocks nothing, but its rows are found
     // through the sessions and intents they name, so its delete precedes both.
-    expect(stmts).toHaveLength(19);
+    //
+    // G12 (csms-server 06c05499): settlement_adjustments points at payment_intents and, through
+    // created_by, at users, so it goes with the money trail, before payment_intents;
+    // tenant_settlement_terms points at users through created_by alone, so it goes with the
+    // other user FKs, before users. 19 statements -> 21.
+    expect(stmts).toHaveLength(21);
     const tables = [
       'offline_auth_grants',
       'wallet_entries',
       'payment_ledger',
       'platform_settlement_ledger',
+      'settlement_adjustments',
       'refunds',
       'settlement_outbox',
       // `offline_transactions` BEFORE `offline_passes`: the transaction carries a
@@ -477,10 +502,12 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
       'organization_members',
       'wallets',
       'invitations',
+      'tenant_settlement_terms',
       'model_has_roles',
       'model_has_permissions',
       'users',
     ];
+    expect(tables).toHaveLength(stmts.length);
     for (let i = 0; i < tables.length; i++) {
       expect(stmts[i], `stmt[${i}] should delete from ${tables[i]}`).toContain(`DELETE FROM ${tables[i]}`);
     }
@@ -506,6 +533,23 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     expect(inv).toBeDefined();
     expect(inv).toContain('invited_by IN');
     expect(inv).toContain('OR email = ANY');
+  });
+
+  it('G12: deletes the adjustments naming the users\' intents or entered by them, and the terms they set, by their own columns', () => {
+    const stmts = buildTeardownTestUsersSql(['e@t']);
+    const userIds = "SELECT id FROM users WHERE email = ANY(ARRAY['e@t']::text[])";
+    const userIntents = `SELECT id FROM payment_intents WHERE user_id IN (${userIds})`;
+    const at = (table: string): number => stmts.findIndex((s) => s.startsWith(`DELETE FROM ${table} `));
+    expect(stmts[at('settlement_adjustments')]).toBe(
+      `DELETE FROM settlement_adjustments WHERE payment_intent_id IN (${userIntents}) OR created_by IN (${userIds});`,
+    );
+    expect(stmts[at('tenant_settlement_terms')]).toBe(
+      `DELETE FROM tenant_settlement_terms WHERE created_by IN (${userIds});`,
+    );
+    // Before the deletes their foreign keys would block.
+    expect(at('settlement_adjustments')).toBeLessThan(at('payment_intents'));
+    expect(at('settlement_adjustments')).toBeLessThan(at('users'));
+    expect(at('tenant_settlement_terms')).toBeLessThan(at('users'));
   });
 });
 

@@ -41,6 +41,10 @@ describe('teardown — the money path', () => {
       'unit_batches',
       'payment_intents',
       'tenant_payment_credentials',
+      // G12, the monthly settlement (csms-server 06c05499).
+      'settlement_adjustments',
+      'tenant_settlement_terms',
+      'tenant_statements',
     ]) {
       expect(at(t), `${t} is not swept`).toBeGreaterThanOrEqual(0);
     }
@@ -54,6 +58,15 @@ describe('teardown — the money path', () => {
     expect(at('unit_batches')).toBeLessThan(at('payment_intents'));
     // The credential row blocks the ORG delete, which is the last thing to go.
     expect(at('tenant_payment_credentials')).toBeLessThan(at('organizations'));
+    // G12: the ledger points at sessions too; an adjustment at payment_intents; a statement is
+    // pointed at by both, and the three new tables point at the organization.
+    expect(at('platform_settlement_ledger')).toBeLessThan(at('sessions'));
+    expect(at('settlement_adjustments')).toBeLessThan(at('payment_intents'));
+    expect(at('platform_settlement_ledger')).toBeLessThan(at('tenant_statements'));
+    expect(at('settlement_adjustments')).toBeLessThan(at('tenant_statements'));
+    for (const t of ['settlement_adjustments', 'tenant_settlement_terms', 'tenant_statements']) {
+      expect(at(t), `${t} must go before the organization`).toBeLessThan(at('organizations'));
+    }
   });
 
   /**
@@ -98,6 +111,81 @@ describe('teardown — the money path', () => {
     const scoped = [...sql.matchAll(/organization_id = '([^']+)'/g)].map((m) => m[1]);
     expect(scoped.length).toBeGreaterThan(0);
     expect([...new Set(scoped)]).toEqual(['org-1']);
+  });
+});
+
+/**
+ * G12 — THE MONTHLY SETTLEMENT (csms-server 06c05499, branch feat/g11-monthly-settlement-20261012).
+ *
+ * A wallet wash now settles in platform_settlement_ledger: one row per session paid from a wallet,
+ * written when the session settles, keyed on its session_id with payment_intent_id NULL
+ * (WalletWashSettlementRecorder::record). The pool half found ledger rows by intent and refund
+ * alone, so the first charged pooled wallet session would have left a row that
+ * platform_settlement_ledger_session_id_fkey holds the sessions delete on - and with it, the
+ * transaction being one, the whole per-run world.
+ *
+ * Three new tables point at the organization, all NO ACTION: settlement_adjustments (a chargeback
+ * the platform super admin enters, also NO ACTION to payment_intents), tenant_settlement_terms
+ * (commission and payment mode from a date) and tenant_statements (a closed month, which holds its
+ * ledger rows and adjustments through their statement_id). The teardown removes the minted
+ * organization's rows of all three, and nothing of a reused organization.
+ */
+describe('teardown — the monthly settlement (G12)', () => {
+  const lines = (sql: string): string[] => sql.split('\n');
+  const deletesOf = (sql: string, table: string): string[] =>
+    lines(sql).filter((l) => new RegExp(`^DELETE FROM ${table}\\b`).test(l));
+  const firstAt = (sql: string, table: string): number =>
+    lines(sql).findIndex((l) => new RegExp(`^DELETE FROM ${table}\\b`).test(l));
+  const lastAt = (sql: string, table: string): number =>
+    lines(sql).reduce((last, l, i) => (new RegExp(`^DELETE FROM ${table}\\b`).test(l) ? i : last), -1);
+
+  it("finds a wallet wash's ledger row by the session it names - exactly the sessions the sessions delete removes", () => {
+    const sql = buildTeardownSql(handle());
+    const sessionsWhere = /^DELETE FROM sessions WHERE (.*);$/m.exec(sql)?.[1];
+    expect(sessionsWhere).toBeDefined();
+    const ledger = deletesOf(sql, 'platform_settlement_ledger');
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toContain(` OR session_id IN (SELECT id FROM sessions WHERE ${sessionsWhere}) OR `);
+    expect(firstAt(sql, 'platform_settlement_ledger')).toBeLessThan(firstAt(sql, 'sessions'));
+  });
+
+  it("deletes the minted organization's adjustments, terms and statements, the held rows by the statement arm", () => {
+    const sql = buildTeardownSql(handle());
+    const statementsOfOrg = "statement_id IN (SELECT id FROM tenant_statements WHERE organization_id = 'org-1')";
+    expect(deletesOf(sql, 'settlement_adjustments')).toEqual([
+      `DELETE FROM settlement_adjustments WHERE organization_id = 'org-1' OR ${statementsOfOrg};`,
+    ]);
+    expect(deletesOf(sql, 'platform_settlement_ledger')[0].endsWith(` OR ${statementsOfOrg};`)).toBe(true);
+    expect(deletesOf(sql, 'tenant_settlement_terms')).toEqual([
+      "DELETE FROM tenant_settlement_terms WHERE organization_id = 'org-1';",
+    ]);
+    expect(deletesOf(sql, 'tenant_statements')).toEqual([
+      "DELETE FROM tenant_statements WHERE organization_id = 'org-1';",
+    ]);
+  });
+
+  it('deletes the statements after every ledger row and adjustment delete in the transaction, the identity sweeps included', () => {
+    const sql = buildTeardownSql({
+      ...handle(),
+      ephemeralOwnerEmail: 'sim-pool-owner-g12@onestoppay.dev',
+      identityCredentials: [{ email: 'sim-worker-g12-0@test.local', password: 'p' }],
+      createdUserEmails: ['created-g12@onestoppay.dev'],
+    } as PoolBootstrapHandle);
+    const statementsAt = firstAt(sql, 'tenant_statements');
+    expect(statementsAt).toBeGreaterThan(-1);
+    expect(lastAt(sql, 'platform_settlement_ledger')).toBeLessThan(statementsAt);
+    expect(lastAt(sql, 'settlement_adjustments')).toBeLessThan(statementsAt);
+    expect(statementsAt).toBeLessThan(firstAt(sql, 'organizations'));
+  });
+
+  it('touches none of the three for a reused organization, and names no statement', () => {
+    const reused = buildTeardownSql({ ...handle(), createdOrgId: undefined });
+    for (const t of ['settlement_adjustments', 'tenant_settlement_terms', 'tenant_statements']) {
+      expect(deletesOf(reused, t), `${t} deleted for a reused organization`).toEqual([]);
+    }
+    expect(reused).not.toContain('tenant_statements');
+    // The session arm is the run's bays', so it stays.
+    expect(deletesOf(reused, 'platform_settlement_ledger')[0]).toContain(' OR session_id IN (SELECT id FROM sessions WHERE bay_id IN (');
   });
 });
 
