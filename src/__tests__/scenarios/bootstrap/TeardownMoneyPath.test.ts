@@ -45,6 +45,8 @@ describe('teardown — the money path', () => {
       'settlement_adjustments',
       'tenant_settlement_terms',
       'tenant_statements',
+      // R8, an organization's VAT from a date (csms-server 1d4b1c0d).
+      'organization_vat_terms',
     ]) {
       expect(at(t), `${t} is not swept`).toBeGreaterThanOrEqual(0);
     }
@@ -64,7 +66,7 @@ describe('teardown — the money path', () => {
     expect(at('settlement_adjustments')).toBeLessThan(at('payment_intents'));
     expect(at('platform_settlement_ledger')).toBeLessThan(at('tenant_statements'));
     expect(at('settlement_adjustments')).toBeLessThan(at('tenant_statements'));
-    for (const t of ['settlement_adjustments', 'tenant_settlement_terms', 'tenant_statements']) {
+    for (const t of ['settlement_adjustments', 'tenant_settlement_terms', 'tenant_statements', 'organization_vat_terms']) {
       expect(at(t), `${t} must go before the organization`).toBeLessThan(at('organizations'));
     }
   });
@@ -176,6 +178,23 @@ describe('teardown — the monthly settlement (G12)', () => {
     expect(lastAt(sql, 'platform_settlement_ledger')).toBeLessThan(statementsAt);
     expect(lastAt(sql, 'settlement_adjustments')).toBeLessThan(statementsAt);
     expect(statementsAt).toBeLessThan(firstAt(sql, 'organizations'));
+  });
+
+  it("R8: deletes the minted organization's VAT rates by the organization, before the organizations delete", () => {
+    const sql = buildTeardownSql(handle());
+    expect(deletesOf(sql, 'organization_vat_terms')).toEqual([
+      "DELETE FROM organization_vat_terms WHERE organization_id = 'org-1';",
+    ]);
+    expect(firstAt(sql, 'organization_vat_terms')).toBeLessThan(firstAt(sql, 'organizations'));
+  });
+
+  it("R8: deletes no VAT rate of a reused organization - the platform organization's own rates are never a run's", () => {
+    // A run reuses an organization it did not mint (no createdOrgId): that organization keeps its
+    // rates. The platform organization is never one a run mints (the bootstrap creates its org
+    // through POST /api/v1/organizations), so no organization arm can name it.
+    const reused = buildTeardownSql({ ...handle(), createdOrgId: undefined });
+    expect(deletesOf(reused, 'organization_vat_terms')).toEqual([]);
+    expect(reused).not.toContain('organization_vat_terms');
   });
 
   it('touches none of the three for a reused organization, and names no statement', () => {

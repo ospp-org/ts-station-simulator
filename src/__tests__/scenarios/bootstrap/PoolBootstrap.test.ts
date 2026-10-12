@@ -476,7 +476,10 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     // created_by, at users, so it goes with the money trail, before payment_intents;
     // tenant_settlement_terms points at users through created_by alone, so it goes with the
     // other user FKs, before users. 19 statements -> 21.
-    expect(stmts).toHaveLength(21);
+    //
+    // R8 (csms-server 1d4b1c0d): organization_vat_terms points at users through created_by alone,
+    // so it goes beside tenant_settlement_terms, before users. 21 statements -> 22.
+    expect(stmts).toHaveLength(22);
     const tables = [
       'offline_auth_grants',
       'wallet_entries',
@@ -503,6 +506,7 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
       'wallets',
       'invitations',
       'tenant_settlement_terms',
+      'organization_vat_terms',
       'model_has_roles',
       'model_has_permissions',
       'users',
@@ -550,6 +554,19 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     expect(at('settlement_adjustments')).toBeLessThan(at('payment_intents'));
     expect(at('settlement_adjustments')).toBeLessThan(at('users'));
     expect(at('tenant_settlement_terms')).toBeLessThan(at('users'));
+  });
+
+  it('R8: deletes the VAT rates the users set, by created_by alone, before the users delete', () => {
+    const stmts = buildTeardownTestUsersSql(['e@t']);
+    const userIds = "SELECT id FROM users WHERE email = ANY(ARRAY['e@t']::text[])";
+    const at = (table: string): number => stmts.findIndex((s) => s.startsWith(`DELETE FROM ${table} `));
+    expect(stmts[at('organization_vat_terms')]).toBe(
+      `DELETE FROM organization_vat_terms WHERE created_by IN (${userIds});`,
+    );
+    // Selected by who set it and nothing else: an organization's rates are reached by the
+    // organization only in the pool half, and only for the organization the run minted.
+    expect(stmts[at('organization_vat_terms')]).not.toContain('organization_id');
+    expect(at('organization_vat_terms')).toBeLessThan(at('users'));
   });
 });
 
