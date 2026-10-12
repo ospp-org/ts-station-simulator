@@ -1245,28 +1245,32 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  * Build the per-run identity-teardown SQL. Drops all user-side state scoped to the run's
  * stamped emails. Idempotent — re-running on already-empty state matches zero rows. Returns
  * the DELETE statements (no BEGIN/COMMIT) so the caller can fold them into a larger
- * teardown transaction.
+ * teardown transaction. That transaction has to set `ospp.purge_test_data` to 'on', as
+ * buildTeardownSql does right after its BEGIN: statements 4 and 5 can meet a ledger row or an
+ * adjustment that a closed monthly statement holds, which csms-server's closed-statement guard
+ * (G12) refuses to delete otherwise, and one refusal rolls the whole transaction back.
  *
  * Coverage rationale (first verified against `pg_constraint` 2026-06-02; re-derived from
  * csms-server's migrations 2026-09-29, at master aadea673 plus
- * 2026_09_29_000002_create_session_settlement_retries_table, not yet on master that day;
- * the snapshot is the SCHEMA_FK_GRAPH constant in
+ * 2026_09_29_000002_create_session_settlement_retries_table, not yet on master that day, and
+ * read again 2026-10-12 at 06c05499, the head of csms-server's G12 branch, not yet on master
+ * either; the snapshot is the SCHEMA_FK_GRAPH constant in
  * `__tests__/scenarios/bootstrap/teardownFkCoverage.test.ts`, which P1-asserts this builder
  * against the graph, by itself and row by row):
  *
- *   `users` has 15 FK children. `api_keys.user_id` and `refresh_tokens.user_id` are
+ *   `users` has 17 FK children. `api_keys.user_id` and `refresh_tokens.user_id` are
  *   ON DELETE CASCADE — the final `DELETE FROM users` removes them automatically — and
  *   `session_settlement_retries.settled_by_user_id` is ON DELETE SET NULL. The remaining
- *   TWELVE FKs are NO ACTION and would block the user delete unless we delete from each
+ *   FOURTEEN FKs are NO ACTION and would block the user delete unless we delete from each
  *   child first (invitations holds two of them, invited_by and revoked_by). `wallets`
  *   itself has a NO-ACTION child (`wallet_entries.wallet_id`) so wallet_entries must
  *   precede wallets which must precede users.
  *
- *   THE MONEY TRAIL (CW109). `payment_intents` has four NO-ACTION children
- *   (payment_ledger, platform_settlement_ledger, refunds, unit_batches), `refunds` two
- *   (payment_ledger, platform_settlement_ledger), `sessions` three (refunds,
- *   platform_settlement_ledger, offline_transactions.reconciled_session_id) and
- *   `unit_batches` one (sessions.batch_id). This sweep deleted the users' payment intents
+ *   THE MONEY TRAIL (CW109). `payment_intents` has five NO-ACTION children
+ *   (payment_ledger, platform_settlement_ledger, refunds, settlement_adjustments,
+ *   unit_batches), `refunds` two (payment_ledger, platform_settlement_ledger), `sessions`
+ *   three (refunds, platform_settlement_ledger, offline_transactions.reconciled_session_id)
+ *   and `unit_batches` one (sessions.batch_id). This sweep deleted the users' payment intents
  *   and sessions and none of those children, which held only while the pool half of the
  *   teardown happened to reach the same money first. It does not when this sweep runs for a
  *   scenario's `creates: user` customer: the pool half then covers the scenario's own
@@ -1280,6 +1284,18 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *   started with the batch's own user_id, so that arm reaches no session the user_id arm
  *   could not; it is there so the unit_batches delete stays FK-safe without relying on
  *   that), the refunds of those intents or sessions, and the ledger rows of all three.
+ *
+ *   THE MONTHLY SETTLEMENT (G12). A wallet wash now settles in platform_settlement_ledger as
+ *   a row keyed on its session alone, with no intent (WalletWashSettlementRecorder), which
+ *   statement 4's session arm already reaches. Two new tables point at users and at the
+ *   trail, both written by `platform.billing.manage` alone, the platform super admin's grant:
+ *   settlement_adjustments, a chargeback (NO ACTION to payment_intents, and to users through
+ *   created_by), and tenant_settlement_terms, a tenant's commission and payment mode (NO ACTION
+ *   to users through created_by). The sweep deletes the adjustments that name the users'
+ *   intents or that one of them entered, and the terms one of them set. Neither is expected
+ *   to match a row - a chargeback names only a session_payment intent, which csms-server
+ *   writes with no user_id, and no identity a run creates holds the grant - but a row either
+ *   missed would block the payment_intents or the users delete.
  *
  *   NOT REACHED, deliberately: rows that belong to another identity and merely point at a
  *   swept user's row. A session naming a swept user's reservation
@@ -1304,26 +1320,28 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *   2. wallet_entries             (NO ACTION child of wallets — must precede wallets)
  *   3. payment_ledger             (NO ACTION → payment_intents, refunds)
  *   4. platform_settlement_ledger (NO ACTION → payment_intents, refunds, sessions)
- *   5. refunds                    (NO ACTION → payment_intents, sessions)
- *   6. settlement_outbox          (no FK; names sessions and intents — CW110)
- *   7. offline_transactions       (NO ACTION → users; → offline_passes, so before 8)
- *   8. offline_passes             (NO ACTION → users)   ← commit #3 missed this; blew up
- *   9. sessions                   (NO ACTION → users, unit_batches)
- *  10. unit_batches               (NO ACTION → users, payment_intents)
- *  11. payment_intents            (NO ACTION → users)
- *  12. reservations               (NO ACTION → users; sessions.reservation_id, so after 9)
- *  13. vehicles                   (NO ACTION → users)
- *  14. organization_members       (NO ACTION → users)
- *  15. wallets                    (NO ACTION → users; depends on wallet_entries gone first)
- *  16. invitations                (NO ACTION → users via invited_by and revoked_by)
- *  17. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
- *  18. model_has_permissions      (Spatie, polymorphic — same)
- *  19. users                      (api_keys + refresh_tokens auto-cascade with this)
+ *   5. settlement_adjustments     (NO ACTION → payment_intents, users via created_by — G12)
+ *   6. refunds                    (NO ACTION → payment_intents, sessions)
+ *   7. settlement_outbox          (no FK; names sessions and intents — CW110)
+ *   8. offline_transactions       (NO ACTION → users; → offline_passes, so before 9)
+ *   9. offline_passes             (NO ACTION → users)   ← commit #3 missed this; blew up
+ *  10. sessions                   (NO ACTION → users, unit_batches)
+ *  11. unit_batches               (NO ACTION → users, payment_intents)
+ *  12. payment_intents            (NO ACTION → users)
+ *  13. reservations               (NO ACTION → users; sessions.reservation_id, so after 10)
+ *  14. vehicles                   (NO ACTION → users)
+ *  15. organization_members       (NO ACTION → users)
+ *  16. wallets                    (NO ACTION → users; depends on wallet_entries gone first)
+ *  17. invitations                (NO ACTION → users via invited_by and revoked_by)
+ *  18. tenant_settlement_terms    (NO ACTION → users via created_by — G12)
+ *  19. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
+ *  20. model_has_permissions      (Spatie, polymorphic — same)
+ *  21. users                      (api_keys + refresh_tokens auto-cascade with this)
  *
- * Statements 3-6 select through intents and sessions, which statements 9-11 remove (a session
- * is found through its batch, which statement 10 removes), and statements 3 and 4 through
- * refunds as well, which statement 5 removes; so each has to run while the rows it selects
- * through still exist. The reverse-graph static check
+ * Statements 3-7 select through intents, and all of them but 5 through sessions as well, which
+ * statements 10-12 remove (a session is found through its batch, which statement 11 removes),
+ * and statements 3 and 4 through refunds as well, which statement 6 removes; so each has to run
+ * while the rows it selects through still exist. The reverse-graph static check
  * (`teardownFkCoverage.test.ts`) fails CI if the schema gains a new NO-ACTION FK that
  * this list doesn't cover.
  */
@@ -1381,17 +1399,22 @@ export function buildTeardownTestUsersSql(
     `DELETE FROM offline_auth_grants WHERE user_id IN (${userIds});`,
     // 1. wallet_entries — child of wallets (NO ACTION). Must precede the wallets delete.
     `DELETE FROM wallet_entries WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id IN (${userIds}));`,
-    // 2-4. The money trail, children first. Both ledgers point at payment_intents AND refunds
-    //      (platform_settlement_ledger at sessions too), and refunds at payment_intents and
-    //      sessions — all NO ACTION. A settlement's reversal rows copy its payment_intent_id
-    //      and session_id, so they fall to the same statement as the settlement they reverse.
+    // 2-5. The money trail, children first. Both ledgers point at payment_intents AND refunds
+    //      (platform_settlement_ledger at sessions too), the adjustments at payment_intents, and
+    //      refunds at payment_intents and sessions — all NO ACTION. A settlement's reversal rows
+    //      copy its payment_intent_id and session_id, so they fall to the same statement as the
+    //      settlement they reverse; a wallet wash's row (G12) names its session alone, which the
+    //      session arm reaches.
     `DELETE FROM payment_ledger WHERE payment_intent_id IN (${userIntents}) OR refund_id IN (${userRefunds});`,
     `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${userIntents}) OR session_id IN (${userSessions}) OR refund_id IN (${userRefunds});`,
+    // settlement_adjustments (G12): a chargeback naming one of the users' intents, or entered
+    // by one of them (created_by, NO ACTION → users). See THE MONTHLY SETTLEMENT above.
+    `DELETE FROM settlement_adjustments WHERE payment_intent_id IN (${userIntents}) OR created_by IN (${userIds});`,
     `DELETE FROM refunds WHERE ${refundsWhere};`,
-    // 5. settlement_outbox (CW110) — no FK, so it blocks nothing, but its rows name the
+    // 6. settlement_outbox (CW110) — no FK, so it blocks nothing, but its rows name the
     //    users' sessions and intents and are found through them, so it goes before both.
     buildSettlementOutboxDeleteSql(sessionsWhere, intentsWhere),
-    // 6-14. The NO-ACTION FKs that point at users.id directly, with unit_batches between
+    // 7-15. The NO-ACTION FKs that point at users.id directly, with unit_batches between
     //       sessions (sessions.batch_id → unit_batches) and payment_intents
     //       (unit_batches.payment_intent_id → payment_intents).
     // ORDER CORRECTED 2026-09-13: transactions BEFORE passes. `offline_transactions`
@@ -1413,19 +1436,22 @@ export function buildTeardownTestUsersSql(
     `DELETE FROM vehicles WHERE user_id IN (${userIds});`,
     `DELETE FROM organization_members WHERE user_id IN (${userIds});`,
     `DELETE FROM wallets WHERE user_id IN (${userIds});`,
-    // 15. invitations — invited_by and revoked_by (both NO ACTION → users) plus email match
+    // 16. invitations — invited_by and revoked_by (both NO ACTION → users) plus email match
     //     (defense-in-depth for any never-accepted invite addressed to a stamped sim-worker
     //     email). revoked_by came with csms-server's
     //     2026_09_25_100001_add_name_and_answer_columns_to_invitations; without it here, an
     //     invitation a swept user revoked but neither sent nor received blocks the users delete.
     `DELETE FROM invitations WHERE invited_by IN (${userIds}) OR revoked_by IN (${userIds}) OR email = ANY(${emailArr});`,
-    // 16-17. Spatie polymorphic — model_id is just a uuid column with no real FK, but
+    // 17. tenant_settlement_terms (G12) — the commission and payment-mode terms one of the
+    //     users set (created_by, NO ACTION → users). See THE MONTHLY SETTLEMENT above.
+    `DELETE FROM tenant_settlement_terms WHERE created_by IN (${userIds});`,
+    // 18-19. Spatie polymorphic — model_id is just a uuid column with no real FK, but
     //        these rows ARE state we seeded (or could have seeded), so sweep to avoid
     //        orphans. CASCADE-style behavior would have been server-side but isn't, so
     //        we own it client-side.
     `DELETE FROM model_has_roles WHERE model_id IN (${userIds});`,
     `DELETE FROM model_has_permissions WHERE model_id IN (${userIds});`,
-    // 18. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
+    // 20. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
     //     session_settlement_retries.settled_by_user_id is nulled (SET NULL).
     `DELETE FROM users WHERE email = ANY(${emailArr});`,
   ];

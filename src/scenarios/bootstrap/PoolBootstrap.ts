@@ -218,9 +218,9 @@ export interface PoolBootstrapHandle {
    * The runner's IdentityPoolAllocator hands these out single-use (never reused within the
    * run) so each scenario drives its own server-side `session-mutate` bucket. Teardown
    * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
-   * sessions, reservations, payment_intents with their refunds, ledger rows and
-   * unit_batches, vehicles, organization_members, invitations, Spatie roles+perms) — see
-   * `buildTeardownTestUsersSql` for the coverage rationale.
+   * sessions, reservations, payment_intents with their refunds, ledger rows, settlement
+   * adjustments and unit_batches, vehicles, organization_members, invitations, settlement
+   * terms, Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
    *
    * Carries the seeded `walletBalance` and, for the ones a scenario's `wallet_balance:`
    * declaration asked for, `declared: true`. Both are load-bearing at the allocator, so the
@@ -1106,6 +1106,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const orRunOrgPass = runOrg
     ? ` OR offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = ${runOrg})`
     : '';
+  // Ledger rows and adjustments that one of the minted org's monthly statements holds (G12). A
+  // statement holds what it closed through their statement_id, NO ACTION, so the org's statements
+  // can only be deleted once every row naming one is gone; StatementCloser::closeMonth gives a
+  // statement rows of its own organization alone, so the arm reaches nothing outside the run.
+  const orRunOrgStatement = runOrg
+    ? ` OR statement_id IN (SELECT id FROM tenant_statements WHERE organization_id = ${runOrg})`
+    : '';
 
   // Resolve this run's uuid sets from the varchar business station_id.
   const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned}`;
@@ -1148,6 +1155,18 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // an empty pool is a no-op and a re-run deletes nothing (idempotent).
   const lines = [
     'BEGIN;',
+    // csms-server's closed-statement guard (G12,
+    // 2026_10_12_000005_create_tenant_statements_and_settlement_adjustments): a BEFORE UPDATE OR
+    // DELETE trigger on tenant_statements, settlement_adjustments and platform_settlement_ledger
+    // refuses to delete a monthly statement, or a ledger row or an adjustment that one holds. A
+    // month closes daily at 02:10 Europe/Bucharest once it has ended, for every organization with
+    // rows in it, so a pool kept past a month's end, or a run still going at 02:10 on the 1st, has
+    // its organization's rows held - and since this teardown is ONE transaction, one refused row
+    // would leave the whole per-run world behind. The trigger lets a transaction through only when
+    // it has set ospp.purge_test_data to 'on'; csms-server never sets it, and the only thing meant to
+    // is a teardown of test data, such as this one. SET LOCAL, never SET: the setting ends with this
+    // transaction, at its COMMIT or at the rollback of a failed statement.
+    "SET LOCAL ospp.purge_test_data = 'on';",
     // ── The money path. Added 2026-08-27, when a scenario first reached SETTLEMENT.
     //
     // None of these five tables was swept before, and none needed to be: no scenario had
@@ -1159,13 +1178,33 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     //
     // Order is over the real FK graph, read from pg_constraint rather than guessed:
     //   payment_ledger, platform_settlement_ledger  → payment_intents AND refunds
+    //   platform_settlement_ledger                  → sessions       (swept below)
+    //   settlement_adjustments                      → payment_intents
     //   refunds                                     → payment_intents
     //   sessions                                    → unit_batches   (swept below)
     //   unit_batches                                → payment_intents
-    // so the two ledgers go first, refunds next, and unit_batches + payment_intents only
-    // after the `sessions` delete further down.
+    // so the two ledgers and the adjustments go first, refunds next, and unit_batches +
+    // payment_intents only after the `sessions` delete further down. The org's monthly
+    // statements, which the ledger rows and the adjustments point at, go at the very end, with
+    // the org's other rows.
     `DELETE FROM payment_ledger WHERE payment_intent_id IN (${runIntents}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}));`,
-    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${runIntents}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}));`,
+    // The session arm (G12): a wallet wash settles in this ledger as well, one row per session
+    // paid from a wallet, written when the session settles and keyed on its session_id with no
+    // payment_intent_id (csms-server WalletWashSettlementRecorder::record), so the intent arms do
+    // not reach it. Without the arm, the first pooled wallet session charged on a server that
+    // writes these rows leaves one, platform_settlement_ledger_session_id_fkey refuses the
+    // `sessions` delete below, and the whole per-run world stays behind. It selects exactly the
+    // sessions that delete removes. The statement arm: see orRunOrgStatement.
+    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${runIntents}) OR session_id IN (${sess}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}))${orRunOrgStatement};`,
+    // settlement_adjustments (G12): the chargebacks the platform super admin enters against a
+    // tenant, NO ACTION to organizations, payment_intents, users (created_by) and
+    // tenant_statements. Those of the org this run minted, and only when it minted one - never a
+    // reused org's. Before the payment_intents delete below: a chargeback names a card payment of
+    // its own organization (SettlementAdjustmentController::store), so the minted org's are the
+    // ones that can name the run's intents.
+    ...(runOrg
+      ? [`DELETE FROM settlement_adjustments WHERE organization_id = ${runOrg}${orRunOrgStatement};`]
+      : []),
     // Widened from session_id alone: a BATCH tail refund is raised against the intent for
     // units that never started, so it has no session to be found by.
     `DELETE FROM refunds WHERE session_id IN (${sess}) OR payment_intent_id IN (${runIntents});`,
@@ -1274,13 +1313,13 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // statements are buildTeardownTestUsersSql's, children before parents, in the order it
   // writes them (pinned statement by statement in PoolBootstrap.test.ts):
   // offline_auth_grants -> wallet_entries -> payment_ledger -> platform_settlement_ledger ->
-  // refunds -> settlement_outbox -> offline_transactions -> offline_passes -> sessions ->
-  // unit_batches -> payment_intents -> reservations -> vehicles -> organization_members ->
-  // wallets -> invitations -> model_has_roles -> model_has_permissions -> users. Not the
-  // seed's order reversed: model_has_roles has no FK on model_id, so it blocks no user
-  // delete, and it goes after the members and the wallets. The offline_enabled reset below
-  // is scoped the same way and is not issued when identityPoolSize > 0, so UAT_EMAIL stays
-  // untouched in that mode.
+  // settlement_adjustments -> refunds -> settlement_outbox -> offline_transactions ->
+  // offline_passes -> sessions -> unit_batches -> payment_intents -> reservations -> vehicles ->
+  // organization_members -> wallets -> invitations -> tenant_settlement_terms ->
+  // model_has_roles -> model_has_permissions -> users. Not the seed's order reversed:
+  // model_has_roles has no FK on model_id, so it blocks no user delete, and it goes after the
+  // members and the wallets. The offline_enabled reset below is scoped the same way and is not
+  // issued when identityPoolSize > 0, so UAT_EMAIL stays untouched in that mode.
   if (handle.identityCredentials && handle.identityCredentials.length > 0) {
     const seededEmails = handle.identityCredentials.map((c) => c.email);
     lines.push(...buildTeardownTestUsersSql(seededEmails));
@@ -1305,27 +1344,29 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
   //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
   //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
-  //   - Of the org's 7 NO-ACTION children, organization_members, invitations and
-  //     tenant_payment_credentials are deleted here, before the org (FK-safe;
-  //     pg_constraint-verified 2026-06-15, and again 2026-09-29). `corporate_policies` WAS in this
-  //     list and is gone: csms-server ADR-0012 retired the surface and
-  //     2026_09_04_000003_drop_corporate_policies_table DROPPED the table, so the DELETE
-  //     referenced a relation that no longer exists. Because the whole teardown is one
-  //     transaction, that single statement aborted it and `DELETE FROM organizations` never
-  //     ran — leaving exactly the "whole per-run world behind" this function warns about two
-  //     paragraphs down. Measured on UAT 2026-09-06: 3 orphaned Sim Pool orgs and 7 orphaned
-  //     stations from three runs. Dropping the statement is safe rather than merely necessary:
-  //     the bootstrap never creates a corporate policy, so on an environment that still has the
-  //     table there is no row for this org to FK-block on. The other four were already
-  //     removed above: `locations` and `offline_auth_grants` by their org arms, `sessions` with
+  //   - Of the org's 10 NO-ACTION children, organization_members, invitations,
+  //     tenant_payment_credentials, tenant_settlement_terms and tenant_statements are deleted
+  //     here, before the org (FK-safe; pg_constraint-verified 2026-06-15, again 2026-09-29, and
+  //     2026-10-12 at csms-server 06c05499, whose G12 added the last two and
+  //     settlement_adjustments). `corporate_policies` WAS in this list and is gone: csms-server
+  //     ADR-0012 retired the surface and 2026_09_04_000003_drop_corporate_policies_table
+  //     DROPPED the table, so the DELETE referenced a relation that no longer exists. Because
+  //     the whole teardown is one transaction, that single statement aborted it and
+  //     `DELETE FROM organizations` never ran — leaving exactly the "whole per-run world
+  //     behind" this function warns about two paragraphs down. Measured on UAT 2026-09-06: 3
+  //     orphaned Sim Pool orgs and 7 orphaned stations from three runs. Dropping the statement
+  //     is safe rather than merely necessary: the bootstrap never creates a corporate policy,
+  //     so on an environment that still has the table there is no row for this org to
+  //     FK-block on. The other five were already removed above: `locations`,
+  //     `offline_auth_grants` and `settlement_adjustments` by their org arms, `sessions` with
   //     the run's bays (csms-server writes no sessions.organization_id), and
-  //     `platform_settlement_ledger` with the run's intents. DELETE FROM organizations then
-  //     CASCADE-removes its 7 CASCADE children: the per-org cloned `roles` (+ their
-  //     model_has_roles + role_has_permissions), `model_has_roles`, `revocation_epochs`,
-  //     `service_definitions` (whose RESTRICT child station_services went with the stations),
-  //     `offline_passes` (whose NO-ACTION child offline_transactions went above, by the pass
-  //     arm), `station_models` (+ station_model_programs; stations.station_model_id is SET NULL),
-  //     and any remaining `stations`.
+  //     `platform_settlement_ledger` with the run's intents and sessions. DELETE FROM
+  //     organizations then CASCADE-removes its 7 CASCADE children: the per-org cloned `roles`
+  //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
+  //     `revocation_epochs`, `service_definitions` (whose RESTRICT child station_services went
+  //     with the stations), `offline_passes` (whose NO-ACTION child offline_transactions went
+  //     above, by the pass arm), `station_models` (+ station_model_programs;
+  //     stations.station_model_id is SET NULL), and any remaining `stations`.
   if (handle.ephemeralOwnerEmail) {
     lines.push(...buildTeardownTestUsersSql([handle.ephemeralOwnerEmail]));
   }
@@ -1337,6 +1378,12 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
       // per-run world — org, stations, bays, batch, intents — is left behind with a
       // warning, which is how the FIRST settling run ended.
       `DELETE FROM tenant_payment_credentials WHERE organization_id = ${createdOrgLit};`,
+      // G12: the commission and payment-mode terms the platform super admin set on the org, and
+      // the org's closed monthly statements. The statements go after every ledger row and
+      // adjustment that names one: the pool half's two deletes above select those by the
+      // statement arm, and every identity sweep's deletes of either table are above as well.
+      `DELETE FROM tenant_settlement_terms WHERE organization_id = ${createdOrgLit};`,
+      `DELETE FROM tenant_statements WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organization_members WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM invitations WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organizations WHERE id = ${createdOrgLit};`,
