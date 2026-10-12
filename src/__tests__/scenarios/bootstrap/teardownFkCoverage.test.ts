@@ -14,9 +14,9 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  * sessions-before-reservations missing; commit #3: offline_passes-before-users missing). Both
  * slipped because the unit tests asserted SQL TEXT, not the FK GRAPH.
  *
- * THE SNAPSHOT. SCHEMA_FK_GRAPH below was regenerated on 2026-09-29 from csms-server master
- * 87164f7d: its 190 migrations applied to an empty database, and every foreign key read from
- * pg_constraint with
+ * THE SNAPSHOT. SCHEMA_FK_GRAPH below was regenerated on 2026-10-12 from csms-server 06c05499, the
+ * head of branch feat/g11-monthly-settlement-20261012 that day (not yet on master): its 196
+ * migrations applied to the csms_test database, and every foreign key read from pg_constraint with
  *
  *   psql -AtF '|' -c "
  *     SELECT par.relname AS parent, chi.relname AS child,
@@ -35,15 +35,21 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  *     WHERE con.contype = 'f' AND con.conparentid = 0
  *     ORDER BY 1, 2, 6;"
  *
- * 75 foreign keys: 44 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
- * and NOT DEFERRABLE. The same query, run again on 2026-09-29 against a database migrated
- * from master d9d860fd, whose database/migrations is the same tree as 87164f7d's
- * (b0c5887b64ff052a37c97ec5a5395a918e04d1f7), returned the same 75 rows; the entries for the
- * 14 tables reached only through a CASCADE were read from it. The snapshot has an entry for
- * every table the teardown removes rows from - the 36 tables both halves, buildTeardownSql and
+ * 83 foreign keys: 52 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
+ * and NOT DEFERRABLE. The same query, run again the same day against the same database, returned
+ * the same 83 rows. The previous snapshot was read on 2026-09-29 from master 87164f7d: 190
+ * migrations, database/migrations tree b0c5887b64ff052a37c97ec5a5395a918e04d1f7, 75 foreign keys.
+ * 06c05499's tree is f0902b2c01f7dfc858907a95020cc1afeea28c8e, and its 6 migrations since add 8
+ * foreign keys, all NO ACTION, and change or drop none - all 8 are G12, the monthly settlement
+ * between the platform and each tenant. 2026_10_12_000003_create_tenant_settlement_terms_table gives
+ * tenant_settlement_terms its organization_id and created_by;
+ * 2026_10_12_000005_create_tenant_statements_and_settlement_adjustments gives tenant_statements its
+ * organization_id, settlement_adjustments its organization_id, payment_intent_id, created_by and
+ * statement_id, and platform_settlement_ledger a statement_id. The snapshot has an entry for every
+ * table the teardown removes rows from - the 39 tables both halves, buildTeardownSql and
  * buildTeardownTestUsersSql, delete from, and the 14 their deletes reach only through ON DELETE
- * CASCADE, 50 tables - holding every FK that points at that table; an empty entry is a table no
- * FK points at. 72 of the 75 are listed here. The other 3:
+ * CASCADE, 53 tables - holding every FK that points at that table; an empty entry is a table no
+ * FK points at. 80 of the 83 are listed here. The other 3:
  *
  *   - 2 point at permissions, which the teardown neither deletes from nor reaches through a
  *     CASCADE.
@@ -51,10 +57,11 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  *
  * `con.conparentid = 0` leaves out partition clones. security_events is partitioned by month,
  * and every partition carries a copy of security_events_station_id_fkey whose conparentid names
- * the parent table's FK - 4 of them in that database, security_events_2026_09 to _12. The
- * partitions are created by the migration that creates security_events (the month it runs and
- * the three after) and daily by ospp:security:manage-partitions, so their names follow the
- * calendar; the FK on security_events is the edge, and it is listed under stations.
+ * the parent table's FK - 4 of them in that database, security_events_2026_10 to
+ * security_events_2027_01. The partitions are created by the migration that creates
+ * security_events and by 2026_10_05_000001_prepare_the_monthly_partitions_ahead (each for the
+ * month it runs and the three after) and daily by ospp:security:manage-partitions, so their names
+ * follow the calendar; the FK on security_events is the edge, and it is listed under stations.
  *
  * Regenerate when csms-server's migrations add or change a foreign key into a table the
  * teardown removes, and whenever the teardown starts removing a table it did not (the last
@@ -78,9 +85,11 @@ interface FkEdge {
 }
 
 const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
-  // 15 FKs point at users: 12 NO ACTION, each of which blocks the users delete until its rows
+  // 17 FKs point at users: 14 NO ACTION, each of which blocks the users delete until its rows
   // are gone; 2 CASCADE (api_keys, refresh_tokens), removed with the user; 1 SET NULL
-  // (session_settlement_retries.settled_by_user_id), nulled with the user.
+  // (session_settlement_retries.settled_by_user_id), nulled with the user. The created_by of
+  // settlement_adjustments and tenant_settlement_terms (G12) name the platform super admin who
+  // entered the chargeback or set the terms.
   users: [
     { child: 'api_keys',                   column: 'user_id',            onDelete: 'CASCADE'   },
     { child: 'invitations',                column: 'invited_by',         onDelete: 'NO ACTION' },
@@ -94,6 +103,8 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'reservations',               column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'session_settlement_retries', column: 'settled_by_user_id', onDelete: 'SET NULL'  },
     { child: 'sessions',                   column: 'user_id',            onDelete: 'NO ACTION' },
+    { child: 'settlement_adjustments',     column: 'created_by',         onDelete: 'NO ACTION' },
+    { child: 'tenant_settlement_terms',    column: 'created_by',         onDelete: 'NO ACTION' },
     { child: 'unit_batches',               column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'vehicles',                   column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'wallets',                    column: 'user_id',            onDelete: 'NO ACTION' },
@@ -118,12 +129,14 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   reservations: [
     { child: 'sessions', column: 'reservation_id', onDelete: 'NO ACTION' },
   ],
-  // 4 FKs point at payment_intents, all NO ACTION. sessions carries a payment_intent_id column
-  // with no FK, so it is not among them.
+  // 5 FKs point at payment_intents, all NO ACTION. sessions carries a payment_intent_id column
+  // with no FK, so it is not among them. settlement_adjustments.payment_intent_id is the card
+  // payment a chargeback names (G12).
   payment_intents: [
     { child: 'payment_ledger',             column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'refunds',                    column: 'payment_intent_id', onDelete: 'NO ACTION' },
+    { child: 'settlement_adjustments',     column: 'payment_intent_id', onDelete: 'NO ACTION' },
     { child: 'unit_batches',               column: 'payment_intent_id', onDelete: 'NO ACTION' },
   ],
   // 2 FKs point at refunds, both NO ACTION.
@@ -143,8 +156,17 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   // can precede itself. What keeps it from blocking: a reversal row copies its settlement's
   // payment_intent_id and session_id (SettlementReversalRecorder), so a statement that reaches
   // a settlement by either key reaches its reversals in the same statement, and NO ACTION is
-  // checked at the end of it.
+  // checked at the end of it. A wallet wash's row (G12) is never reversed:
+  // SettlementReversalRecorder::record finds the settlement by payment_intent_id, which a wallet
+  // row does not carry.
   platform_settlement_ledger: [],
+  // 2 FKs point at tenant_statements, both NO ACTION (G12): a closed month holds the ledger rows
+  // and the adjustments it closed through their statement_id, and StatementCloser::closeMonth
+  // gives it rows of its own organization alone.
+  tenant_statements: [
+    { child: 'platform_settlement_ledger', column: 'statement_id', onDelete: 'NO ACTION' },
+    { child: 'settlement_adjustments',     column: 'statement_id', onDelete: 'NO ACTION' },
+  ],
   // 10 FKs point at stations: 7 NO ACTION; station_services CASCADE; security_events and
   // station_journal SET NULL, which neither block nor cascade - the delete nulls the key and the
   // row stays, so buildTeardownSql deletes both itself. (The 4 partition clones of the
@@ -182,10 +204,12 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     // station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
-  // 14 FKs point at organizations: 7 NO ACTION, each of which must be deleted first or the org
+  // 17 FKs point at organizations: 10 NO ACTION, each of which must be deleted first or the org
   // delete FK-blocks; 7 CASCADE, removed by the org delete. The ephemeral-org teardown
   // (Direction B) deletes the org last. corporate_policies.organization_id went with its table
-  // (2026_09_04_000003_drop_corporate_policies_table, ADR-0012).
+  // (2026_09_04_000003_drop_corporate_policies_table, ADR-0012). settlement_adjustments,
+  // tenant_settlement_terms and tenant_statements came with G12: a tenant's chargebacks, its
+  // commission and payment-mode terms, and its closed months.
   organizations: [
     { child: 'invitations',                column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'locations',                  column: 'organization_id', onDelete: 'NO ACTION' },
@@ -198,9 +222,12 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'roles',                      column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'service_definitions',        column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'sessions',                   column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'settlement_adjustments',     column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'station_models',             column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'stations',                   column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'tenant_payment_credentials', column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'tenant_settlement_terms',    column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'tenant_statements',          column: 'organization_id', onDelete: 'NO ACTION' },
   ],
   // 2 FKs point at offline_passes: offline_transactions NO ACTION, offline_pass_consumptions
   // CASCADE.
@@ -255,7 +282,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   role_has_permissions: [],
   session_settlement_retries: [],
   station_model_programs: [],
-  // No FK points at any of these 20, so nothing can block their deletes (the FKs they carry
+  // No FK points at any of these 22, so nothing can block their deletes (the FKs they carry
   // as children are in the entries above).
   diagnostics_uploads: [],
   firmware_updates: [],
@@ -271,10 +298,12 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   security_event_dedup: [],
   security_events: [],
   service_catalogs: [],
+  settlement_adjustments: [],
   settlement_outbox: [],
   station_configurations: [],
   station_journal: [],
   tenant_payment_credentials: [],
+  tenant_settlement_terms: [],
   vehicles: [],
   wallet_entries: [],
 };
@@ -793,14 +822,17 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
  * The decision was taken on 2026-10-05: csms-server refuses a start that names a reservation not
  * made for its bay (e3b6d149), so the open one cannot happen under its writers either, and it is
  * listed below with them: 12 cannot happen, 2 are asked and met, none is open.
+ *
+ * Read again on 2026-10-12, against the writers of csms-server 06c05499 (G12): 40 requirements.
+ * sessions <- platform_settlement_ledger.session_id was listed as one no writer can produce, and
+ * WalletWashSettlementRecorder::record now writes it - a row per session paid from a wallet, keyed
+ * on the session, with no intent - so it leaves the list and is asked: the ledger delete has to
+ * select the run's sessions. The new foreign keys add 6 requirements: the three into organizations
+ * and the two into tenant_statements are asked, and payment_intents <-
+ * settlement_adjustments.payment_intent_id cannot happen and is listed. 12 cannot happen, 28 are
+ * asked, none is open.
  */
 const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
-  // No writer sets the column. SettlementLedgerRecorder::record, the one writer of settlement
-  // rows, writes session_id null (the session starts after the settlement commits), and
-  // SettlementReversalRecorder::record copies the settlement's session_id into its reversal;
-  // FiscalOutboxRelay::issue saves only fiscal_status and fiscal_document_id.
-  'sessions <- platform_settlement_ledger.session_id':
-    'no csms-server writer sets platform_settlement_ledger.session_id: a settlement writes null and a reversal copies it',
   // WebPaymentOrchestrator::initiateUnitBatch, the one writer of unit_batches, creates the batch
   // with bay_id the intent's metadata.bay_id, which PaymentLandingController::process wrote from the
   // same bay business id as the intent's reference_id; neither column is updated afterwards.
@@ -854,14 +886,30 @@ const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
   // run organization, so every station at one of them is a run-organization station.
   'locations <- stations.location_id':
     "a station's location is in the station's own organization, and the stations delete's organization arm removes every run-organization station",
-  // SettlementLedgerRecorder::record writes organization_id from the intent's
+  // SettlementLedgerRecorder::record writes a card row's organization_id from the intent's
   // metadata.organization_id, which PaymentLandingController::process takes from the bay's station
   // (StationQueryService::findBayWithStationInfo) as it writes that bay's business id as the
-  // reference_id; a reversal copies its settlement's. A station's organization cannot change, a bay
-  // never moves station, and no production code deletes a bay row (DeleteStationAction retires
-  // them), so the bay is still listed when the run's bays are read.
+  // reference_id; a reversal copies its settlement's. WalletWashSettlementRecorder::record (G12)
+  // writes a wallet wash's from its session's bay's station (tenantOf), with the session's id as
+  // session_id and no intent. A station's organization cannot change, a bay never moves station,
+  // and no production code deletes a bay row (DeleteStationAction retires them), so the bay is
+  // still listed when the run's bays are read.
   'organizations <- platform_settlement_ledger.organization_id':
-    "a ledger row's organization is its intent's bay's, so a run-organization row names a run intent, which the payment_intent_id arm covers",
+    "a ledger row's organization is its intent's bay's or its session's bay's, so a run-organization row names a run intent or a run-bay session, which the payment_intent_id and session_id arms cover",
+  // SettlementAdjustmentController::store, the one writer of settlement_adjustments (G12), names a
+  // payment only when it is a session_payment intent whose metadata.organization_id is the
+  // adjustment's organization (422 PAYMENT_IS_NOT_THIS_TENANTS otherwise), and
+  // PaymentLandingController::process writes that from the bay's station as it writes the bay's
+  // business id as the reference_id. Every run bay is on a station of the run organization: the
+  // bootstrap registers its stations as that organization's owner and
+  // StationManagementController::registerStation writes the caller's organization
+  // (BelongsToTenant), the other run stations are the ones the stations delete reaches by its
+  // organization arm, and a station's organization cannot change. So an adjustment naming a run
+  // intent is the run organization's, and the adjustments delete removes it by its organization
+  // arm. It is given no payment_intent_id arm: it is scoped to the organization the run minted and
+  // to nothing wider.
+  'payment_intents <- settlement_adjustments.payment_intent_id':
+    "an adjustment names only a payment of its own organization, and a run intent's is the run organization, whose adjustments the organization arm removes",
   // Every writer pairs a station with a definition of the station's own organization:
   // UpdateServiceCatalogResponseHandler::handleAccepted (resolveOrCreateDefinition with
   // $station->organization_id) and StationServiceCatalogController::store; neither column is
