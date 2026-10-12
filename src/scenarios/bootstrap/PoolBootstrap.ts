@@ -220,7 +220,8 @@ export interface PoolBootstrapHandle {
    * sweeps the full FK web rooted at each user (wallets+wallet_entries, offline_passes,
    * sessions, reservations, payment_intents with their refunds, ledger rows, settlement
    * adjustments and unit_batches, vehicles, organization_members, invitations, settlement
-   * terms, Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage rationale.
+   * and VAT terms, Spatie roles+perms) — see `buildTeardownTestUsersSql` for the coverage
+   * rationale.
    *
    * Carries the seeded `walletBalance` and, for the ones a scenario's `wallet_balance:`
    * declaration asked for, `declared: true`. Both are load-bearing at the allocator, so the
@@ -1316,7 +1317,8 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   // settlement_adjustments -> refunds -> settlement_outbox -> offline_transactions ->
   // offline_passes -> sessions -> unit_batches -> payment_intents -> reservations -> vehicles ->
   // organization_members -> wallets -> invitations -> tenant_settlement_terms ->
-  // model_has_roles -> model_has_permissions -> users. Not the seed's order reversed:
+  // organization_vat_terms -> model_has_roles -> model_has_permissions -> users. Not the seed's
+  // order reversed:
   // model_has_roles has no FK on model_id, so it blocks no user delete, and it goes after the
   // members and the wallets. The offline_enabled reset below is scoped the same way and is not
   // issued when identityPoolSize > 0, so UAT_EMAIL stays untouched in that mode.
@@ -1344,13 +1346,15 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //   - The owner is swept via the same full-FK user-teardown as the per-scenario workers,
   //     which carries the C-018 protected-emails guard: it THROWS if the owner is ever the
   //     platform admin, so an identity-confusion regression fails loudly here, not on the DB.
-  //   - Of the org's 10 NO-ACTION children, organization_members, invitations,
-  //     tenant_payment_credentials, tenant_settlement_terms and tenant_statements are deleted
-  //     here, before the org (FK-safe; pg_constraint-verified 2026-06-15, again 2026-09-29, and
-  //     2026-10-12 at csms-server 06c05499, whose G12 added the last two and
-  //     settlement_adjustments). `corporate_policies` WAS in this list and is gone: csms-server
-  //     ADR-0012 retired the surface and 2026_09_04_000003_drop_corporate_policies_table
-  //     DROPPED the table, so the DELETE referenced a relation that no longer exists. Because
+  //   - Of the org's 11 NO-ACTION children, organization_members, invitations,
+  //     tenant_payment_credentials, tenant_settlement_terms, tenant_statements and
+  //     organization_vat_terms are deleted here, before the org (FK-safe; pg_constraint-verified
+  //     2026-06-15, again 2026-09-29, and 2026-10-12 at csms-server 06c05499, whose G12 added
+  //     tenant_settlement_terms, tenant_statements and settlement_adjustments, and at 1d4b1c0d,
+  //     whose R8 added organization_vat_terms). `corporate_policies` WAS in this list and is
+  //     gone: csms-server ADR-0012 retired the surface and
+  //     2026_09_04_000003_drop_corporate_policies_table DROPPED the table, so the DELETE
+  //     referenced a relation that no longer exists. Because
   //     the whole teardown is one transaction, that single statement aborted it and
   //     `DELETE FROM organizations` never ran — leaving exactly the "whole per-run world
   //     behind" this function warns about two paragraphs down. Measured on UAT 2026-09-06: 3
@@ -1384,6 +1388,12 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
       // statement arm, and every identity sweep's deletes of either table are above as well.
       `DELETE FROM tenant_settlement_terms WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM tenant_statements WHERE organization_id = ${createdOrgLit};`,
+      // R8: the VAT rates the platform super admin set on the org, each from a date
+      // (organization_vat_terms.organization_id, NO ACTION). The org this run minted alone: a
+      // reused org keeps its own, and the platform organization - whose rate is the VAT of every
+      // wash the platform collects - is never one this run minted (acquireEphemeralProvisioningIdentity
+      // creates a new organization through POST /api/v1/organizations, which mints a fresh id).
+      `DELETE FROM organization_vat_terms WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organization_members WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM invitations WHERE organization_id = ${createdOrgLit};`,
       `DELETE FROM organizations WHERE id = ${createdOrgLit};`,

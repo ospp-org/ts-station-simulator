@@ -1252,16 +1252,17 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *
  * Coverage rationale (first verified against `pg_constraint` 2026-06-02; re-derived from
  * csms-server's migrations 2026-09-29, at master aadea673 plus
- * 2026_09_29_000002_create_session_settlement_retries_table, not yet on master that day, and
+ * 2026_09_29_000002_create_session_settlement_retries_table, not yet on master that day,
  * read again 2026-10-12 at 06c05499, the head of csms-server's G12 branch, not yet on master
- * either; the snapshot is the SCHEMA_FK_GRAPH constant in
+ * either, and the same day at 1d4b1c0d, the head of its settlement money rules branch (R4-R8),
+ * not yet on master; the snapshot is the SCHEMA_FK_GRAPH constant in
  * `__tests__/scenarios/bootstrap/teardownFkCoverage.test.ts`, which P1-asserts this builder
  * against the graph, by itself and row by row):
  *
- *   `users` has 17 FK children. `api_keys.user_id` and `refresh_tokens.user_id` are
+ *   `users` has 18 FK children. `api_keys.user_id` and `refresh_tokens.user_id` are
  *   ON DELETE CASCADE — the final `DELETE FROM users` removes them automatically — and
  *   `session_settlement_retries.settled_by_user_id` is ON DELETE SET NULL. The remaining
- *   FOURTEEN FKs are NO ACTION and would block the user delete unless we delete from each
+ *   FIFTEEN FKs are NO ACTION and would block the user delete unless we delete from each
  *   child first (invitations holds two of them, invited_by and revoked_by). `wallets`
  *   itself has a NO-ACTION child (`wallet_entries.wallet_id`) so wallet_entries must
  *   precede wallets which must precede users.
@@ -1296,6 +1297,17 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *   to match a row - a chargeback names only a session_payment intent, which csms-server
  *   writes with no user_id, and no identity a run creates holds the grant - but a row either
  *   missed would block the payment_intents or the users delete.
+ *
+ *   AN ORGANIZATION'S VAT (R8). organization_vat_terms holds every dated change of an
+ *   organization's VAT rate, a tenant's or the platform organization's, written by
+ *   `platform.billing.manage` alone through csms-server's OrganizationVatTermsController (NO
+ *   ACTION to users through created_by). The sweep deletes the rates one of the users set. It is
+ *   not expected to match a row: no identity a run creates writes one - the one a run ever grants
+ *   platform_super_admin (scripts/mint-revoked-fixture.sh) only revokes a certificate - and the
+ *   platform admin the runs authenticate as is never swept (the protected-emails guard below). A
+ *   row missed would block the users delete; a row matched would be a rate a swept identity set,
+ *   which no scenario does, so the platform organization's own rates, set by a real platform
+ *   super admin, are never among them.
  *
  *   NOT REACHED, deliberately: rows that belong to another identity and merely point at a
  *   swept user's row. A session naming a swept user's reservation
@@ -1334,9 +1346,10 @@ export function buildSettlementOutboxDeleteSql(sessionsWhere: string, intentsWhe
  *  16. wallets                    (NO ACTION → users; depends on wallet_entries gone first)
  *  17. invitations                (NO ACTION → users via invited_by and revoked_by)
  *  18. tenant_settlement_terms    (NO ACTION → users via created_by — G12)
- *  19. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
- *  20. model_has_permissions      (Spatie, polymorphic — same)
- *  21. users                      (api_keys + refresh_tokens auto-cascade with this)
+ *  19. organization_vat_terms     (NO ACTION → users via created_by — R8)
+ *  20. model_has_roles            (Spatie, polymorphic — no FK but seeded state)
+ *  21. model_has_permissions      (Spatie, polymorphic — same)
+ *  22. users                      (api_keys + refresh_tokens auto-cascade with this)
  *
  * Statements 3-7 select through intents, and all of them but 5 through sessions as well, which
  * statements 10-12 remove (a session is found through its batch, which statement 11 removes),
@@ -1445,13 +1458,16 @@ export function buildTeardownTestUsersSql(
     // 17. tenant_settlement_terms (G12) — the commission and payment-mode terms one of the
     //     users set (created_by, NO ACTION → users). See THE MONTHLY SETTLEMENT above.
     `DELETE FROM tenant_settlement_terms WHERE created_by IN (${userIds});`,
-    // 18-19. Spatie polymorphic — model_id is just a uuid column with no real FK, but
+    // 18. organization_vat_terms (R8) — the VAT rates one of the users set (created_by, NO
+    //     ACTION → users). See AN ORGANIZATION'S VAT above.
+    `DELETE FROM organization_vat_terms WHERE created_by IN (${userIds});`,
+    // 19-20. Spatie polymorphic — model_id is just a uuid column with no real FK, but
     //        these rows ARE state we seeded (or could have seeded), so sweep to avoid
     //        orphans. CASCADE-style behavior would have been server-side but isn't, so
     //        we own it client-side.
     `DELETE FROM model_has_roles WHERE model_id IN (${userIds});`,
     `DELETE FROM model_has_permissions WHERE model_id IN (${userIds});`,
-    // 20. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
+    // 21. users — api_keys + refresh_tokens auto-delete via their CASCADE FKs;
     //     session_settlement_retries.settled_by_user_id is nulled (SET NULL).
     `DELETE FROM users WHERE email = ANY(${emailArr});`,
   ];
