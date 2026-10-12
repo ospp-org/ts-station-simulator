@@ -14,9 +14,9 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  * sessions-before-reservations missing; commit #3: offline_passes-before-users missing). Both
  * slipped because the unit tests asserted SQL TEXT, not the FK GRAPH.
  *
- * THE SNAPSHOT. SCHEMA_FK_GRAPH below was regenerated on 2026-10-12 from csms-server 06c05499, the
- * head of branch feat/g11-monthly-settlement-20261012 that day (not yet on master): its 196
- * migrations applied to the csms_test database, and every foreign key read from pg_constraint with
+ * THE SNAPSHOT. SCHEMA_FK_GRAPH below was regenerated on 2026-10-12 from csms-server 1d4b1c0d, the
+ * head of branch feat/settlement-money-rules-20261012 that day (not yet on master): its 199
+ * migrations applied to the csms_side_b database, and every foreign key read from pg_constraint with
  *
  *   psql -AtF '|' -c "
  *     SELECT par.relname AS parent, chi.relname AS child,
@@ -35,21 +35,26 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  *     WHERE con.contype = 'f' AND con.conparentid = 0
  *     ORDER BY 1, 2, 6;"
  *
- * 83 foreign keys: 52 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
- * and NOT DEFERRABLE. The same query, run again the same day against the same database, returned
- * the same 83 rows. The previous snapshot was read on 2026-09-29 from master 87164f7d: 190
- * migrations, database/migrations tree b0c5887b64ff052a37c97ec5a5395a918e04d1f7, 75 foreign keys.
- * 06c05499's tree is f0902b2c01f7dfc858907a95020cc1afeea28c8e, and its 6 migrations since add 8
- * foreign keys, all NO ACTION, and change or drop none - all 8 are G12, the monthly settlement
- * between the platform and each tenant. 2026_10_12_000003_create_tenant_settlement_terms_table gives
- * tenant_settlement_terms its organization_id and created_by;
- * 2026_10_12_000005_create_tenant_statements_and_settlement_adjustments gives tenant_statements its
- * organization_id, settlement_adjustments its organization_id, payment_intent_id, created_by and
- * statement_id, and platform_settlement_ledger a statement_id. The snapshot has an entry for every
- * table the teardown removes rows from - the 39 tables both halves, buildTeardownSql and
- * buildTeardownTestUsersSql, delete from, and the 14 their deletes reach only through ON DELETE
- * CASCADE, 53 tables - holding every FK that points at that table; an empty entry is a table no
- * FK points at. 80 of the 83 are listed here. The other 3:
+ * 85 foreign keys: 54 NO ACTION, 22 CASCADE, 6 SET NULL, 3 RESTRICT; every one single-column
+ * and NOT DEFERRABLE. The query returned 86 rows there, and the same 86 when run again the same
+ * day against the same database: the 86th is topology.layer -> topology.topology, a table of the
+ * postgis_topology extension that database carries and csms_test does not, not one of
+ * csms-server's - the same query with `AND chi.relnamespace = 'public'::regnamespace` returns the
+ * 85. The previous snapshot was read the same day from 06c05499, the head of branch
+ * feat/g11-monthly-settlement-20261012: 196 migrations, database/migrations tree
+ * f0902b2c01f7dfc858907a95020cc1afeea28c8e, 83 foreign keys. master 01b26d13 (tree
+ * 0a1f9c012fbd23c2d72540d1a7de8aba7270f641, 196 migrations) renames
+ * 2026_10_12_000002_add_reconnect_replay_columns_to_sessions to
+ * 2026_10_12_000002_add_reconnect_replay_since_to_sessions, which adds no foreign key, and
+ * 1d4b1c0d's tree is 85d1e14f8e73fe55583b7a362d059d57617b7d63: its 3 migrations since add 2
+ * foreign keys, both NO ACTION, and change or drop none. Both are R8, an organization's VAT rate
+ * from a date: 2026_10_12_100001_create_organization_vat_terms_table gives organization_vat_terms
+ * its organization_id and created_by; 2026_10_12_100002 and 2026_10_12_100003 add columns to
+ * platform_settlement_ledger and settlement_adjustments that point at nothing. The snapshot has an
+ * entry for every table the teardown removes rows from - the 40 tables both halves,
+ * buildTeardownSql and buildTeardownTestUsersSql, delete from, and the 14 their deletes reach only
+ * through ON DELETE CASCADE, 54 tables - holding every FK that points at that table; an empty entry
+ * is a table no FK points at. 82 of the 85 are listed here. The other 3:
  *
  *   - 2 point at permissions, which the teardown neither deletes from nor reaches through a
  *     CASCADE.
@@ -85,11 +90,12 @@ interface FkEdge {
 }
 
 const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
-  // 17 FKs point at users: 14 NO ACTION, each of which blocks the users delete until its rows
+  // 18 FKs point at users: 15 NO ACTION, each of which blocks the users delete until its rows
   // are gone; 2 CASCADE (api_keys, refresh_tokens), removed with the user; 1 SET NULL
   // (session_settlement_retries.settled_by_user_id), nulled with the user. The created_by of
   // settlement_adjustments and tenant_settlement_terms (G12) name the platform super admin who
-  // entered the chargeback or set the terms.
+  // entered the chargeback or set the terms, and organization_vat_terms' (R8) the one who set an
+  // organization's VAT rate.
   users: [
     { child: 'api_keys',                   column: 'user_id',            onDelete: 'CASCADE'   },
     { child: 'invitations',                column: 'invited_by',         onDelete: 'NO ACTION' },
@@ -98,6 +104,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'offline_passes',             column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'offline_transactions',       column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'organization_members',       column: 'user_id',            onDelete: 'NO ACTION' },
+    { child: 'organization_vat_terms',     column: 'created_by',         onDelete: 'NO ACTION' },
     { child: 'payment_intents',            column: 'user_id',            onDelete: 'NO ACTION' },
     { child: 'refresh_tokens',             column: 'user_id',            onDelete: 'CASCADE'   },
     { child: 'reservations',               column: 'user_id',            onDelete: 'NO ACTION' },
@@ -204,12 +211,13 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     // station_services), so the RESTRICT FK is satisfied by then.
     { child: 'station_services', column: 'service_definition_id', onDelete: 'RESTRICT' },
   ],
-  // 17 FKs point at organizations: 10 NO ACTION, each of which must be deleted first or the org
+  // 18 FKs point at organizations: 11 NO ACTION, each of which must be deleted first or the org
   // delete FK-blocks; 7 CASCADE, removed by the org delete. The ephemeral-org teardown
   // (Direction B) deletes the org last. corporate_policies.organization_id went with its table
   // (2026_09_04_000003_drop_corporate_policies_table, ADR-0012). settlement_adjustments,
   // tenant_settlement_terms and tenant_statements came with G12: a tenant's chargebacks, its
-  // commission and payment-mode terms, and its closed months.
+  // commission and payment-mode terms, and its closed months; organization_vat_terms with R8: an
+  // organization's VAT rate from a date.
   organizations: [
     { child: 'invitations',                column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'locations',                  column: 'organization_id', onDelete: 'NO ACTION' },
@@ -217,6 +225,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'offline_auth_grants',        column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'offline_passes',             column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'organization_members',       column: 'organization_id', onDelete: 'NO ACTION' },
+    { child: 'organization_vat_terms',     column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'organization_id', onDelete: 'NO ACTION' },
     { child: 'revocation_epochs',          column: 'organization_id', onDelete: 'CASCADE'   },
     { child: 'roles',                      column: 'organization_id', onDelete: 'CASCADE'   },
@@ -282,7 +291,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   role_has_permissions: [],
   session_settlement_retries: [],
   station_model_programs: [],
-  // No FK points at any of these 22, so nothing can block their deletes (the FKs they carry
+  // No FK points at any of these 23, so nothing can block their deletes (the FKs they carry
   // as children are in the entries above).
   diagnostics_uploads: [],
   firmware_updates: [],
@@ -293,6 +302,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   offline_auth_grants: [],
   offline_transactions: [],
   organization_members: [],
+  organization_vat_terms: [],
   payment_ledger: [],
   pending_commands: [],
   security_event_dedup: [],
@@ -831,6 +841,12 @@ describe('teardown FK coverage — the user sweep reaches every row that points 
  * and the two into tenant_statements are asked, and payment_intents <-
  * settlement_adjustments.payment_intent_id cannot happen and is listed. 12 cannot happen, 28 are
  * asked, none is open.
+ *
+ * Read again the same day at csms-server 1d4b1c0d (R8): 41 requirements. The new foreign key into
+ * organizations, organization_vat_terms.organization_id, adds one, and it is asked: the platform
+ * super admin can set the VAT of any organization (OrganizationVatTermsController::store), the one
+ * the run minted included, so its rows go with its other rows. 12 cannot happen, 29 are asked, none
+ * is open.
  */
 const NOT_KEYED_IN_THE_POOL_HALF: Record<string, string> = {
   // WebPaymentOrchestrator::initiateUnitBatch, the one writer of unit_batches, creates the batch
