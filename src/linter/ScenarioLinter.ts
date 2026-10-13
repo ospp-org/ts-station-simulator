@@ -13,6 +13,7 @@ import { ErrorCodeRegistryCheck } from './checks/ErrorCodeRegistryCheck.js';
 import { ConnectLifecycleCheck } from './checks/ConnectLifecycleCheck.js';
 import { RequiredStepArgsCheck } from './checks/RequiredStepArgsCheck.js';
 import { SkipMarkerShapeCheck } from './checks/SkipMarkerShapeCheck.js';
+import { BootClaimCheck } from './checks/BootClaimCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -30,6 +31,7 @@ export class ScenarioLinter {
       new ConnectLifecycleCheck(),
       new RequiredStepArgsCheck(),
       new SkipMarkerShapeCheck(),
+      new BootClaimCheck(),
     ];
   }
 
