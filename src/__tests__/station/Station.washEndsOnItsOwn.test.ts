@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  wire, resetWire, fakeClock, certDir, connectConfig, request, startService, until, frames,
+  elapse, wire, resetWire, fakeClock, certDir, connectConfig, request, startService, until, frames,
   SESSION_KEY, STATION_ID, BAY_ID,
 } from '../helpers/stationHarness.js';
 
@@ -58,10 +58,10 @@ describe('M1 - the station ends the wash it accepted, on its own, at its booked 
     expect(frames('StartService', 'Response')[0]?.payload.status).toBe('Accepted');
 
     // One second short of the booking: the wash is still running.
-    await vi.advanceTimersByTimeAsync(59_000);
+    await elapse(59_000);
     expect(frames('SessionEnded'), 'the wash ended before its booked duration').toEqual([]);
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    await elapse(1_000);
     await until(() => frames('SessionEnded').length > 0, 'a SessionEnded at the booked end');
 
     const ended = frames('SessionEnded')[0].payload;
@@ -81,7 +81,7 @@ describe('M1 - the station ends the wash it accepted, on its own, at its booked 
     const station = await onlineStation();
     await new StartServiceHandler().handle(startService('sess_m1stop', 60), station as never);
 
-    await vi.advanceTimersByTimeAsync(20_000);
+    await elapse(20_000);
     await new StopServiceHandler().handle(
       request('StopService', { sessionId: 'sess_m1stop', bayId: BAY_ID }),
       station as never,
@@ -89,7 +89,7 @@ describe('M1 - the station ends the wash it accepted, on its own, at its booked 
     expect(frames('StopService', 'Response')[0]?.payload).toMatchObject({ status: 'Accepted', actualDurationSeconds: 20 });
 
     // Past the booked end: the cleared timer must not fire a second end record.
-    await vi.advanceTimersByTimeAsync(60_000);
+    await elapse(60_000);
     for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r));
     expect(frames('SessionEnded'), `frames: ${JSON.stringify(wire.frames.map((f) => f.action))}`).toEqual([]);
   });

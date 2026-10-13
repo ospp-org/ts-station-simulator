@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  wire, resetWire, fakeClock, certDir, connectConfig, request, startService, bootAccepted, until, frames, indexOf,
+  elapse, wire, resetWire, fakeClock, certDir, connectConfig, request, startService, bootAccepted, until, frames, indexOf,
   STATION_ID,
 } from '../helpers/stationHarness.js';
 
@@ -64,13 +64,13 @@ describe('M5 - UpdateFirmware with a session running: accepted, downloaded, inst
     const since = wire.frames.length;
 
     const handled = new UpdateFirmwareHandler().handle(request('UpdateFirmware', UPDATE), station as never);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await elapse(10_000);
 
     expect(frames('UpdateFirmware', 'Response', since)[0]?.payload, 'the update was refused while a wash ran').toEqual({ status: 'Accepted' });
     expect(statuses(since)).toEqual(['Downloading', 'Downloaded']);
 
     // The wash runs to its timer; only then may the image be written.
-    await vi.advanceTimersByTimeAsync(55_000);
+    await elapse(55_000);
     await until(() => frames('BootNotification', 'Request', since).length > 0, 'the boot into the new image');
     await handled;
 
@@ -81,7 +81,9 @@ describe('M5 - UpdateFirmware with a session running: accepted, downloaded, inst
     expect(wire.frames[ended].payload).toMatchObject({ sessionId: 'sess_m5wash', reason: 'TimerExpired' });
     expect(ended, 'the install began while the session ran').toBeLessThan(installing);
     expect(installing).toBeLessThan(boot);
-    expect(wire.frames[boot].payload).toMatchObject({ bootReason: 'FirmwareUpdate', firmwareVersion: '1.1.0', uptimeSeconds: 0 });
+    expect(wire.frames[boot].payload).toMatchObject({ bootReason: 'FirmwareUpdate', firmwareVersion: '1.1.0' });
+    // The new image powered on: the uptime started again, below the 60 s the wash alone took.
+    expect(Number(wire.frames[boot].payload.uptimeSeconds)).toBeLessThan(60);
   });
 
   it('CONTROL: the version already installed is still refused 5016, and nothing reboots', async () => {

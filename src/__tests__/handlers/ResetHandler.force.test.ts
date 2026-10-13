@@ -34,10 +34,13 @@ import type { StationContext, SessionInfo } from '../../handlers/Handler.js';
 interface Sent { payload: Record<string, unknown> }
 
 function makeStation(sessionCount: number): {
-  station: StationContext; sent: Sent[]; sessions: Map<string, SessionInfo>; stopped: string[];
+  station: StationContext; sent: Sent[]; sessions: Map<string, SessionInfo>; stopped: string[]; restarts: string[];
 } {
   const sent: Sent[] = [];
   const stopped: string[] = [];
+  // The reboot (reset.md §5 rule 6), recorded with the sessions it found: a Reset restarts the
+  // station with `RemoteReset`, and only after the settle (rule 3).
+  const restarts: string[] = [];
   const sessions = new Map<string, SessionInfo>();
   for (let i = 0; i < sessionCount; i++) {
     sessions.set(`sess_${i}`, { sessionId: `sess_${i}`, bayId: `bay_${i}`, seqNo: 0 } as unknown as SessionInfo);
@@ -49,9 +52,10 @@ function makeStation(sessionCount: number): {
     stopHeartbeat: () => {},
     destroyConnection: () => {},
     settleSessionAsOperatorStop: async (id: string) => { stopped.push(id); sessions.delete(id); },
+    restart: async (reason: string) => { restarts.push(`${reason} with ${sessions.size} session(s) left`); },
   } as unknown as StationContext;
 
-  return { station, sent, sessions, stopped };
+  return { station, sent, sessions, stopped, restarts };
 }
 
 function envelope(force?: boolean): OsppEnvelope {
@@ -65,13 +69,14 @@ function envelope(force?: boolean): OsppEnvelope {
 
 describe('ResetHandler — force is what it does to a RUNNING session', () => {
   it('unforced with a session running: 3016, and no reboot', async () => {
-    const { station, sent, sessions } = makeStation(1);
+    const { station, sent, sessions, restarts } = makeStation(1);
 
     await new ResetHandler().handle(envelope(false), station);
 
     expect(sent[0].payload.status).toBe('Rejected');
     expect(sent[0].payload.errorCode).toBe(OsppErrorCode.ACTIVE_SESSIONS_PRESENT);
     expect(sessions.size).toBe(1);
+    expect(restarts).toEqual([]);
   });
 
   it('OMITTED is the same as false — the schema default', async () => {
@@ -87,29 +92,33 @@ describe('ResetHandler — force is what it does to a RUNNING session', () => {
     // settled as an operator stop BEFORE the reboot, not abandoned by it: its
     // SessionEnded / OperatorStopped report of the delivered time is what the
     // server settles by service kind.
-    const { station, sent, sessions, stopped } = makeStation(2);
+    const { station, sent, sessions, stopped, restarts } = makeStation(2);
 
     await new ResetHandler().handle(envelope(true), station);
 
     expect(sent[0].payload.status).toBe('Accepted');
     expect(stopped.sort()).toEqual(['sess_0', 'sess_1']);
     expect(sessions.size).toBe(0);
+    // And then it reboots - after the settle, so the restart finds nothing left running.
+    expect(restarts).toEqual(['RemoteReset with 0 session(s) left']);
   });
 
   it('forced with NO session running is still accepted', async () => {
     // Force is not conditional on there being something to force.
-    const { station, sent } = makeStation(0);
+    const { station, sent, restarts } = makeStation(0);
 
     await new ResetHandler().handle(envelope(true), station);
 
     expect(sent[0].payload.status).toBe('Accepted');
+    expect(restarts).toEqual(['RemoteReset with 0 session(s) left']);
   });
 
   it('unforced with no session running is accepted', async () => {
-    const { station, sent } = makeStation(0);
+    const { station, sent, restarts } = makeStation(0);
 
     await new ResetHandler().handle(envelope(false), station);
 
     expect(sent[0].payload.status).toBe('Accepted');
+    expect(restarts).toEqual(['RemoteReset with 0 session(s) left']);
   });
 });

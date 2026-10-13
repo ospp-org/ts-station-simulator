@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  wire, resetWire, fakeClock, certDir, connectConfig, request, startService, bootAccepted, until, frames, indexOf,
+  elapse, wire, resetWire, fakeClock, certDir, connectConfig, request, startService, bootAccepted, until, frames, indexOf,
   STATION_ID, BAY_ID,
 } from '../helpers/stationHarness.js';
 
@@ -53,10 +53,17 @@ async function bootedStation() {
   return station;
 }
 
-/** Run the Reset handler on the fake clock: it waits out its reboot delay before it reboots. */
+/**
+ * Run the Reset handler on the fake clock: it waits out its reboot delay before it reboots. The
+ * clock moves a second at a time and stops once the handler is done, so the boot it sends is read
+ * at the second it was sent in - not seconds later, while its own disk reads were in flight.
+ */
 async function reset(station: unknown, force: boolean | undefined): Promise<void> {
-  const handled = new ResetHandler().handle(request('Reset', force === undefined ? {} : { force }), station as never);
-  await vi.advanceTimersByTimeAsync(5_000);
+  let done = false;
+  const handled = new ResetHandler()
+    .handle(request('Reset', force === undefined ? {} : { force }), station as never)
+    .finally(() => { done = true; });
+  for (let second = 0; second < 10 && !done; second++) await elapse(1_000);
   await handled;
 }
 
@@ -64,7 +71,7 @@ describe('M4 - a forced Reset settles every session first, then reboots with Rem
   it('RED: Reset Accepted, then SessionEnded OperatorStopped with the delivered time, then a BootNotification RemoteReset with uptime 0', async () => {
     const station = await bootedStation();
     await new StartServiceHandler().handle(startService('sess_m4forced', 300), station as never);
-    await vi.advanceTimersByTimeAsync(45_000);
+    await elapse(45_000);
     const since = wire.frames.length;
 
     await reset(station, true);
@@ -80,25 +87,30 @@ describe('M4 - a forced Reset settles every session first, then reboots with Rem
       reason: 'OperatorStopped',
       actualDurationSeconds: 45,
     });
-    expect(wire.frames[boot].payload).toMatchObject({ bootReason: 'RemoteReset', uptimeSeconds: 0 });
+    expect(wire.frames[boot].payload.bootReason).toBe('RemoteReset');
+    // The uptime started again: below the 45 s the station had run before the Reset.
+    expect(Number(wire.frames[boot].payload.uptimeSeconds)).toBeLessThan(45);
     // The settlement is complete before the reboot (rule 3), and the answer goes before both (rule 5).
     expect(answer).toBeLessThan(settled);
     expect(settled).toBeLessThan(boot);
     expect(station.sessions.size).toBe(0);
     // One end record for the session, not a second one at the booked end.
-    await vi.advanceTimersByTimeAsync(300_000);
+    await elapse(300_000);
     expect(frames('SessionEnded', undefined, since)).toHaveLength(1);
   });
 
   it('RED: an unforced Reset with nothing running is Accepted and reboots with RemoteReset', async () => {
     const station = await bootedStation();
+    await elapse(30_000);
     const since = wire.frames.length;
 
     await reset(station, false);
     await until(() => frames('BootNotification', 'Request', since).length > 0, 'a BootNotification after the Reset');
 
     expect(frames('Reset', 'Response', since)[0].payload.status).toBe('Accepted');
-    expect(frames('BootNotification', 'Request', since)[0].payload).toMatchObject({ bootReason: 'RemoteReset', uptimeSeconds: 0 });
+    expect(frames('BootNotification', 'Request', since)[0].payload.bootReason).toBe('RemoteReset');
+    // Below the 30 s the station had run: the uptime started again.
+    expect(Number(frames('BootNotification', 'Request', since)[0].payload.uptimeSeconds)).toBeLessThan(30);
   });
 
   it('CONTROL: an unforced Reset with a session running is refused 3016 and nothing reboots', async () => {

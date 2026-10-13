@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  wire, resetWire, fakeClock, certDir, connectConfig, startService, bootAccepted, until, frames, indexOf,
+  elapse, wire, resetWire, fakeClock, certDir, connectConfig, startService, bootAccepted, until, settled, frames, indexOf,
   readSessionRecord, STATION_ID, BAY_ID,
 } from '../helpers/stationHarness.js';
 
@@ -54,15 +54,15 @@ describe('M6 - the link drops mid-wash and comes back without a restart', () => 
     await until(() => frames('StatusNotification').length > 0, 'the boot report');
     await new StartServiceHandler().handle(startService('sess_m6away', 60), station as never);
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await elapse(10_000);
     // The socket drops: what mqtt.js re-emits through MqttConnection when the stream closes.
     const link = wire.connections[wire.connections.length - 1];
     link.emit('close');
     const away = wire.frames.length;
 
     // Away for 55 s: the wash reaches its booked end (60 s) while the station cannot transmit.
-    await vi.advanceTimersByTimeAsync(55_000);
-    for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r));
+    await elapse(55_000);
+    await settled(() => readSessionRecord().heldSessionEnded.length > 0);
     expect(wire.frames.slice(away).map((f) => f.action), 'the station published into a dead link').toEqual([]);
     // Held, not lost: the end record waits on disk for the next boot it can be sent after.
     expect(readSessionRecord().heldSessionEnded, 'the SessionEnded of the wash that ended while away is not held').toHaveLength(1);

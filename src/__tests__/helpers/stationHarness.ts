@@ -72,11 +72,33 @@ export const STATION_ID = 'stn_e2d00001';
 export const BAY_ID = 'bay_e2d00001';
 export const SERVICE_ID = 'svc_wash_basic';
 
+/** The real timer, taken before any test fakes the clock: the disk works in real time. */
+const realSetTimeout: typeof setTimeout = globalThis.setTimeout;
+
+function realPause(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => realSetTimeout(resolve, ms));
+}
+
 /** The fake clock every one of these tests runs on - the monotonic one included, since durations are measured on it. */
 export function fakeClock(): void {
   vi.useFakeTimers({
     toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'],
   });
+}
+
+/**
+ * Let `ms` of station time pass, a second at a time, with real time between the seconds.
+ *
+ * The station writes its session record on the REAL disk, and the fake clock does not wait for it:
+ * one jump of 55 s fires every timer of those 55 s while the first write is still in flight - a
+ * station whose disk took a minute to write. A real station's write lands within the second it
+ * starts in, and this is that.
+ */
+export async function elapse(ms: number, stepMs = 1000): Promise<void> {
+  for (let done = 0; done < ms; done += stepMs) {
+    await vi.advanceTimersByTimeAsync(Math.min(stepMs, ms - done));
+    await realPause(2);
+  }
 }
 
 /** A temporary certificate directory: what the station keeps on disk lives beside its certificates. */
@@ -87,7 +109,8 @@ export async function certDir(): Promise<{ dir: string; cleanup: () => Promise<v
   await writeFile(cert, 'stub');
   await writeFile(key, 'stub');
   wire.tlsPaths = { cert, key };
-  return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  // A station abandoned mid-test may still be landing a write: retried, not failed on.
+  return { dir, cleanup: () => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }) };
 }
 
 export function resetWire(): void {
@@ -174,7 +197,7 @@ export function startService(sessionId: string, durationSeconds: number): never 
   });
 }
 
-/** Yield to the REAL event loop until `cond` holds - file writes finish there, not on the fake clock. */
+/** Wait in REAL time until `cond` holds - file writes finish there, not on the fake clock. */
 export async function until(cond: () => boolean | Promise<boolean>, what: string, tries = 400): Promise<void> {
   if (await settled(cond, tries)) return;
   throw new Error(`never happened: ${what}; frames: ${JSON.stringify(wire.frames.map((f) => `${f.action}/${f.messageType}`))}`);
@@ -184,7 +207,7 @@ export async function until(cond: () => boolean | Promise<boolean>, what: string
 export async function settled(cond: () => boolean | Promise<boolean>, tries = 400): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     if (await cond()) return true;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await realPause(1);
   }
   return false;
 }

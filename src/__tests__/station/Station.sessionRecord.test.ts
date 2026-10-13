@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  wire, resetWire, fakeClock, certDir, connectConfig, startService, until,
+  elapse, wire, resetWire, fakeClock, certDir, connectConfig, startService, until,
   SESSION_KEY, STATION_ID, BAY_ID, SERVICE_ID,
 } from '../helpers/stationHarness.js';
 
@@ -89,7 +89,7 @@ describe('M2 - a connect-mode station keeps every live session on disk', () => {
     expect(Number.isNaN(Date.parse(record.startedAt))).toBe(false);
 
     // 25 s into the wash the record must say at least 15 s were delivered: never more than 10 s behind.
-    await vi.advanceTimersByTimeAsync(25_000);
+    await elapse(25_000);
     await until(() => (storedSessions()[0]?.deliveredSeconds ?? 0) >= 15, 'a delivered-time checkpoint at most 10 s old');
     const delivered = storedSessions()[0].deliveredSeconds;
     expect(delivered).toBeGreaterThanOrEqual(15);
@@ -105,11 +105,15 @@ describe('M2 - a connect-mode station keeps every live session on disk', () => {
     await new StartServiceHandler().handle(startService('sess_m2gone', 30), station as never);
     await until(() => storedSessions().some((s) => s.sessionId === 'sess_m2gone'), 'the record of the running wash');
 
-    await vi.advanceTimersByTimeAsync(30_000);
+    await elapse(30_000);
     await until(() => wire.frames.some((f) => f.action === 'SessionEnded'), 'the SessionEnded at the booked end');
-    await until(() => storedSessions().length === 0 && existsSync(recordFile()), 'the record emptied after the SessionEnded');
+    // The end is written twice: held before it is published (a power loss in between must still find
+    // it), released after. Read once both have landed.
+    const held = (): unknown[] =>
+      (JSON.parse(readFileSync(recordFile(), 'utf-8')) as { heldSessionEnded?: unknown[] }).heldSessionEnded ?? [];
+    await until(() => existsSync(recordFile()) && storedSessions().length === 0 && held().length === 0, 'the record emptied after the SessionEnded');
 
-    const file = JSON.parse(readFileSync(recordFile(), 'utf-8')) as { heldSessionEnded?: unknown[] };
-    expect(file.heldSessionEnded ?? [], 'a published SessionEnded is still held for a replay').toEqual([]);
+    expect(storedSessions()).toEqual([]);
+    expect(held(), 'a published SessionEnded is still held for a replay').toEqual([]);
   });
 });

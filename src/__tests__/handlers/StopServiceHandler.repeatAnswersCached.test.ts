@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  resetWire, fakeClock, certDir, connectConfig, request, startService, frames,
+  elapse, resetWire, fakeClock, certDir, connectConfig, request, startService, frames,
   SESSION_KEY, STATION_ID, BAY_ID,
 } from '../helpers/stationHarness.js';
 
@@ -56,14 +56,14 @@ async function washingStation(sessionId: string) {
 describe('S4 - the second StopService for a stopped session gets the first answer again', () => {
   it('RED: the repeat is answered Accepted with the cached delivered time, credits and finalSeqNo, correlated to the repeat', async () => {
     const station = await washingStation('sess_s4cached');
-    await vi.advanceTimersByTimeAsync(30_000);
+    await elapse(30_000);
 
     await new StopServiceHandler().handle(
       request('StopService', { sessionId: 'sess_s4cached', bayId: BAY_ID }, 'cmd_stop_first'),
       station as never,
     );
     // The RESPONSE was lost; the server re-sends the stop ten seconds later.
-    await vi.advanceTimersByTimeAsync(10_000);
+    await elapse(10_000);
     await new StopServiceHandler().handle(
       request('StopService', { sessionId: 'sess_s4cached', bayId: BAY_ID }, 'cmd_stop_again'),
       station as never,
