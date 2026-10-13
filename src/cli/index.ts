@@ -63,8 +63,12 @@ import {
   bootstrapPool,
   teardownPool,
   DEFAULT_POOL_BAYS,
+  EXIT_POOL_CARD_MONEY_HELD,
+  EXIT_POOL_TEARDOWN_FAILED,
   PoolBootstrapError,
-  serializePoolHandle,
+  PoolCardMoneyHeldError,
+  PoolTeardownError,
+  persistPoolHandle,
   handleFromSerialized,
   type PoolBootstrapHandle,
   type SerializedPoolHandle,
@@ -72,6 +76,55 @@ import {
 import { commitProvisioningKeySet } from '../provisioning/persistedKeySet.js';
 
 const POOL_HANDLE_PATH = path.resolve('tests/artifacts/pool-handle.json');
+
+/**
+ * The exit statuses a pool teardown adds, shown in the help of the two commands that tear a pool
+ * down. Documented with the teardown in docs/RUNNING-AGAINST-UAT.md, "The teardown gives the card
+ * money back".
+ */
+const POOL_TEARDOWN_EXIT_HELP = `
+Exit status of a pool teardown:
+  ${EXIT_POOL_CARD_MONEY_HELD}  the pool was KEPT and nothing was deleted: a card payment of its organization still
+     holds money, is still pending, or could not be read (each order is printed). The handle is kept,
+     or written, for \`teardown-pool --handle\` once the money is back.
+  ${EXIT_POOL_TEARDOWN_FAILED}  the teardown failed otherwise: the delete transaction was refused (nothing deleted, the
+     handle kept or written), or the server rows are gone and a local file could not be removed.
+Both win over a run's own 1: what is left on the server is acted on first, and the scenario results
+are in the report either way.
+`;
+
+/**
+ * A teardown that did not finish: say why, keep what finishes it, and return the exit status.
+ *
+ * Until 2026-10-13 this was a yellow "Teardown warning" that left the run's exit status as it was -
+ * 0 for a run whose scenarios passed - and wrote no handle, so a pool left on the server survived
+ * only as ids in scrollback. Now the status says the teardown failed, and while the pool is still
+ * on the server its handle is written for `teardown-pool --handle`, never over another pool's.
+ */
+async function reportUnfinishedTeardown(err: unknown, handle: PoolBootstrapHandle): Promise<number> {
+  const message = err instanceof Error ? err.message : String(err);
+  const moneyHeld = err instanceof PoolCardMoneyHeldError;
+  console.error(chalk.red(moneyHeld ? `Pool teardown KEPT the pool - ${message}` : `Pool teardown FAILED - ${message}`));
+  if (!(err instanceof PoolTeardownError && err.serverRowsDeleted)) {
+    try {
+      const written = await persistPoolHandle(handle, POOL_HANDLE_PATH, { overwrite: false });
+      console.error(chalk.yellow(
+        `  The pool is still on the server. Handle: ${written}\n` +
+        `  Finish it with: simulator teardown-pool --handle ${written}`,
+      ));
+    } catch (e) {
+      // The ids at least, in scrollback; never the passwords the handle carries.
+      console.error(chalk.red(
+        `  The handle could not be written (${e instanceof Error ? e.message : String(e)}). The pool: ` +
+        JSON.stringify({
+          createdOrgId: handle.createdOrgId, orgId: handle.orgId, ephemeralOwnerEmail: handle.ephemeralOwnerEmail,
+          locationId: handle.locationId, stationIds: handle.stationIds, apiBaseUrl: handle.apiBaseUrl,
+        }),
+      ));
+    }
+  }
+  return moneyHeld ? EXIT_POOL_CARD_MONEY_HELD : EXIT_POOL_TEARDOWN_FAILED;
+}
 
 const program = new Command();
 
@@ -131,7 +184,7 @@ program
   // if this default drifts from it in either direction.
   .option('--pool-bays <n>', 'Bays per provisioned pool station', String(DEFAULT_POOL_BAYS))
   .option('--no-offline-enable', 'Skip the privileged users.offline_enabled step during --bootstrap-pool')
-  .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle for `teardown-pool` (debug/inspection)')
+  .option('--keep-pool', 'Do not tear down the bootstrapped pool on success; persist a handle (mode 0600) for `teardown-pool` (debug/inspection)')
   .option('--keep-created', 'Do not tear down the org/location/station/user a self-provisioning scenario creates (`creates:` in its YAML); print the ids instead (debug/inspection)')
   .option(
     '--require-conclusive',
@@ -148,6 +201,7 @@ program
     (value: string, previous: string[]) => [...previous, value],
     [] as string[],
   )
+  .addHelpText('after', POOL_TEARDOWN_EXIT_HELP)
   .action(async (opts: RunCommandOptions) => {
     let bootstrapHandle: PoolBootstrapHandle | undefined;
     let exitCode = 0;
@@ -445,18 +499,16 @@ program
       // 6. Teardown — runs even on failure, BEFORE exit (process.exit is deferred
       //    so cleanup is never short-circuited). --keep-pool preserves a SUCCESSFUL
       //    run's pool for inspection (persisting a handle for `teardown-pool`); a
-      //    failed run is always torn down regardless.
+      //    failed run is always torn down regardless. The teardown gives the run's
+      //    card money back first and keeps the pool when it cannot; a teardown that
+      //    does not finish fails the run (EXIT_POOL_*) and keeps its handle.
       if (bootstrapHandle) {
         if (opts.keepPool && exitCode === 0) {
           try {
-            await fs.mkdir(path.dirname(POOL_HANDLE_PATH), { recursive: true });
-            await fs.writeFile(
-              POOL_HANDLE_PATH,
-              JSON.stringify(serializePoolHandle(bootstrapHandle), null, 2),
-            );
+            const written = await persistPoolHandle(bootstrapHandle, POOL_HANDLE_PATH, { overwrite: true });
             console.log(chalk.yellow(
               `Pool KEPT (--keep-pool): ${bootstrapHandle.stationIds.length} station(s) under org ` +
-              `${bootstrapHandle.orgId}.\n  Handle: ${POOL_HANDLE_PATH}\n  Tear down later with: simulator teardown-pool`,
+              `${bootstrapHandle.orgId}.\n  Handle: ${written}\n  Tear down later with: simulator teardown-pool`,
             ));
           } catch (e) {
             console.error(chalk.yellow(`Could not persist pool handle: ${e instanceof Error ? e.message : String(e)}`));
@@ -467,7 +519,7 @@ program
             await teardownPool(bootstrapHandle);
             console.log(chalk.green('Pool teardown complete.'));
           } catch (e) {
-            console.error(chalk.yellow(`Teardown warning: ${e instanceof Error ? e.message : String(e)}`));
+            exitCode = await reportUnfinishedTeardown(e, bootstrapHandle);
           }
         }
       }
@@ -772,9 +824,14 @@ interface TeardownPoolOptions {
 
 program
   .command('teardown-pool')
-  .description('Tear down a station pool previously kept by `run --keep-pool` (idempotent)')
+  .description(
+    'Tear down a station pool kept by `run --keep-pool`, or by a run whose teardown did not finish: ' +
+    'give its card money back through the server first, then delete it (the delete is idempotent)',
+  )
   .option('--handle <path>', 'Path to the persisted pool handle JSON', POOL_HANDLE_PATH)
+  .addHelpText('after', POOL_TEARDOWN_EXIT_HELP)
   .action(async (opts: TeardownPoolOptions) => {
+    let handle: PoolBootstrapHandle;
     try {
       let raw: string;
       try {
@@ -788,14 +845,36 @@ program
       console.log(chalk.blue(
         `Tearing down ${serialized.stationIds?.length ?? 0} station(s) from ${opts.handle}...`,
       ));
-      await teardownPool(handleFromSerialized(serialized));
-      await fs.rm(opts.handle, { force: true });
-      console.log(chalk.green('Pool teardown complete.'));
+      handle = handleFromSerialized(serialized);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       console.error(chalk.red(`Fatal: ${error.message}`));
       process.exit(1);
+      return;
     }
+
+    try {
+      await teardownPool(handle);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof PoolTeardownError && err.serverRowsDeleted) {
+        // The pool is gone from the server; the handle would only fail its next owner sign-in.
+        await fs.rm(opts.handle, { force: true });
+        console.error(chalk.red(`Pool teardown FAILED - ${message}`));
+        process.exit(EXIT_POOL_TEARDOWN_FAILED);
+        return;
+      }
+      const moneyHeld = err instanceof PoolCardMoneyHeldError;
+      console.error(chalk.red(moneyHeld ? `Pool teardown KEPT the pool - ${message}` : `Pool teardown FAILED - ${message}`));
+      console.error(chalk.yellow(
+        `  The pool is still on the server. Handle kept: ${opts.handle}\n` +
+        `  Finish it with: simulator teardown-pool --handle ${opts.handle}`,
+      ));
+      process.exit(moneyHeld ? EXIT_POOL_CARD_MONEY_HELD : EXIT_POOL_TEARDOWN_FAILED);
+      return;
+    }
+    await fs.rm(opts.handle, { force: true });
+    console.log(chalk.green('Pool teardown complete.'));
   });
 
 // ---------------------------------------------------------------------------

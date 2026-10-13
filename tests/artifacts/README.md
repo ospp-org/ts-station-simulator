@@ -7,8 +7,16 @@ scenario step, by `ProvisionStationPoolStep`, and by the pool bootstrap in
 ## These files carry live credentials
 
 `pool-handle.json` holds the ephemeral operator accounts a pool run creates, as
-**plaintext `{email, password}` pairs**. `uat/stn_*/` holds station private keys,
-receipt signing keys and issued certificates.
+**plaintext `{email, password}` pairs**, the pool's ids and the API it was built through
+(`apiBaseUrl`). `uat/stn_*/` holds station private keys, receipt signing keys and issued
+certificates.
+
+A handle is written, mode 0600, by `run --keep-pool` and by a pool teardown that did not finish
+(exit 3: card money of the pool's organization still captured or pending; exit 4: the delete was
+refused) - see `docs/RUNNING-AGAINST-UAT.md` §5c. The second never overwrites a handle already
+there: it writes `pool-handle-<organization>.json` beside it. Every such file names a pool that
+is still on the server until `simulator teardown-pool --handle <file>` finishes it and removes the
+file.
 
 ## Ignore rule
 

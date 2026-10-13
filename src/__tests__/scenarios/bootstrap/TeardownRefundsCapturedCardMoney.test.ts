@@ -276,6 +276,27 @@ describe('a pool teardown gives the card money back through the server before it
     for (const f of certFiles) expect(existsSync(f)).toBe(true);
   });
 
+  it('when the payments cannot be read for the whole 10 minutes, nothing is deleted and the teardown says so', async () => {
+    const server = fakePaymentsServer({
+      api: API, orgId: ORG, ownerEmail: OWNER, ownerPassword: OWNER_PASSWORD, payments: [batch()],
+      unavailable: ({ method, path }) => method === 'GET' && path.startsWith('/api/v1/admin/payments'),
+    });
+    vi.stubGlobal('fetch', server.fetch);
+
+    const out = await settleUnderFakeTime(teardownPool(handle(), DB));
+
+    expect(out.error).toBeInstanceOf(Error);
+    expect((out.error as Error).name).toBe('PoolCardMoneyHeldError');
+    expect((out.error as Error).message).toMatch(/could not be read/);
+    expect((out.error as Error).message).toContain('503');
+    // The wait is the budget; no refund rounds are spent on an API that never answered.
+    expect(out.fakeElapsedMs).toBeGreaterThanOrEqual(10 * 60_000 - 15_000);
+    expect(out.fakeElapsedMs).toBeLessThan(11 * 60_000);
+    expect(server.refundCalls()).toEqual([]);
+    expect(sqlCalls()).toEqual([]);
+    for (const f of certFiles) expect(existsSync(f)).toBe(true);
+  });
+
   it('a pool with no card payment is read as its owner and then torn down', async () => {
     const server = serve([]);
 

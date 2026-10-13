@@ -169,6 +169,11 @@ export class ScenarioResourceLedger {
  * Delete everything the ledger recorded: server rows in one FK-ordered transaction,
  * then the local key/cert artifacts.
  *
+ * The transaction is {@link buildTeardownSql}'s, so it refuses itself while a card payment of a
+ * declared organization still holds money (its guard, 2026-10-13); that refusal throws like any
+ * other, before the artifacts are touched. This path refunds nothing: no self-provisioning scenario
+ * pays with a card - the two that do run on the pool, whose teardownPool gives the money back.
+ *
  * Throws on failure — the caller is expected to turn that into a LEFTOVERS report
  * carrying {@link ScenarioResourceLedger.describe}. A teardown that swallowed its own
  * error would leave a run claiming it cleaned up, which is strictly worse than a run

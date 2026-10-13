@@ -72,6 +72,8 @@ export interface FakePaymentsServerOptions {
   ownerEmail: string;
   ownerPassword: string;
   payments: FakePayment[];
+  /** Requests answered 503 by the edge, as an outage would: the server never sees them. */
+  unavailable?: (call: { method: string; path: string }) => boolean;
 }
 
 type Json = Record<string, unknown>;
@@ -143,6 +145,9 @@ export function fakePaymentsServer(options: FakePaymentsServerOptions) {
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
   const answer = (method: string, url: URL, headers: Record<string, string>, body: unknown): Response => {
+    if (options.unavailable?.({ method, path: url.pathname + url.search })) {
+      return new Response('<html><body>503 Service Temporarily Unavailable</body></html>', { status: 503 });
+    }
     settleDue();
     if (method === 'POST' && url.pathname === '/api/v1/auth/login') {
       const b = (body ?? {}) as Json;
