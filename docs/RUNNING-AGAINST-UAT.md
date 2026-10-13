@@ -293,7 +293,10 @@ SELECT station_id, is_active FROM stations WHERE station_id = 'stn_…';
 Also accumulating, from runs whose teardown did not complete: `certs/uat/` key sets,
 `tests/artifacts/uat/` directories, and `pool-handle.json` holding a finished run's
 credentials. `persistedKeySet` **reuses** an existing key set rather than flagging it, so a
-half-provisioned directory is silently adopted.
+half-provisioned directory is silently adopted. Since 2026-10-13 a teardown that does not finish
+says so — exit 3 or 4 — and keeps the pool's certificate files and writes its handle on purpose
+(§5c): a `pool-handle*.json` there is a pool still on the server until `teardown-pool --handle`
+finishes it.
 
 **A fixed id in a shared environment poisons itself permanently.**
 `security/offline-transaction-reconcile.yaml` hardcoded `offlineTxId: otx_a0000000001`. The
@@ -378,6 +381,103 @@ that takes the real signal with it.
 
 The console summary always breaks the count out (`of which INCONCLUSIVE: n`) whether or not the
 flag is set, so the condition is visible before someone decides to enforce it.
+
+---
+
+## 5c. The teardown gives the card money back before it deletes anything
+
+Two corpus files pay with the BT sandbox card (§9): `multiunit-batch-drive` captures 6 lei,
+`multiunit-jam-drive` 4 lei, of which the server itself refunds the jammed unit's 2. Until
+2026-10-13 the teardown was one SQL transaction that deleted the run's `payment_intents` with
+their refunds and ledgers and asked the server nothing, so every such order was deleted from UAT
+while its money stayed at BT with no row naming it: 10 orders of 2026-09-29 and 2026-10-05 held
+37,57 lei on 2026-10-13, refundable only by asking BT directly.
+
+Now the teardown — at the end of `run --bootstrap-pool`, whether the run passed or failed, and in
+`teardown-pool --handle` — gives the money back through the server's own refund path first
+(`src/scenarios/bootstrap/PoolCardRefunds.ts`), and deletes nothing while it cannot:
+
+1. It signs in at the handle's `apiBaseUrl` as the pool owner — the handle's
+   `ephemeralOwnerEmail`, with the password the bootstrap copied onto every identity in
+   `identityCredentials` — and lists the payments of the organization the run minted, as the
+   console does: `GET /api/v1/admin/payments?per_page=100&page=N`, `X-Organization-Id` that
+   organization. The owner holds `payments.view` and `payments.refund` there.
+2. A payment still `pending` may already be paid at BT (on 2026-10-12 BT deposited while its 3DS
+   page showed an error, and the server's poller settled the intent about 2 minutes later), so the
+   teardown first waits **at most 10 minutes, reading every 15 s,** for every pending payment to
+   settle.
+3. Every payment still holding money — `succeeded` or `partially_refunded` — is refunded for what
+   is left: its amount less every refund that did not fail, read from
+   `GET /api/v1/admin/payments/{id}`, with
+   `POST /api/v1/admin/payments/{id}/refund {"amount_cents": <left>, "reason": "Pool teardown: the corpus's card payment is given back"}`.
+4. BT's `refund.do` answers "system error" for minutes at a time. The server then answers **502**
+   and keeps the payment unrefunded, so the teardown tries again **every 90 s, 10 tries at most**
+   per payment (on 2026-10-12/13 BT took such refunds 1 to 7 tries later). A refund the server
+   answers 200 with its status `pending` (BT's outcome not known yet, held for
+   `refunds:recover-stranded`) has committed what is left; it is waited for, never asked twice.
+5. A payment is given back when the server answered 200 with the refund `succeeded` and a read of
+   the payment shows it `refunded`. Only when no payment of the organization is captured or
+   pending does the SQL run.
+6. The SQL refuses by itself as well: its first statement after `BEGIN` and `SET LOCAL` raises
+   `pool teardown refused, card money still captured: <payment> (BT order <id>, <status>), …`
+   while a payment of the minted organization, or of one of the run's bays, is `succeeded` or
+   `partially_refunded` — and the whole transaction rolls back.
+7. Only after the transaction commits are the certificate files removed and the owner's
+   `SIM_POOL_OWNER_*` variables cleared. A delete that is refused leaves both: the pool they belong
+   to is still on the server.
+
+**When it cannot, it keeps the pool.** Nothing is deleted — no row, no local file — and every
+order still holding money or still pending is printed with its payment id, BT order id, what is
+left, the tries and the server's last answer:
+
+```
+Pool teardown KEPT the pool - nothing was deleted: 1 card payment(s) of organization 019e…
+  - payment 01a13289-…, BT order 88c0b457-…: succeeded, 600 of 600 cents still captured, 10 refund tries,
+    last answer: HTTP 502, refund failed "Refund could not be completed: … The payment remains unrefunded."
+  The pool is still on the server. Handle: tests/artifacts/pool-handle.json
+  Finish it with: simulator teardown-pool --handle tests/artifacts/pool-handle.json
+```
+
+The handle is written with mode 0600 to `tests/artifacts/pool-handle.json`, or, when that file
+already holds another kept pool's handle, beside it as `pool-handle-<organization>.json` — it is
+never overwritten. `teardown-pool --handle <path>` runs the same sequence again and removes the
+handle only once the pool is gone. A payment that stays captured can also be refunded from the
+console; a pending payment the server has **parked** (its poll attempts exhausted) will not
+settle by itself and needs a person.
+
+**Exit status** (`run --help` and `teardown-pool --help` print it too):
+
+| status | meaning |
+|---|---|
+| 0 | the scenarios passed and the pool is gone (or kept by `--keep-pool`) |
+| 1 | a scenario failed, or the run could not start |
+| **3** | the teardown **kept the pool** because card money of its organization is still captured, still pending, or could not be read; nothing was deleted, the handle is kept or written |
+| **4** | the teardown failed otherwise: the delete transaction was refused (nothing deleted, the handle kept or written), or the server rows are gone and a local file could not be removed |
+
+3 and 4 win over a run's own 1: what is left on the server is acted on first, and the scenario
+results are in the report either way.
+
+Until 2026-10-13 a teardown that threw printed a yellow `Teardown warning`, left the exit status
+at 0 for a run whose scenarios passed, wrote no handle — the pool's ids survived only in
+scrollback — and had already removed the certificate files of the pool it left behind.
+
+What to expect on UAT while it retries: each try BT refuses leaves a `failed` refund row (the
+console's unsettled refunds list) and makes the server log CRITICAL `refund OWED but NO money
+moved` in `storage/logs/laravel.log`. That is the server doing what it must. The end of a run can
+take up to 10 minutes of waiting for a pending payment and 13.5 minutes of refund tries (9 gaps
+of 90 s).
+
+To see each refund: the run's `[teardown] card money:` lines name every payment, BT order, amount
+and answer. The UAT rows go with the teardown that follows at once, so the lasting traces are the
+server's log — one `ProcessRefund: refund processed` line per refund (refund id, amount, channel
+`processor`) in `storage/logs/laravel.log` of `csms-app-uat` — and BT's own `getOrderStatusExtended`
+for the order: `orderStatus 4`, `refundedAmount` the order's whole amount, `depositedAmount` 0
+(600 and 0 for the Batch Drive refunded through the server on 2026-10-12). A run with
+`--keep-pool` refunds nothing until `teardown-pool --handle`, so the captured payment can be read on
+UAT first; that command then refunds and deletes in one go.
+
+A handle written before 2026-10-13 carries no `apiBaseUrl`; `teardown-pool` keeps such a pool
+(exit 3) and says so. Add `"apiBaseUrl": "https://api-uat.onestoppay.ro"` to the file.
 
 ---
 
@@ -1100,3 +1200,7 @@ the classic `4111…` is accepted by the form, reaches BT, and comes back
 is unknown"`. The flow also has a second page after the card form — a 3DS confirmation whose
 button is labelled **"Confirmare autentificare"**. Without pressing it the payment does not
 finish, and the intent stays `pending` until the settlement poll gives up.
+
+**What the card captures goes back at the end of the run.** The pool teardown refunds every
+captured card payment of the run's organization through the server before it deletes anything,
+and keeps the pool when it cannot (§5c).

@@ -35,6 +35,9 @@ import {
   type UatDbConfig,
 } from './uatPrivileged.js';
 import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js';
+import { refundPoolCardPayments, PoolCardMoneyHeldError } from './PoolCardRefunds.js';
+
+export { PoolCardMoneyHeldError } from './PoolCardRefunds.js';
 
 /**
  * Per-run station-pool bootstrap (F-PROC-1 fix).
@@ -53,8 +56,10 @@ import { commitProvisioningKeySet } from '../../provisioning/persistedKeySet.js'
  *   4. Runs the privileged offline-enable step (DB-only flag, no API path).
  *
  * The returned {@link PoolBootstrapHandle} feeds the runner's allocator
- * (`target.stationPool = handle.stationIds`) and `target.orgId`, and drives the
- * idempotent {@link teardownPool} at suite end (finally/afterAll).
+ * (`target.stationPool = handle.stationIds`) and `target.orgId`, and drives
+ * {@link teardownPool} at suite end (finally/afterAll), which gives the run's card
+ * money back through the server before it deletes anything, and keeps the pool when
+ * it cannot.
  *
  * Org creation needs platform_admin; the configured UAT identity is a
  * tenant_owner, so the bootstrap REUSES that owner's existing org (stable
@@ -189,6 +194,12 @@ export interface PoolBootstrapOptions {
 export interface PoolBootstrapHandle {
   orgId: string;
   /**
+   * The API the pool was built through - the target's `csms_url`. The teardown signs in there as
+   * the pool owner to give the run's card payments back before it deletes anything (see
+   * PoolCardRefunds.ts). Absent on a handle written before 2026-10-13, which the teardown then keeps.
+   */
+  apiBaseUrl?: string;
+  /**
    * The ephemeral tenant_owner this run minted from the platform admin (Direction B:
    * the pool builder is self-sufficient on identity). Deleted at teardown. Absent on
    * legacy handles.
@@ -253,6 +264,8 @@ export class PoolBootstrapError extends Error {
 /** JSON-serializable subset of a handle — enough to drive {@link teardownPool}. */
 export interface SerializedPoolHandle {
   orgId: string;
+  /** Optional for backwards-compat: a handle written before 2026-10-13 has none. */
+  apiBaseUrl?: string;
   ephemeralOwnerEmail?: string;
   createdOrgId?: string;
   locationId?: string;
@@ -278,6 +291,7 @@ export interface SerializedPoolHandle {
 export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPoolHandle {
   return {
     orgId: handle.orgId,
+    apiBaseUrl: handle.apiBaseUrl,
     ephemeralOwnerEmail: handle.ephemeralOwnerEmail,
     createdOrgId: handle.createdOrgId,
     locationId: handle.locationId,
@@ -293,6 +307,7 @@ export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPool
 export function handleFromSerialized(s: SerializedPoolHandle): PoolBootstrapHandle {
   return {
     orgId: s.orgId,
+    apiBaseUrl: s.apiBaseUrl,
     ephemeralOwnerEmail: s.ephemeralOwnerEmail,
     createdOrgId: s.createdOrgId,
     locationId: s.locationId,
@@ -542,7 +557,10 @@ export const POOL_OWNER_PASSWORD_ENV = 'SIM_POOL_OWNER_PASSWORD';
  *
  * CLEARED AT TEARDOWN, deliberately: the account is deleted there, so leaving the variables
  * set would leave a credential in the environment that no longer authenticates — which is the
- * shape of a confusing 401 much later.
+ * shape of a confusing 401 much later. Cleared once the delete has committed, not before it:
+ * until then the owner still exists, the teardown signs in as it to give the card money back
+ * (poolOwnerPassword reads the password here for a pool that seeded no identity), and a teardown
+ * that keeps the pool leaves them naming an account that still authenticates.
  */
 export function exportEphemeralOwnerToEnv(identity: EphemeralProvisioningIdentity): void {
   process.env[POOL_OWNER_EMAIL_ENV] = identity.ownerEmail;
@@ -649,6 +667,7 @@ export async function bootstrapPool(
 
   const handle: PoolBootstrapHandle = {
     orgId: options.orgId ?? '',
+    apiBaseUrl,
     stationIds: [],
     certFiles: [],
     seededServiceIds: [],
@@ -981,42 +1000,123 @@ async function registerAndProvisionStation(
 }
 
 // ---------------------------------------------------------------------------
-// Teardown — idempotent, FK-safe, scoped strictly to this run's resources
+// Teardown — card money first, then idempotent, FK-safe, scoped strictly to this run's resources
 // ---------------------------------------------------------------------------
 
 /**
- * Reverse the bootstrap. Safe to call with a partial handle and safe to re-run
- * (every statement is WHERE-scoped to this run's ids; deleting 0 rows is not an
- * error). Removes provisioned stations (+ children), the run location, resets
- * offline_enabled, and deletes local cert artifacts. Errors are collected and
- * surfaced together so one failing concern does not skip the others.
+ * The exit status of `run --bootstrap-pool` and `teardown-pool` when the teardown KEPT the pool
+ * because a card payment of its organization still holds money, is still pending, or could not be
+ * read ({@link PoolCardMoneyHeldError}). Nothing was deleted; the handle is kept, or written.
+ * It wins over the run's own 1, as {@link EXIT_POOL_TEARDOWN_FAILED} does: what is left on the
+ * server is acted on first, and the scenario results are in the report either way.
+ */
+export const EXIT_POOL_CARD_MONEY_HELD = 3;
+
+/**
+ * The exit status of both commands when the teardown failed otherwise ({@link PoolTeardownError}):
+ * the delete transaction was refused - nothing deleted, the handle kept or written - or the
+ * server's rows are gone and a local file could not be removed.
+ */
+export const EXIT_POOL_TEARDOWN_FAILED = 4;
+
+/**
+ * A teardown that did not finish for a reason other than card money. `serverRowsDeleted` says
+ * which half failed: false, the delete transaction was refused and rolled back, so the whole pool
+ * is still on the server and its handle is what finishes it; true, the rows are gone and only
+ * local files are left.
+ */
+export class PoolTeardownError extends Error {
+  constructor(message: string, readonly serverRowsDeleted: boolean) {
+    super(message);
+    this.name = 'PoolTeardownError';
+  }
+}
+
+/**
+ * The phrase the delete transaction's guard raises with (see buildTeardownSql), which is how the
+ * teardown tells "card money still captured" from any other refusal of the same transaction.
+ */
+export const CARD_MONEY_GUARD_MESSAGE = 'pool teardown refused, card money still captured';
+
+/**
+ * The pool owner's password, for the teardown to sign in with: the one the bootstrap copied onto
+ * every identity it seeded (step 6 of bootstrapPool), and - in the process that bootstrapped a pool
+ * with no identity (`identityPoolSize: 0`) - the one it published to SIM_POOL_OWNER_PASSWORD for the
+ * owner it published to SIM_POOL_OWNER_EMAIL.
+ */
+export function poolOwnerPassword(handle: PoolBootstrapHandle): string | undefined {
+  const seeded = handle.identityCredentials?.find((c) => typeof c.password === 'string' && c.password !== '');
+  if (seeded) return seeded.password;
+  if (handle.ephemeralOwnerEmail && process.env[POOL_OWNER_EMAIL_ENV] === handle.ephemeralOwnerEmail) {
+    const published = process.env[POOL_OWNER_PASSWORD_ENV];
+    if (published) return published;
+  }
+  return undefined;
+}
+
+/**
+ * Reverse the bootstrap - and never delete card money still captured.
+ *
+ * 0. THE CARD MONEY, before anything is deleted: every card payment of the organization the run
+ *    minted is given back through the server's own refund door, signed in as the pool owner, and
+ *    the teardown waits for a pending one to settle ({@link refundPoolCardPayments}). If any is
+ *    still captured or pending at the end, or the payments could not be read, it throws
+ *    {@link PoolCardMoneyHeldError} and deletes NOTHING - no row, no local file - so the pool and
+ *    its handle stay for `teardown-pool`. The delete transaction's first statement refuses the
+ *    same money by itself (buildTeardownSql), and that refusal is the same error.
+ * 1. The server's rows, in one FK-ordered transaction. Refused, it rolled back: nothing was deleted,
+ *    and it throws {@link PoolTeardownError} (`serverRowsDeleted: false`) without touching the local
+ *    files, which belong to a pool that is still on the server.
+ * 2. Only then the local cert artifacts, and the owner's credentials in the environment, whose
+ *    account step 1 deleted. A file that cannot be removed throws PoolTeardownError
+ *    (`serverRowsDeleted: true`).
+ *
+ * Safe to call with a partial handle. The SQL is safe to re-run (every statement is WHERE-scoped to
+ * this run's ids; deleting 0 rows is not an error); step 0 needs the owner, so a handle whose pool
+ * was already torn down is refused there, with a message saying so.
  */
 export async function teardownPool(
   handle: PoolBootstrapHandle,
   dbConfig: UatDbConfig = uatDbConfigFromEnv(),
 ): Promise<void> {
-  const errors: string[] = [];
-
-  // The account these credentials name is deleted below. Clearing them FIRST means a failure
-  // anywhere in this function still leaves the environment honest — a variable that survives
-  // the user it authenticates as is a 401 nobody can attribute.
-  clearEphemeralOwnerFromEnv();
+  // 0. Card money first. Throws before anything is deleted.
+  await refundPoolCardPayments({
+    organizationId: handle.createdOrgId,
+    apiBaseUrl: handle.apiBaseUrl,
+    ownerEmail: handle.ephemeralOwnerEmail,
+    ownerPassword: poolOwnerPassword(handle),
+  });
 
   // 1. Server-side rows (single transaction, FK-ordered).
   try {
     await runUatSql(buildTeardownSql(handle), dbConfig);
-    console.log(
-      `[teardown] removed ${handle.stationIds.length} station(s)` +
-      `${handle.locationId ? ' + location' : ''}` +
-      `${handle.seededServiceIds && handle.seededServiceIds.length > 0 ? ' + orphan-swept seeded service_definitions' : ''}` +
-      `${handle.identityCredentials && handle.identityCredentials.length > 0 ? ` + ${handle.identityCredentials.length} seeded identity(ies)` : ''}` +
-      `${handle.offlineEnabledEmail ? ' + reset offline_enabled' : ''}`,
-    );
   } catch (err) {
-    errors.push(`server teardown: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes(CARD_MONEY_GUARD_MESSAGE)) {
+      throw new PoolCardMoneyHeldError(handle.createdOrgId, [], `the delete transaction refused: ${message}`);
+    }
+    throw new PoolTeardownError(
+      `server teardown: ${message}. The delete is one transaction and it did not complete, so the pool ` +
+      'is still on the server',
+      false,
+    );
   }
+  console.log(
+    `[teardown] removed ${handle.stationIds.length} station(s)` +
+    `${handle.locationId ? ' + location' : ''}` +
+    `${handle.seededServiceIds && handle.seededServiceIds.length > 0 ? ' + orphan-swept seeded service_definitions' : ''}` +
+    `${handle.identityCredentials && handle.identityCredentials.length > 0 ? ` + ${handle.identityCredentials.length} seeded identity(ies)` : ''}` +
+    `${handle.offlineEnabledEmail ? ' + reset offline_enabled' : ''}`,
+  );
 
-  // 2. Local cert artifacts.
+  // The account these credentials name is gone now. Cleared HERE, after the delete and not before
+  // it: until the transaction commits the owner still exists and step 0 signs in as it, and a
+  // teardown that keeps the pool leaves them naming an account that still authenticates. A
+  // variable that survives the user it authenticates as is a 401 nobody can attribute.
+  clearEphemeralOwnerFromEnv();
+
+  // 2. Local cert artifacts - only now, when the stations they authenticate are gone.
+  const errors: string[] = [];
   for (const file of handle.certFiles) {
     try {
       await fs.rm(file, { force: true });
@@ -1028,8 +1128,42 @@ export async function teardownPool(
   handle.pool.clear();
 
   if (errors.length > 0) {
-    throw new Error(`teardown completed with errors:\n  - ${errors.join('\n  - ')}`);
+    throw new PoolTeardownError(
+      `the pool's server rows are gone, but local files could not be removed:\n  - ${errors.join('\n  - ')}`,
+      true,
+    );
   }
+}
+
+/**
+ * Write a pool's handle for `teardown-pool`, mode 0600 - it carries the identities' passwords.
+ *
+ * `overwrite: true` (`--keep-pool`) writes `preferredPath` as it always has. `overwrite: false` (a
+ * teardown that kept its pool) never replaces a handle already there - the only record of another
+ * kept pool's ids - and writes `pool-handle-<organization>.json` beside it instead. Returns the path
+ * written.
+ */
+export async function persistPoolHandle(
+  handle: PoolBootstrapHandle,
+  preferredPath: string,
+  options: { overwrite: boolean },
+): Promise<string> {
+  const body = JSON.stringify(serializePoolHandle(handle), null, 2);
+  await fs.mkdir(path.dirname(preferredPath), { recursive: true });
+  const write = async (target: string, flag: 'w' | 'wx'): Promise<string> => {
+    await fs.writeFile(target, body, { mode: 0o600, flag });
+    // The mode of writeFile applies only to a file it creates.
+    await fs.chmod(target, 0o600);
+    return target;
+  };
+  if (options.overwrite) return write(preferredPath, 'w');
+  try {
+    return await write(preferredPath, 'wx');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  }
+  const id = handle.createdOrgId || handle.orgId || randomUUID();
+  return write(path.join(path.dirname(preferredPath), `pool-handle-${id}.json`), 'w');
 }
 
 /**
@@ -1131,6 +1265,16 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const runSessionsWhere = `bay_id IN (${bays})`;
   const runIntentsWhere = `reference_id IN (${bayBizIds})`;
   const runIntents = `SELECT id FROM payment_intents WHERE ${runIntentsWhere}`;
+  // The card payments this transaction must not delete while they hold money: those of the
+  // organization the run minted - by the organization frozen into the payment's metadata at
+  // initiate, which is how csms-server scopes a tenant's payments (DashboardPaymentController::index)
+  // - and those of the run's own bays, the rows the payment_intents delete below removes, which
+  // covers a handle that minted no organization. Succeeded or partially refunded is money the
+  // processor still holds: csms-server flips a payment to refunded only on a processor refund
+  // (ProcessRefundAction::applyIntentRefundStatus). The `wallet` intents are bookkeeping, amount 0.
+  const heldCardMoneyWhere =
+    `(${runOrg ? `metadata->>'organization_id' = ${runOrg} OR ` : ''}${runIntentsWhere}) ` +
+    `AND status IN ('succeeded', 'partially_refunded') AND processor <> 'wallet'`;
 
   // Topological delete order over the AUTHORITATIVE FK graph (pg_constraint,
   // verified — not assumed; an earlier hand-guessed order shipped a bug that
@@ -1168,6 +1312,15 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // is a teardown of test data, such as this one. SET LOCAL, never SET: the setting ends with this
     // transaction, at its COMMIT or at the rollback of a failed statement.
     "SET LOCAL ospp.purge_test_data = 'on';",
+    // ── Belt and braces for the card money (2026-10-13). teardownPool gives every captured card
+    // payment back through the server BEFORE it sends this script (PoolCardRefunds.ts), and keeps
+    // the pool when it cannot. This statement holds the same line inside the transaction, for every
+    // caller of this builder - teardownScenarioResources too - and for a payment captured after
+    // that check: while one still holds money it raises, psql's ON_ERROR_STOP ends the script, and
+    // the whole transaction rolls back with nothing deleted. The phrase it raises with is
+    // CARD_MONEY_GUARD_MESSAGE, by which teardownPool reports it as card money held. One line, and
+    // not a DELETE, so the FK checks that read every DELETE FROM line pass over it.
+    `DO $$ DECLARE held text; BEGIN SELECT string_agg(id::text || ' (BT order ' || COALESCE(processor_transaction_id, 'none') || ', ' || status::text || ')', ', ') INTO held FROM payment_intents WHERE ${heldCardMoneyWhere}; IF held IS NOT NULL THEN RAISE EXCEPTION '${CARD_MONEY_GUARD_MESSAGE}: %', held; END IF; END $$;`,
     // ── The money path. Added 2026-08-27, when a scenario first reached SETTLEMENT.
     //
     // None of these five tables was swept before, and none needed to be: no scenario had
@@ -1188,6 +1341,12 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // payment_intents only after the `sessions` delete further down. The org's monthly
     // statements, which the ledger rows and the adjustments point at, go at the very end, with
     // the org's other rows.
+    //
+    // None of the payments these deletes reach still holds captured card money (2026-10-13):
+    // teardownPool gives it back through the server first, and waits for a pending payment, and
+    // the guard at the top of this transaction refuses one still succeeded or partially refunded.
+    // Before that, a captured order went with its rows and its money stayed at BT with nothing on
+    // UAT naming it.
     `DELETE FROM payment_ledger WHERE payment_intent_id IN (${runIntents}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}));`,
     // The session arm (G12): a wallet wash settles in this ledger as well, one row per session
     // paid from a wallet, written when the session settles and keyed on its session_id with no
