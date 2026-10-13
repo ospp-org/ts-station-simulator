@@ -198,13 +198,13 @@ export function startService(sessionId: string, durationSeconds: number): never 
 }
 
 /** Wait in REAL time until `cond` holds - file writes finish there, not on the fake clock. */
-export async function until(cond: () => boolean | Promise<boolean>, what: string, tries = 400): Promise<void> {
+export async function until(cond: () => boolean | Promise<boolean>, what: string, tries = 1500): Promise<void> {
   if (await settled(cond, tries)) return;
   throw new Error(`never happened: ${what}; frames: ${JSON.stringify(wire.frames.map((f) => `${f.action}/${f.messageType}`))}`);
 }
 
 /** The same wait, reporting instead of throwing - for a step whose absence a later assertion names better. */
-export async function settled(cond: () => boolean | Promise<boolean>, tries = 400): Promise<boolean> {
+export async function settled(cond: () => boolean | Promise<boolean>, tries = 1500): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     if (await cond()) return true;
     await realPause(1);

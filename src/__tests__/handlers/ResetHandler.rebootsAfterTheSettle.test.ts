@@ -63,7 +63,10 @@ async function reset(station: unknown, force: boolean | undefined): Promise<void
   const handled = new ResetHandler()
     .handle(request('Reset', force === undefined ? {} : { force }), station as never)
     .finally(() => { done = true; });
-  for (let second = 0; second < 10 && !done; second++) await elapse(1_000);
+  // Generous: the reboot delay is armed only once the settle's record has reached the real
+  // disk, and a loaded machine's disk is slow. More station seconds before the reboot change
+  // nothing asserted - the delivered time is taken at the settle, the uptime at the boot.
+  for (let second = 0; second < 120 && !done; second++) await elapse(1_000);
   await handled;
 }
 

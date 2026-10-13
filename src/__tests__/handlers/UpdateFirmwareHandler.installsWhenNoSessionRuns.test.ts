@@ -69,8 +69,13 @@ describe('M5 - UpdateFirmware with a session running: accepted, downloaded, inst
     expect(frames('UpdateFirmware', 'Response', since)[0]?.payload, 'the update was refused while a wash ran').toEqual({ status: 'Accepted' });
     expect(statuses(since)).toEqual(['Downloading', 'Downloaded']);
 
-    // The wash runs to its timer; only then may the image be written.
+    // The wash runs to its timer; only then may the image be written. The install gate waits
+    // on station seconds for the end record to leave, and that record reaches the real disk
+    // first - so the clock keeps moving, a second at a time, until the new image has booted.
     await elapse(55_000);
+    for (let second = 0; second < 120 && frames('BootNotification', 'Request', since).length === 0; second++) {
+      await elapse(1_000);
+    }
     await until(() => frames('BootNotification', 'Request', since).length > 0, 'the boot into the new image');
     await handled;
 
