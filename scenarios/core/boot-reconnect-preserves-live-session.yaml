@@ -21,30 +21,33 @@
 #   scenarios, 101 send PowerOn, 4 ErrorRecovery, 3 ManualReset, 1 each
 #   Watchdog / ScheduledReset / FirmwareUpdate. Zero send Reconnect.
 #
-# WHY uptimeSeconds IS 0 — NO LONGER LOAD-BEARING (2026-10-13)
-#   This paragraph read: TWO layers could save a live session across a boot, the
-#   bootReason and the uptime window — failStuckSessions was called with
-#   `now()->subSeconds($dto->uptimeSeconds)` and failed only sessions started BEFORE
-#   that instant (:402-411) — and uptime 0 disarmed the window, so the bootReason
-#   string alone decided the outcome. The session-end rule removed both layers with
-#   the force-fail: at a boot, neither the reason nor the uptime decides anything
-#   about a session. sessions/arc8-reconnect-preserve.yaml, cited here as the proof of
-#   the UPTIME layer, proves no such layer now either.
+# WHY uptimeSeconds IS 3 — THE UPTIME THE STATION ALREADY HAD (2026-10-13)
+#   boot-notification.md §5.2 rule 2: a `Reconnect` "carries the uptime the station
+#   already had — it spans the outage". This station booted with PowerOn at uptime 0
+#   above, and the re-boot goes out about three seconds later (3.0 s on UAT,
+#   2026-10-13, 1.5 s of it the file's own delay), so it carries 3.
 #
-#   The 0 is kept because changing it would change nothing the server decides, and it
-#   is not what a real station would send: boot-notification.md §5.2 rule 2 says a
-#   `Reconnect` "carries the uptime the station already had", so a truthful one here
-#   would carry the seconds since the PowerOn boot above. It is not BACKWARDS against
-#   that boot's 0, so it is not rule 3's contradicted claim either.
+#   It carried 0 until then, and this paragraph read: TWO layers could save a live
+#   session across a boot, the bootReason and the uptime window — failStuckSessions
+#   was called with `now()->subSeconds($dto->uptimeSeconds)` and failed only sessions
+#   started BEFORE that instant (:402-411) — and uptime 0 disarmed the window, so the
+#   bootReason string alone decided the outcome. The session-end rule removed both
+#   layers with the force-fail: at a boot, neither the reason nor the uptime decides
+#   anything about a session, and sessions/arc8-reconnect-preserve.yaml, cited here as
+#   the proof of the UPTIME layer, proves no such layer now either. With nothing left
+#   to disarm, the 0 was only a `Reconnect` that did not span the seconds this file
+#   had already run: not BACKWARDS against the PowerOn's 0, so not a claim rule 3
+#   refuses, but not what a real station sends, and BootClaimCheck refuses it.
 #
 # THE CONTROL NO LONGER DISCRIMINATES (2026-10-13)
 #   core/boot-remote-reset-ends-nothing.yaml (boot-remote-reset-fails-live-session.yaml
-#   until 2026-10-13) carries the same live session into a RemoteReset boot at the same
-#   uptime 0. While the server ended a session at that boot it expected `failed` + 1010,
-#   and the pair was the attribution: same station, same uptime, same session, opposite
-#   server-written outcome. Under the session-end rule both boots leave the session
-#   `active`, so the pair no longer discriminates: a server that ended sessions at a
-#   boot would now fail BOTH files, and a server that ends none passes both.
+#   until 2026-10-13) carries the same live session into a RemoteReset boot at uptime 0,
+#   a restart's, where this file's Reconnect runs on. While the server ended a session at
+#   that boot it expected `failed` + 1010, and the pair was the attribution: same
+#   station, same uptime (both were 0 then), same session, opposite server-written
+#   outcome. Under the session-end rule both boots leave the session `active`, so the
+#   pair no longer discriminates: a server that ended sessions at a boot would now fail
+#   BOTH files, and a server that ends none passes both.
 #
 #   How that control moved before, kept: it sent `PowerOn` until csms-server X3 replaced
 #   the two-value predicate quoted above with SESSION_PRESERVING_BOOT_REASONS -- {PowerOn,
@@ -56,7 +59,7 @@
 #   6d220530), and then `RemoteReset`, one of the two that ended a session until the
 #   session-end rule.
 name: "Boot Reconnect Preserves Live Session"
-description: "Start a session, then re-boot with bootReason Reconnect and uptimeSeconds 0. The server MUST leave the session active — no boot ends a session, so the station's own SessionEnded at the end is its end record."
+description: "Start a session, then re-boot with bootReason Reconnect and the uptime running on from the PowerOn boot. The server MUST leave the session active — no boot ends a session, so the station's own SessionEnded at the end is its end record."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -166,7 +169,7 @@ steps:
     expect_body:
       data.status: "active"
 
-  # --- The re-boot under test. Reconnect + uptime 0. ---
+  # --- The re-boot under test. Reconnect + the uptime running on (3). ---
   - action: send
     message: BootNotification
     payload:
@@ -180,7 +183,7 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 0
+      uptimeSeconds: 3
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "Reconnect"

@@ -116,7 +116,7 @@ branch that `core/happy-boot.yaml` does not.
 
 | File | csms-server branch reached | Asserted on |
 |------|----------------------------|-------------|
-| `core/boot-reconnect-preserves-live-session` | the boot handler, which since the session-end rule (2026-10-13) ends no session at any boot, and the `Local` arm of `SessionEndedHandler` | `GET /sessions/{id}` → `status: active` after a `Reconnect` boot with uptime 0, then the station's `SessionEnded` |
+| `core/boot-reconnect-preserves-live-session` | the boot handler, which since the session-end rule (2026-10-13) ends no session at any boot, and the `Local` arm of `SessionEndedHandler` | `GET /sessions/{id}` → `status: active` after a `Reconnect` boot with its uptime running on, then the station's `SessionEnded` |
 | `core/boot-remote-reset-ends-nothing` | the same boot handler at `RemoteReset`, uptime 0 — the boot that used to force-fail every live session — and the `Fault` arm of `SessionEndedHandler` | `status: active` after the boot; then the station's `SessionEnded Fault` (it could not resume the wash) → `failed`, 0 charged, 1000 refunded |
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
@@ -178,7 +178,7 @@ branch that `core/happy-boot.yaml` does not.
 | `core/boot-watchdog.yaml` | Boot Watchdog | bootReason: Watchdog | new |
 | `core/boot-firmware-update.yaml` | Boot Firmware Update | bootReason: FirmwareUpdate, new version | new |
 | `core/boot-manual-reset.yaml` | Boot Manual Reset | bootReason: ManualReset | new |
-| `core/boot-scheduled-reset.yaml` | Boot Scheduled Reset | bootReason: ScheduledReset, 24h uptime | new |
+| `core/boot-scheduled-reset.yaml` | Boot Scheduled Reset | bootReason: ScheduledReset, uptime counted from the reset | new |
 | `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot leaves a live session `active` — no boot ends a session since the session-end rule (2026-10-13) — and the station's `SessionEnded` ends it | new |
 | `core/heartbeat-cycle.yaml` | Heartbeat Cycle | 3 heartbeat request/response cycles | migrated |
 | `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout — the CLIENT's wait budget, not a server behaviour | new |

@@ -22,18 +22,17 @@ description: >
   side is scripted explicitly by this file — scenario mode registers no TriggerMessageHandler
   (see the note at the TriggerMessage wait_for below), so nothing auto-responds and nothing
   auto-sends the BootNotification.
-# NO SERVER-STATE ASSERTION — THE EFFECT IS INDISTINGUISHABLE. Marked, not asserted.
+# NO SERVER-STATE ASSERTION — IT WOULD PROVE INGESTION, NOT CAUSATION. Marked, not asserted.
 #
 # The triggered message here is a BootNotification, and its server effect is
-# stations.boot_reason. That column is already `PowerOn` from the FIRST boot at
-# the top of this file, and the triggered boot writes `PowerOn` again — see the
-# note at the send below, which explains why that is correct and deliberate:
-# bootReason means "why the station booted", not "why it is sending now". So a
-# read-back of data.bootReason would return the same value whether the triggered
-# boot landed, or landed as something else, or never happened at all. It is an
-# assertion that cannot fail, which is worse than none.
+# stations.boot_reason. The FIRST boot at the top of this file writes `PowerOn`
+# and the triggered boot writes `Reconnect` (see the note at the send below), so a
+# read-back of data.bootReason would now tell the two apart. It is still not
+# asserted, for the reason the header gives: an unsolicited `Reconnect` boot — a
+# station re-dialling — moves the identical column, so the read would prove the
+# boot was INGESTED, not that the trigger CAUSED it.
 #
-# The one column that DOES move is stations.last_boot_at. CORRECTED 2026-08-11:
+# The other column that moves is stations.last_boot_at. CORRECTED 2026-08-11:
 # the stated reason it was unassertable — "expect_body compares by equality with
 # no changed-since or is-recent form" — has expired. The runner now has
 # `is_recent`. The column is still not assertable HERE, for two reasons that
@@ -48,10 +47,16 @@ description: >
 #     proof, which is the thing the header above already declines — an
 #     unsolicited boot moves the identical column.
 #
-# Changing the triggered boot to a different bootReason WOULD make it
-# distinguishable, and is refused on purpose: it would manufacture a difference
-# the protocol does not have, and encode a wrong reading of bootReason into the
-# corpus to buy a green assertion.
+# THE TRIGGERED BOOT SAID `PowerOn` UNTIL 2026-10-13, with uptimeSeconds 3600, and
+# this block refused a different bootReason as "a difference the protocol does not
+# have". The protocol has it: boot-notification.md §5.2 names the triggered case,
+# and `Reconnect` "covers both cases of no boot occurred: a re-dialled session, and
+# a Boot the server asked for". The `PowerOn` reading — bootReason as the boot
+# episode that is running (docs/RECORD-triggered-boot-deferred-20260730T050809Z.md)
+# — predates that text. And the pair contradicted this file itself: a restart an
+# hour old, sent about a second after the same station reported a `PowerOn` at
+# uptime 0. That is the claim rule 3 makes the server refuse, and it did on every
+# run, logging the contradiction and not acting on the reason.
 #
 # What IS asserted, on the wire and already present: TriggerMessage carries
 # requestedMessage BootNotification, and the subsequent BootNotification Response
@@ -130,16 +135,15 @@ steps:
       status: "Accepted"
 
   # The triggered re-announce, and the point of the scenario. A trigger is not a
-  # power-cycle: the station has been up for an hour and says so. Reporting
-  # uptimeSeconds: 0 here made the server derive bootTime ≈ now and force-fail +
-  # refund every live wash on the station, until the session-end rule (2026-10-13):
-  # no boot ends a session now, whatever its uptime, so 3600 is kept because it is
-  # what the station truthfully reports, not to spare a wash. bootReason stays PowerOn
-  # because that is still the episode that is running — the field is "reason the
-  # station booted", not "reason for this send" — and deviceManagementSupported
-  # is declared so one station does not advertise two capability sets.
-  # These are the values TriggerMessageHandler now emits via Station.retryBoot();
-  # the offline pin on that is src/__tests__/handlers/TriggerMessageHandler.bootTruthful.test.ts.
+  # restart: nothing boots, the station composes the message on the connection it
+  # already has. So bootReason is `Reconnect` (boot-notification.md §5.2), and
+  # uptimeSeconds is the uptime the station already had (rule 2), running on from
+  # the PowerOn at 0 above: the two boots go out about a second apart (0.8 s on
+  # UAT, 2026-10-13), so 1. It said `PowerOn` with 3600 until 2026-10-13 (see the
+  # note near the top). deviceManagementSupported is declared so one station does not
+  # advertise two capability sets. Connect mode's TriggerMessageHandler answers a
+  # triggered boot the same way, `Reconnect` with the uptime running on; the
+  # offline pin on that is src/__tests__/handlers/TriggerMessageHandler.bootTruthful.test.ts.
   - action: send
     message: BootNotification
     payload:
@@ -153,10 +157,10 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 3600
+      uptimeSeconds: 1
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "PowerOn"
+      bootReason: "Reconnect"
       capabilities:
         bleSupported: false
         offlineModeSupported: false
