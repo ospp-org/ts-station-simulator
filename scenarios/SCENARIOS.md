@@ -182,7 +182,7 @@ branch that `core/happy-boot.yaml` does not.
 | `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot PRESERVES a live session — pins the second member of the preserve set that the Reconnect proof does not cover | new |
 | `core/heartbeat-cycle.yaml` | Heartbeat Cycle | 3 heartbeat request/response cycles | migrated |
 | `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout — the CLIENT's wait budget, not a server behaviour | new |
-| `core/heartbeat-silence-offline-sweep.yaml` | Heartbeat Silence Offline Sweep | 175s of APPLICATION silence on a live socket → `station:check-heartbeats` marks the station offline (`cause: heartbeat_timeout`). Nothing is disconnected; declares its own timeout | new |
+| `core/heartbeat-silence-offline-sweep.yaml` | Heartbeat Silence Offline Sweep | 175s of APPLICATION silence on a live socket after the first Heartbeat after the boot (which ends the replay) → `station:check-heartbeats` marks the station offline (`cause: heartbeat_timeout`). Nothing is disconnected; declares its own timeout | new |
 | `core/status-notification.yaml` | Status Notification | StatusNotification Available with services | migrated |
 | `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for the 6 REPORTABLE bay statuses; 4 persist, Occupied/Finishing are session-gated and discarded | new |
 | `core/connection-lost-lwt.yaml` | Connection Lost LWT | `fault: sever` under `clean_session: false` → the BROKER publishes the will and the server marks the station offline (`cause: broker_will`). Swap to `disconnect` and it goes red | new |

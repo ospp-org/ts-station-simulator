@@ -182,7 +182,9 @@ describe('the legitimate overrides in the corpus', () => {
   //   2. Detection is a scheduled sweep, not a read-time evaluation —
   //      Schedule::command('station:check-heartbeats')->everyMinute(). The row
   //      flips on the first tick strictly AFTER the threshold is crossed, so the
-  //      observable transition lands in the 105-165s band after the Boot.
+  //      observable transition lands in the 105-165s band after the station's first
+  //      Heartbeat after the Boot, which ends its replay (before it, csms-server
+  //      f413256f waits the longer of 3.5 x the interval and 360s).
   //
   // 105s threshold + up to 60s of sweep latency already exceeds the 90s default
   // before the Boot and the two arming reads are counted, so the default would
