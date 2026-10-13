@@ -7,14 +7,14 @@ import {
   type TriggerMessageRequest,
   type TriggerMessageResponse,
   type HeartbeatRequest,
-  type StatusNotificationPayload,
-  type MeterValuesPayload,
   type DiagnosticsNotificationPayload,
   type FirmwareStatusNotificationPayload,
   type SecurityEventPayload,
   type SignCertificateRequest,
 } from '@ospp/protocol';
-import type { Handler, StationContext } from './Handler.js';
+import type { Handler, SessionInfo, StationContext } from './Handler.js';
+import { reportBayStatus } from '../station/bayReport.js';
+import { sendMeterValues } from '../station/sessionMeter.js';
 
 export class TriggerMessageHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -58,14 +58,13 @@ export class TriggerMessageHandler implements Handler {
         // deviceManagementSupported. Calling the shared path means the next field
         // added to the boot payload cannot diverge on this one.
         //
-        // bootReason follows from the same premise: the field is "reason the
-        // station booted" (boot-notification.md §3 Request Payload) — a
-        // property of the last boot EPISODE, not of the send. A trigger
-        // re-announces an episode rather than starting one, exactly as a
-        // Rejected/Pending retry does, so the truthful value is whatever actually
-        // booted the station. That is Station.currentBootReason, and reading it
-        // makes this path truthful by construction instead of by picking a value.
-        await station.retryBoot();
+        // bootReason: `Reconnect`, the uptime running on. boot-notification.md
+        // §5.2 names this case: "`Reconnect` therefore covers both cases of no boot
+        // occurred: a re-dialled session, and a Boot the server asked for." This
+        // path used to report the reason of the last real boot - `PowerOn` after a
+        // power-on - with an uptime that never reset: a power-on that did not
+        // happen, which the server's rule-3 cross-check refuses on every trigger.
+        await station.bootOnRequest();
         console.log('[TriggerMessage] BootNotification sent');
         break;
       }
@@ -82,10 +81,10 @@ export class TriggerMessageHandler implements Handler {
       }
 
       case 'StatusNotification': {
-        // Send status for all configured bays
-        for (const bay of station.config.bays) {
-          const bayId = request.bayId ?? bay.bayId;
-          const bayState = station.getBayState(bayId);
+        // Every bay, or only the one asked for (trigger-message.md §5 rule 3) - reported with its own
+        // bayNumber. It took the FIRST bay's, so a trigger for bay 2 named bay 2's id with bay 1's number.
+        for (const bay of this.baysAskedFor(request, station)) {
+          const bayState = station.getBayState(bay.bayId);
 
           // Same rule as the post-boot report: a station reports a determinate
           // state or it does not report. `Unknown` is not a wire value
@@ -94,50 +93,28 @@ export class TriggerMessageHandler implements Handler {
           // forgotten.
           if (!isReportableBayStatus(bayState)) {
             throw new Error(
-              `[TriggerMessage] bay ${bayId} is in state ${bayState}, which a station must not ` +
+              `[TriggerMessage] bay ${bay.bayId} is in state ${bayState}, which a station must not ` +
                 'report. Resolve the bay before reporting it (05-state-machines.md §1.2).',
             );
           }
 
-          const statusPayload: StatusNotificationPayload = {
-            bayId,
-            bayNumber: bay.bayNumber,
-            status: bayState,
-            // PROGRAMS, not services — status-notification.schema.json.
-            programs: bay.programs.map(p => ({
-              programNumber: p.programNumber,
-              available: p.available,
-            })),
-          };
-          await station.sender.send<StatusNotificationPayload>(
-            OsppAction.STATUS_NOTIFICATION,
-            MessageType.EVENT,
-            statusPayload,
-          );
-          // If a specific bayId was requested, only send for that one
-          if (request.bayId) break;
+          // The one bay reporter: previousStatus only when the bay is not what it was last reported as
+          // (status-notification.md §5 rule 2), and the report recorded as the last one.
+          await reportBayStatus(station, bay.bayId, bayState);
         }
         console.log('[TriggerMessage] StatusNotification sent');
         break;
       }
 
       case 'MeterValues': {
-        // Send MeterValues for all active sessions
-        for (const session of station.sessions.values()) {
-          const meterPayload: MeterValuesPayload = {
-            bayId: session.bayId,
-            sessionId: session.sessionId,
-            timestamp: new Date().toISOString(),
-            values: {
-              liquidMl: 0,
-              energyWh: 0,
-            },
-          };
-          await station.sender.send<MeterValuesPayload>(
-            OsppAction.METER_VALUES, MessageType.EVENT, meterPayload,
-          );
+        // A normal message instance (rule 2): the session's reading now, with its next seqNo on its one
+        // counter, persisted before the publish - built where every MeterValues is (sessionMeter.ts). It
+        // sent constant zeros, with no seqNo, for every session whatever bayId was asked.
+        const sessions = this.sessionsAskedFor(request, station);
+        for (const session of sessions) {
+          await sendMeterValues(station, session);
         }
-        console.log('[TriggerMessage] MeterValues sent for %d sessions', station.sessions.size);
+        console.log('[TriggerMessage] MeterValues sent for %d session(s)', sessions.length);
         break;
       }
 
@@ -198,10 +175,30 @@ export class TriggerMessageHandler implements Handler {
   private shouldReject(request: TriggerMessageRequest, station: StationContext): string | null {
     switch (request.requestedMessage) {
       case 'MeterValues':
-        if (station.sessions.size === 0) return 'no active sessions';
+        // Rule 4: Rejected when no session is active on the bay asked for, or on any bay.
+        if (this.sessionsAskedFor(request, station).length === 0) {
+          return request.bayId !== undefined ? `no session on bay ${request.bayId}` : 'no active sessions';
+        }
+        return null;
+      case 'StatusNotification':
+        // A bay this station does not have: nothing it could send after an Accepted.
+        if (this.baysAskedFor(request, station).length === 0) return `no bay ${request.bayId}`;
         return null;
       default:
         return null;
     }
+  }
+
+  private baysAskedFor(request: TriggerMessageRequest, station: StationContext) {
+    return request.bayId === undefined
+      ? station.config.bays
+      : station.config.bays.filter((b) => b.bayId === request.bayId);
+  }
+
+  /** The running sessions on the bay asked for, or on every bay - not one whose end is already under way. */
+  private sessionsAskedFor(request: TriggerMessageRequest, station: StationContext): SessionInfo[] {
+    return [...station.sessions.values()].filter(
+      (s) => s.ending !== true && (request.bayId === undefined || s.bayId === request.bayId),
+    );
   }
 }

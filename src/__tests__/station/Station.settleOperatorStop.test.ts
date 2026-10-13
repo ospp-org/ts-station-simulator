@@ -33,15 +33,24 @@ function makeConfig(): StationConfig {
       programs: [{ programNumber: 1, label: 'P1', available: true }],
       services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }],
     }],
-    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30, meterValuesIntervalSec: 10 },
+    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30 },
   } as unknown as StationConfig;
 }
 
-function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station; sent: unknown[] } {
+type Sent = { action: string; payload: Record<string, unknown> };
+
+/** The one SessionEnded the settle sent. */
+function endedOf(sent: Sent[]): Record<string, unknown> {
+  const ended = sent.filter((m) => m.action === 'SessionEnded');
+  expect(ended).toHaveLength(1);
+  return ended[0].payload;
+}
+
+function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station; sent: Sent[] } {
   const station = new Station(makeConfig(), {} as never);
-  const sent: unknown[] = [];
+  const sent: Sent[] = [];
   vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
-    sent.push(payload);
+    sent.push({ action: String(action), payload: payload as Record<string, unknown> });
   // `send` answers with the envelope it published, so a stub that returns
   // nothing does not have that method's type. Returning the envelope keeps
   // the stub honest instead of widening it to `never`.
@@ -81,8 +90,10 @@ describe('Station.settleSessionAsOperatorStop — the real one', () => {
     await station.settleSessionAsOperatorStop('sess_1');
 
     expect(station.sessions.size).toBe(0);
-    expect(sent).toHaveLength(1);
-    const p = sent[0] as Record<string, unknown>;
+    // The final reading, the end record, then the bay's two transitions (meter-values.md §5.1 rule 3;
+    // 04-flows.md §6). This pinned the SessionEnded alone, while the station metered and reported nothing.
+    expect(sent.map((m) => m.action)).toEqual(['MeterValues', 'SessionEnded', 'StatusNotification', 'StatusNotification']);
+    const p = endedOf(sent);
     expect(p.sessionId).toBe('sess_1');
     // 120s elapsed → 2 minutes. Metered from ELAPSED, not from the 300s
     // requested: the reset cut the wash short and billing the full request would
@@ -99,8 +110,8 @@ describe('Station.settleSessionAsOperatorStop — the real one', () => {
 
     await station.settleSessionAsOperatorStop('sess_1');
 
-    expect((sent[0] as Record<string, unknown>).reason).toBeDefined();
-    expect((sent[0] as Record<string, unknown>).finalSeqNo).toBeDefined();
+    expect(endedOf(sent).reason).toBeDefined();
+    expect(endedOf(sent).finalSeqNo).toBeDefined();
   });
 
   it('takes the bay Occupied -> Finishing -> Available, the FSM path', async () => {

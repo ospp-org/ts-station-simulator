@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SessionEndReason } from '@ospp/protocol';
+import { OsppAction, SessionEndReason } from '@ospp/protocol';
 import { Station } from '../../station/Station.js';
 import { SequenceCounter } from '../../station/SequenceCounter.js';
 import { monotonicNowMs } from '../../station/monotonicClock.js';
@@ -36,16 +36,18 @@ function makeConfig(): StationConfig {
       programs: [{ programNumber: 1, label: 'P1', available: true }],
       services: [{ serviceId: 'svc_x', serviceName: 'X', available: true }],
     }],
-    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30, meterValuesIntervalSec: 10 },
+    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30 },
   } as unknown as StationConfig;
 }
 
 describe('a forced stop reports OperatorStopped with the delivered time', () => {
   it('emits OperatorStopped, not Deauthorized', async () => {
     const station = new Station(makeConfig(), {} as never);
+    // The SessionEnded events only: the final MeterValues before it and the bay reports after it are
+    // pinned elsewhere (Station.metersTheWash.test.ts, Station.reportsTheBayAtTheWash.test.ts).
     const sent: Record<string, unknown>[] = [];
     vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
-      sent.push(payload as Record<string, unknown>);
+      if (action === OsppAction.SESSION_ENDED) sent.push(payload as Record<string, unknown>);
     // `send` answers with the envelope it published, so a stub that returns
     // nothing does not have that method's type. Returning the envelope keeps
     // the stub honest instead of widening it to `never`.
@@ -66,6 +68,7 @@ describe('a forced stop reports OperatorStopped with the delivered time', () => 
 
     await station.settleSessionAsOperatorStop('sess_1');
 
+    expect(sent).toHaveLength(1);
     expect(sent[0].reason).toBe(SessionEndReason.OPERATOR_STOPPED);
     expect(sent[0].reason).not.toBe(SessionEndReason.DEAUTHORIZED);
     // The delivered-time figure the station reports: 120s at the advisory

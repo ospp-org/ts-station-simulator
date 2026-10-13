@@ -174,7 +174,6 @@ async function main(): Promise<void> {
         acceptRate: 1.0,
         responseDelayMs: [0, 0] as [number, number],
         heartbeatIntervalSec: 60,
-        meterValuesIntervalSec: 30,
         autoRetryBoot: false,
       },
     },

@@ -28,7 +28,7 @@ interface CapturedSend {
 
 function makeMockStation(
   seqNoAtStop: number,
-  options: { startedAtOffsetMs?: number; priceCreditsPerMinute?: number } = {},
+  options: { startedAtOffsetMs?: number; priceCreditsPerMinute?: number; canTransmit?: boolean } = {},
 ): {
   station: StationContext;
   captured: CapturedSend[];
@@ -60,6 +60,11 @@ function makeMockStation(
   let bayState = BayStatus.OCCUPIED;
 
   const station = {
+    // The bay the session runs on, so its end can be reported (bayReport.ts reads the bay's programs).
+    config: {
+      bays: [{ bayId: 'bay_test', bayNumber: 1, programs: [{ programNumber: 1, label: 'P1', available: true }], services: [] }],
+    },
+    ...(options.canTransmit !== undefined ? { canTransmit: () => options.canTransmit } : {}),
     sessions,
     sender: {
       async send(action: OsppAction, messageType: MessageType, payload: unknown): Promise<void> {
@@ -97,22 +102,49 @@ function makeStopServiceRequest(): OsppEnvelope {
  */
 type AcceptedStopService = Extract<StopServiceResponse, { status: 'Accepted' }>;
 
-describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
-  it('Accepted Response carries finalSeqNo from session.seqNo', async () => {
-    const { station, captured } = makeMockStation(7);
-    const handler = new StopServiceHandler();
-
-    await handler.handle(makeStopServiceRequest(), station);
-
+// 05-state-machines.md §3.5 rule 5: finalSeqNo is "the highest seqNo emitted in the session"; the
+// response schema: "Present when status is Accepted and the station has emitted at least one
+// session-scoped EVENT (MeterValues) with seqNo". It was `peek()` - the NEXT number, one more than
+// was ever sent, and present for a session that emitted none. The stop now sends the final reading
+// first (meter-values.md §5.1 rule 3), so the highest emitted is usually that reading's own number.
+describe('StopServiceHandler — finalSeqNo is the highest seqNo emitted', () => {
+  function stopResponse(captured: CapturedSend[]): AcceptedStopService & { finalSeqNo?: number } {
     const response = captured.find(
       (c) => c.action === OsppAction.STOP_SERVICE && c.messageType === MessageType.RESPONSE,
     );
     expect(response).toBeDefined();
-    const payload = response!.payload as AcceptedStopService;
+    return response!.payload as AcceptedStopService & { finalSeqNo?: number };
+  }
+
+  it('after seven MeterValues (seqNo 0-6) the final reading takes 7, and the RESPONSE says finalSeqNo 7', async () => {
+    const { station, captured } = makeMockStation(7);
+
+    await new StopServiceHandler().handle(makeStopServiceRequest(), station);
+
+    const final = captured.find((c) => c.action === OsppAction.METER_VALUES);
+    expect((final?.payload as { seqNo?: number }).seqNo).toBe(7);
+    const payload = stopResponse(captured);
     expect(payload.status).toBe('Accepted');
-    expect((payload as { finalSeqNo?: number }).finalSeqNo).toBe(7);
+    expect(payload.finalSeqNo).toBe(7);
+    expect(payload.meterValues).toEqual((final?.payload as { values: unknown }).values);
   });
 
+  it('when the final reading cannot leave, finalSeqNo is the last one that did - 6, not 7', async () => {
+    const { station, captured } = makeMockStation(7, { canTransmit: false });
+
+    await new StopServiceHandler().handle(makeStopServiceRequest(), station);
+
+    expect(captured.some((c) => c.action === OsppAction.METER_VALUES)).toBe(false);
+    expect(stopResponse(captured).finalSeqNo).toBe(6);
+  });
+
+  it('a session that emitted no seqNo-bearing event gets no finalSeqNo at all', async () => {
+    const { station, captured } = makeMockStation(0, { canTransmit: false });
+
+    await new StopServiceHandler().handle(makeStopServiceRequest(), station);
+
+    expect(stopResponse(captured)).not.toHaveProperty('finalSeqNo');
+  });
 });
 
 // spec v0.13.0 session-ended.md §4 Reasons, the one RFC-2119 rule on
@@ -130,14 +162,23 @@ describe('StopServiceHandler — v0.4.0 finalSeqNo emission', () => {
 // arrives first wins, because the loser hits a terminal-session guard. The station does
 // not get to send both and let the server sort it out.
 describe('StopServiceHandler — SessionEnded MUST NOT follow an Accepted StopService', () => {
-  it('emits the RESPONSE and nothing else', async () => {
+  it('emits the final reading, the RESPONSE and the bay\'s two transitions - and no SessionEnded', async () => {
     const { station, captured } = makeMockStation(12);
     const handler = new StopServiceHandler();
 
     await handler.handle(makeStopServiceRequest(), station);
 
+    // The final reading before the end record (meter-values.md §5.1 rule 3), then the RESPONSE that is
+    // the end record, then Finishing and Available (05-state-machines.md §7.2, 04-flows.md §6).
     expect(captured.map((c) => `${c.action}:${c.messageType}`)).toEqual([
+      `${OsppAction.METER_VALUES}:${MessageType.EVENT}`,
       `${OsppAction.STOP_SERVICE}:${MessageType.RESPONSE}`,
+      `${OsppAction.STATUS_NOTIFICATION}:${MessageType.EVENT}`,
+      `${OsppAction.STATUS_NOTIFICATION}:${MessageType.EVENT}`,
+    ]);
+    expect(captured.slice(2).map((c) => c.payload)).toEqual([
+      expect.objectContaining({ status: BayStatus.FINISHING, previousStatus: BayStatus.OCCUPIED }),
+      expect.objectContaining({ status: BayStatus.AVAILABLE, previousStatus: BayStatus.FINISHING }),
     ]);
   });
 

@@ -4,13 +4,13 @@ import {
   MessageType,
   BayStatus,
   SessionEndReason,
-  isReportableBayStatus,
   type SessionEndedPayload,
-  type StatusNotificationPayload,
 } from '@ospp/protocol';
 import type { SessionInfo, StationContext } from '../handlers/Handler.js';
 import type { HeldSessionEnded } from './SessionStore.js';
-import { monotonicNowMs } from './monotonicClock.js';
+import { deliveredMs, deliveredSeconds } from './delivered.js';
+import { clearMeterTimer, nextMeterValues, publishMeterValues, readingAt } from './sessionMeter.js';
+import { reportBayStatus } from './bayReport.js';
 
 /**
  * THE ONE PATH BY WHICH THIS STATION ENDS A SESSION IT DECIDED TO END.
@@ -35,19 +35,6 @@ const ZERO_BILLED: ReadonlySet<SessionEndReason> = new Set([
   SessionEndReason.DEAUTHORIZED,
 ]);
 
-/**
- * Seconds of service delivered so far: what a restart carried in, plus the monotonic time since this
- * process began (or resumed) delivering it, rounded to the nearest second (stop-service.md §6 rule 5,
- * session-ended.md §5 rule 2). Never the wall clock.
- */
-export function deliveredSeconds(
-  session: Pick<SessionInfo, 'startedAtMonotonicMs' | 'deliveredBeforeRestartSeconds'>,
-  nowMs: number = monotonicNowMs(),
-): number {
-  const sinceThisProcess = Math.max(0, Math.round((nowMs - session.startedAtMonotonicMs) / 1000));
-  return (session.deliveredBeforeRestartSeconds ?? 0) + sinceThisProcess;
-}
-
 export function clearWashTimer(session: Pick<SessionInfo, 'washTimer'>): void {
   if (session.washTimer !== undefined) {
     clearTimeout(session.washTimer);
@@ -65,9 +52,7 @@ export function armWashTimer(
   session: Pick<SessionInfo, 'sessionId' | 'durationSeconds' | 'startedAtMonotonicMs' | 'deliveredBeforeRestartSeconds' | 'washTimer'>,
 ): void {
   clearWashTimer(session);
-  const deliveredMs = (session.deliveredBeforeRestartSeconds ?? 0) * 1000
-    + Math.max(0, monotonicNowMs() - session.startedAtMonotonicMs);
-  const remainingMs = Math.max(0, session.durationSeconds * 1000 - deliveredMs);
+  const remainingMs = Math.max(0, session.durationSeconds * 1000 - deliveredMs(session));
 
   const timer = setTimeout(() => {
     session.washTimer = undefined;
@@ -89,12 +74,17 @@ export function armWashTimer(
  * End `sessionId` for `reason` and send its SessionEnded - or hold it, when the station cannot
  * transmit, until the next `Accepted` boot (session-ended.md §5 rule 3).
  *
- * In order: the timer goes; the delivered time is measured (or taken from `deliveredSeconds`, for
- * the timer's booked duration and a restart's persisted time); the session leaves the map and its
- * bay goes Occupied -> Finishing -> Available; the SessionEnded is recorded as held and the record
- * written BEFORE the publish, so a power loss in between still finds it; the station's replay sends
- * it and releases it. After it, a bay whose last report no longer says what it is now is reported
- * again - SessionEnded before that StatusNotification (session-ended.md §5 rule 6).
+ * In order: the wash and meter timers go; the delivered time is measured (or taken from
+ * `deliveredSeconds`, for the timer's booked duration and a restart's persisted time); the final
+ * reading at that time is sent as a MeterValues (meter-values.md §5.1 rule 3) when the station can
+ * transmit; the session leaves the map and its bay goes Occupied -> Finishing -> Available; the
+ * SessionEnded - its seqNo and finalSeqNo the next number, continuing the count (05-state-machines.md
+ * §3.5 rule 5), its meterValues the final reading - is recorded as held and the record written BEFORE
+ * the publish, so a power loss in between still finds it; the station's replay sends it and releases
+ * it. Only once it has left are the bay's two transitions reported, Finishing (previous Occupied) and
+ * then Available (previous Finishing): the end record before the StatusNotification that follows it
+ * (session-ended.md §5 rule 6; 04-flows.md §6). An end record held for the next boot takes its bay
+ * reports with it - that boot's report carries the bay.
  *
  * Returns the payload it ended the session with, or null when the station held no such session.
  */
@@ -105,18 +95,29 @@ export async function endSession(
   opts: { deliveredSeconds?: number } = {},
 ): Promise<SessionEndedPayload | null> {
   const session = station.sessions.get(sessionId);
-  if (session === undefined) {
+  // An end already under way - the wash timer's, a stop's - is the only one: two end records for one
+  // session is the ambiguity the session-end rule exists to remove. Marked before anything is awaited.
+  if (session === undefined || session.ending === true) {
     return null;
   }
+  session.ending = true;
 
   clearWashTimer(session);
+  clearMeterTimer(session);
   const actualDurationSeconds = Math.max(0, opts.deliveredSeconds ?? deliveredSeconds(session));
   const creditsCharged = ZERO_BILLED.has(reason)
     ? 0
     : Math.ceil((actualDurationSeconds / 60) * (session.priceCreditsPerMinute ?? DEFAULT_PRICE_CREDITS_PER_MINUTE));
 
+  // THE FINAL READING, before the end record that carries it too (meter-values.md §5.1 rule 3). It
+  // makes rule 1 hold for a wash shorter than the interval. Dropped, taking no number, when the
+  // station cannot transmit - a restart that could not resume the wash, a wash that ended while away.
+  const reading = readingAt(actualDurationSeconds);
+  const final = nextMeterValues(station, session, reading);
+  if (final !== null) await publishMeterValues(station, final);
+
   station.sessions.delete(sessionId);
-  releaseBay(station, session.bayId);
+  const transitions = releaseBay(station, session.bayId);
 
   const payload: SessionEndedPayload = {
     sessionId: session.sessionId as SessionEndedPayload['sessionId'],
@@ -124,7 +125,9 @@ export async function endSession(
     reason,
     actualDurationSeconds,
     creditsCharged,
-    // peek, not next: SessionEnded reports the FINAL position, it does not issue a new one.
+    meterValues: reading,
+    // peek, not next: the SessionEnded's own number is the one after the last MeterValues, and the
+    // highest the session issued - its finalSeqNo too (05-state-machines.md §3.5 rule 5).
     seqNo: session.seq.peek(),
     finalSeqNo: session.seq.peek(),
   };
@@ -153,23 +156,32 @@ export async function endSession(
   }
   console.log('[Session] %s ended - %s, %ds, %d credits', sessionId, reason, actualDurationSeconds, creditsCharged);
 
-  await reportBayIfChanged(station, session.bayId);
+  for (const [from, to] of transitions) {
+    await reportBayStatus(station, session.bayId, to, from);
+  }
   return payload;
 }
+
+/** One bay transition the station performed: [from, to]. */
+export type BayTransition = [BayStatus, BayStatus];
 
 /**
  * Occupied -> Finishing -> Available: the FSM has no direct Occupied -> Available edge, and a wash
  * that is ending passes through Finishing whoever ended it. A bay already idle (a restart that could
  * not resume the wash never set it Occupied) is left alone. A transition hiccup must not lose the
- * end record, so it is logged, not thrown.
+ * end record, so it is logged, not thrown. Returns the transitions it made, for the reports that
+ * follow the end record.
  */
-function releaseBay(station: StationContext, bayId: string): void {
+export function releaseBay(station: StationContext, bayId: string): BayTransition[] {
+  const made: BayTransition[] = [];
   try {
     if (station.getBayState(bayId) === BayStatus.OCCUPIED) {
       station.setBayState(bayId, BayStatus.FINISHING);
+      made.push([BayStatus.OCCUPIED, BayStatus.FINISHING]);
     }
     if (station.getBayState(bayId) === BayStatus.FINISHING) {
       station.setBayState(bayId, BayStatus.AVAILABLE);
+      made.push([BayStatus.FINISHING, BayStatus.AVAILABLE]);
     }
   } catch (err) {
     console.log(
@@ -177,42 +189,7 @@ function releaseBay(station: StationContext, bayId: string): void {
       bayId, err instanceof Error ? err.message : String(err),
     );
   }
-}
-
-/**
- * Report a bay whose state is no longer what this station last put on the wire for it - the bay of
- * a wash resumed after a restart, which the boot reported Occupied. A bay whose last report already
- * says what it is gets nothing: connect mode reports at boot and does not report the start of a
- * wash, so an ordinary wash ends where its bay's last report left it.
- */
-export async function reportBayIfChanged(station: StationContext, bayId: string): Promise<void> {
-  const reported = station.lastReportedBayStatus;
-  if (reported === undefined) return;
-  let now: BayStatus;
-  try {
-    now = station.getBayState(bayId);
-  } catch {
-    return;
-  }
-  const last = reported.get(bayId);
-  if (last === undefined || last === now || !isReportableBayStatus(now)) return;
-  if (station.canTransmit !== undefined && !station.canTransmit()) return;
-
-  const bay = station.config.bays.find((b) => b.bayId === bayId);
-  if (bay === undefined) return;
-  const report: StatusNotificationPayload = {
-    bayId: bay.bayId,
-    bayNumber: bay.bayNumber,
-    status: now,
-    previousStatus: last as StatusNotificationPayload['previousStatus'],
-    programs: bay.programs.map((p) => ({ programNumber: p.programNumber, available: p.available })),
-  };
-  try {
-    await station.sender.send<StatusNotificationPayload>(OsppAction.STATUS_NOTIFICATION, MessageType.EVENT, report);
-    reported.set(bayId, now);
-  } catch (err) {
-    console.log('[Session] bay %s could not be reported %s (%s)', bayId, now, err instanceof Error ? err.message : String(err));
-  }
+  return made;
 }
 
 async function persist(station: StationContext, what: string): Promise<void> {

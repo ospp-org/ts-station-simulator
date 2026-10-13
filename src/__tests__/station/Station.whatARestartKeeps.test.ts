@@ -12,8 +12,8 @@ import {
  *    that cannot write it "MUST refuse with 5103 STORAGE_ERROR and MUST NOT activate" - a wash it
  *    could not remember is one it could send no end record for after a restart.
  *  - A wash resumed after a restart had its bay reported Occupied at the boot; when its
- *    SessionEnded has gone, the bay is reported again as what it is now, Available. Otherwise the
- *    server's bay stays Occupied after the wash, and the next start on it is refused.
+ *    SessionEnded has gone, the bay's two transitions are reported, Finishing and then Available.
+ *    Otherwise the server's bay stays Occupied after the wash, and the next start on it is refused.
  *  - stop-service.md §6 rule 10: the cached RESPONSE of a stop is kept for the retention horizon,
  *    across a restart too - the server's repeated StopService is how it recovers a lost RESPONSE,
  *    and a restart in between must not turn the answer into 3006.
@@ -83,7 +83,7 @@ describe('start-service.md §6 rule 9 - no record, no wash', () => {
 });
 
 describe('a resumed wash gives its bay back', () => {
-  it('RED: after the SessionEnded of a wash resumed across a restart, the bay is reported Available, previousStatus Occupied', async () => {
+  it('RED: after the SessionEnded of a wash resumed across a restart, the bay is reported Finishing (previous Occupied), then Available (previous Finishing)', async () => {
     const first = power();
     await bootOnline(first, 0);
     await new StartServiceHandler().handle(startService('sess_givesback', 60), first as never);
@@ -97,12 +97,16 @@ describe('a resumed wash gives its bay back', () => {
     await bootOnline(second, since);
     await elapse(40_000);
     await until(() => frames('SessionEnded', undefined, since).length > 0, 'the SessionEnded of the resumed wash');
-    await settled(() => frames('StatusNotification', undefined, indexOf((f) => f.action === 'SessionEnded', since)).length > 0);
+    await settled(() => frames('StatusNotification', undefined, indexOf((f) => f.action === 'SessionEnded', since)).length > 1);
 
     const ended = indexOf((f) => f.action === 'SessionEnded', since);
     const after = frames('StatusNotification', undefined, ended).filter((f) => f.payload.bayId === BAY_ID);
-    expect(after.map((f) => f.payload), 'the bay stayed Occupied on the wire after the wash ended')
-      .toEqual([expect.objectContaining({ status: 'Available', previousStatus: 'Occupied' })]);
+    // Both transitions, after the end record: there is no Occupied -> Available edge (05-state-machines.md
+    // §7.2). This pinned the one Available report, previousStatus Occupied, that edge.
+    expect(after.map((f) => f.payload), 'the bay stayed Occupied on the wire after the wash ended').toEqual([
+      expect.objectContaining({ status: 'Finishing', previousStatus: 'Occupied' }),
+      expect.objectContaining({ status: 'Available', previousStatus: 'Finishing' }),
+    ]);
   });
 });
 

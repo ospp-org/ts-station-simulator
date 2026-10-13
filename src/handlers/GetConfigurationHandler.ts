@@ -7,6 +7,7 @@ import {
   type ConfigurationEntry,
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { HELD_CONFIG_KEYS, configValue } from '../station/StationConfiguration.js';
 
 export class GetConfigurationHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -22,7 +23,10 @@ export class GetConfigurationHandler implements Handler {
       { key: 'bayCount', value: String(station.config.bayCount), readonly: true },
       { key: 'timezone', value: station.config.timezone, readonly: false },
       { key: 'heartbeatIntervalSec', value: String(station.config.behavior.heartbeatIntervalSec), readonly: false },
-      { key: 'meterValuesIntervalSec', value: String(station.config.behavior.meterValuesIntervalSec), readonly: false },
+      // The configuration keys this station holds, under the names the spec gives them (08-configuration.md
+      // §3) and with the value in force. The interval was reported as `meterValuesIntervalSec`, a name no
+      // spec version has, so a GetConfiguration of MeterValuesInterval came back in unknownKeys.
+      ...HELD_CONFIG_KEYS.map((key) => ({ key, value: String(configValue(station, key)), readonly: false })),
       { key: 'acceptRate', value: String(station.config.behavior.acceptRate), readonly: false },
     ];
 

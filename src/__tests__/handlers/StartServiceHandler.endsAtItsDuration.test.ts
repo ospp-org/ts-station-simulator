@@ -52,7 +52,11 @@ describe('RED (O2) - the station ends the wash it accepted when its duration ela
     vi.useFakeTimers();
     const { ctx, sent, sessions } = station();
     await new StartServiceHandler().handle(start(2), ctx);
-    expect(sent.map((m) => `${m.action}/${m.type}`)).toEqual([`${OsppAction.START_SERVICE}/${MessageType.RESPONSE}`]);
+    // The RESPONSE, then the bay change it made (start-service.md §6 rule 10; 04-flows.md §3 steps 7-8).
+    expect(sent.map((m) => `${m.action}/${m.type}`)).toEqual([
+      `${OsppAction.START_SERVICE}/${MessageType.RESPONSE}`,
+      `${OsppAction.STATUS_NOTIFICATION}/${MessageType.EVENT}`,
+    ]);
 
     await vi.advanceTimersByTimeAsync(3000);
 

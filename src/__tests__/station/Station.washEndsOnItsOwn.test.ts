@@ -71,7 +71,12 @@ describe('M1 - the station ends the wash it accepted, on its own, at its booked 
     // 60 s at the simulator's 100 credits/minute: the whole booking was delivered.
     expect(ended.actualDurationSeconds).toBe(60);
     expect(ended.creditsCharged).toBe(100);
-    expect(ended.finalSeqNo).toBe(0);
+    // The final reading went first and took seqNo 0 (meter-values.md §5.1 rule 3); the SessionEnded's
+    // own number is the next, and finalSeqNo - the highest emitted - is that one (05-state-machines.md
+    // §3.5 rule 5). Both were 0 while the station sent no MeterValues at all.
+    expect(frames('MeterValues').map((f) => f.payload.seqNo)).toEqual([0]);
+    expect(ended.seqNo).toBe(1);
+    expect(ended.finalSeqNo).toBe(1);
     expect(station.sessions.has('sess_m1timer')).toBe(false);
     // Occupied -> Finishing -> Available, as the stop takes it.
     expect(station.getBayState(BAY_ID)).toBe('Available');

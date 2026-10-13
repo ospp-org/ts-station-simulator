@@ -151,9 +151,23 @@ once and installs when no session runs, then boots with `FirmwareUpdate`. After 
 link comes back it boots with `Reconnect`, reports its bays and sends what it held
 while away.
 
+**It meters every wash and reports its bay.** After the `StartService` RESPONSE the
+bay is reported `Occupied` (`previousStatus` `Available`, or `Reserved` for the
+holder's start). While the wash runs a `MeterValues` goes out every
+`MeterValuesInterval` seconds - cumulative readings derived from the delivered time,
+`seqNo` per session on disk before each publish - and none while the link is down. At
+the end a final reading goes out and the end record carries it too, then the bay is
+reported `Finishing` and `Available`. The station holds `MeterValuesInterval` (default
+60) and `MeterValuesSampleInterval` (default 10) as the spec names them: the server
+sets them by ChangeConfiguration (a value out of range is `Rejected` `5109`) or in the
+boot's `configuration`, and GetConfiguration reports them. A `TriggerMessage` for
+`MeterValues` reads the same meter; one for `BootNotification` is answered with
+`Reconnect`, the uptime running on.
+
 ```bash
 simulator connect ... --on-restart interrupt     # end each held wash at once instead of resuming it
 simulator connect ... --boot-reason Watchdog     # the reason this process booted (default PowerOn)
+simulator connect ... --meter-values-interval 10 # the factory MeterValuesInterval, 10-3600 s (default 60)
 ```
 
 **Ctrl+C announces the departure.** The station publishes `ConnectionLost` with

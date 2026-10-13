@@ -45,7 +45,6 @@ function makeConfig(): StationConfig {
       acceptRate: 1,
       responseDelayMs: [0, 0],
       heartbeatIntervalSec: 30,
-      meterValuesIntervalSec: 10,
     },
   } as unknown as StationConfig;
 }

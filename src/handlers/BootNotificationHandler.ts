@@ -1,5 +1,6 @@
 import { type OsppEnvelope, type BootNotificationResponse, OsppAction, MessageType, type StatusNotificationPayload, isReportableBayStatus } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
+import { applyBootConfiguration } from '../station/StationConfiguration.js';
 
 export class BootNotificationHandler implements Handler {
   /**
@@ -57,6 +58,12 @@ export class BootNotificationHandler implements Handler {
         // HMAC-sign critical outbound messages (over the whole envelope).
         station.sessionKey = response.sessionKey ?? null;
 
+        // The configuration the server sent with the answer, applied at once (08-configuration.md §8.3):
+        // the keys this station holds, each validated, an invalid entry warned about and ignored and
+        // the boot never failed for it. In both modes - it changes nothing a scenario's station sends.
+        // The block was never read: a MeterValuesInterval pushed here went nowhere.
+        applyBootConfiguration(station, response.configuration);
+
         // The station beats — in BOTH modes, at the interval the server just
         // declared. This is the one thing real firmware always does after an
         // accepted boot, so it is the default and a file that needs silence turns
@@ -101,7 +108,8 @@ export class BootNotificationHandler implements Handler {
             };
             await station.sender.send(OsppAction.STATUS_NOTIFICATION, MessageType.EVENT, statusPayload);
             // What this bay was last reported as: the bay of a wash resumed after a restart is
-            // reported Occupied here, and Available again after that wash's SessionEnded.
+            // reported Occupied here, and Finishing then Available after that wash's end record
+            // (bayReport.ts reads this to decide previousStatus).
             station.lastReportedBayStatus?.set(bay.bayId, bayState);
           }
 

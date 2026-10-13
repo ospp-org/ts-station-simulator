@@ -146,7 +146,6 @@ export function connectConfig(extra: Record<string, unknown> = {}, behavior: Rec
       acceptRate: 1.0,
       responseDelayMs: [0, 0],
       heartbeatIntervalSec: 30,
-      meterValuesIntervalSec: 30,
       autoRetryBoot: false,
       ...behavior,
     },
