@@ -316,9 +316,9 @@ steps:
   #   fail_reason — THE discriminator, and the only one available. Deauthorized
   #       and Fault are otherwise byte-identical on every asserted field:
   #       failed / 0 / 500. The strings differ, and nothing else does, so
-  #       dropping this line would collapse a revoked pass and a hardware fault
-  #       into one indistinguishable assertion. Server-composed: the station
-  #       sends `reason: "Deauthorized"`, the row stores the sentence below.
+  #       dropping this line would collapse a revoked pass and a Fault into one
+  #       indistinguishable assertion. Server-composed: the station sends
+  #       `reason: "Deauthorized"`, the row stores the sentence below.
   #
   # NOT asserted: fail_error_code, which is present-but-null here (status IS
   # failed so SessionResource:64-67 includes the key, but this path sets a reason
