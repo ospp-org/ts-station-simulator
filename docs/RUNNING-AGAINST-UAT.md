@@ -464,13 +464,15 @@ scrollback — and had already removed the certificate files of the pool it left
 What to expect on UAT while it retries: each try BT refuses leaves a `failed` refund row (the
 console's unsettled refunds list) and makes the server log CRITICAL `refund OWED but NO money
 moved` in `storage/logs/laravel.log`. That is the server doing what it must. The end of a run can
-take up to 10 minutes of waiting for a pending payment and 13,5 minutes of refund tries.
+take up to 10 minutes of waiting for a pending payment and 13.5 minutes of refund tries (9 gaps
+of 90 s).
 
 To see each refund: the run's `[teardown] card money:` lines name every payment, BT order, amount
 and answer. The UAT rows go with the teardown that follows at once, so the lasting traces are the
 server's log — one `ProcessRefund: refund processed` line per refund (refund id, amount, channel
 `processor`) in `storage/logs/laravel.log` of `csms-app-uat` — and BT's own `getOrderStatusExtended`
-for the order: `orderStatus 4`, `refundedAmount` equal to `depositedAmount`. A run with
+for the order: `orderStatus 4`, `refundedAmount` the order's whole amount, `depositedAmount` 0
+(600 and 0 for the Batch Drive refunded through the server on 2026-10-12). A run with
 `--keep-pool` refunds nothing until `teardown-pool --handle`, so the captured payment can be read on
 UAT first; that command then refunds and deletes in one go.
 
