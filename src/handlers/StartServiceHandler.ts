@@ -12,6 +12,8 @@ import { bayRefusalCode, errorName } from './bayRefusal.js';
 import { SequenceCounter } from '../station/SequenceCounter.js';
 import { monotonicNowMs } from '../station/monotonicClock.js';
 import { armWashTimer } from '../station/sessionEnd.js';
+import { armMeterTimer } from '../station/sessionMeter.js';
+import { reportBayStatus } from '../station/bayReport.js';
 
 export class StartServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -231,6 +233,17 @@ export class StartServiceHandler implements Handler {
       // no end record, charged in full with the anomaly mark (session-end rule S1). A stop, a forced
       // Reset or a restart clears the timer; their own record is the end.
       armWashTimer(station, session);
+      // AND IT IS METERED WHILE IT RUNS: the first MeterValues within MeterValuesInterval of the
+      // activation, then one every interval until the end, which sends the last (sessionMeter.ts;
+      // meter-values.md §5.1). The boot declares meterValuesSupported, and none was ever sent.
+      armMeterTimer(station, session);
+
+      // THE BAY CHANGE, REPORTED - after the RESPONSE (04-flows.md §3 steps 7-8) and within 1 s of it
+      // (status-notification.md §7 rule 3): Occupied, previousStatus Available, or Reserved for the
+      // holder's start (05-state-machines.md §2.3). The bay used to move in the station's own state
+      // machine only, so the server's stayed `available` for the whole wash - it writes bays.status
+      // from StatusNotification alone. Dropped while the link is down: the next boot report carries it.
+      await reportBayStatus(station, request.bayId, BayStatus.OCCUPIED, bayState);
 
       console.log(
         '[StartService] Accepted session %s on bay %s (service: %s, duration: %ds)',

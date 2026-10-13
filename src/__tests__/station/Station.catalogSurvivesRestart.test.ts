@@ -73,7 +73,7 @@ function power(persistCatalog: boolean): StationInstance {
           services: [{ serviceId: 'svc_wash_basic', serviceName: 'Basic Wash', available: true }],
         },
       ],
-      behavior: { acceptRate: 1.0, responseDelayMs: [0, 0], heartbeatIntervalSec: 60, meterValuesIntervalSec: 30, autoRetryBoot: false },
+      behavior: { acceptRate: 1.0, responseDelayMs: [0, 0], heartbeatIntervalSec: 60, autoRetryBoot: false },
       ...(persistCatalog ? { persistCatalog: true } : {}),
     },
     { mqttUrl: 'mqtts://localhost:8883', stationId: STATION_ID },

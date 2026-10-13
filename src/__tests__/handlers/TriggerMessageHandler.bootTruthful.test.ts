@@ -20,11 +20,12 @@ import { EventEmitter } from 'node:events';
  * three instances: the two paths must emit the same payload, so a field added to
  * one cannot silently diverge on the other.
  *
- * On bootReason: the field is "reason the station booted"
- * (boot-notification.md §3 Request Payload) — a property of the last boot
- * EPISODE, not of the send. A trigger re-announces an episode; it does not start
- * one. So the truthful value is whatever actually booted the station, which is
- * exactly what retryBoot() reports. See Station.currentBootReason.
+ * On bootReason: boot-notification.md §5.2 names this case. "`Reconnect`
+ * therefore covers both cases of no boot occurred: a re-dialled session, and a
+ * Boot the server asked for." This file used to pin the reason of the last real
+ * boot instead - `PowerOn` after a power-on, with an uptime that never reset -
+ * which named a power-on that did not happen (the D3 decision of 2026-10-13
+ * inverted that pin). See Station.bootOnRequest.
  *
  * Fully offline: MqttConnection is stubbed; no broker, no csms.
  */
@@ -90,7 +91,6 @@ function buildStation(): InstanceType<typeof Station> {
         acceptRate: 1.0,
         responseDelayMs: [0, 0],
         heartbeatIntervalSec: 60,
-        meterValuesIntervalSec: 30,
         autoRetryBoot: true,
       },
     },
@@ -184,8 +184,9 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     const station = buildStation();
     await station.connect();
 
-    // A cert renewal re-handshook the link — the station's episode reason is no
-    // longer PowerOn. A trigger re-announces that episode; it does not start one.
+    // A cert renewal re-handshook the link — no restart, so the station's reason is
+    // no longer PowerOn — and a trigger starts no boot either: Reconnect
+    // (boot-notification.md §5.2).
     elapse(7200_000);
     await station.reconnectWithRenewedCertificate();
 
@@ -208,7 +209,7 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     expect(boot.bootReason).toBe(BootReason.RECONNECT);
   });
 
-  it('a genuine power-on still reports PowerOn — the trigger does not invent a reason', async () => {
+  it('after a genuine power-on the trigger says Reconnect — no boot occurred — with the uptime of that power-on', async () => {
     const station = buildStation();
     await station.connect();
 
@@ -219,10 +220,10 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     );
 
     const [boot] = bootPayloads();
-    // True on both counts: the station powered on 40000s ago, and that is still
-    // why it is up. Truthful uptime is what preserves the sessions here — the
-    // reason is reported because it is the fact, not to buy server behaviour.
-    expect(boot.bootReason).toBe(BootReason.POWER_ON);
+    // boot-notification.md §5.2: a Boot the server asked for is `Reconnect`, the uptime running on.
+    // This pinned PowerOn - the last real boot's reason - with 40000 s of uptime: a power-on that
+    // did not happen, which the server's rule-3 cross-check refuses as a contradiction.
+    expect(boot.bootReason).toBe(BootReason.RECONNECT);
     expect(boot.uptimeSeconds).toBe(40_000);
   });
 
@@ -258,5 +259,48 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     // Not "these three fields agree" — the whole payload agrees, so a field
     // added to the boot path cannot silently go missing on the trigger path.
     expect(triggered).toEqual(direct);
+  });
+});
+
+// boot-notification.md §5.2 (spec 398870a) :96 - "`Reconnect` therefore covers both cases of no boot
+// occurred: a re-dialled session, and a Boot the server asked for" - and the request schema's
+// bootReason: "It covers TWO such cases: a re-dialled MQTT session, and a BootNotification the
+// server asked for by TriggerMessage ... a station claiming `PowerOn` with a large uptime is
+// detectably lying." Rule 3: a retry of a boot repeats that boot, the same bootReason.
+describe('RED (D3) - the BootNotification a TriggerMessage asks for is Reconnect', () => {
+  beforeEach(() => {
+    publishCalls.length = 0;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(POWER_ON_AT);
+    monotonicMs = MONOTONIC_ORIGIN;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicMs);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('after a power-on, the triggered boot says Reconnect with the uptime running on, and a retry of it repeats Reconnect', async () => {
+    const station = buildStation();
+    await station.connect();
+    // The station's own boot, at power-on.
+    await station.retryBoot();
+
+    elapse(40_000_000);
+    await new TriggerMessageHandler().handle(
+      triggerEnvelope('BootNotification') as never,
+      station as never,
+    );
+    // What a Pending answer's retry sends: the same boot again.
+    await station.retryBoot();
+
+    const [own, triggered, retried] = bootPayloads();
+    expect(own.bootReason).toBe(BootReason.POWER_ON);
+    expect(own.uptimeSeconds).toBe(0);
+    expect(triggered.bootReason, 'the Boot the server asked for named a power-on that did not happen').toBe(BootReason.RECONNECT);
+    expect(triggered.uptimeSeconds).toBe(40_000);
+    expect(retried.bootReason).toBe(BootReason.RECONNECT);
+    expect(retried.uptimeSeconds).toBe(40_000);
   });
 });

@@ -180,7 +180,7 @@ async function main(): Promise<void> {
         })),
         behavior: {
           acceptRate: 1.0, responseDelayMs: [0, 0],
-          heartbeatIntervalSec: 60, meterValuesIntervalSec: 30, autoRetryBoot: false,
+          heartbeatIntervalSec: 60, autoRetryBoot: false,
         },
       },
       {

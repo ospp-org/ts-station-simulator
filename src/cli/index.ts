@@ -17,12 +17,13 @@ import {
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
-import { OsppAction, BootReason } from '@ospp/protocol';
+import { OsppAction, BootReason, ConfigKey } from '@ospp/protocol';
 import { inboundSchemaStats, resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { heartbeatStats } from '../station/heartbeatStats.js';
 import { FrameJournal, resolveJournalSink, prepareJournalSink } from '../mqtt/FrameJournal.js';
 import { assertBays } from '../provisioning/assertBays.js';
 import { generateStationId, generateSerialNumber } from '../station/StationConfig.js';
+import { defaultConfigValue, describeConfigRange, parseConfigValue } from '../station/StationConfiguration.js';
 import { parseTopologySpec, denseTopology, formatTopologySpec, type BaySpec } from '../station/topologySpec.js';
 import { BootNotificationHandler } from '../handlers/BootNotificationHandler.js';
 import { HeartbeatHandler } from '../handlers/HeartbeatHandler.js';
@@ -889,6 +890,7 @@ interface ConnectCommandOptions {
   reportBays?: string;
   onRestart: string;
   bootReason: string;
+  meterValuesInterval: string;
 }
 
 /**
@@ -941,6 +943,13 @@ program
       'A RemoteReset or FirmwareUpdate boot resumes no wash.',
     BootReason.POWER_ON,
   )
+  .option(
+    '--meter-values-interval <seconds>',
+    `The station's factory MeterValuesInterval: a MeterValues every this many seconds while a wash runs ` +
+      `(08-configuration.md §3: ${describeConfigRange(ConfigKey.METER_VALUES_INTERVAL)}), until the server sets ` +
+      'another by ChangeConfiguration or in the boot\'s configuration',
+    String(defaultConfigValue(ConfigKey.METER_VALUES_INTERVAL)),
+  )
   .action(async (opts: ConnectCommandOptions) => {
     try {
       if (opts.onRestart !== 'resume' && opts.onRestart !== 'interrupt') {
@@ -949,6 +958,14 @@ program
       const bootReason = PROCESS_BOOT_REASONS.find((r) => r === opts.bootReason);
       if (bootReason === undefined) {
         throw new Error(`--boot-reason must be one of ${PROCESS_BOOT_REASONS.join(', ')}, got "${opts.bootReason}"`);
+      }
+      // Validated as a ChangeConfiguration of the key would be: an integer in its range, or no station.
+      const meterValuesInterval = parseConfigValue(ConfigKey.METER_VALUES_INTERVAL, opts.meterValuesInterval);
+      if (meterValuesInterval === null) {
+        throw new Error(
+          `--meter-values-interval must be an integer number of seconds in ` +
+            `${describeConfigRange(ConfigKey.METER_VALUES_INTERVAL)}, got "${opts.meterValuesInterval}"`,
+        );
       }
 
       const targetName = opts.target ?? process.env['OSPP_TARGET'] ?? 'local';
@@ -1093,10 +1110,12 @@ program
             acceptRate: 1.0,
             responseDelayMs: [0, 0] as [number, number],
             heartbeatIntervalSec: 60,
-            meterValuesIntervalSec: 30,
             autoRetryBoot: true,
             onRestart: opts.onRestart,
           },
+          // THE WASH IS METERED: a MeterValues every MeterValuesInterval while it runs, and a final one
+          // at its end (meter-values.md §5.1) - this factory value until the server sets another.
+          factoryConfiguration: { [ConfigKey.METER_VALUES_INTERVAL]: meterValuesInterval },
           // The catalog this station accepts is kept beside its certificates and held again at the
           // next start (update-service-catalog.md rule 5): the server does not push it twice.
           persistCatalog: true,
@@ -1188,6 +1207,10 @@ program
       for (const bay of bays) {
         console.log(`  bay ${bay.bayNumber}:      ${bay.bayId}  (service: ${bay.services[0].serviceId})`);
       }
+      console.log(chalk.gray(
+        `  MeterValues every ${station.configuration.get(ConfigKey.METER_VALUES_INTERVAL)} s while a wash runs ` +
+          '(MeterValuesInterval), a final one at its end; the bay change at the start and the end is reported.',
+      ));
       console.log();
 
       // The post-boot StatusNotification per bay is BootNotificationHandler's job

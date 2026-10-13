@@ -41,6 +41,13 @@ export interface StationConfig {
    * what restoreSessions does with the sessions it finds on disk.
    */
   bootReason?: import('@ospp/protocol').BootReason;
+  /**
+   * The factory values of the configuration keys this station holds (StationConfiguration.ts) - what it
+   * runs with until the server sets another. A key left out takes the spec default: MeterValuesInterval
+   * 60, MeterValuesSampleInterval 10 (08-configuration.md §3). `simulator connect
+   * --meter-values-interval` sets the first.
+   */
+  factoryConfiguration?: import('./StationConfiguration.js').FactoryConfiguration;
 }
 
 export interface BayConfig {
@@ -83,7 +90,6 @@ export interface BehaviorConfig {
   acceptRate: number;                  // 0.0 - 1.0, probability of accepting requests
   responseDelayMs: [number, number];   // [min, max] random delay range
   heartbeatIntervalSec: number;
-  meterValuesIntervalSec: number;
   autoRetryBoot: boolean;              // true = handler auto-retries on Rejected/Pending
   /**
    * What the station does, after a restart that keeps the session, with each wash it held:

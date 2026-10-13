@@ -43,6 +43,17 @@ export interface StationContext {
   stopHeartbeat(): void;
   retryBoot(): Promise<void>;
   /**
+   * The BootNotification the server asked for by TriggerMessage: `Reconnect`, the uptime running on -
+   * no boot occurred (boot-notification.md §5.2) - and the reason a retry of it repeats.
+   */
+  bootOnRequest(): Promise<void>;
+  /**
+   * The configuration keys this station holds (08-configuration.md): MeterValuesInterval and
+   * MeterValuesSampleInterval. Absent on a handler test's hand-built context, where the spec defaults
+   * govern and a change is validated but kept nowhere.
+   */
+  configuration?: import('../station/StationConfiguration.js').StationConfiguration;
+  /**
    * Settle one running session as an OPERATOR-INITIATED stop and report it.
    *
    * reset-request.schema.json (spec v0.44.0), `force`: "the station settles every
@@ -138,6 +149,13 @@ export interface SessionInfo {
   deliveredBeforeRestartSeconds?: number;
   /** The timer that ends the wash at its booked duration with SessionEnded TimerExpired; every other end clears it. */
   washTimer?: ReturnType<typeof setTimeout>;
+  /** The timer of the next periodic MeterValues (sessionMeter.ts); every end clears it with the wash timer. */
+  meterTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Set, before anything is awaited, by the path that ends the session - its wash timer, a stop, a
+   * forced Reset, a restart - so no second path ends it too while the first is still sending.
+   */
+  ending?: boolean;
   /** The program the StartService named, and that command's envelope messageId - start-service.md §6 rule 9's record. */
   programNumber?: number;
   startMessageId?: string;

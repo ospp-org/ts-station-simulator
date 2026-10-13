@@ -9,7 +9,10 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { errorName } from './bayRefusal.js';
-import { clearWashTimer, deliveredSeconds, reportBayIfChanged } from '../station/sessionEnd.js';
+import { clearWashTimer } from '../station/sessionEnd.js';
+import { deliveredSeconds } from '../station/delivered.js';
+import { clearMeterTimer, highestSeqNo, nextMeterValues, publishMeterValues, readingAt } from '../station/sessionMeter.js';
+import { reportBayStatus } from '../station/bayReport.js';
 
 export class StopServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -38,7 +41,10 @@ export class StopServiceHandler implements Handler {
 
     const session = station.sessions.get(request.sessionId);
 
-    if (!session) {
+    // A session whose own end is already under way (its wash timer fired a moment ago) is answered as
+    // it always was in that race - not found: its SessionEnded is the end record, and a second one, the
+    // RESPONSE, would be the double end the session-end rule removes.
+    if (!session || session.ending === true) {
       const response: StopServiceResponse = {
         status: 'Rejected',
         errorCode: OsppErrorCode.SESSION_NOT_FOUND,
@@ -54,8 +60,9 @@ export class StopServiceHandler implements Handler {
       );
 
       console.log(
-        '[StopService] Rejected — session %s not found',
+        '[StopService] Rejected — session %s %s',
         request.sessionId,
+        session ? 'is already ending on its own - its SessionEnded is the end record' : 'not found',
       );
       return;
     }
@@ -81,10 +88,14 @@ export class StopServiceHandler implements Handler {
     }
 
     // The wash stops here, so the timer that would have ended it at its booked duration goes: this
-    // RESPONSE is the end record, and no SessionEnded may follow it.
+    // RESPONSE is the end record, and no SessionEnded may follow it. Marked as ending before anything
+    // is awaited, and its meter stops with it.
+    session.ending = true;
     clearWashTimer(session);
+    clearMeterTimer(session);
 
     // Transition bay: Occupied -> Finishing -> Available
+    const bayBefore = station.getBayState(session.bayId);
     station.setBayState(session.bayId, BayStatus.FINISHING);
 
     // MONOTONIC, not the wall clock. `stop-service.md §6 Processing Rules` rule 5: the station
@@ -119,15 +130,28 @@ export class StopServiceHandler implements Handler {
       (actualDurationSeconds / 60) * session.priceCreditsPerMinute,
     );
 
+    // THE FINAL READING (meter-values.md §5.1 rule 3): a MeterValues before this RESPONSE, which
+    // carries the same reading (stop-service.md §6 rule 7). Its seqNo is issued here, before anything
+    // is awaited, so the RESPONSE built below already names it.
+    const reading = readingAt(actualDurationSeconds);
+    const final = nextMeterValues(station, session, reading);
+
+    // finalSeqNo is the HIGHEST seqNo EMITTED (05-state-machines.md §3.5 rule 5; the schema: "Present
+    // when ... the station has emitted at least one session-scoped EVENT") - the final reading's, or
+    // absent when none was. It was `peek()`, the next number, one more than was ever sent.
+    const finalSeqNo = highestSeqNo(session);
     const response: Extract<StopServiceResponse, { status: 'Accepted' }> = {
       status: 'Accepted',
       actualDurationSeconds,
       creditsCharged,
-      finalSeqNo: session.seq.peek(),
+      meterValues: reading,
+      ...(finalSeqNo !== undefined ? { finalSeqNo } : {}),
     };
 
-    // Kept BEFORE it is sent: a repeat that races this answer gets the same one (rule 10).
+    // Kept BEFORE anything is sent: a repeat that races this answer gets the same one (rule 10).
     station.rememberStopAnswer?.(request.sessionId, session.bayId, response);
+
+    if (final !== null) await publishMeterValues(station, final);
 
     await station.sender.send<StopServiceResponse>(
       OsppAction.STOP_SERVICE,
@@ -169,9 +193,9 @@ export class StopServiceHandler implements Handler {
       console.error('[StopService] could not record the stop of %s on disk: %s', request.sessionId, err instanceof Error ? err.message : String(err));
     }
 
-    // A wash resumed after a restart had its bay reported Occupied at the boot: report it again now
-    // that it is idle, after the RESPONSE that ended it. An ordinary wash's bay was never reported
-    // Occupied, so nothing is sent for it.
-    await reportBayIfChanged(station, session.bayId);
+    // The bay's two transitions, reported after the RESPONSE that ended the wash (04-flows.md §6;
+    // 05-state-machines.md §7.2: there is no Occupied -> Available edge).
+    await reportBayStatus(station, session.bayId, BayStatus.FINISHING, bayBefore);
+    await reportBayStatus(station, session.bayId, BayStatus.AVAILABLE, BayStatus.FINISHING);
   }
 }

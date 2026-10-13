@@ -20,7 +20,10 @@ import {
   type StoppedSessionAnswer,
   type StoredSessionState,
 } from './SessionStore.js';
-import { armWashTimer, clearWashTimer, deliveredSeconds, endSession } from './sessionEnd.js';
+import { armWashTimer, clearWashTimer, endSession } from './sessionEnd.js';
+import { deliveredSeconds } from './delivered.js';
+import { armMeterTimer, clearMeterTimer } from './sessionMeter.js';
+import { StationConfiguration } from './StationConfiguration.js';
 import type { StationContext } from '../handlers/Handler.js';
 import type {
   OsppEnvelope,
@@ -30,6 +33,7 @@ import type {
   StopServiceResponse,
 } from '@ospp/protocol';
 import {
+  ConfigKey,
   EffectedBy,
   OsppAction,
   type ConnectionLostPayload,
@@ -89,11 +93,14 @@ export interface SessionInfo {
   seq: SequenceCounter;
   /**
    * The rest of Handler.ts's declaration, kept in step for the reason above: the delivered seconds
-   * a restart carried in, the wash timer, the rule-9 record's program and messageId, the advisory
-   * price. Optional here because a scenario's sessions (SendStep) carry none of them.
+   * a restart carried in, the wash and meter timers, the end under way, the rule-9 record's program
+   * and messageId, the advisory price. Optional here because a scenario's sessions (SendStep) carry
+   * none of them.
    */
   deliveredBeforeRestartSeconds?: number;
   washTimer?: ReturnType<typeof setTimeout>;
+  meterTimer?: ReturnType<typeof setTimeout>;
+  ending?: boolean;
   programNumber?: number;
   startMessageId?: string;
   priceCreditsPerMinute?: number;
@@ -168,6 +175,12 @@ export class Station extends EventEmitter {
   // TriggerCertificateRenewalHandler, consumed by CertificateInstallHandler.
   public pendingRenewalKeyPem: string | null = null;
 
+  /**
+   * StationContext.configuration: the configuration keys this station holds (StationConfiguration.ts) -
+   * MeterValuesInterval and MeterValuesSampleInterval, from the factory values this station was built
+   * with, then as the server sets them. Not `config`, which is how the simulator was built.
+   */
+  public readonly configuration: StationConfiguration;
   /** StationContext.heldSessionEnded: the end records waiting for a boot they can be sent after. Mutated in place. */
   public readonly heldSessionEnded: HeldSessionEnded[] = [];
   /** StationContext.lastReportedBayStatus: what the boot report, and every report since, said each bay was. */
@@ -178,7 +191,7 @@ export class Station extends EventEmitter {
   private sessionStoreInstance: SessionStore | null | undefined = undefined;
   /** Every write of the record, in order: two writers racing on one temporary file would corrupt it. */
   private sessionWrites: Promise<void> = Promise.resolve();
-  private checkpointTimer: ReturnType<typeof setInterval> | null = null;
+  private checkpointTimer: ReturnType<typeof setTimeout> | null = null;
   /** The socket is up (MqttConnection's `connect` and `close`) - tracked for a station that acts on its link. */
   private linkUp = false;
   /** Inside connect(): the `connect` that follows is the one connect() waits for, not mqtt.js reconnecting on its own. */
@@ -222,9 +235,9 @@ export class Station extends EventEmitter {
    * Why the station is sending its CURRENT BootNotification. Defaults to
    * POWER_ON (this instance did just power on), or to the reason the process was
    * started with (`config.bootReason`), and is updated by whatever re-boots the
-   * station — a cert-renewal re-handshake or a reconnect (`Reconnect`), a restart()
-   * (its reason). Retries of the same boot re-send the same reason, since a retry
-   * is not a new boot episode.
+   * station — a cert-renewal re-handshake, a reconnect or a Boot the server asked
+   * for (`Reconnect`), a restart() (its reason). Retries of the same boot re-send
+   * the same reason, since a retry is not a new boot episode.
    */
   private currentBootReason: BootReason;
 
@@ -236,6 +249,7 @@ export class Station extends EventEmitter {
   constructor(config: StationConfig, mqttOptions: MqttConnectionOptions) {
     super();
     this.config = config;
+    this.configuration = new StationConfiguration(config.factoryConfiguration);
     this.currentBootReason = config.bootReason ?? BootReason.POWER_ON;
     this.connection = new MqttConnection(mqttOptions);
     this.journal = mqttOptions.journal;
@@ -585,6 +599,22 @@ export class Station extends EventEmitter {
     await this.disconnect();
     await this.connect();
     this.currentBootReason = Station.RECONNECT_BOOT_REASON;
+  }
+
+  /**
+   * StationContext.bootOnRequest - the BootNotification the server asked for by TriggerMessage.
+   *
+   * boot-notification.md §5.2 (:96): "`Reconnect` therefore covers both cases of no boot occurred: a
+   * re-dialled session, and a Boot the server asked for." The trigger re-announces the station and
+   * nothing restarts, so it says `Reconnect` with the uptime running on; reporting the reason of the
+   * last real boot (`PowerOn` after a power-on) named a power-on that did not happen, with an uptime
+   * that never reset - the claim the server's cross-check refuses (rule 3). It becomes the current
+   * reason, so a retry of this boot, after a Pending answer, repeats it (rule 3: a retry repeats its
+   * boot); a later restart() sets its own.
+   */
+  async bootOnRequest(): Promise<void> {
+    this.currentBootReason = Station.RECONNECT_BOOT_REASON;
+    await this.retryBoot();
   }
 
   /**
@@ -979,19 +1009,30 @@ export class Station extends EventEmitter {
     };
   }
 
-  /** The checkpoint: the delivered time on disk is never more than SESSION_CHECKPOINT_INTERVAL_SECONDS old while a wash runs. */
+  /**
+   * The checkpoint: the delivered time on disk is never more than SESSION_CHECKPOINT_INTERVAL_SECONDS
+   * old while a wash runs - nor older than the MeterValuesSampleInterval this station holds, when that
+   * is shorter: 05-state-machines.md §3.5 rule 3 asks for the delivered time "at least every
+   * MeterValuesSampleInterval seconds". Each checkpoint schedules the next one (persistSessions ->
+   * here) at the value in force then, so a change of the key applies from the next checkpoint.
+   */
   private syncCheckpointing(): void {
     if (this.sessions.size > 0 && this.checkpointTimer === null) {
-      this.checkpointTimer = setInterval(() => {
+      const seconds = Math.min(
+        SESSION_CHECKPOINT_INTERVAL_SECONDS,
+        this.configuration.get(ConfigKey.METER_VALUES_SAMPLE_INTERVAL),
+      );
+      this.checkpointTimer = setTimeout(() => {
+        this.checkpointTimer = null;
         this.persistSessions().catch((err: unknown) => {
           console.error('[Session] checkpoint not written: %s', err instanceof Error ? err.message : String(err));
         });
-      }, SESSION_CHECKPOINT_INTERVAL_SECONDS * 1000);
+      }, seconds * 1000);
       if (typeof (this.checkpointTimer as { unref?: () => void }).unref === 'function') {
         (this.checkpointTimer as { unref: () => void }).unref();
       }
     } else if (this.sessions.size === 0 && this.checkpointTimer !== null) {
-      clearInterval(this.checkpointTimer);
+      clearTimeout(this.checkpointTimer);
       this.checkpointTimer = null;
     }
   }
@@ -1069,6 +1110,9 @@ export class Station extends EventEmitter {
       if (mayResume && !fullyDelivered && this.bayAvailableForResume(record.bayId)) {
         this.setBayState(record.bayId, BayStatus.OCCUPIED);
         armWashTimer(this.asContext(), session);
+        // Its MeterValues go on at the next number (05-state-machines.md §3.5 rule 2), the first within
+        // the interval of the resume; its readings go on from the delivered time the record held.
+        armMeterTimer(this.asContext(), session);
         restored.resumed.push(session.sessionId);
         console.log(
           '[Session] resumed %s on bay %s after %s - %ds of %ds delivered, %ds left',
@@ -1104,9 +1148,11 @@ export class Station extends EventEmitter {
   /**
    * StationContext.restart - the in-process power cycle (a Reset, an installed update, a test).
    *
-   * What a power loss takes: every timer (the heartbeat, each wash's, the checkpoint), the live
-   * session map, the held events and answered stops in memory, the boot verdict, the session key,
-   * the bays' state (back to Available, as at power-on) and the socket. What it leaves: the disk.
+   * What a power loss takes: every timer (the heartbeat, each wash's and its meter's, the
+   * checkpoint), the live session map, the held events and answered stops in memory, the boot
+   * verdict, the session key, the bays' state (back to Available, as at power-on) and the socket.
+   * What it leaves: the disk - and the configuration keys the station holds, which a real station
+   * keeps in NVS (StationConfiguration.ts; a new process starts from the factory values).
    * The uptime starts again at 0 and the next BootNotification carries `reason`; then
    * restoreSessions() decides each kept session exactly as for a new process, which is the point -
    * one restart path, whether the process survived it or not. `Reconnect` is refused: it names the
@@ -1119,9 +1165,12 @@ export class Station extends EventEmitter {
     console.log('[Station] %s restarting (%s)', this.config.stationId, reason);
 
     this.stopHeartbeat();
-    for (const session of this.sessions.values()) clearWashTimer(session);
+    for (const session of this.sessions.values()) {
+      clearWashTimer(session);
+      clearMeterTimer(session);
+    }
     if (this.checkpointTimer !== null) {
-      clearInterval(this.checkpointTimer);
+      clearTimeout(this.checkpointTimer);
       this.checkpointTimer = null;
     }
     // Nothing leaves from here on. An end record already being published finishes and is released;

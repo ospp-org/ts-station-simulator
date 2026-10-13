@@ -382,21 +382,25 @@ function makeStationConfig(): StationConfig {
       programs: [{ programNumber: 1, label: 'P1', available: true }],
       services: [{ serviceId: 'svc_clock', serviceName: 'Wash', available: true }],
     }],
-    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30, meterValuesIntervalSec: 10 },
+    behavior: { acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 30 },
   } as unknown as StationConfig;
 }
 
-/** A real Station whose session was written by the real StartServiceHandler. */
+/**
+ * A real Station whose session was written by the real StartServiceHandler. `sent` keeps the
+ * SessionEnded events only: the settle's end record is what is under test. (The final MeterValues
+ * before it and the bay reports after it are pinned by Station.metersTheWash.test.ts and
+ * Station.reportsTheBayAtTheWash.test.ts.)
+ */
 async function realStationMidSession(): Promise<{ station: Station; sent: Record<string, unknown>[] }> {
   const station = new Station(makeStationConfig(), {} as never);
   const sent: Record<string, unknown>[] = [];
   vi.spyOn(station.sender, 'send').mockImplementation(
-    (async (_a: unknown, _t: unknown, p: unknown) => {
-      sent.push(p as Record<string, unknown>);
+    (async (a: unknown, _t: unknown, p: unknown) => {
+      if (a === OsppAction.SESSION_ENDED) sent.push(p as Record<string, unknown>);
     }) as never,
   );
   await new StartServiceHandler().handle(startEnvelope(), station as unknown as StationContext);
-  sent.length = 0; // drop the StartService RESPONSE; the settle is what is under test
   return { station, sent };
 }
 

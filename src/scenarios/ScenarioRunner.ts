@@ -1373,7 +1373,6 @@ function createStationFromScenario(
       acceptRate: behavior?.accept_rate ?? 1.0,
       responseDelayMs: behavior?.response_delay_ms ?? [0, 0],
       heartbeatIntervalSec: 60,
-      meterValuesIntervalSec: 30,
       autoRetryBoot: (behavior as Record<string, unknown> | undefined)?.auto_retry_boot !== false,
     },
   };

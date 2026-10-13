@@ -212,19 +212,48 @@ station for the one thing the rule asks of a station (its S1–S6), and nothing 
 
 | the station decides | what connect mode sends | pinned by |
 |---|---|---|
-| the booked duration is delivered | `SessionEnded TimerExpired`, the booked duration, then the bay Available | `Station.washEndsOnItsOwn.test.ts`, `StartServiceHandler.endsAtItsDuration.test.ts` |
-| a stop the server asked for | the `StopService` RESPONSE — no `SessionEnded`; a repeat gets the cached RESPONSE | `StopServiceHandler.test.ts`, `StopServiceHandler.repeatAnswersCached.test.ts` |
+| the booked duration is delivered | the final `MeterValues`, then `SessionEnded TimerExpired` with the booked duration and that reading, then `StatusNotification` `Finishing` and `Available` | `Station.washEndsOnItsOwn.test.ts`, `StartServiceHandler.endsAtItsDuration.test.ts`, `Station.reportsTheBayAtTheWash.test.ts` |
+| a stop the server asked for | the final `MeterValues`, then the `StopService` RESPONSE carrying it — no `SessionEnded` — then `Finishing` and `Available`; a repeat gets the cached RESPONSE | `StopServiceHandler.test.ts`, `StopServiceHandler.repeatAnswersCached.test.ts`, `Station.reportsTheBayAtTheWash.test.ts` |
 | a forced Reset | `SessionEnded OperatorStopped` for each session, then a real reboot: `BootNotification RemoteReset`, uptime from 0 | `ResetHandler.rebootsAfterTheSettle.test.ts` |
 | an update | `Accepted` and the download at once; the install when no session runs and its end record has left; `BootNotification FirmwareUpdate` with the new version | `UpdateFirmwareHandler.installsWhenNoSessionRuns.test.ts` |
-| a restart (any boot reason) | every session it held, from `<stationId>-sessions.json` (delivered time ≤ 10 s old): resumed — bay `Occupied` in the boot report, `SessionEnded` at the end — or `SessionEnded Fault` at once with the persisted delivered time (`--on-restart interrupt`, and always after `RemoteReset`/`FirmwareUpdate`) | `Station.sessionRecord.test.ts`, `Station.restartReportsHeldSessions.test.ts` |
+| a restart (any boot reason) | every session it held, from `<stationId>-sessions.json` (delivered time ≤ 10 s old): resumed — bay `Occupied` in the boot report, its `MeterValues` going on at the persisted `seqNo` + 1, `SessionEnded` at the end — or `SessionEnded Fault` at once with the persisted delivered time (`--on-restart interrupt`, and always after `RemoteReset`/`FirmwareUpdate`) | `Station.sessionRecord.test.ts`, `Station.restartReportsHeldSessions.test.ts`, `Station.metersTheWash.test.ts` |
 | the link drops and returns | nothing while away; `BootNotification Reconnect` (uptime kept), the bay reports, then every `SessionEnded` it held | `Station.reconnectBootsAndReplays.test.ts` |
 
 What the 2026-09-11 decision still governs: the refusal rows above are closed only where the rule
 needs them (r9a, r10), and the scenario corpus is still where the **server** is driven — scenario
 mode registers BootNotificationHandler alone and none of the above runs there, so a scenario's
-YAML sends what a conforming station would (`scenarios/SCENARIOS.md`). Still not built: a meter
-cadence (`MeterValues` on `meterValuesIntervalSec`), bay reports at the start of a wash, and a
-bay-fault injector.
+YAML sends what a conforming station would (`scenarios/SCENARIOS.md`). Not built on that date: a
+meter cadence and bay reports at the start of a wash - both built since, next section - and a
+bay-fault injector, still not built.
+
+### Extended to the wash itself, 2026-10-13 (Part E)
+
+The connect-mode boot declares `meterValuesSupported: true`, so `meter-values.md` §5.1 binds it:
+the first `MeterValues` within `MeterValuesInterval` of the activation, then one at that interval
+until the session ends, a final reading also carried in the end record, a changed interval applied
+from the next scheduled event. And an accepted start moves the bay (`start-service.md` §6 rule 10),
+every transition reported within 1 s (`status-notification.md` §7 rule 3), the end through
+`Finishing` (`05-state-machines.md` §7.2). Connect mode sent no `MeterValues` and reported no bay
+change of a wash, so the server's bay stayed `available` through it. Now:
+
+| the station | what connect mode sends | pinned by |
+|---|---|---|
+| accepts a StartService | after the RESPONSE, `StatusNotification Occupied`, `previousStatus` `Available` - or `Reserved` for the holder's start | `Station.reportsTheBayAtTheWash.test.ts` |
+| runs a wash | a `MeterValues` every `MeterValuesInterval`, none at or after the booked end; cumulative readings derived from the delivered time (`liquidMl` 125 and `energyWh` 0.25 a second, `consumableMl` omitted); `seqNo` from 0 per session, on disk before each publish (`05` §3.5 rule 1); dropped, taking no number, while the link is down | `Station.metersTheWash.test.ts` |
+| ends a wash, any way | the final `MeterValues` when it can transmit, then the end record carrying the same reading - `SessionEnded` with the next `seqNo` as its own and as `finalSeqNo`, or the `StopService` RESPONSE with `finalSeqNo` the highest emitted - then `Finishing` and `Available` | both files above, `StopServiceHandler.test.ts` |
+| holds `MeterValuesInterval` and `MeterValuesSampleInterval` (`08-configuration.md` §3) | factory values - the spec defaults 60 and 10, `--meter-values-interval` for the first - changed by ChangeConfiguration (validated: `Rejected` `5109 INVALID_CONFIGURATION_VALUE`, nothing in the batch applied) and by an Accepted boot's `configuration` (an invalid entry warned about and ignored); reported by GetConfiguration under these names; the delivered time on disk never older than `MeterValuesSampleInterval` (nor than 10 s) | `Station.metersTheWash.test.ts`, `StationConfiguration.test.ts` |
+| answers TriggerMessage | `MeterValues`: the session on the bay asked for, its next `seqNo`, its reading now - `Rejected` for a bay with no session; `StatusNotification`: the bay asked for with its own `bayNumber`, `previousStatus` only when it is not what was last reported; `BootNotification`: `Reconnect`, the uptime running on (`boot-notification.md` §5.2) | `Station.metersTheWash.test.ts`, `Station.reportsTheBayAtTheWash.test.ts`, `TriggerMessageHandler.bootTruthful.test.ts` |
+
+`behavior.meterValuesIntervalSec` (30), which no code read, is gone.
+
+Still not built: the two keys live in memory - they survive a Reset or an update, not a new process
+(`08` §8.4 asks for non-volatile storage); every other key is still answered `Accepted` by
+ChangeConfiguration and not applied (`RevocationEpoch` excepted), and GetConfiguration still lists
+non-spec keys beside these two; ReserveBay, a reservation's expiry or cancellation and maintenance
+mode still move the bay without reporting it; the bay-fault injector. On the server's side
+(csms-server `15e0b30f`, `StatusNotificationHandler.php`): the `Finishing` report that follows a
+conforming end record is refused as a change of a settled session's bay - one journal row per wash,
+the case `05` §7.2 warns about; the `Available` after it is accepted.
 
 ---
 
@@ -294,7 +323,8 @@ grep -n 'setInterval\|setTimeout' src/station/Station.ts      -> 1 setInterval (
 
 *(Measured 2026-09-12. Two of its three bullets are no longer true since 2026-10-13 — an accepted
 `StartService` arms a wash timer that ends it with `SessionEnded TimerExpired`; see* Reversed for
-session ends *above. The meter cadence is still absent.)*
+session ends *above. The third, the meter cadence, is built since Part E the same day; see*
+Extended to the wash itself.*)*
 
 **Zero of the four timers is session-bound**, and no `durationSeconds` site sits next to any of
 them. So in connect mode a station that accepted a `StartService`:
@@ -318,8 +348,9 @@ could say "wired" for as long as it has. `npm run check:doc-claims` passes with 
 **Consequence for anyone reading a green run:** connect mode is a wire-framing and signing peer,
 not a session-driving station. The guide's chapters 5–10 cannot be executed through it; the
 adversarial session wrote its own wire client for exactly that reason, and we use scenarios.
-*(Superseded for session ends on 2026-10-13: connect mode now ends, persists and reports its own
-sessions. It still meters nothing on its own.)*
+*(Superseded on 2026-10-13: connect mode now ends, persists and reports its own sessions, meters
+each wash on the station-held `MeterValuesInterval` - `behavior.meterValuesIntervalSec` is gone - and
+reports the bay at the start and the end of it.)*
 
 ### 2. Connect mode invents its own `serialNumber` instead of the provisioned one
 

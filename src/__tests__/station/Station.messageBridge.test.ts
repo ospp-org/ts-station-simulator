@@ -18,7 +18,6 @@ function minimalConfig(stationId: string): StationConfig {
       acceptRate: 1,
       responseDelayMs: [0, 0],
       heartbeatIntervalSec: 60,
-      meterValuesIntervalSec: 30,
       autoRetryBoot: false,
     },
   };

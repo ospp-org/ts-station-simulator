@@ -39,7 +39,7 @@ function buildStation(journal: InstanceType<typeof FrameJournal>) {
       }],
       behavior: {
         acceptRate: 1, responseDelayMs: [0, 0], heartbeatIntervalSec: 60,
-        meterValuesIntervalSec: 30, autoRetryBoot: false,
+        autoRetryBoot: false,
       },
     },
     { mqttUrl: 'mqtt://x', stationId: 'stn_faultbye', journal },

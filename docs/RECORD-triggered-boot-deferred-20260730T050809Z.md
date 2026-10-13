@@ -51,6 +51,13 @@ the schema's own `uptimeSeconds` description ("Seconds elapsed since the
 station last booted") both say, and what the repo already does for
 Rejected/Pending retries.
 
+*(Superseded 2026-10-13. Spec 0.31.0 named the case: `boot-notification.md`
+§5.2, "`Reconnect` therefore covers both cases of no boot occurred: a re-dialled
+session, and a Boot the server asked for." The episode reading answered a
+power-on station's trigger with `PowerOn` and an uptime that never reset, which
+the server's rule-3 cross-check refuses; connect mode now answers with
+`Reconnect`, the uptime running on - `Station.bootOnRequest`.)*
+
 **Deliberately not proposed as a spec change.** A spec edit made to justify a
 simulator change is the wrong direction, and the reading above needs no edit to
 be correct. If the ambiguity is ever closed upstream it should be closed on its
@@ -80,7 +87,9 @@ the server agree on the protocol package" is not assumed.
 Carried forward from the brief, listed so they stay visible:
 
 - no boot-response timeout
-- ignores `response.configuration`
+- ignores `response.configuration` *(2026-10-13: the two keys the station holds,
+  `MeterValuesInterval` and `MeterValuesSampleInterval`, are applied from it; the
+  rest are still ignored)*
 - flat reconnect period
 - discards `mqttConfig` fields
 
