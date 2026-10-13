@@ -260,3 +260,46 @@ describe('TriggerMessage → BootNotification is truthful about the station, not
     expect(triggered).toEqual(direct);
   });
 });
+
+// boot-notification.md §5.2 (spec 398870a) :96 - "`Reconnect` therefore covers both cases of no boot
+// occurred: a re-dialled session, and a Boot the server asked for" - and the request schema's
+// bootReason: "It covers TWO such cases: a re-dialled MQTT session, and a BootNotification the
+// server asked for by TriggerMessage ... a station claiming `PowerOn` with a large uptime is
+// detectably lying." Rule 3: a retry of a boot repeats that boot, the same bootReason.
+describe('RED (D3) - the BootNotification a TriggerMessage asks for is Reconnect', () => {
+  beforeEach(() => {
+    publishCalls.length = 0;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(POWER_ON_AT);
+    monotonicMs = MONOTONIC_ORIGIN;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonicMs);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('after a power-on, the triggered boot says Reconnect with the uptime running on, and a retry of it repeats Reconnect', async () => {
+    const station = buildStation();
+    await station.connect();
+    // The station's own boot, at power-on.
+    await station.retryBoot();
+
+    elapse(40_000_000);
+    await new TriggerMessageHandler().handle(
+      triggerEnvelope('BootNotification') as never,
+      station as never,
+    );
+    // What a Pending answer's retry sends: the same boot again.
+    await station.retryBoot();
+
+    const [own, triggered, retried] = bootPayloads();
+    expect(own.bootReason).toBe(BootReason.POWER_ON);
+    expect(own.uptimeSeconds).toBe(0);
+    expect(triggered.bootReason, 'the Boot the server asked for named a power-on that did not happen').toBe(BootReason.RECONNECT);
+    expect(triggered.uptimeSeconds).toBe(40_000);
+    expect(retried.bootReason).toBe(BootReason.RECONNECT);
+    expect(retried.uptimeSeconds).toBe(40_000);
+  });
+});
