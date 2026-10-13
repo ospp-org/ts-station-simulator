@@ -1,0 +1,237 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# A BOOT ENDS NOTHING - NOT EVEN THE ONE AT WHICH NO SESSION SHOULD BE LIVE (the
+# session-end rule, 2026-10-13).
+#
+#   A session is ended only by the station's end record. No BootNotification ends one,
+#   whatever its bootReason and its uptimeSeconds: the server's boot force-fail is removed
+#   (BootNotificationHandler::failStuckSessions' arm for started sessions, SessionForceFailed,
+#   the ForceFailedReboot settlement, the 1010 a boot wrote). After this file's RemoteReset
+#   boot with uptime 0 - the boot the server used to answer by failing every live session
+#   on the station - the session reads `active`.
+#
+#   WHAT THE STATION THEN OWES. RemoteReset and FirmwareUpdate are the two boots at which
+#   no session may be live (reset.md §5 rule 3: a forced Reset settles every session
+#   first; rule 2 refuses an unforced one while a session runs; update-firmware.md §5 rule
+#   7 installs only once the sessions ended). A station that still holds a session at such
+#   a boot - its settle-first skipped or lost - cannot resume it, and after any restart it
+#   must report every session it held: it sends SessionEnded `Fault` at once, with the last
+#   delivered time it persisted. `Fault` is "a hardware fault, or a restart the station
+#   could not resume the wash after" (Gabi, 2026-10-13). This file is that station.
+#
+#   THE MONEY: Fault's row. A UserDuration session (`{{serviceId_1}}`, `svc_wash_basic`,
+#   seeded PerMinute) is pro-rated on the delivered time and refunded IN FULL below the
+#   low-delivery floor (`faultFullRefundThreshold` of the booking). The record of a wash
+#   that had barely started holds 0 s delivered, so the 1000 authorized for a 600 s
+#   booking at 100 credits/minute come back whole: `failed`, 0 charged, 1000 refunded.
+#
+# WHAT THIS FILE USED TO BE. "Boot RemoteReset Fails Live Session", the END-side control
+# of the preserve proofs: core/boot-reconnect-preserves-live-session.yaml was this file
+# with one literal changed (the second boot's bootReason), that one read `active` and this
+# one `failed` + 1010, and the pair attributed the outcome to the bootReason string. The
+# rule abolishes the partition the pair measured - every reason now reads `active` - so
+# the pair no longer discriminates; a server that ended sessions at a boot would now fail
+# both files. What separates this file from its old twin is what comes after the boot:
+# the end record a station that could not resume sends.
+#
+# uptimeSeconds 0 STAYS, as the truth of a RemoteReset: boot-notification.md §5.2 rule 2,
+# the real-boot reasons "carry an uptime measured from the restart they name". It no
+# longer decides anything about the session on the server.
+#
+# It does not duplicate device-management/soft-reset.yaml or hard-reset.yaml, which hold
+# no session, nor reset-forced-settles-session-as-operator-stop.yaml, where the station
+# settles first (OperatorStopped) and the boot finds nothing live.
+#
+# NEEDS THE SERVER OF THE SESSION-END RULE. Against csms-server f413256f and earlier the
+# boot fails the session and the `active` read after it fails.
+name: "Boot RemoteReset Ends Nothing"
+description: "A live session, then a RemoteReset boot with uptime 0: the boot ends nothing and the session stays active. The station, which could not resume the wash after a RemoteReset, sends SessionEnded Fault at once with the persisted delivered time, and Fault's row settles it - failed, refunded in full below the low-delivery floor."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay available, then a live session ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 600
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # The pre-condition, read off the server: the session is live before the boot.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The re-boot under test: RemoteReset, uptime 0 - a restart the server commanded,
+  #     with a session still live on its books. ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "RemoteReset"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: delay
+    ms: 1500
+
+  # READ 1 - THE BOOT ENDED NOTHING. Server-written: a server that still failed sessions at
+  # a boot would read `failed` + 1010 here, which is what this file asserted until the rule.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- THE END RECORD of a station that could not resume the wash after a RemoteReset:
+  #     SessionEnded Fault at once, carrying the delivered time its record held (none of
+  #     the wash had been checkpointed as delivered when the restart came). ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Fault"
+      actualDurationSeconds: 0
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1500
+
+  # READ 2 - Fault's row settled it: `failed` (Fault is the one end-record arm that fails a
+  # session), nothing charged and the whole 1000 refunded, below the low-delivery floor.
+  # (`fail_reason` is pinned by sessions/session-fault-during-service.yaml, not here.)
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.credits_charged: 0
+      data.refund_amount: 1000

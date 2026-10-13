@@ -18,18 +18,22 @@ import YAML from 'yaml';
  * What an accepted Reset leaves is readable. ResetResponseHandler::handle writes a
  * `station_reset` row to the station journal whose details carry the Reset's messageId and the
  * `forced` its pending command was registered with (GET /api/v1/admin/stations/{stationId}/
- * journal, newest first), then dispatches StationReset. The event's listener,
- * SettleSessionsOnForcedReset, returns on an unforced reset; on a forced one it runs
- * StopAllStationSessionsAction, whose StopSessionAction moves each active session to `stopping`
- * and then publishes a StopService naming it.
+ * journal, newest first).
+ *
+ * What it no longer does (the session-end rule, 2026-10-13): stop the sessions itself. Until
+ * then a forced Reset's StationReset listener, SettleSessionsOnForcedReset, moved each active
+ * session to `stopping` and published a StopService naming it. A session is ended only by the
+ * station's end record, and for a forced Reset that is the station's settle-first SessionEnded
+ * `OperatorStopped` (reset.md §5 rule 3); the listener is removed.
  *
  * So, over the parsed YAML:
  *   - every reset the corpus commands sends no key but `force`;
  *   - hard-reset commands the forced reset and soft-reset the unforced one, each saying so;
  *   - the three files that answer their Reset to prove the round trip read back the
  *     station_reset row of THAT Reset (by its messageId) with the force they sent;
- *   - the forced reset, with a session running, waits for the listener's StopService, checks it
- *     names that session and reads `stopping`, all before the station's own SessionEnded.
+ *   - the forced reset, with a session running, reads it still `active` after the Reset is
+ *     accepted, then sends the station's SessionEnded OperatorStopped and reads `completed` -
+ *     and waits for no StopService of the server's.
  */
 
 const SCENARIOS_DIR = fileURLToPath(new URL('../../../scenarios', import.meta.url));
@@ -148,28 +152,33 @@ describe('CW120 — a scenario that answers its Reset reads back the station_res
   }
 });
 
-describe('CW120 — the forced reset asserts its operator stop before the station settles', () => {
-  it("waits for the listener's StopService, checks it names the session, and reads stopping before the SessionEnded", () => {
+describe('the forced reset: the station settles first, and the server stops nothing itself', () => {
+  it('reads active after the Reset Response, then sends SessionEnded OperatorStopped, then reads completed - and waits for no StopService', () => {
     const steps = stepsOf(join(DEVICE_MANAGEMENT, 'reset-forced-settles-session-as-operator-stop.yaml'));
+
+    const sessionRead = (status: string) => (s: Step): boolean =>
+      s.action === 'api_call' && s.method === 'GET' &&
+      s.url === '{{target_url}}/api/v1/sessions/{{captured.sessionId}}' &&
+      (s.expect_body as Record<string, unknown> | undefined)?.['data.status'] === status;
 
     const answer = indexFrom(steps, 0, (s) =>
       s.action === 'send' && s.message === 'Reset' && s.messageType === 'Response');
-    const stopService = indexFrom(steps, answer, (s) =>
-      s.action === 'wait_for' && s.message === 'StopService' && s.messageType === 'Request');
-    const namesSession = indexFrom(steps, stopService, (s) =>
-      s.action === 'assert' && s.field === 'payload.sessionId' && s.equals === '{{captured.sessionId}}');
-    const stopping = indexFrom(steps, namesSession, (s) =>
-      s.action === 'api_call' && s.method === 'GET' &&
-      s.url === '{{target_url}}/api/v1/sessions/{{captured.sessionId}}' &&
-      (s.expect_body as Record<string, unknown> | undefined)?.['data.status'] === 'stopping');
-    const sessionEnded = indexFrom(steps, 0, (s) => s.action === 'send' && s.message === 'SessionEnded');
+    const active = indexFrom(steps, answer, sessionRead('active'));
+    const sessionEnded = indexFrom(steps, 0, (s) =>
+      s.action === 'send' && s.message === 'SessionEnded' &&
+      (s.payload as Record<string, unknown> | undefined)?.reason === 'OperatorStopped');
+    const completed = indexFrom(steps, sessionEnded, sessionRead('completed'));
+    const stopServiceWait = indexFrom(steps, 0, (s) =>
+      s.action === 'wait_for' && s.message === 'StopService');
 
-    const order = { answer, stopService, namesSession, stopping, sessionEnded };
+    const order = { answer, active, sessionEnded, completed, stopServiceWait };
     expect(answer, JSON.stringify(order)).toBeGreaterThanOrEqual(0);
-    expect(stopService, JSON.stringify(order)).toBeGreaterThan(answer);
-    // AssertStep reads the LAST message received, so the check has to follow its wait_for directly.
-    expect(namesSession, JSON.stringify(order)).toBe(stopService + 1);
-    expect(stopping, JSON.stringify(order)).toBeGreaterThan(namesSession);
-    expect(sessionEnded, JSON.stringify(order)).toBeGreaterThan(stopping);
+    // The server's own stop is gone: after the Accepted Reset the session is still live.
+    expect(active, JSON.stringify(order)).toBeGreaterThan(answer);
+    // The station's settle-first is the end record, and it comes after that read.
+    expect(sessionEnded, JSON.stringify(order)).toBeGreaterThan(active);
+    expect(completed, JSON.stringify(order)).toBeGreaterThan(sessionEnded);
+    // And nothing waits for a StopService the server no longer sends.
+    expect(stopServiceWait, JSON.stringify(order)).toBe(-1);
   });
 });

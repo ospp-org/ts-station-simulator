@@ -176,7 +176,36 @@ steps:
     message: AuthorizeOfflinePass
     messageType: Response
     timeout_ms: 10000
+    capture:
+      offlineSessionId: "payload.sessionId"
 
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # --- The station ends the session the pass opened (the session-end rule, 2026-10-13: a
+  #     session is ended only by the station's end record), as
+  #     offline-pass-refused-the-three-a-station-meets.yaml closes its control's. Until
+  #     2026-10-13 this file stopped at the Accepted and left the session open, claiming the
+  #     bay for the next scenario on this station until the sweep closed it. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      reason: "Local"
+      actualDurationSeconds: 2
+      creditsCharged: 0
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

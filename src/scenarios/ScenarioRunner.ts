@@ -183,8 +183,9 @@ export interface ScenarioDefinition {
   skip_kind?: SkipKind;
   /**
    * Override the per-scenario wall-clock budget (ms). Only for a scenario whose slowness is
-   * DELIBERATE — arc8-reconnect-preserve holds a connection past the server's 300s recovery
-   * deadline and legitimately runs ~348s. Raising this to paper over a scenario that hangs
+   * DELIBERATE — one that waits out a server schedule, as heartbeat-silence-offline-sweep
+   * waits out the 105s heartbeat threshold and its sweep (every override is argued in
+   * ScenarioRunner.scenarioTimeout.test.ts). Raising this to paper over a scenario that hangs
    * for an unknown reason is the failure this whole mechanism exists to surface.
    */
   scenario_timeout_ms?: number;
@@ -1895,11 +1896,13 @@ export class ScenarioRunner {
    *   - slowest SUCCESSFUL scenario, excluding the deliberate outlier:  14.4s (Hard Reset)
    *   - slowest scenario overall, excluding the outlier:                60.8s — and those two
    *     (multiunit-*-drive) spend it inside their own `wait_for … timeout_ms: 60000`
-   *   - the deliberate outlier: arc8-reconnect-preserve at 347.8s, which by design holds a
-   *     connection past the server's 300s offline-recovery deadline
+   *   - the deliberate outlier: arc8-reconnect-preserve at 347.8s, which by design held a
+   *     connection past the server's 300s offline-recovery deadline (the session-end rule
+   *     of 2026-10-13 removed that deadline, and arc8 now runs inside the default)
    * DEFAULT_SCENARIO_TIMEOUT_MS sits above the 60.8s band so a scenario that legitimately
    * exhausts a 60s `wait_for` still reports ITS OWN error rather than being masked by ours,
-   * and ~6x above the real success ceiling. arc8 carries `scenario_timeout_ms` of its own.
+   * and ~6x above the real success ceiling. A file that waits out a server schedule carries
+   * `scenario_timeout_ms` of its own.
    *
    * HONEST LIMIT: a JS promise cannot be cancelled. On timeout we return a failed result and
    * let the run continue, but the orphaned scenario keeps running; its own `finally` still

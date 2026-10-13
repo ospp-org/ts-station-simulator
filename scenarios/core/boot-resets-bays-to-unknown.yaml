@@ -70,10 +70,13 @@ description: "Drive both bays to `available`, then Boot twice from the same stat
 # member that does not name a boot", sent when the station re-establishes MQTT
 # WITHOUT having restarted. A station that never restarted did not lose its bays, so
 # the server's knowledge of them is no staler after the reconnect than before it —
-# and `unknown` is not cosmetic, it refuses money with 3002 BAY_NOT_READY. The three
-# sweeps beside the reset (failStuckSessions, failStuckFirmwareUpdates,
-# failStuckDiagnosticsUploads) all preserve on this branch; the bay wipe was the
-# fourth call and the only one that did not, which is what f8f3af2b closed.
+# and `unknown` is not cosmetic, it refuses money with 3002 BAY_NOT_READY. When f8f3af2b
+# landed, the three sweeps beside the reset (failStuckSessions, failStuckFirmwareUpdates,
+# failStuckDiagnosticsUploads) all preserved on this branch; the bay wipe was the
+# fourth call and the only one that did not, which is what f8f3af2b closed. The session
+# sweep has since gone: under the session-end rule (2026-10-13) no boot ends a session,
+# whatever its reason, so this branch now decides only the bay wipe and the firmware
+# and diagnostics sweeps.
 #
 # WHAT WOULD MAKE THIS FILE GO RED AGAIN, IN EITHER DIRECTION. PROOF 1 red = the
 # reset stopped firing at all. PROOF 2 red = the wipe escaped the guard and a
@@ -259,10 +262,11 @@ steps:
   # --- PROOF 2: a Reconnect Boot does NOT reset them — the reset is a RESTART's.
   # uptimeSeconds is ~25h and the reason is `Reconnect`: the station is telling the
   # server it never restarted, only re-established MQTT. That is the branch at
-  # BootNotificationHandler.php:387 which PRESERVES in-flight sessions — and as of
-  # csms-server f8f3af2b the status wipe is INSIDE that preservation, so the bays
-  # survive. This step is what distinguishes "the reset fires on a reboot" from "the
-  # reset fires on every Boot", and it now reads the FIRST of those.
+  # BootNotificationHandler.php:387 which then PRESERVED in-flight sessions (every boot
+  # does since the session-end rule, 2026-10-13) — and as of csms-server f8f3af2b the
+  # status wipe is INSIDE that branch, so the bays survive. This step is what
+  # distinguishes "the reset fires on a reboot" from "the reset fires on every Boot",
+  # and it now reads the FIRST of those.
   #
   # INVERTED, NOT DELETED, AND THE ARM IS WHY IT IS STILL A PROOF. Reading a value
   # that was already there proves nothing — which is the trap this file was built to

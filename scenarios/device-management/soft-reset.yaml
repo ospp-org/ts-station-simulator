@@ -82,8 +82,9 @@ steps:
   # (`PendingCommandRegistry::hasOutstanding`). The Reset round trip would never complete.
   # Answered, the Response is what `ResetResponseHandler::handle` resolves: it writes a
   # `station_reset` row to the station journal with this Reset's messageId and `details.forced`
-  # false, read back at the end of this file, and dispatches StationReset. The event's one
-  # listener, SettleSessionsOnForcedReset, returns on an unforced reset.
+  # false, read back at the end of this file. (The forced-reset listener that stopped the
+  # station's sessions, SettleSessionsOnForcedReset, is removed by the session-end rule of
+  # 2026-10-13; it never acted on an unforced reset.)
   - action: send
     message: Reset
     messageType: Response

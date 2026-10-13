@@ -1,0 +1,242 @@
+# Placeholders overridable via --var KEY=VALUE on `simulator run`:
+#   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
+#
+# AN UNANSWERED STOP IS SENT AGAIN, AND THE STATION'S ANSWER IS STILL THE END RECORD (the
+# session-end rule, 2026-10-13).
+#
+#   A session is ended only by the station's end record, and for a stop the server asked
+#   for that record is the StopService RESPONSE `Accepted` (Gabi, 2026-10-13: "the
+#   RESPONSE stays its record"). A StopService that goes unanswered - the command timeout,
+#   the STOPPING timeout - is NOT an end: the server no longer closes the session on its
+#   own, it SENDS THE StopService AGAIN, and waits. The station answers a repeated
+#   StopService for a session it already stopped with its cached RESPONSE (stop-service.md
+#   §6 rule 10, the 24-hour retention horizon): the delivered time and credits of the stop
+#   it actually performed. The sweep (booked end + 60 s, `completed`, full charge, anomaly)
+#   stays the only fallback.
+#
+#   WHAT THIS FILE USED TO PROVE IS GONE. It was the StopService TIMEOUT arm, one of the two
+#   timeout arms that moved money: CommandTimeoutScanner::handleStopServiceTimeout and the
+#   STOPPING reaper both failed the session `failed` / 1010 / TerminalReason::StopAckLost,
+#   settled pro-rata on the server's own clock. Both closes are removed. What the timeout
+#   does now is the re-send this file waits for.
+#
+# THE STATION HERE IS THE ONE WHOSE RESPONSE WAS LOST. It received the first StopService,
+# stopped the wash (3 s in), and its RESPONSE never arrived - in this file, it is simply not
+# sent. When the stop comes again it answers with the RESPONSE it cached: `Accepted`, 3 s,
+# 5 credits. (A station that never received the first one would stop at the second and
+# answer with what it had delivered by then; the server cannot tell the two apart, and
+# need not.)
+#
+# THE WINDOW, AND WHY THE WAIT IS 120s.
+#   config/ospp.php   'StopService' => 10 (command_timeouts) and `'stopping' => 60` (the
+#                     session STOPPING timeout)
+#   PendingCommandRegistry.php:96  SCAN_CADENCE_SECONDS = 60 - `command:check-timeouts` is
+#                     `->everyMinute()` (routes/console.php), as is `session:check-timeouts`
+#   so the first re-send is due no later than 10 + 60 = 70s after the dispatch, and the
+#   STOPPING timeout's no later than 60 + 60. The wait below is 120s: either arm's first
+#   re-send lands inside it, with margin for `->withoutOverlapping(10)` skipping a tick.
+#
+# THE MONEY, and it is deterministic now. The cached RESPONSE carries 3 delivered seconds;
+# the customer's stop (`POST /sessions/{id}/stop`, stop_origin `user`) settles a UserDuration
+# booking pro-rata on them, as sessions/stop-service.yaml measured on UAT for 45 s
+# (75/425): ceil(3/60 x 100) = 5 charged of the 500 a 300 s booking authorizes, 495 refunded.
+# The old arm's amount was "however long the sweep took to land", and unassertable.
+#
+# WHAT A FAILING SERVER LOOKS LIKE. `failed` / 1010 after the silence (the removed close);
+# no second StopService (no re-send: the session would hold its bay until the sweep and
+# then be charged in full); or a `completed` at a full charge (a close of its own).
+#
+# NEEDS THE SERVER OF THE SESSION-END RULE, and its scheduler (`schedule:work` on UAT).
+# Against csms-server f413256f and earlier the timeout fails the session and no second
+# StopService is sent.
+name: "Stop Service Unanswered - sent again, settled on the station's answer"
+description: "Server dispatches StopService for an active session and the station's RESPONSE is lost. The server must not close the session on the timeout: it stays stopping, the server sends the StopService again, and the station's cached RESPONSE to the repeat settles it pro-rata on the delivered time it reports."
+scenario_timeout_ms: 240000
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Bay Available ---
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A real, funded, ACTIVE session. The stop has to have something to stop. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/start"
+    background: true
+    body:
+      bay_id: "{{bayId_1}}"
+      service_id: "{{serviceId_1}}"
+      duration_seconds: 300
+    expect_status: 201
+
+  - action: wait_for
+    message: StartService
+    messageType: Request
+    timeout_ms: 15000
+    capture:
+      sessionId: "payload.sessionId"
+      bayId: "payload.bayId"
+
+  - action: send
+    message: StartService
+    messageType: Response
+    payload:
+      status: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      previousStatus: "Available"
+      programs:
+        - programNumber: 1
+          available: false
+
+  # The StartService Response is processed asynchronously: read the session ACTIVE before
+  # the stop is asked for.
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+      data.credits_authorized: 500
+
+  # --- The operator asks for the stop. The server answers 200 and publishes StopService. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}/stop"
+    expect_status: 200
+
+  # --- The command reaches the station. Confirming that is what makes the silence below
+  #     a lost answer, rather than a message that never arrived. ---
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # THE LOST RESPONSE. There is deliberately no `send` here: the station stopped the wash
+  # and its answer never reached the server.
+  # ────────────────────────────────────────────────────────────────────────────
+
+  - action: delay
+    ms: 3000
+
+  # READ 1 - the silence ended nothing yet: the stop is outstanding.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "stopping"
+
+  # THE RE-SEND. The timeout's arm now asks again instead of closing the session. It names
+  # the same session; it arrives after the command timeout and one scan.
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 120000
+
+  - action: assert
+    field: "payload.sessionId"
+    equals: "{{captured.sessionId}}"
+
+  # READ 2 - and nothing closed it in between: still `stopping`, not `failed` / 1010.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "stopping"
+
+  # --- THE CACHED RESPONSE (stop-service.md §6 rule 10): the stop the station performed at
+  #     the first StopService, 3 s in. It answers the repeat, which it correlates to. ---
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 3
+      creditsCharged: 5
+
+  # No SessionEnded: the RESPONSE is the end record of a stop the server asked for.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 2000
+
+  # READ 3 - the station's answer settled it: completed, pro-rata on the 3 s it reports.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 5
+      data.refund_amount: 495

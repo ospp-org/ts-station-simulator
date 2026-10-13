@@ -1,11 +1,25 @@
 name: "Disconnect During Session"
 description: >
-  Disconnect in the middle of an active session, leaving the session ACTIVE and the station
-  disconnected — which is its real, used purpose (other work relies on it to produce exactly
-  that state). KNOWN GAP — it does NOT test what its old description claimed: `fault: disconnect`
-  is the last step and nothing is asserted afterwards, so neither the LWT firing nor the
-  server's handling of the orphaned session is observed. Same 5s-reconnect vs 10s-will race
-  recorded in sessions/arc8-reconnect-preserve.yaml:7-10.
+  Disconnect in the middle of an active session: losing the MQTT link ends nothing, so the
+  session reads ACTIVE while the station is away. The station then does what a conforming
+  station does after a blip - reconnects, boots again with `Reconnect` and its uptime running
+  on (a reboot ends nothing either) - and ends the wash with its own SessionEnded, which
+  settles it. Until 2026-10-13 the file stopped at the disconnect and left the session open;
+  under the session-end rule only the sweep would ever close such a session, holding the bay
+  for the next scenario on this station.
+# THE SESSION-END RULE (2026-10-13). A session is ended only by the station's end record; a
+# disconnection, the will it publishes and the reconnect boot are none of them, and the
+# server's only fallback is the sweep (booked end + 60 s, plus the grace period while the
+# station is away). Under the corpus default `clean_session: true` the reconnect publishes
+# the will (MqttConnection's LIVE_RECONNECT_PERIOD_MS docblock), so the server marks the
+# station offline and discards its session key: the station has to boot again before
+# anything it signs is accepted (connection-lost.md §6 step 1), and only then can it send
+# the SessionEnded.
+#
+# WHAT THE ASSERTIONS ATTRIBUTE. `active` after the disconnect and again after the reconnect
+# boot: neither ended the session. `completed` after the SessionEnded: the station's record
+# did. Under the session-end rule nothing else could have, short of the sweep, which a 300 s
+# booking keeps minutes away.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -111,20 +125,11 @@ steps:
   - action: delay
     ms: 1000
 
-  # THE ASSERTION — the file's own stated purpose, verified for the first time.
-  # Its description says the point is "leaving the session ACTIVE and the station
-  # disconnected — which is its real, used purpose (other work relies on it to
-  # produce exactly that state)". That state was never checked: the file
-  # disconnected and ended, so a session the server had already failed or settled
-  # looked identical to one left correctly active.
-  #
-  # data.status active is server-derived and is precisely the invariant the rest
-  # of the corpus leans on this file for. Losing the MQTT link must NOT terminate
-  # a running session — the wash is still running on real hardware, and the
-  # reconnect path (boot-reconnect-preserves-live-session, boot-error-recovery)
-  # exists to hand it back. If this ever reads `failed`, every scenario that
-  # depends on this file to set up a live-session-plus-offline-station has been
-  # building on a state that was not there.
+  # THE FIRST ASSERTION — the session survived the loss of the link. data.status active
+  # is server-derived: losing the MQTT link must NOT terminate a running session — the
+  # wash is still running on real hardware, and only the station's end record may end it.
+  # If this ever reads `failed` or `completed`, the server ended a session on a
+  # disconnection, which the session-end rule forbids.
   #
   # The api_call is plain HTTP and is unaffected by the disconnect.
   - action: api_call
@@ -133,3 +138,99 @@ steps:
     expect_status: 200
     expect_body:
       data.status: "active"
+
+  # --- The link comes back on the client's own reconnect, and the station boots again:
+  #     `Reconnect`, because the firmware did not restart, with the uptime running on from
+  #     the first boot (boot-notification.md §5.2 rule 1). ---
+  - action: wait_for_connect
+    timeout_ms: 20000
+
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 10
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "Reconnect"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: false
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # The post-boot report: the wash ran on through the blip, so the bay is still Occupied.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+
+  - action: delay
+    ms: 1500
+
+  # The reconnect boot ended nothing either.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- THE END RECORD. The customer stops the wash at the bay: SessionEnded `Local`, with
+  #     the seconds it ran. It, and nothing before it, ends the session. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 12
+      creditsCharged: 20
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: delay
+    ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"

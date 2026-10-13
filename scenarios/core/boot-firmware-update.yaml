@@ -52,7 +52,11 @@ steps:
   # the full statement of what this does and does not prove. In short: it proves
   # the boot was persisted onto stations.boot_reason rather than merely answered,
   # and it does NOT prove any behaviour, because nothing branches on the column.
-  # `FirmwareUpdate` is in the force-fail class at BootNotificationHandler.php:343.
+  # `FirmwareUpdate` was in the force-fail class at BootNotificationHandler.php:343, and
+  # one of the two reasons that still ended a session until the session-end rule
+  # (2026-10-13). No boot ends one now: on the station's side `FirmwareUpdate` means no
+  # session may be live at this boot (an update installs only once its sessions ended),
+  # and a station still holding one sends SessionEnded `Fault` for it at once.
   #
   # This file boots firmwareVersion 2.0.0, so it also pins the version the server
   # recorded for the same boot. That IS a second echoed literal, not a derived

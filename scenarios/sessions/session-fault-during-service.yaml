@@ -115,6 +115,9 @@ steps:
       creditsCharged: 0
 
   # --- StatusNotification Faulted ---
+  # The bay's state, and only the bay's: a bay report never settles, closes or fails a
+  # session (the session-end rule, 2026-10-13), so the session's row read below is the
+  # SessionEnded's doing alone.
   - action: send
     message: StatusNotification
     messageType: Event
@@ -138,8 +141,11 @@ steps:
   #                          `completed`. Without this field the two are identical
   #                          on the wire; with it they are unambiguous.
   #   credits_charged 0    — Fault carries the low-delivery floor
-  #                          (TerminalReason::appliesLowDeliveryFloor():100 lists
-  #                          Fault, BayFault, ForceFailedReboot and nothing else).
+  #                          (TerminalReason::appliesLowDeliveryFloor()), and of the
+  #                          reasons a SessionEnded can carry it is the only one that
+  #                          does. Since the session-end rule (2026-10-13) Fault also
+  #                          covers a restart the station could not resume the wash
+  #                          after; it is still the one wire value for both.
   #                          1 delivered second out of 300 is below the floor, so
   #                          the pro-rata bill collapses to a full refund. The
   #                          identical-input sibling session-stop-local, whose

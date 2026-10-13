@@ -1,83 +1,57 @@
 # Placeholders overridable via --var KEY=VALUE on `simulator run`:
 #   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_1}}
 #
-# SERVER BRANCH REACHED — and it is a MONEY branch with no scenario on it.
-#   csms-server app/Modules/Session/Handlers/StopServiceResponseHandler.php:296-300
-#     // The wash ran. Settle it through the ONE authority as a DELIVERED session of its
-#     // kind, and let the two strategies price it.
-#     $this->completeSessionAction->execute(
-#         sessionId: $sessionId,
-#         actualDurationSeconds: $session !== null ? $this->deliveredSeconds($session) : null,
-#         reason: TerminalReason::StopRefusedWhileRunning,
-#     );
+# A REFUSED STOP ENDS NOTHING (the session-end rule, 2026-10-13).
+#   A session is ended only by the station's end record - its SessionEnded, or the
+#   StopService RESPONSE `Accepted` of a stop the server asked for - and a StopService
+#   RESPONSE `Rejected`, with any code, is not one. The server leaves the session live,
+#   `stopping`, and waits for the station's SessionEnded or, failing it, for the sweep
+#   (booked end + 60 s, closed `completed`, charged in full, with the anomaly mark).
 #
-#   IT WAS `forceCompleteFullDelivery` AND IT IS NOT ANY MORE. This header described the
-#   branch as re-entering `execute()` with `actualDurationSeconds: $session->
-#   duration_requested` — the whole booking, as minute arithmetic, for every kind alike.
-#   csms-server `77f9fdd6` replaced that call: the helper "settles through the kind-blind
-#   legacy arm of CompleteSessionAction ... so the amount was decided by a clock rather
-#   than by the service" (StopServiceResponseHandler.php:283-286). The branch now goes to
-#   the ONE settlement authority with a terminal REASON, and the amount is chosen by the
-#   session's service kind.
+#   UNTIL THAT RULE THIS FILE PROVED THE OPPOSITE, and it is kept to prove the new one on
+#   the same bytes. The refusal used to SETTLE the wash: csms-server
+#   StopServiceResponseHandler completed it as a delivered session of its kind
+#   (TerminalReason::StopRefusedWhileRunning) and journalled `settledAs` beside the
+#   refusal; the 3006 sibling settled it as StationLostSession. Both settlements are
+#   removed. What is left of the refusal on the server is its journal row.
 #
-#   `forceCompleteFullDelivery` still exists and is still correct — for its ONE remaining
-#   caller, the offline / connection-lost sweep (FailOfflineSessionJob). It is simply no
-#   longer on this path, so a reader who followed this header into
-#   CompleteSessionAction.php was reading a mechanism this scenario does not reach.
+# WHY 3007 SESSION_MISMATCH. It is one of the refusals `stop-service.md` §6 requires of a
+# conforming station (r3: the sessionId names a session on another bay). The station in
+# this file refused the stop and went on running the wash, which is what a station that
+# was running it does: the refusal stopped nothing.
 #
-#   WHAT DID NOT CHANGE IS THIS FILE'S TWO NUMBERS, and they now arrive by a different
-#   route — see THE ARITHMETIC below. What DID change is that the choice is no longer
-#   binary: the errorCode still selects the RULE (this arm against the 3006 sibling's),
-#   but the service KIND now selects the arithmetic inside it. This file books a
-#   PerMinute service, so it exercises the pro-rata arm of the corrected handler;
-#   stop-service-refused-multiunit-bills-full.yaml is the all-or-nothing one.
+# WHAT A CONFORMING STATION SENDS NEXT, AND WHY THE BOOKING IS THE 60 s MINIMUM. The wash
+# runs to its timer and the station ends it with SessionEnded `TimerExpired` - the end
+# record the server waits for. The booking is the shortest StartSessionRequest admits
+# (`duration_seconds` min:60), so the timer's end lands inside this file, a minute after
+# the start. `TimerExpired` is "full booked duration delivered": the whole authorization
+# is charged, 100 of 100 credits for 60 s at 100 credits/minute (`svc_wash_basic`, seeded
+# PerMinute, uatPrivileged.ts DEFAULT_SEED_SERVICES), refund 0.
 #
-# WHY NO SCENARIO REACHED IT. Measured 2026-09-11 over all 149 files: the corpus
-# contains 104 `messageType: Response` sends and SIX of them are refusals
-# (UpdateFirmware x3, CertificateInstall, ChangeConfiguration, StartService). StopService
-# is answered NINE times and every one of them is `Accepted`. The neighbouring file
-# `stop-service-rejected.yaml` is not a counter-example — it never starts a session and
-# asserts a SERVER-side pre-dispatch 404, and its own header says the station-rejection
-# path "is no longer reachable". That statement is true only for an UNKNOWN sessionId.
-# For a session the server itself created and dispatched a StopService for — this file —
-# the station's refusal is reachable, and it settles money.
+# THE THREE READS, AND WHAT EACH ONE RULES OUT.
+#   1. `stopping` after the refusal: the session is live. A server that still settled a
+#      refused stop would read `completed` here; one that dropped the stop would read
+#      `active`.
+#   2. The refusal's journal row WITHOUT `settledAs`: the refusal was recorded and chose
+#      no settlement.
+#   3. `completed` 100/0 within seconds of the SessionEnded, and no anomaly mark: the
+#      station's end record settled it, by TimerExpired's row. A server that refused a
+#      TimerExpired on a `stopping` session (csms-server SessionEndedHandler did, while the
+#      stop was the settlement) would leave it `stopping` here, for the sweep to close a
+#      minute later with the anomaly mark - the same 100/0, so the money alone could not
+#      tell them apart; the timing and the mark do.
 #
-# WHY 3007 SESSION_MISMATCH. It is one of the two refusals `stop-service.md` requires of
-# a conforming station (r1 3005 unknown bay, r3 3007 session names a different bay) and
-# the simulator implements NEITHER (docs/CONFORMANCE-GAPS.md group D). So the code here
-# is both a real station obligation and a non-3006 value, which is what selects the arm.
-# Any non-3006 code takes the same branch; 3007 is chosen so the file names a gap.
+# NEITHER ASSERTED NUMBER IS ECHOED FROM THIS FILE. The SessionEnded carries the station's
+# advisory `creditsCharged`; the server settles from its own tariff (session-ended.md §5
+# rule 5), and `refund_amount` is derived (SessionResource).
 #
-# HONESTY ABOUT WHAT IS PROVEN. The station in scenario mode is a byte source — it is
-# not deciding to refuse, it is scripted to. That is fine and deliberate: this file is a
-# proof about the SERVER's handling, not about station conformance. It is stated here so
-# nobody later reads a green run as evidence that a station detects a bay mismatch.
+# HONESTY ABOUT WHAT IS PROVEN. The station in scenario mode is a byte source: it is
+# scripted to refuse, not deciding to. This file is a proof about the SERVER's handling.
 #
-# THE ARITHMETIC, DERIVED NOT COPIED — AND IT NO LONGER RUNS THROUGH duration_requested.
-# `svc_wash_basic` is seeded PerMinute at 100 credits/minute (uatPrivileged.ts
-# DEFAULT_SEED_SERVICES) and the booking below is 300s, so `credits_authorized` =
-# ceil(300/60 * 100) = 500. PerMinute resolves to UserDuration, so the corrected handler
-# bills PRO-RATA on DELIVERED time rather than charging the reservation whole.
-#
-# Delivered time comes from the meter's last sample, and this file's sample carries a
-# literal `2026-05-27T08:00:00.000Z` that PREDATES `started_at`. A sample at or before
-# the start measures nothing, so csms-server `8a2506d0` falls back to the reservation —
-# 300s — instead of flooring to zero. Pro-rata over the full 300s is the full 500, and
-# the refund stays 0. Same two numbers, reached by a fallback rather than by a helper
-# that ignored the clock; the commit that restored the fallback names this scenario's
-# timestamp as the reason it exists. The sibling `stop-service.yaml`
-# books the SAME service for the SAME 300s and, on an Accepted stop reporting 45
-# delivered seconds, settles 75/425. Same fixture, same money in, opposite money out —
-# and the only difference on the wire is this file's `status: Rejected`.
-#
-# NEITHER ASSERTED NUMBER IS ECHOED FROM THIS FILE. 500 and 0 appear in no payload sent
-# here; `credits_charged` is computed by the settlement strategy from
-# `duration_requested`, and `refund_amount` is derived in SessionResource:53-56. The one
-# value this file does supply — 3007 — is asserted only where the server RE-DERIVED a
-# decision from it: `details.settledAs`, which is written by comparing the code against
-# SESSION_NOT_FOUND (StopServiceResponseHandler.php:124,140).
+# NEEDS THE SERVER OF THE SESSION-END RULE. Against csms-server f413256f and earlier the
+# refusal settles the session and read 1 fails.
 name: "Stop Service Refused While Running - full delivery billed"
-description: "Server dispatches StopService for an active session; the station refuses with 3007 SESSION_MISMATCH. The server must treat the wash as delivered in full - bill the whole reserved duration, refund nothing, and journal the refusal as StopRefusedWhileRunning."
+description: "Server dispatches StopService for an active session; the station refuses with 3007 SESSION_MISMATCH and runs the wash to its timer. The refusal ends nothing - the session stays stopping, the journal records the refusal with no settlement - and the station's SessionEnded TimerExpired settles it: the whole booking billed, nothing refunded, no anomaly."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -133,7 +107,7 @@ steps:
         - programNumber: 1
           available: true
 
-  # --- Start a real, funded session: 300s at 100 cr/min = 500 authorized ---
+  # --- Start a real, funded session: 60s at 100 cr/min = 100 authorized ---
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/start"
@@ -141,7 +115,7 @@ steps:
     body:
       bay_id: "{{bayId_1}}"
       service_id: "{{serviceId_1}}"
-      duration_seconds: 300
+      duration_seconds: 60
     expect_status: 201
 
   - action: wait_for
@@ -170,25 +144,19 @@ steps:
         - programNumber: 1
           available: false
 
-  # Mirrors stop-service.yaml: the StartService Response and the Occupied notification are
-  # processed asynchronously, so the session must be observed ACTIVE before the stop is
-  # asked for. A MeterValues then a delay is the pattern that file established.
-  - action: delay
-    ms: 500
-
-  - action: send
-    message: MeterValues
-    messageType: Event
-    payload:
-      bayId: "{{captured.bayId}}"
-      sessionId: "{{captured.sessionId}}"
-      timestamp: "2026-05-27T08:00:00.000Z"
-      values:
-        liquidMl: 500
-        energyWh: 100
-
+  # The StartService Response is processed asynchronously, so the session is read ACTIVE
+  # before the stop is asked for: a stop against a session still `authorized` is a
+  # different path.
   - action: delay
     ms: 1500
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+      data.credits_authorized: 100
 
   # --- Operator asks for the stop. The server answers 200 and publishes StopService. ---
   - action: api_call
@@ -214,23 +182,19 @@ steps:
   - action: delay
     ms: 2000
 
-  # ASSERTION 1 — the money. A server that ignored the refusal would leave this `active`;
-  # one that treated a refused stop like a Fault would refund. Full delivery is the only
-  # outcome that bills the whole 500 and returns 0.
+  # READ 1 - the refusal ended nothing. `stopping` is the state the stop request put the
+  # session in, and nothing has taken it out: no settlement, no failure, no return to
+  # `active`.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
     expect_status: 200
     expect_body:
-      data.status: "completed"
-      data.credits_charged: 500
-      data.refund_amount: 0
+      data.status: "stopping"
 
-  # ASSERTION 2 — the DECISION, not just its effect. `settledAs` is the server comparing
-  # this file's 3007 against SESSION_NOT_FOUND and recording which settlement rule it
-  # picked. The sessions row shows the outcome and cannot show which of the two rules
-  # produced it — the handler's own docblock says so (StopServiceResponseHandler.php:26-30).
-  # This is the field that distinguishes the two money arms.
+  # READ 2 - the refusal is on the record, and it chose no settlement. The row is written
+  # by the server from this file's 3007; `settledAs` was the rule it settled the wash by,
+  # and there is no rule to name any more.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
@@ -239,9 +203,24 @@ steps:
       data[kind=command_refused].effectedBy: "Station"
       data[kind=command_refused].details.action: "StopService"
       data[kind=command_refused].details.errorCode: 3007
-      data[kind=command_refused].details.settledAs: "StopRefusedWhileRunning"
+    expect_body_absent:
+      - "data[kind=command_refused].details.settledAs"
 
-  # --- Pool hygiene: the session is terminal, so only the bay is returned. ---
+  # --- The wash runs on to its timer: the rest of the booked minute. ---
+  - action: delay
+    ms: 52000
+
+  # --- THE END RECORD. The station's timer ran out: the whole booking delivered. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 60
+      creditsCharged: 100
+
   - action: send
     message: StatusNotification
     messageType: Event
@@ -253,3 +232,26 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 2000
+
+  # READ 3 - the station's record settled it, by TimerExpired's row.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 100
+      data.refund_amount: 0
+
+  # And not the sweep: a sweep close carries `full_delivery_no_session_ended`, an end
+  # record's settlement carries no mark (the station's sessions list serves `anomaly`).
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/sessions"
+    expect_status: 200
+    expect_body:
+      data[sessionId={{captured.sessionId}}].status: "completed"
+      data[sessionId={{captured.sessionId}}].anomaly: null

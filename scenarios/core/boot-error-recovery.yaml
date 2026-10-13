@@ -8,35 +8,46 @@
 #   PERSISTED the reason they sent. That is an echoed literal: nothing in the
 #   server branches on stations.boot_reason.
 #
-#   `ErrorRecovery` is the exception, and the only one among the six. The server
-#   DOES branch on the wire value, at BootNotificationHandler.php:343:
+#   This one carries a LIVE SESSION into the boot and reads the session back, which
+#   is derived, not echoed. Until the session-end rule (2026-10-13) that read was also
+#   the corpus's one pin on `ErrorRecovery`'s place in the server's preserve set, first
+#   quoted here as BootNotificationHandler.php:343 had it:
 #
 #     $isReconnect = in_array($dto->bootReason,
 #       [BootReason::RECONNECT->value, BootReason::ERROR_RECOVERY->value], true);
 #
-#   The preserve set has exactly TWO members. `ErrorRecovery` is one of them,
-#   and the comment above that line says it is KEPT ALONGSIDE `Reconnect` on
-#   purpose — a fleet mid-upgrade emits both, and dropping the older value would
-#   force-fail live washes on every station that has not moved to `Reconnect`
-#   yet. That is a deliberate compatibility guarantee with no other test.
+#   `ErrorRecovery` was KEPT ALONGSIDE `Reconnect` there on purpose — a fleet
+#   mid-upgrade emits both, and dropping the older value would have force-failed live
+#   washes on every station not yet moved to `Reconnect` — and it stayed in the set when
+#   csms-server X3 and bd7f7135 widened it to six. No reason decides a session's fate
+#   now: no boot ends a session, whatever its bootReason or its uptimeSeconds, and a
+#   live session stays `active` after any boot. `ErrorRecovery` is one of the six
+#   reasons after which the station may resume a wash it held: it resumes it and sends
+#   its SessionEnded at the end, or sends SessionEnded `Fault` at once for a wash it
+#   cannot resume.
 #
 # WHY IT IS NOT A DUPLICATE OF boot-reconnect-preserves-live-session.yaml
 #
-#   That file pins `Reconnect`. This one pins `ErrorRecovery`. They are two
-#   separate literals in one in_array, so deleting `ErrorRecovery` from it —
-#   exactly the "tidy up the old value" edit the handler comment warns against —
-#   leaves the Reconnect proof GREEN and breaks only this file. A guarantee whose
-#   removal no test detects is not guaranteed.
+#   That file pins `Reconnect`, the one reason that names NO restart; this one pins
+#   `ErrorRecovery`, which names one (boot-notification.md §5.2). They were two
+#   separate literals in one in_array, and deleting `ErrorRecovery` from it would have
+#   left the Reconnect proof GREEN and broken only this file. Under the session-end
+#   rule they are the two halves of "no boot ends a session": a boot without a
+#   restart, and a restart. A server that ended a session whenever the station said it
+#   restarted would pass the Reconnect proof and fail this file.
 #
-# WHY uptimeSeconds IS 0
+# WHY uptimeSeconds IS 0 — NO LONGER WHAT DECIDES THE OUTCOME (2026-10-13)
 #
-#   Same reason as the Reconnect proof, and it is load-bearing. The fail arm is
-#   failStuckSessions(now()->subSeconds($dto->uptimeSeconds)) — a nonzero uptime
-#   spares any session started inside that window, so a boot with uptime 3600
-#   would preserve the session identically whatever the reason, and prove the
-#   UPTIME layer instead. uptimeSeconds 0 disarms it: the boot instant is now,
-#   the session started before it, and the ONLY thing left that can spare the
-#   session is the bootReason string.
+#   This paragraph read: the fail arm was failStuckSessions(now()->subSeconds(
+#   $dto->uptimeSeconds)), a nonzero uptime spared any session started inside that
+#   window, and uptime 0 disarmed that UPTIME layer, so the bootReason string alone
+#   could spare the session. The session-end rule removed the arm: at a boot, neither
+#   the reason nor the uptime decides anything about a session.
+#
+#   The 0 is kept because it is the truthful value: boot-notification.md §5.2 rule 2
+#   says `ErrorRecovery` carries "an uptime measured from the restart" it names. An
+#   uptime that did not reset would be rule 3's contradicted claim, through which the
+#   server MUST keep every session, so it would read `active` below all the same.
 #
 # WHAT THIS FILE DELIBERATELY DOES NOT PROVE
 #
@@ -45,7 +56,7 @@
 #   nothing with a nonzero count except Log::info — no column, no queue, no
 #   response field. It is unobservable over REST and is not asserted below.
 name: "Boot Error Recovery"
-description: "Start a live session, then re-boot with bootReason ErrorRecovery and uptimeSeconds 0. The server MUST leave the session active — the uptime layer is disarmed, so only the bootReason branch can produce that. Pins the second member of the preserve set, which the Reconnect proof does not cover."
+description: "Start a live session, then re-boot with bootReason ErrorRecovery and uptimeSeconds 0. The server MUST leave the session active — no boot ends a session, so the station's own SessionEnded at the end is its end record. Pins a restart, which the Reconnect proof (no restart) does not cover."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -138,11 +149,13 @@ steps:
         - programNumber: 1
           available: false
 
-  # The session must be ACTIVE before the re-boot, or this proves nothing: a
-  # session still PENDING is failed by a DIFFERENT arm of the same predicate
-  # (`status = pending AND created_at < bootTime`), so a preserved-looking
-  # outcome could come from the wrong branch. Asserted, not assumed — `status`
-  # is the server's own sessions.status column, read back.
+  # The session must be ACTIVE before the re-boot, or this proves nothing: what no
+  # boot may end is a session that has STARTED, and one still PENDING is a StartService
+  # not yet answered, so an `active` read after the boot could be the start landing
+  # late rather than the boot ending nothing. (A pending session used to be failed by a
+  # DIFFERENT arm of the boot's force-fail predicate, `status = pending AND created_at <
+  # bootTime`, which went with that force-fail under the session-end rule, 2026-10-13.)
+  # Asserted, not assumed — `status` is the server's own sessions.status column, read back.
   - action: delay
     ms: 1500
 
@@ -192,20 +205,23 @@ steps:
 
   # THE ASSERTION. Both fields are written by the server, neither is echoed:
   #   data.status          — sessions.status. The force-fail UPDATE in the else
-  #                          arm would have set this to 'failed'.
+  #                          arm set this to 'failed' until the session-end rule
+  #                          (2026-10-13); no boot ends a session now.
   #   data.fail_error_code — 1010 on that same UPDATE, and absent entirely unless
   #                          status is FAILED (SessionResource.php:66). Its
   #                          ABSENCE is therefore part of what 'active' asserts.
-  # The control for this assertion is boot-remote-reset-fails-live-session.yaml:
-  # the same live session and uptimeSeconds 0 with a session-ending bootReason, and
-  # it expects 'failed' + 1010. It is the one-literal twin of the Reconnect proof,
-  # not of this file: against this file it also differs in the station's response
-  # delays, offlineModeSupported, connectionType and pendingOfflineTransactions, none
-  # of which the outcome reads. It sent `PowerOn` until csms-server X3 moved that
-  # value into SESSION_PRESERVING_BOOT_REASONS alongside `ErrorRecovery`, then
-  # `ManualReset` until csms-server bd7f7135 moved that one too; a control on the same
-  # side of the partition as the thing it controls is not one, so it now sends
-  # `RemoteReset`.
+  # THE CONTROL NO LONGER DISCRIMINATES. It was boot-remote-reset-fails-live-session.yaml,
+  # now core/boot-remote-reset-ends-nothing.yaml: the same live session and uptimeSeconds 0
+  # with a RemoteReset boot, which expected 'failed' + 1010 while the server ended a
+  # session at that boot. Under the session-end rule it reads `active` after the boot, as
+  # this file does, so the pair no longer discriminates: a server that ended sessions at
+  # a boot would now fail BOTH files, and a server that ends none passes both. Its
+  # history, kept: it was the one-literal twin of the Reconnect proof, not of this file
+  # (it also differs in the station's response delays, offlineModeSupported,
+  # connectionType and pendingOfflineTransactions, none of which the outcome reads), and
+  # it sent `PowerOn` until csms-server X3 moved that value into
+  # SESSION_PRESERVING_BOOT_REASONS alongside `ErrorRecovery`, then `ManualReset` until
+  # csms-server bd7f7135 moved that one too, and then `RemoteReset`.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
@@ -216,7 +232,7 @@ steps:
   # Secondary, and echoed rather than derived — see boot-watchdog.yaml. Worth
   # keeping only because it transitions PowerOn -> ErrorRecovery on one station
   # within one scenario, so it proves the SECOND boot is the one that landed and
-  # that the preserve above was decided by this boot rather than an earlier one.
+  # that the `active` above is what this boot left, not a boot that never arrived.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
@@ -224,8 +240,15 @@ steps:
     expect_body:
       data.bootReason: "ErrorRecovery"
 
-  # --- Pool-hygiene teardown: this scenario deliberately leaves the session
-  #     ALIVE, so it must end it explicitly. (Class: session-leak.)
+  # --- THE END RECORD, not just pool hygiene. The boot ended nothing, so the session
+  #     is still `active`, and what ends it is the station's own SessionEnded: `Local`,
+  #     the customer stopping the wash at the bay, the record a conforming station sends
+  #     (the session-end rule, 2026-10-13). Its settlement is not read back here.
+  #     Without it the session would hold the bay until the sweep closed it, `completed`,
+  #     charged in full and marked `full_delivery_no_session_ended` (class:
+  #     session-leak); this boot is a restart the station may resume the wash after, so
+  #     the sweep counts the booked duration from this boot. The Available report after
+  #     it moves only the bay: a StatusNotification ends no session.
   - action: send
     message: SessionEnded
     messageType: Event
