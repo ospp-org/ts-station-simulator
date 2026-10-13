@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StationPool } from '../../scenarios/stations/StationPool.js';
-import { fakePaymentsServer, type FakePayment } from '../helpers/fakePaymentsServer.js';
+import { driveFakeTime, fakePaymentsServer, type FakePayment } from '../helpers/fakePaymentsServer.js';
 
 /**
  * WHAT THE CLI DOES WHEN A POOL TEARDOWN DOES NOT FINISH (Part C2, 2026-10-13).
@@ -130,12 +130,11 @@ async function runCli(args: string[]): Promise<CliOutcome> {
   process.argv = ['node', 'simulator', ...args];
   try {
     await import('../../cli/index.js');
-    for (let i = 0; exitCode === undefined && !(completed && args[0] === 'teardown-pool'); i++) {
-      if (i > 20_000) throw new Error(`the CLI never finished; stdout:\n${out.join('\n')}\nstderr:\n${err.join('\n')}`);
-      await vi.advanceTimersByTimeAsync(15_000);
+    try {
+      await driveFakeTime(() => exitCode !== undefined || (completed && args[0] === 'teardown-pool'), 50_000);
+    } catch (e) {
+      throw new Error(`the CLI never finished (${String(e)}); stdout:\n${out.join('\n')}\nstderr:\n${err.join('\n')}`);
     }
-    // Let a command that reported completion run to its end (a trailing file removal).
-    await vi.advanceTimersByTimeAsync(15_000);
   } finally {
     process.argv = argv;
     for (const s of spies) s.mockRestore();

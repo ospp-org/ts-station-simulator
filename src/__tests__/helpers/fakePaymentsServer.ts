@@ -272,20 +272,32 @@ export function fakePaymentsServer(options: FakePaymentsServerOptions) {
 }
 
 /**
- * Await a promise whose work sleeps on (faked) `setTimeout`, moving the fake clock until it settles.
- * Each step yields to the real event loop, so fetch mocks, file I/O and microtasks run between steps.
+ * Move the fake clock while work that sleeps on (faked) `setTimeout` runs, until `done()`.
+ *
+ * The clock moves ONLY while a fake timer is pending - straight to the next one - and otherwise
+ * stands still while the real event loop turns, so real work (file I/O, a module import, a mock's
+ * promises) finishes before fake time passes. Moving it a fixed step per turn let fake time run
+ * hours ahead of a slow `fs.rm` under the full parallel suite: the caller stopped waiting with the
+ * teardown still removing files, and its assertions ran in the middle of it.
  */
+export async function driveFakeTime(done: () => boolean, maxRealMs = 25_000): Promise<void> {
+  const realStart = performance.now();
+  while (!done()) {
+    if (performance.now() - realStart > maxRealMs) {
+      throw new Error(`still not done after ${maxRealMs} ms of real time`);
+    }
+    if (vi.getTimerCount() > 0) await vi.advanceTimersToNextTimerAsync();
+    else await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/** Await a promise whose work sleeps on (faked) `setTimeout`; see {@link driveFakeTime}. */
 export async function settleUnderFakeTime<T>(
   promise: Promise<T>,
-  options: { stepMs?: number; maxFakeMs?: number } = {},
-): Promise<{ value?: T; error?: unknown; settled: boolean; fakeElapsedMs: number }> {
-  const stepMs = options.stepMs ?? 15_000;
-  const maxFakeMs = options.maxFakeMs ?? 3 * 60 * 60_000;
+): Promise<{ value?: T; error?: unknown; settled: true; fakeElapsedMs: number }> {
   const start = Date.now();
   let outcome: { value?: T; error?: unknown } | undefined;
   promise.then((value) => { outcome = { value }; }, (error: unknown) => { outcome = { error }; });
-  while (outcome === undefined && Date.now() - start < maxFakeMs) {
-    await vi.advanceTimersByTimeAsync(stepMs);
-  }
-  return { ...(outcome ?? {}), settled: outcome !== undefined, fakeElapsedMs: Date.now() - start };
+  await driveFakeTime(() => outcome !== undefined);
+  return { ...(outcome as { value?: T; error?: unknown }), settled: true, fakeElapsedMs: Date.now() - start };
 }
