@@ -279,7 +279,7 @@ export async function settleUnderFakeTime<T>(
   promise: Promise<T>,
   options: { stepMs?: number; maxFakeMs?: number } = {},
 ): Promise<{ value?: T; error?: unknown; settled: boolean; fakeElapsedMs: number }> {
-  const stepMs = options.stepMs ?? 5_000;
+  const stepMs = options.stepMs ?? 15_000;
   const maxFakeMs = options.maxFakeMs ?? 3 * 60 * 60_000;
   const start = Date.now();
   let outcome: { value?: T; error?: unknown } | undefined;

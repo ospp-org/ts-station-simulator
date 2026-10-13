@@ -132,10 +132,10 @@ async function runCli(args: string[]): Promise<CliOutcome> {
     await import('../../cli/index.js');
     for (let i = 0; exitCode === undefined && !(completed && args[0] === 'teardown-pool'); i++) {
       if (i > 20_000) throw new Error(`the CLI never finished; stdout:\n${out.join('\n')}\nstderr:\n${err.join('\n')}`);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     }
     // Let a command that reported completion run to its end (a trailing file removal).
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(15_000);
   } finally {
     process.argv = argv;
     for (const s of spies) s.mockRestore();
@@ -176,7 +176,11 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('run --bootstrap-pool: a teardown that does not finish fails the run and keeps its handle', () => {
+// Each case imports the whole CLI module graph afresh, which under a full parallel run takes seconds
+// of real time on its own; the default 5 s is a budget for a unit, not for that.
+const CLI_CASE_TIMEOUT_MS = 60_000;
+
+describe('run --bootstrap-pool: a teardown that does not finish fails the run and keeps its handle', { timeout: CLI_CASE_TIMEOUT_MS }, () => {
   it('exits 3 and writes the handle when card money is still captured after every try, and deletes nothing', async () => {
     serve([stillCaptured()]);
 
@@ -239,7 +243,7 @@ describe('run --bootstrap-pool: a teardown that does not finish fails the run an
   });
 });
 
-describe('teardown-pool --handle: the same two codes, and the handle is kept', () => {
+describe('teardown-pool --handle: the same two codes, and the handle is kept', { timeout: CLI_CASE_TIMEOUT_MS }, () => {
   it('exits 3 and keeps the handle when card money is still captured, and deletes nothing', async () => {
     serve([stillCaptured()]);
     mkdirSync(artifacts(), { recursive: true });

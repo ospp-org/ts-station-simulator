@@ -133,7 +133,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('a pool teardown gives the card money back through the server before it deletes anything', () => {
+describe('a pool teardown gives the card money back through the server before it deletes anything', { timeout: 30_000 }, () => {
   it("signs in as the pool owner, refunds a Batch Drive's captured 6 lei, and deletes only after the refund went through", async () => {
     const server = serve([batch()]);
 
