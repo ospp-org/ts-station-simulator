@@ -37,9 +37,14 @@ function bounded(runner: ScenarioRunner, s: ScenarioDefinition): Promise<Scenari
 }
 
 describe('per-scenario timeout — the bound itself', () => {
-  it('the default is derived from the corpus: above the 60.8s band, below arc8 at 347.8s', () => {
+  it('the default is derived from the corpus: above the 60.8s band, below the 165s floor of the shortest schedule-bound file', () => {
+    // The upper bound was arc8's measured 347.8s until 2026-10-13, when the session-end rule
+    // removed the 300s deadline that file held a connection past (see the override list
+    // below). The tightest SERVER floor a file now waits out is heartbeat-silence-offline-
+    // sweep's 105s threshold plus a 60s sweep, and the default must stay under it for that
+    // file's override to be necessary rather than decorative.
     expect(DEFAULT_SCENARIO_TIMEOUT_MS).toBeGreaterThan(60_800);
-    expect(DEFAULT_SCENARIO_TIMEOUT_MS).toBeLessThan(347_831);
+    expect(DEFAULT_SCENARIO_TIMEOUT_MS).toBeLessThan(165_000);
   });
 
   it('a scenario that blocks forever FAILS on its budget instead of hanging', async () => {
@@ -120,12 +125,17 @@ describe('per-scenario timeout — THE POINT: a hang must not cost the other res
 });
 
 describe('the legitimate overrides in the corpus', () => {
-  it('arc8-reconnect-preserve declares a budget above its measured 347.8s', () => {
+  // arc8-reconnect-preserve declared 600s until 2026-10-13: it held a heartbeating connection
+  // past the server's 300s offline-recovery deadline (measured 347.8s) to prove the recovery
+  // job skipped a station back online. The session-end rule removed that job, the file no
+  // longer holds anything, and it runs inside the default - so it no longer overrides.
+  it('arc8-reconnect-preserve no longer holds past a deadline, and runs inside the default', () => {
     const src = fs.readFileSync(
       path.resolve('scenarios/sessions/arc8-reconnect-preserve.yaml'), 'utf8');
-    const m = src.match(/^scenario_timeout_ms:\s*(\d+)/m);
-    expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThan(347_831);
+    expect(src).not.toMatch(/^scenario_timeout_ms:/m);
+    const declaredDelayMs = [...src.matchAll(/^\s+ms:\s*(\d+)/gm)]
+      .reduce((sum, d) => sum + Number(d[1]), 0);
+    expect(declaredDelayMs + 30_000).toBeLessThan(DEFAULT_SCENARIO_TIMEOUT_MS);
   });
 
   // THE ARGUMENT, as this describe block demands of every new override.
@@ -182,9 +192,10 @@ describe('the legitimate overrides in the corpus', () => {
   //   2. Detection is a scheduled sweep, not a read-time evaluation —
   //      Schedule::command('station:check-heartbeats')->everyMinute(). The row
   //      flips on the first tick strictly AFTER the threshold is crossed, so the
-  //      observable transition lands in the 105-165s band after the station's first
-  //      Heartbeat after the Boot, which ends its replay (before it, csms-server
-  //      f413256f waits the longer of 3.5 x the interval and 360s).
+  //      observable transition lands in the 105-165s band after the last message the
+  //      file sends (every accepted message is liveness; the session-end rule of
+  //      2026-10-13 removed the replay allowance that held a station for the longer of
+  //      3.5 x the interval and 360s until its first Heartbeat after the Boot).
   //
   // 105s threshold + up to 60s of sweep latency already exceeds the 90s default
   // before the Boot and the two arming reads are counted, so the default would
@@ -309,7 +320,6 @@ describe('the legitimate overrides in the corpus', () => {
       .sort();
 
     expect(overriding).toEqual([
-      'arc8-reconnect-preserve.yaml',
       'e2e-new-customer-onboarding.yaml',
       'e2e-returning-customer-session.yaml',
       'e2e-session-end-matrix.yaml',
@@ -330,8 +340,10 @@ describe('the legitimate overrides in the corpus', () => {
       'reserve-expire.yaml',
       // --- added 2026-08-26. Argument below the firmware block. ---
       'session-start-ack-timeout-and-the-bay-it-half-claims.yaml',
-      // --- added 2026-09-11. Argument below. ---
-      'stop-service-unanswered-settles-as-stop-ack-lost.yaml',
+      // --- added 2026-10-13: the 3006 desync now waits for the sweep. Argument below. ---
+      'stop-service-refused-session-not-found-desync.yaml',
+      // --- added 2026-09-11 (renamed 2026-10-13). Argument below. ---
+      'stop-service-unanswered-is-sent-again.yaml',
     ]);
   });
 
@@ -405,18 +417,20 @@ describe('the legitimate overrides in the corpus', () => {
   /**
    * THE ARGUMENT FOR THE TWO SILENCE FILES, added 2026-09-11.
    *
-   * `stop-service-unanswered-settles-as-stop-ack-lost` and
+   * `stop-service-unanswered-is-sent-again` (until 2026-10-13
+   * `stop-service-unanswered-settles-as-stop-ack-lost`) and
    * `reserve-bay-unanswered-compensates-with-a-cancel` are the same shape as the 08-26
    * override below, and the argument is the same one: the wait is set by a SERVER SCHEDULE
    * that nothing in the file can shorten.
    *
    * Both leave a dispatched command unanswered on purpose. What they are waiting for is
    * `command:check-timeouts`, which is `->everyMinute()` (routes/console.php:27-30) and is
-   * named in the registry as SCAN_CADENCE_SECONDS = 60 (PendingCommandRegistry.php:96). So
-   * the worst case from dispatch to sweep is the action's configured timeout plus a full
-   * cadence:
+   * named in the registry as SCAN_CADENCE_SECONDS = 60 (PendingCommandRegistry.php:96) - for
+   * the StopService, since the session-end rule, the RE-SEND that the timeout now produces
+   * instead of a close. So the worst case from dispatch to that arm is the action's
+   * configured timeout plus a full cadence:
    *
-   *   StopService  config/ospp.php:225  10s + 60s = 70s   -> 90s of delay
+   *   StopService  config/ospp.php:225  10s + 60s = 70s   -> a 120s wait for the re-send
    *   ReserveBay   config/ospp.php:226   5s + 60s = 65s   -> 75s of delay
    *
    * plus boot, the session or reservation round trip, and the read-back — over the 90s
@@ -429,6 +443,43 @@ describe('the legitimate overrides in the corpus', () => {
    * scenario whose own wait is 75-90s has very little room left before the runner kills it,
    * and a killed scenario reports as a hang rather than as the assertion that failed.
    */
+
+  /**
+   * THE ARGUMENT FOR `stop-service-refused-session-not-found-desync`, added 2026-10-13.
+   *
+   * The session-end rule leaves exactly one thing that can close a session whose station
+   * sends no end record: the sweep (`session:check-timeouts`, `->everyMinute()` under
+   * `withoutOverlapping(10)`, routes/console.php). A station that answered 3006 holds no
+   * session, so no record will come, and the file's subject IS that close. Three server
+   * facts set the floor:
+   *
+   *   1. StartSessionRequest's `duration_seconds` min:60 - the shortest booking;
+   *   2. `active_sweep_grace_seconds` = 60 (config/ospp.php) - the margin after the booked end;
+   *   3. the minute cadence - the close lands on the first tick after both.
+   *
+   * 60 + 60 + 60 = 180s after the start, more if a tick is skipped. The file polls the session
+   * for up to 240s, so it returns as soon as the sweep has run, and the budget covers the
+   * poll plus the boot and the round trips around it. Checked off the file, so trimming the
+   * booking below the floor or the poll below the sweep goes red here.
+   */
+  it('the 3006 desync waits out the sweep: the minimum booking, the margin and one cadence', () => {
+    const src = fs.readFileSync(
+      path.resolve('scenarios/sessions/stop-service-refused-session-not-found-desync.yaml'), 'utf8');
+    const body = src.split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
+
+    const budget = Number(body.match(/^scenario_timeout_ms:\s*(\d+)/m)![1]);
+    const booking = Number(body.match(/^\s+duration_seconds:\s*(\d+)/m)![1]);
+    const poll = Number(body.match(/^\s+poll:\s*\n\s+timeout_ms:\s*(\d+)/m)![1]);
+
+    const MIN_BOOKING_S = 60;
+    const SWEEP_MARGIN_S = 60;
+    const SWEEP_CADENCE_S = 60;
+    expect(booking, 'the booking is the minimum the server admits').toBe(MIN_BOOKING_S);
+    expect(poll, 'the poll must out-wait the booking, the margin and one cadence')
+      .toBeGreaterThanOrEqual((booking + SWEEP_MARGIN_S + SWEEP_CADENCE_S) * 1000);
+    expect(budget, 'the budget covers the poll and the round trips around it').toBeGreaterThan(poll + 30_000);
+    expect(src, 'the file must state the scheduler dependency').toMatch(/schedule:work/);
+  });
 
   /**
    * THE ARGUMENT FOR `session-start-ack-timeout-and-the-bay-it-half-claims`, added

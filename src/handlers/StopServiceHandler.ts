@@ -9,11 +9,33 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { errorName } from './bayRefusal.js';
-import { monotonicNowMs } from '../station/monotonicClock.js';
+import { clearWashTimer, deliveredSeconds, reportBayIfChanged } from '../station/sessionEnd.js';
 
 export class StopServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
     const request = envelope.payload as StopServiceRequest;
+
+    // RULE 10 BEFORE RULE 2. stop-service.md §6 rule 10: a stop this station answered `Accepted`
+    // keeps its RESPONSE for the retention horizon, and "Duplicate StopService REQUESTs targeting the
+    // same sessionId within the horizon MUST return the same cached RESPONSE without re-running the
+    // stop logic"; rule 2 says it is evaluated first, and that answering 3006 here is "the failure
+    // mode rule 10 exists to prevent". It is now the server's only recovery for a lost RESPONSE: it
+    // no longer closes a stop on its own, it sends the StopService again and takes this answer as the
+    // end record (session-end rule S4). This station used to delete the session and keep nothing, so
+    // the repeat was refused 3006 - which, under that rule, leaves the stopped wash open until the
+    // sweep charges it in full.
+    const cached = station.stopAnswerFor?.(request.sessionId);
+    if (cached !== undefined) {
+      await station.sender.send<StopServiceResponse>(
+        OsppAction.STOP_SERVICE, MessageType.RESPONSE, cached, envelope.messageId,
+      );
+      console.log(
+        '[StopService] Repeated stop for session %s — answered with the cached RESPONSE (%ds, %d credits)',
+        request.sessionId, cached.actualDurationSeconds, cached.creditsCharged,
+      );
+      return;
+    }
+
     const session = station.sessions.get(request.sessionId);
 
     if (!session) {
@@ -58,6 +80,10 @@ export class StopServiceHandler implements Handler {
       return;
     }
 
+    // The wash stops here, so the timer that would have ended it at its booked duration goes: this
+    // RESPONSE is the end record, and no SessionEnded may follow it.
+    clearWashTimer(session);
+
     // Transition bay: Occupied -> Finishing -> Available
     station.setBayState(session.bayId, BayStatus.FINISHING);
 
@@ -84,18 +110,24 @@ export class StopServiceHandler implements Handler {
     // The clamp is belt-and-braces on a monotonic source, which cannot run
     // backwards; it was the ONLY thing standing between a backwards wall-clock
     // step and a schema-invalid frame, and this site did not have it.
-    const elapsedMs = monotonicNowMs() - session.startedAtMonotonicMs;
-    const actualDurationSeconds = Math.max(0, Math.round(elapsedMs / 1000));
+    //
+    // Through deliveredSeconds() now, the same measure every end path uses: for a wash resumed
+    // after a restart it adds the delivered seconds the restart carried in, since the monotonic
+    // origin of this process is the instant the wash resumed, not the instant it started.
+    const actualDurationSeconds = deliveredSeconds(session);
     const creditsCharged = Math.ceil(
       (actualDurationSeconds / 60) * session.priceCreditsPerMinute,
     );
 
-    const response: StopServiceResponse = {
+    const response: Extract<StopServiceResponse, { status: 'Accepted' }> = {
       status: 'Accepted',
       actualDurationSeconds,
       creditsCharged,
       finalSeqNo: session.seq.peek(),
     };
+
+    // Kept BEFORE it is sent: a repeat that races this answer gets the same one (rule 10).
+    station.rememberStopAnswer?.(request.sessionId, session.bayId, response);
 
     await station.sender.send<StopServiceResponse>(
       OsppAction.STOP_SERVICE,
@@ -129,5 +161,17 @@ export class StopServiceHandler implements Handler {
     // reason value that makes sending both correct, which is why the fix is to send one.
     station.sessions.delete(request.sessionId);
     station.setBayState(session.bayId, BayStatus.AVAILABLE);
+
+    // The session leaves the record and the answer stays in it, for a repeat after a restart too.
+    try {
+      await station.persistSessions?.();
+    } catch (err) {
+      console.error('[StopService] could not record the stop of %s on disk: %s', request.sessionId, err instanceof Error ? err.message : String(err));
+    }
+
+    // A wash resumed after a restart had its bay reported Occupied at the boot: report it again now
+    // that it is idle, after the RESPONSE that ended it. An ordinary wash's bay was never reported
+    // Occupied, so nothing is sent for it.
+    await reportBayIfChanged(station, session.bayId);
   }
 }

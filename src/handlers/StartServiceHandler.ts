@@ -7,10 +7,11 @@ import {
   type StartServiceResponse,
   BayStatus,
 } from '@ospp/protocol';
-import type { Handler, StationContext } from './Handler.js';
+import type { Handler, SessionInfo, StationContext } from './Handler.js';
 import { bayRefusalCode, errorName } from './bayRefusal.js';
 import { SequenceCounter } from '../station/SequenceCounter.js';
 import { monotonicNowMs } from '../station/monotonicClock.js';
+import { armWashTimer } from '../station/sessionEnd.js';
 
 export class StartServiceHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -145,27 +146,10 @@ export class StartServiceHandler implements Handler {
           );
           return;
         }
-
-        // Reservation matches (or was already consumed) — consume it
-        if (reservation) {
-          clearTimeout(reservation.timer);
-          station.reservations.delete(request.bayId);
-          // RETAINED so cancel-reservation.md r6 can answer 3012 rather than a
-          // misleading Accepted: the reservation is gone, but it did exist.
-          station.terminalReservations.set(reservation.reservationId, {
-            bayId: request.bayId, outcome: 'consumed',
-          });
-          console.log(
-            '[StartService] Consumed reservation %s on bay %s',
-            reservation.reservationId,
-            request.bayId,
-          );
-        }
+        // A matching reservation (or one already consumed) is consumed below, once the record is written.
       }
 
-      station.setBayState(request.bayId, BayStatus.OCCUPIED);
-
-      station.sessions.set(request.sessionId, {
+      const session: SessionInfo = {
         sessionId: request.sessionId,
         bayId: request.bayId,
         serviceId: request.serviceId,
@@ -181,7 +165,56 @@ export class StartServiceHandler implements Handler {
         durationSeconds: request.durationSeconds,
         seq: new SequenceCounter(),
         priceCreditsPerMinute: 100,
-      });
+        programNumber: request.programNumber,
+        startMessageId: envelope.messageId,
+      };
+      station.sessions.set(request.sessionId, session);
+
+      // THE RECORD BEFORE ANYTHING IS ENERGISED. start-service.md §6 rule 9: "before energising
+      // anything, the station MUST durably record the command - at minimum the envelope messageId,
+      // the sessionId, the bayId and the programNumber - to non-volatile storage. If it cannot, it
+      // MUST refuse with 5103 STORAGE_ERROR and MUST NOT activate." It is also what lets a restart
+      // report this session (session-end rule S2): a wash the station does not remember is one it can
+      // send no end record for. Before the reservation is consumed and the bay taken, so a refusal
+      // leaves both as they were. A context with no store (a handler test) records nothing.
+      try {
+        await station.persistSessions?.();
+      } catch (err) {
+        station.sessions.delete(request.sessionId);
+        const refused: StartServiceResponse = {
+          status: 'Rejected',
+          errorCode: OsppErrorCode.STORAGE_ERROR,
+          errorText: errorName(OsppErrorCode.STORAGE_ERROR),
+          programNumber: request.programNumber,
+        };
+        await station.sender.send<StartServiceResponse>(
+          OsppAction.START_SERVICE, MessageType.RESPONSE, refused, envelope.messageId,
+        );
+        console.log(
+          '[StartService] Rejected session %s — STORAGE_ERROR, the record could not be written (%s)',
+          request.sessionId, err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+
+      // Reservation matches (or was already consumed) — consume it
+      const reservation = bayState === BayStatus.RESERVED ? station.reservations.get(request.bayId) : undefined;
+      if (reservation) {
+        clearTimeout(reservation.timer);
+        station.reservations.delete(request.bayId);
+        // RETAINED so cancel-reservation.md r6 can answer 3012 rather than a
+        // misleading Accepted: the reservation is gone, but it did exist.
+        station.terminalReservations.set(reservation.reservationId, {
+          bayId: request.bayId, outcome: 'consumed',
+        });
+        console.log(
+          '[StartService] Consumed reservation %s on bay %s',
+          reservation.reservationId,
+          request.bayId,
+        );
+      }
+
+      station.setBayState(request.bayId, BayStatus.OCCUPIED);
 
       const response: StartServiceResponse = { status: 'Accepted' };
 
@@ -191,6 +224,13 @@ export class StartServiceHandler implements Handler {
         response,
         envelope.messageId,
       );
+
+      // THE WASH ENDS ON ITS OWN. At its booked duration the station stops it and sends SessionEnded
+      // TimerExpired - the end it decides most often, and the one connect mode never sent: it armed
+      // nothing, and every session it accepted was left for the server's sweep to close as one with
+      // no end record, charged in full with the anomaly mark (session-end rule S1). A stop, a forced
+      // Reset or a restart clears the timer; their own record is the end.
+      armWashTimer(station, session);
 
       console.log(
         '[StartService] Accepted session %s on bay %s (service: %s, duration: %ds)',

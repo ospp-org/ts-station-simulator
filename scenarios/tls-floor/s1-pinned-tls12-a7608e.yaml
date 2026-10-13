@@ -21,7 +21,7 @@
 # the deploy step, along with confirming the broker's actual rejected/
 # accepted behavior matches what's asserted here.
 name: "TLS floor S1 — pinned TLS 1.2 (A7608E-H emulation)"
-description: "Client pins minVersion=maxVersion=TLSv1.2. Connect + mTLS + BootNotification Accepted + start a session, proving a TLS-1.2-only client works once the broker floor allows it."
+description: "Client pins minVersion=maxVersion=TLSv1.2. Connect + mTLS + BootNotification Accepted + start a session and end it with the station's SessionEnded, proving a TLS-1.2-only client works once the broker floor allows it."
 tls:
   min_version: "TLSv1.2"
   max_version: "TLSv1.2"
@@ -148,3 +148,31 @@ steps:
       programs:
         - programNumber: 1
           available: false
+
+  # --- The station ends the session it started (the session-end rule, 2026-10-13: a
+  #     session is ended only by the station's end record). The customer stops the wash at
+  #     the bay - SessionEnded `Local` with the seconds it ran - and the bay is reported
+  #     Available. Until 2026-10-13 this file stopped at the Occupied report and left the
+  #     session open; the sweep would then hold its bay for the next scenario on this
+  #     station until the booked end + 60 s, and charge it in full. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 3
+      creditsCharged: 5
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: true

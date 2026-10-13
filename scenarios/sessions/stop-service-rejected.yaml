@@ -95,12 +95,11 @@ steps:
     # CORRECTION 2026-09-11 — this file used to say the station-rejection path was
     # "no longer reachable". That is true ONLY for an unknown sessionId, which is the
     # case this file drives. For a session the SERVER created and dispatched a
-    # StopService for, the station's 3006 is perfectly reachable and settles money as
-    # StationLostSession — and a different code on the same message bills the whole
-    # booking instead. Both arms are now on the wire:
+    # StopService for, the station's refusal is perfectly reachable:
     #     stop-service-refused-session-not-found-desync.yaml    (3006)
     #     stop-service-refused-while-running-bills-full.yaml    (non-3006)
-    # The generalisation cost nothing while nobody tried it; it had held since the
-    # file was written, and it was wrong about two money branches.
+    # Until the session-end rule (2026-10-13) each of those refusals settled the money
+    # (StationLostSession, StopRefusedWhileRunning); now neither ends the session, which
+    # waits for the station's SessionEnded or the sweep.
     expect_body:
       errorCode: 3006

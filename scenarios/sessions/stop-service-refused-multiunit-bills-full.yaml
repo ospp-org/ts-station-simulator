@@ -1,41 +1,21 @@
 # Placeholders overridable via --var KEY=VALUE on `simulator run`:
 #   {{stationId}}, {{serialNumber}}, {{bayId_1}}, {{serviceId_multiunit}}
 #
-# WHY THIS FILE EXISTS — the per-kind half of a money rule that is proven on ONE kind.
+# THE ALL-OR-NOTHING HALF OF "A REFUSED STOP ENDS NOTHING" (the session-end rule, 2026-10-13).
 #
-#   csms-server `77f9fdd6` made a refused stop settle as a DELIVERED session of its kind
-#   settles: pro-rata on delivered time for UserDuration, the WHOLE authorized amount for
-#   the two all-or-nothing kinds. Three strategies, one rule, and the corpus reaches the
-#   first one only. Measured over the 158 files that existed before this one: exactly
-#   TWO send a `StopService` Response with `status: Rejected` --
-#   stop-service-refused-while-running-bills-full.yaml (3007) and
-#   stop-service-refused-session-not-found-desync.yaml (3006) -- and BOTH book
-#   `{{serviceId_1}}` = `svc_wash_basic`, seeded PerMinute, which resolves to
-#   UserDuration. So the all-or-nothing arm of the correction -- the arm where the
-#   amount does NOT depend on how long the wash ran -- has never been on the wire. It is
-#   unit-tested and nothing else. This file is the third of 159, and the first to book a
-#   non-UserDuration kind.
+#   A session is ended only by the station's end record, and a StopService RESPONSE
+#   `Rejected` is not one: the server leaves the session `stopping` and waits for the
+#   station's SessionEnded or the sweep. stop-service-refused-while-running-bills-full.yaml
+#   proves it on a UserDuration booking; this file proves it on a MultiUnit one, where the
+#   end record decides the money with no reference to time.
 #
-# THE BRANCH REACHED, AND THE ONE LINE THAT PICKS IT
-#   StopServiceResponseHandler::handleRejected (:171-175) routes on the errorCode:
-#
-#     $refusedWhileRunning = in_array($dto->errorCode, [
-#         OsppErrorCode::BAY_NOT_FOUND->value,     // 3005
-#         OsppErrorCode::SESSION_MISMATCH->value,  // 3007
-#         OsppErrorCode::BAY_MAINTENANCE->value,   // 3011
-#     ], true);
-#
-#   Three codes in, one out. 3006 SESSION_NOT_FOUND is the fourth of the four
-#   `stop-service.md` §7 names and the one the correction deliberately did NOT move: it
-#   is the only code that says there is no session to have been running, so it keeps
-#   settling as StationLostSession. `3007` is used here for the same reason the
-#   UserDuration file uses it — it is a real station obligation (`stop-service.md` r3)
-#   the simulator does not implement (docs/CONFORMANCE-GAPS.md group D), so the file
-#   names a gap while it proves a server branch.
-#
-#   From there `completeSessionAction->execute(reason: StopRefusedWhileRunning)`
-#   (:296-300) reaches the ONE settlement authority, which picks the strategy by the
-#   session's own kind (SettlementService::strategyFor, :41-48).
+#   WHAT THIS FILE USED TO PROVE IS GONE. It was the per-kind half of the refused-stop
+#   SETTLEMENT: csms-server `77f9fdd6` settled a refused stop as a delivered session of its
+#   kind (TerminalReason::StopRefusedWhileRunning), pro-rata for UserDuration and the whole
+#   authorized amount for the all-or-nothing kinds, journalled `settledAs`. The session-end
+#   rule removes that settlement, so there is no per-kind arm of it left to reach. The file
+#   is kept, rewritten, because what a refusal does to a MultiUnit session is still a
+#   question with an answer: nothing, until the unit's own end record.
 #
 # WHAT MAKES THIS A DIFFERENT KIND, AND IT IS NOT A DIFFERENT CALL
 #   The same `POST /api/v1/sessions/start` this corpus uses everywhere. The kind is a
@@ -63,51 +43,37 @@
 #     duration_requested   5    the preset, not the 300 posted below
 #     credits_authorized   200  priceCreditsFixed, not ceil(seconds/60 * rate)
 #
-#   On the refusal, MultiUnitStrategy -> AllOrNothingSettlement::forReason
-#   (MultiUnitStrategy.php:35), whose `StopRefusedWhileRunning` arm is
-#   `SettlementResult::fullCharge($creditsAuthorized)` (AllOrNothingSettlement.php:53-54)
-#   = charged 200, refunded 0 (SettlementResult.php:28-33).
+#   The station refuses the stop (3007, a real station obligation, `stop-service.md` §6
+#   r3) and the unit's 5 s pulse runs out: SessionEnded `TimerExpired`, the unit delivered.
+#   MultiUnitStrategy -> AllOrNothingSettlement::forReason (MultiUnitStrategy.php:35)
+#   charges `TimerExpired` whole: 200 charged, 0 refunded.
 #
-# THE AMOUNT IS THE ATTRIBUTION, WHICH IS WHY IT IS WORTH ASSERTING TWICE OVER
-#   Both kinds would authorize the same 200 here — the price is Fixed either way — so
-#   `credits_authorized` cannot tell them apart. The SETTLEMENT can. Had the kind
-#   resolved to UserDuration (the fallback when `service_kind` is NULL), the same
-#   fixture would have taken UserDurationStrategy and billed pro-rata on a handful of
-#   delivered seconds against a 300s booking: a small charge and a large refund. 200/0
-#   is reachable ONLY through the all-or-nothing table. `duration_requested: 5` pins the
-#   same fact from the other side — 5 is the catalog preset and 300 is what this file
-#   posted, so the two together say the server resolved a server-duration kind and
-#   settled it whole.
+# THE AMOUNT IS STILL THE ATTRIBUTION. Had the kind resolved to UserDuration (the fallback
+# when `service_kind` is NULL), the 300 s this file posts would have been the booking and
+# 500 the authorization. `duration_requested: 5` with `credits_authorized: 200`, read
+# before the refusal, says the server resolved the server-duration kind; 200/0 after the
+# unit's end record says it settled that kind on TimerExpired's row.
 #
-# AND THE METER SAMPLE HERE IS DELIBERATELY IRRELEVANT
-#   The UserDuration sibling carries a MeterValues whose `2026-05-27T08:00:00.000Z`
-#   predates `started_at`, and on that file it is load-bearing: csms-server `8a2506d0`
-#   falls back to the reservation for an unusable sample instead of flooring delivered
-#   time to zero, and that fallback is what keeps its 500 a 500. The same sample is sent
-#   here and CANNOT move a byte of the money, because MultiUnitStrategy "deliberately
-#   NEVER reads `duration_actual`/elapsed" (its own docblock) — per-unit delivery is
-#   binary and time-independent. Same bytes on the wire, load-bearing on one kind and
-#   inert on the other: that contrast is the difference the all-or-nothing rule IS.
+# THREE READS: `active` with the kind's booking before the stop; `stopping` after the
+# refusal (the refusal settled nothing - this read was `completed` while it did); and
+# `completed` 200/0 within seconds of the SessionEnded, with no anomaly mark - the
+# station's record, not the sweep (which could close a 5 s booking no earlier than 65 s
+# after its start).
 #
-# NEITHER ASSERTED AMOUNT IS ECHOED FROM THIS FILE. 200 and 0 appear in no payload sent
-# here. `credits_charged` is written by the settlement strategy and `refund_amount` is
-# derived in SessionResource:53-56 as `credits_authorized - credits_charged`, so the two
-# are one fact stated twice — asserted together because a strategy that charged nothing
-# would satisfy neither, and one that charged half would satisfy neither.
+# NEITHER ASSERTED AMOUNT IS ECHOED FROM THIS FILE. The SessionEnded's `creditsCharged`
+# is advisory; `credits_charged` is written by the settlement strategy and
+# `refund_amount` is derived (SessionResource).
 #
 # HONESTY ABOUT WHAT IS PROVEN. The station is a byte source: it is scripted to refuse,
-# not deciding to. This is a proof about the SERVER's settlement, not about station
-# conformance. Stated so nobody reads a green run as evidence that a station detects a
-# session mismatch.
+# not deciding to. This is a proof about the SERVER, not about station conformance.
 #
-# NOT COVERED, AND NAMED RATHER THAN LEFT TO BE FOUND: FixedDuration, the third kind.
-# It shares this exact all-or-nothing table with MultiUnit (FixedDurationStrategy.php:23
-# and MultiUnitStrategy.php:35 both call `AllOrNothingSettlement::forReason`), so the
-# arm this file lands on is the same one — but no `serviceKind: 'FixedDuration'` row has
-# ever been seeded by this corpus, so there is no fixture to book. Closing it needs a
-# seeded service, not another scenario.
+# NOT COVERED: FixedDuration, the third kind - it shares the all-or-nothing table with
+# MultiUnit, and no `serviceKind: 'FixedDuration'` row is seeded by this corpus.
+#
+# NEEDS THE SERVER OF THE SESSION-END RULE. Against csms-server f413256f and earlier the
+# refusal settles the session and the `stopping` read fails.
 name: "Stop Service Refused While Running - MultiUnit billed whole"
-description: "Server dispatches StopService for an active MULTI-UNIT session; the station refuses with 3007 SESSION_MISMATCH. The all-or-nothing kinds bill the whole authorized amount regardless of delivered time - charge 200, refund 0, journalled StopRefusedWhileRunning."
+description: "Server dispatches StopService for an active MULTI-UNIT session; the station refuses with 3007 SESSION_MISMATCH. The refusal ends nothing - the session stays stopping - until the unit's own SessionEnded TimerExpired, which the all-or-nothing table charges whole: 200 charged, 0 refunded, no anomaly."
 requires_multiunit_service: 1
 station:
   stationId: "{{stationId}}"
@@ -205,27 +171,12 @@ steps:
         - programNumber: 1
           available: false
 
-  # Mirrors the UserDuration sibling: the StartService Response and the Occupied
-  # notification are processed asynchronously, so the session must be observed ACTIVE
-  # before the stop is asked for.
-  - action: delay
-    ms: 500
-
-  - action: send
-    message: MeterValues
-    messageType: Event
-    payload:
-      bayId: "{{captured.bayId}}"
-      sessionId: "{{captured.sessionId}}"
-      timestamp: "2026-05-27T08:00:00.000Z"
-      values:
-        liquidMl: 500
-        energyWh: 100
-
+  # The StartService Response is processed asynchronously, so the session must be observed
+  # ACTIVE before the stop is asked for.
   - action: delay
     ms: 1500
 
-  # PRE-CONDITION, and it is also the KIND assertion. `duration_requested` is 5 because
+  # READ 1 - PRE-CONDITION, and it is also the KIND assertion. `duration_requested` is 5 because
   # the catalog preset replaced the 300 this file posted, and `credits_authorized` is
   # 200 because the entry is Fixed-priced. Both are read BEFORE the refusal, so the
   # settlement below is measured against a booking already proven to be the multi-unit
@@ -262,40 +213,28 @@ steps:
       errorText: "SESSION_MISMATCH"
 
   - action: delay
-    ms: 2000
+    ms: 1000
 
-  # ASSERTION 1 — the money, and it is the whole subject of the file. A server that
-  # ignored the refusal would leave this `active`. One that treated a refused stop like
-  # a Fault would refund all 200 (that is the arm two rows below in the same table). One
-  # that settled this kind pro-rata — the defect `77f9fdd6` corrected — would charge a
-  # few seconds of delivery and refund most of it. Only the all-or-nothing table bills
-  # the authorized amount whole and returns nothing.
+  # READ 2 - the refusal ended nothing: the session the stop request put in `stopping`
+  # stays there. While the refusal settled the wash, this read was `completed` 200/0.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
     expect_status: 200
     expect_body:
-      data.status: "completed"
-      data.credits_charged: 200
-      data.refund_amount: 0
+      data.status: "stopping"
 
-  # ASSERTION 2 — the DECISION, not just its effect. `settledAs` is the server recording
-  # which settlement rule it picked, written by comparing this file's 3007 against
-  # SESSION_NOT_FOUND (StopServiceResponseHandler.php:221-227). The sessions row shows
-  # the outcome and cannot show which rule produced it. Identical to the UserDuration
-  # sibling's value — the LABEL is kind-blind, the AMOUNT is not, and that pair is
-  # exactly what this file adds: same decision, different arithmetic.
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/journal?kind=command_refused"
-    expect_status: 200
-    expect_body:
-      data[kind=command_refused].effectedBy: "Station"
-      data[kind=command_refused].details.action: "StopService"
-      data[kind=command_refused].details.errorCode: 3007
-      data[kind=command_refused].details.settledAs: "StopRefusedWhileRunning"
+  # --- THE END RECORD. The unit's 5 s pulse has run out: the unit was delivered. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "TimerExpired"
+      actualDurationSeconds: 5
+      creditsCharged: 200
 
-  # --- Pool hygiene: the session is terminal, so only the bay is returned. ---
   - action: send
     message: StatusNotification
     messageType: Event
@@ -307,3 +246,27 @@ steps:
       programs:
         - programNumber: 1
           available: true
+
+  - action: delay
+    ms: 2000
+
+  # READ 3 - the unit's end record settled it, by kind: the all-or-nothing table charges a
+  # TimerExpired unit whole. A server that settled this kind pro-rata would charge a few
+  # seconds' worth; one that left the session for the sweep would still read `stopping`.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 200
+      data.refund_amount: 0
+
+  # And by the record, not the sweep: no anomaly mark on the station's sessions list.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/sessions"
+    expect_status: 200
+    expect_body:
+      data[sessionId={{captured.sessionId}}].status: "completed"
+      data[sessionId={{captured.sessionId}}].anomaly: null

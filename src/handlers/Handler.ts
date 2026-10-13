@@ -1,5 +1,5 @@
 import type { SequenceCounter } from '../station/SequenceCounter.js';
-import type { OsppEnvelope, BayStatus } from '@ospp/protocol';
+import type { OsppEnvelope, BayStatus, BootReason, StopServiceResponse } from '@ospp/protocol';
 
 /**
  * Minimal station context passed to every handler.
@@ -56,6 +56,39 @@ export interface StationContext {
    */
   settleSessionAsOperatorStop(sessionId: string): Promise<void>;
   /**
+   * Power-cycle the station in process and boot again with `reason` (a Reset: `RemoteReset`; an
+   * installed update: `FirmwareUpdate`): every timer and the session key go, the uptime restarts at
+   * 0, and the sessions it kept on disk are resumed or ended exactly as after a real power loss
+   * (Station.restoreSessions). The six reasons that keep a session resume it; RemoteReset and
+   * FirmwareUpdate find none to keep.
+   */
+  restart(reason: BootReason): Promise<void>;
+  /**
+   * Keep the live sessions, the SessionEnded events not yet sent and the stops already answered on
+   * disk (session-end rule S2) - Station, when its config asks for it (connect mode). Absent on a
+   * handler test's hand-built context, which keeps nothing.
+   */
+  persistSessions?(): Promise<void>;
+  /**
+   * Whether a message can leave now: the link is up, a boot was answered `Accepted`, a session key
+   * is held. Absent means yes - a handler test's context publishes into its own array.
+   */
+  canTransmit?(): boolean;
+  /**
+   * The SessionEnded events the station could not publish (offline, restricted, or the publish
+   * failed), oldest first, sent after the next `Accepted` boot with their original values
+   * (session-ended.md §5 rule 3: buffered, never discarded). Absent on a hand-built context.
+   */
+  heldSessionEnded?: import('../station/SessionStore.js').HeldSessionEnded[];
+  /** The cached RESPONSE of a stop this station answered `Accepted`, within the retention horizon (stop-service.md §6 rule 10). */
+  stopAnswerFor?(sessionId: string): Extract<StopServiceResponse, { status: 'Accepted' }> | undefined;
+  /** Keep the RESPONSE of a stop just answered `Accepted`, for a repeated StopService (rule 10). */
+  rememberStopAnswer?(sessionId: string, bayId: string, response: Extract<StopServiceResponse, { status: 'Accepted' }>): void;
+  /** The bay status this station last put on the wire for a bay (the boot report and every report after it). */
+  lastReportedBayStatus?: Map<string, BayStatus>;
+  /** After an Accepted boot and its bay reports: send every held SessionEnded, oldest first (Station). */
+  replayHeldSessionEnded?(): Promise<void>;
+  /**
    * Persist a renewed leaf cert (+ optional issuing chain) and its retained
    * private key to the station's TLS file paths — the client-cert swap. ADR-0002 T1.
    */
@@ -96,6 +129,18 @@ export interface SessionInfo {
   startedAtMonotonicMs: number;
   durationSeconds: number;
   seq: SequenceCounter;
+  /**
+   * The delivered seconds a restart carried into this process: the time persisted for a wash the
+   * station resumed after it (session-end rule S3). Absent - zero - for a wash this process ran from
+   * its start. The delivered time is this plus the monotonic time since `startedAtMonotonicMs`, which
+   * for a resumed wash is the instant it resumed (sessionEnd.ts, deliveredSeconds).
+   */
+  deliveredBeforeRestartSeconds?: number;
+  /** The timer that ends the wash at its booked duration with SessionEnded TimerExpired; every other end clears it. */
+  washTimer?: ReturnType<typeof setTimeout>;
+  /** The program the StartService named, and that command's envelope messageId - start-service.md §6 rule 9's record. */
+  programNumber?: number;
+  startMessageId?: string;
   // Credits-per-minute used to compute `creditsCharged` on session end per OSPP
   // §03-messages.md §3.4 StopService: `creditsCharged = ceil(actualDurationSeconds / 60 * priceCreditsPerMinute)`.
   // StartService Request schema does not carry pricing; sim defaults to 100 cr/min,

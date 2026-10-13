@@ -316,12 +316,13 @@ steps:
   # (CommandTimeoutScanner) expires it past its 30 s timeout, and for those 30 s
   # StartSessionAction refuses a start on this station with 3002
   # (`PendingCommandRegistry::hasOutstanding`) - a fence the pool would hand to the next lessee.
-  # `ResetResponseHandler::handle` resolves the pending command, writes a `station_reset` row
-  # to the station journal and dispatches StationReset. The event's one listener,
-  # SettleSessionsOnForcedReset, acts only on a forced reset, and this one is unforced
-  # (`payload: {}`); the 202 above already says the pre-flight found no live session to
-  # settle anyway. So the Response writes one journal row, with `details.forced: false`,
-  # and changes no session or bay state a later scenario on this station could trip on.
+  # `ResetResponseHandler::handle` resolves the pending command and writes a `station_reset`
+  # row to the station journal. No server code stops a session on a Reset any more (the
+  # forced-reset listener, SettleSessionsOnForcedReset, is removed by the session-end rule of
+  # 2026-10-13), and this one is unforced (`payload: {}`); the 202 above already says the
+  # pre-flight found no live session anyway. So the Response writes one journal row, with
+  # `details.forced: false`, and changes no session or bay state a later scenario on this
+  # station could trip on.
   - action: send
     message: Reset
     messageType: Response

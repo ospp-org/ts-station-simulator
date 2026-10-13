@@ -1,42 +1,45 @@
-# ARC 8 — reconnect-as-reconciliation, LIVE UAT proof.
-# A station that stays UP across a network blip (uptime CONTINUES) must NOT have
-# its active session force-failed/refunded — not on the reconnect Boot (Layer 1
-# uptime-continuity preserve), and not when the offline-recovery timer fires past
-# the 300s deadline (Layer 3 skip-at-execution, because the station is back online).
+# ARC 8 — away and back: the server is told the link died, the station comes back without
+# a restart, and the session is ended by nothing but the station's own SessionEnded.
 #
-# THE ConnectionLost BELOW IS FABRICATED BY THE STATION. THIS FILE IS NOT LWT
-# COVERAGE, AND ANYONE COUNTING IT AS SUCH IS COUNTING A MESSAGE THE SIMULATOR
-# WROTE. It is a `send` step (steps, ~line 106) publishing onto
-# `toServerTopic(stationId)` over the LIVE connection — the same topic the real
-# will uses — so at the topic level it is indistinguishable from a broker-published
-# will. Two things do distinguish it, and both are absent here: `messageId` has no
-# `lwt-` prefix (MqttConnection stamps that at CONNECT, MqttConnection.ts:366) and
-# `source` is the station's, not `Server`. The linter permits it because
-# ConnectionLost is whitelisted station->server (MessageDirectionCheck.ts:18-21) and
-# it is MAC-exempt (MessageSender.ts:197). Nothing about the BROKER's will path is
-# exercised. That path is owned by core/connection-lost-lwt.yaml, which drives it
-# with `fault: sever` under a persistent session and reads the `lwt-` prefix back
-# out of the consumer log.
+# THE SESSION-END RULE (2026-10-13). A session is ended only by the station's end record. A
+# ConnectionLost, the away period it opens and the boot that closes it end nothing; the only
+# fallback is the sweep, at the booked end + 60 s plus the grace period for the time the
+# station was away. So a session carried across "the server marked the station offline,
+# then it came back" is still `active` when it comes back, whenever that is, and settles on
+# its record.
 #
-# THE INJECTION IS STILL THE RIGHT CHOICE HERE — but not for the reason this header
-# used to give. It claimed "the sim's fixed 5s auto-reconnect cancels the real
-# 10s-delayed will". That diagnosis was measured false on 2026-08-14 (see
-# core/connection-lost-lwt.yaml): under this file's default `clean_session: true`
-# the reconnect arrives with Clean Start 1, which ENDS the old session, and MQTT 5
-# §3.1.3.2.2 publishes the will when the session ends OR the delay elapses,
-# whichever is first. A real `fault: disconnect` here would therefore PUBLISH the
-# will, not cancel it. The actual reason to inject is that this file's subject is
-# what happens AFTER the server is told the link died — Layer 1 uptime-continuity
-# preserve and the Layer 3 skip past the 300s deadline — and it needs that message
-# at a controlled instant with the connection still usable for the steps that
-# follow. A genuine sever would take the link with it.
-# Deliberately the slowest file in the corpus: it holds a connection past the server's
-# 300s offline-recovery deadline, and measured 347.8s on the 2026-08-10 run. That is
-# well over the 90s default budget (ScenarioRunner.DEFAULT_SCENARIO_TIMEOUT_MS), so it
-# declares its own. This is the ONLY legitimate reason to raise it.
-scenario_timeout_ms: 600000
-name: "ARC8 reconnect preserve (uptime continuity, past 300s)"
-description: "Boot(uptime huge) -> start session -> inject ConnectionLost -> reconnect Boot(uptime huge) -> hold connected past the 300s recovery deadline. Session must stay ACTIVE, no refund."
+# WHAT THIS FILE USED TO PROVE, AND WHY IT IS GONE. It was the slowest file in the corpus
+# (347.8 s, its own 600 s budget): it held a heartbeating connection past the server's 300 s
+# offline-recovery deadline to prove two layers that each spared the session - the
+# reconnect boot's uptime-continuity preserve (a boot no longer ends any session, whatever
+# its uptime) and the offline-recovery job skipping a station back online at execution
+# (FailOfflineSessionJob is removed; the sweep's away deadline replaces it, and it cannot
+# fall before the booked end + 60 s). Holding past 300 s proves nothing any more, so the
+# hold is gone and the file ends its session the way a conforming station does.
+#
+# THE ConnectionLost BELOW IS FABRICATED BY THE STATION. THIS FILE IS NOT LWT COVERAGE, AND
+# ANYONE COUNTING IT AS SUCH IS COUNTING A MESSAGE THE SIMULATOR WROTE. It is a `send` step
+# publishing onto `toServerTopic(stationId)` over the LIVE connection — the same topic the
+# real will uses — so at the topic level it is indistinguishable from a broker-published
+# will. Two things do distinguish it, and both are absent here: `messageId` has no `lwt-`
+# prefix (MqttConnection stamps that at CONNECT) and `source` is the station's, not
+# `Server`. The linter permits it because ConnectionLost is whitelisted station->server
+# (MessageDirectionCheck) and it is MAC-exempt. The BROKER's will path is owned by
+# core/connection-lost-lwt.yaml. The injection is the right instrument HERE because the
+# subject is what happens AFTER the server is told the link died, and it needs that
+# message at a controlled instant with the connection still usable for the steps that
+# follow; a genuine sever would take the link with it.
+#
+# THE BOOTS ARE `Reconnect`, WITH THE UPTIME RUNNING ON. The station has been up ~25 h and
+# re-establishes its MQTT session twice without restarting, which is what `Reconnect` says
+# (boot-notification.md §5.2 rule 1). This file sent `PowerOn` with a 25 h uptime while the
+# uptime layer decided the session; neither field decides anything about a session now.
+#
+# NEEDS THE SERVER OF THE SESSION-END RULE only in that nothing else could end the session:
+# the reads are `active` across the away period and the boot, then `completed` on the
+# station's `Local`, charged pro-rata on the 18 s it reports.
+name: "ARC8 reconnect preserve (away and back, ended by its SessionEnded)"
+description: "Boot(Reconnect, uptime 25h) -> start session -> inject ConnectionLost -> the station reads offline and the session stays active -> reconnect Boot(Reconnect, uptime continues) -> the session is still active -> the station's SessionEnded Local ends it, settled pro-rata."
 tls:
   min_version: "TLSv1.2"
   max_version: "TLSv1.2"
@@ -66,7 +69,7 @@ steps:
       uptimeSeconds: 90000
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "PowerOn"
+      bootReason: "Reconnect"
       capabilities: { bleSupported: false, offlineModeSupported: false, meterValuesSupported: true }
       networkInfo: { connectionType: "Ethernet" }
   - action: wait_for
@@ -77,7 +80,8 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- Bay available, then start a long (30-min) session so its own timer can't expire during the test ---
+  # --- Bay available, then a long (10-min) session, so neither its timer nor the sweep can
+  #     reach it while the file runs ---
   - action: send
     message: StatusNotification
     messageType: Event
@@ -120,9 +124,8 @@ steps:
     ms: 3000
 
   # --- FABRICATED WILL (see header). The STATION publishes this, on the live
-  # connection, onto the server topic. The broker is not involved and no will path
-  # is under test here; this only arms the server side — markOffline +
-  # FailOfflineSessionJob(300s) — which is what the steps below are about.
+  # connection, onto the server topic. The broker is not involved and no will path is
+  # under test; it marks the station offline - the away period the steps below are about.
   - action: send
     message: ConnectionLost
     messageType: Event
@@ -132,7 +135,22 @@ steps:
   - action: delay
     ms: 6000
 
-  # --- Reconnect: station still UP (uptime continues) -> Layer 1 PRESERVE, not reboot-fail ---
+  # ---- AWAY: the server marked the station offline, and that ended nothing. ----
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: false
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- Back: the station re-establishes the link without restarting - Reconnect, uptime
+  #     running on. ---
   - action: send
     message: BootNotification
     payload:
@@ -146,10 +164,10 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 90120
+      uptimeSeconds: 90012
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "PowerOn"
+      bootReason: "Reconnect"
       capabilities: { bleSupported: false, offlineModeSupported: false, meterValuesSupported: true }
       networkInfo: { connectionType: "Ethernet" }
   - action: wait_for
@@ -160,62 +178,26 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # ---- MARKER: reconnected, session must still be ACTIVE (external DB snapshot #2) ----
-  # Hold the connection open AND HEARTBEATING (every 28s < the 3.5x30=105s stale
-  # threshold) PAST the 300s recovery deadline, so the station stays genuinely
-  # is_online=true and the armed FailOfflineSessionJob SKIPS at execution (Layer 3).
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-  - { action: send, message: Heartbeat, messageType: Request }
-  - { action: delay, ms: 28000 }
-
+  # The post-boot report: the wash ran on, the bay is still Occupied.
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Occupied"
+      programs: [ { programNumber: 1, available: false } ]
   - action: delay
-    ms: 1000
+    ms: 1500
 
-  # THE ASSERTION — its own description, finally checked: "Session must stay
-  # ACTIVE, no refund."
-  #
-  # This file was previously recorded as being at its limit. That was WRONG, and
-  # the mistake is worth naming: it is the slowest and most elaborate file in the
-  # corpus (347.8s, its own 600s budget, three preserve layers), and the effort
-  # visible in its header read as thoroughness. It held a connection past the
-  # server's 300s offline-recovery deadline and then asserted nothing about what
-  # the server did with the session — which is the entire point of holding it.
-  #
-  #   data.status active — the session survived BOTH layers. Layer 1 is the
-  #       reconnect Boot's uptime-continuity preserve; Layer 3 is the
-  #       offline-recovery timer declining to fail a station that is back online
-  #       when it fires. Between them sits the injected ConnectionLost that arms
-  #       that timer. A failure at either layer lands here as `failed`.
-  #   data.credits_charged 0 / refund_amount 1000 — "no refund" is the claim, and
-  #       it means the customer has not yet been billed OR refunded: the session
-  #       is still running, so nothing is settled. 1000 authorized on a 600s
-  #       booking — ten minutes at 100 cr/min — none of it charged. (Measured:
-  #       written as 600 first, from reading the duration as if it were credits.) A force-fail would have
-  #       settled it, so these two are what distinguish "still active" from
-  #       "failed and refunded" — which is exactly the harm ARC 8 exists to
-  #       prevent, and the shape a bare status assertion would miss if the server
-  #       ever settled a session it left nominally active.
+  # ---- BACK: online again, and the boot ended nothing either. Nothing has been charged
+  #      or refunded: 1000 authorized for 600 s at 100 cr/min, none of it settled. ----
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
+    expect_status: 200
+    expect_body:
+      data.isOnline: true
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
@@ -224,3 +206,38 @@ steps:
       data.status: "active"
       data.credits_charged: 0
       data.refund_amount: 1000
+
+  # --- THE END RECORD. The customer stops the wash at the bay, 18 s in: SessionEnded
+  #     `Local`, pro-rata on the seconds it ran. ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.sessionId}}"
+      bayId: "{{captured.bayId}}"
+      reason: "Local"
+      actualDurationSeconds: 18
+      creditsCharged: 30
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Occupied"
+      programs: [ { programNumber: 1, available: true } ]
+  - action: delay
+    ms: 1500
+
+  # THE ASSERTION — the station's record ended it, and decided the money: ceil(18/60 x 100)
+  # = 30 charged of the 1000 authorized, 970 refunded. `Local` settles pro-rata with no
+  # low-delivery floor (sessions/session-fault-during-service.yaml contrasts it with Fault).
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.sessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: 30
+      data.refund_amount: 970

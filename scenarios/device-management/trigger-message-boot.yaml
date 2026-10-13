@@ -131,8 +131,10 @@ steps:
 
   # The triggered re-announce, and the point of the scenario. A trigger is not a
   # power-cycle: the station has been up for an hour and says so. Reporting
-  # uptimeSeconds: 0 here would make the server derive bootTime ≈ now and
-  # force-fail + refund every live wash on the station. bootReason stays PowerOn
+  # uptimeSeconds: 0 here made the server derive bootTime ≈ now and force-fail +
+  # refund every live wash on the station, until the session-end rule (2026-10-13):
+  # no boot ends a session now, whatever its uptime, so 3600 is kept because it is
+  # what the station truthfully reports, not to spare a wash. bootReason stays PowerOn
   # because that is still the episode that is running — the field is "reason the
   # station booted", not "reason for this send" — and deviceManagementSupported
   # is declared so one station does not advertise two capability sets.

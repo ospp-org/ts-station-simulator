@@ -116,8 +116,8 @@ branch that `core/happy-boot.yaml` does not.
 
 | File | csms-server branch reached | Asserted on |
 |------|----------------------------|-------------|
-| `core/boot-reconnect-preserves-live-session` | `BootNotificationHandler.php:725` preserve arm (`Reconnect`, one of the four in `SESSION_PRESERVING_BOOT_REASONS`) | `GET /sessions/{id}` → `status: active` |
-| `core/boot-remote-reset-fails-live-session` | `BootNotificationHandler.php:741` `$preservesSession` false (`RemoteReset`, one of the two reasons outside `SESSION_PRESERVING_BOOT_REASONS`) + the force-fail UPDATE at `:860-876` | `status: failed`, `fail_error_code: 1010` |
+| `core/boot-reconnect-preserves-live-session` | the boot handler, which since the session-end rule (2026-10-13) ends no session at any boot, and the `Local` arm of `SessionEndedHandler` | `GET /sessions/{id}` → `status: active` after a `Reconnect` boot with uptime 0, then the station's `SessionEnded` |
+| `core/boot-remote-reset-ends-nothing` | the same boot handler at `RemoteReset`, uptime 0 — the boot that used to force-fail every live session — and the `Fault` arm of `SessionEndedHandler` | `status: active` after the boot; then the station's `SessionEnded Fault` (it could not resume the wash) → `failed`, 0 charged, 1000 refunded |
 | `security/mac-verification-failed-drops-request` | `VerifyIncomingMiddleware.php:82` MAC_VERIFICATION_FAILED | silence + a clean control round trip |
 | `security/mac-missing-drops-request` | `VerifyIncomingMiddleware.php:51` MAC_MISSING | silence + a clean control round trip |
 | `sessions/start-service-refused-program-not-declared` | `StartServiceResponseHandler.php:172` `handleRejected` | server-sent `programNumber`; `status: failed`, `fail_error_code: 3017` |
@@ -125,7 +125,7 @@ branch that `core/happy-boot.yaml` does not.
 | `sessions/meter-values-seqno-gap-still-ingested` | `MeterValuesHandler.php:112` gap check | the three `meter_values` rows the server wrote |
 | `sessions/meter-values-seqno-out-of-order-still-ingested` | `MeterValuesHandler.php:112` + the watermark rule at `:126` | four rows — the repeated ordinal is not deduplicated |
 | `device-management/reset-graceful-refused-with-active-session` | `ResetStationAction::execute`, its active-session pre-flight | `409` + `ospp_code 6008` with `details.wouldBe 3016`, and no Reset on the wire |
-| `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction::execute`, `SettleSessionsOnForcedReset::handle`, the OPERATOR_STOPPED arm of `SessionEndedHandler::handle`, `BootNotificationHandler::failStuckSessions` | server-sent `force: true`; a StopService naming the session and the session `stopping` before the station's settle; the `station_reset` row with `forced: true`; `completed`, surviving the reboot |
+| `device-management/reset-forced-settles-session-as-operator-stop` | `ResetStationAction::execute`, `ResetResponseHandler::handle`, the OPERATOR_STOPPED arm of `SessionEndedHandler::handle` | server-sent `force: true`; the session still `active` after the station accepts (the server no longer stops it itself); `completed` on the station's settle-first; the `station_reset` row with `forced: true`; `completed` after the RemoteReset boot |
 | `sessions/session-rejected-insufficient-balance` | `StartSessionAction.php:241-250` money gate | `402` + `ospp_code 4001`, and the `500` the server derived from a `300`s request — on an identity it declares unfunded (`wallet_balance: 0`) |
 
 ## Summary
@@ -164,7 +164,7 @@ branch that `core/happy-boot.yaml` does not.
      missing file tests, which is content work and not a number. Known members of the gap:
      `boot-rejected.yaml` has a row but no file, and
      `boot-disabled-station-boots-and-stays-gated.yaml`,
-     `boot-remote-reset-fails-live-session.yaml` and `boot-reconnect-preserves-live-session.yaml`
+     `boot-remote-reset-ends-nothing.yaml` and `boot-reconnect-preserves-live-session.yaml`
      have files but no row (the last two are described in the table at the top of this file
      instead). Comparing listed filenames against the tree is a different instrument from
      counting them, and it is named here rather than half-built. -->
@@ -179,10 +179,10 @@ branch that `core/happy-boot.yaml` does not.
 | `core/boot-firmware-update.yaml` | Boot Firmware Update | bootReason: FirmwareUpdate, new version | new |
 | `core/boot-manual-reset.yaml` | Boot Manual Reset | bootReason: ManualReset | new |
 | `core/boot-scheduled-reset.yaml` | Boot Scheduled Reset | bootReason: ScheduledReset, 24h uptime | new |
-| `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot PRESERVES a live session — pins the second member of the preserve set that the Reconnect proof does not cover | new |
+| `core/boot-error-recovery.yaml` | Boot Error Recovery | ErrorRecovery re-boot leaves a live session `active` — no boot ends a session since the session-end rule (2026-10-13) — and the station's `SessionEnded` ends it | new |
 | `core/heartbeat-cycle.yaml` | Heartbeat Cycle | 3 heartbeat request/response cycles | migrated |
 | `core/heartbeat-timeout.yaml` | Heartbeat Timeout | Heartbeat with very short timeout — the CLIENT's wait budget, not a server behaviour | new |
-| `core/heartbeat-silence-offline-sweep.yaml` | Heartbeat Silence Offline Sweep | 175s of APPLICATION silence on a live socket after the first Heartbeat after the boot (which ends the replay) → `station:check-heartbeats` marks the station offline (`cause: heartbeat_timeout`). Nothing is disconnected; declares its own timeout | new |
+| `core/heartbeat-silence-offline-sweep.yaml` | Heartbeat Silence Offline Sweep | 175s of APPLICATION silence on a live socket after its last bay report (every accepted message is liveness; the threshold is 3.5 x the interval, always) → `station:check-heartbeats` marks the station offline (`cause: heartbeat_timeout`). Nothing is disconnected; declares its own timeout | new |
 | `core/status-notification.yaml` | Status Notification | StatusNotification Available with services | migrated |
 | `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for the 6 REPORTABLE bay statuses; 4 persist, Occupied/Finishing are session-gated and discarded | new |
 | `core/connection-lost-lwt.yaml` | Connection Lost LWT | `fault: sever` under `clean_session: false` → the BROKER publishes the will and the server marks the station offline (`cause: broker_will`). Swap to `disconnect` and it goes red | new |
@@ -293,7 +293,7 @@ branch that `core/happy-boot.yaml` does not.
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
-| `chaos/disconnect-during-session.yaml` | Disconnect During Session | LWT + orphaned session | migrated |
+| `chaos/disconnect-during-session.yaml` | Disconnect During Session | Disconnect mid-session → the session stays `active` through the blip and the `Reconnect` boot → the station's `SessionEnded Local` ends it | migrated |
 | `chaos/disconnect-during-boot.yaml` | Disconnect During Boot | Incomplete boot handshake | new |
 | `chaos/slow-responses.yaml` | Slow Responses | 3-5s response delays | migrated |
 | `chaos/malformed-messages.yaml` | Malformed Messages | Unusual/minimal payloads | migrated |

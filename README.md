@@ -138,6 +138,24 @@ OSPP handlers are wired (boot, heartbeat, session lifecycle, configuration,
 firmware, diagnostics, maintenance, catalog, trigger, certificates, data transfer,
 status, meter, security event).
 
+**The station ends every session it starts.** A session is ended only by the
+station's end record, so connect mode sends one for each: `SessionEnded TimerExpired`
+when the booked duration has been delivered, `OperatorStopped` for a forced Reset
+(then it reboots and boots with `RemoteReset`), and the `StopService` RESPONSE for a
+stop the server asked for — answered again from its cache when the server repeats
+it. Its live sessions are kept beside its certificates (`<stationId>-sessions.json`,
+the delivered time at most 10 s old), so after any restart it reports every session
+it held: it resumes the wash and sends its `SessionEnded` at the end, or ends it at
+once with `SessionEnded Fault` and the delivered time it kept. An update downloads at
+once and installs when no session runs, then boots with `FirmwareUpdate`. After its
+link comes back it boots with `Reconnect`, reports its bays and sends what it held
+while away.
+
+```bash
+simulator connect ... --on-restart interrupt     # end each held wash at once instead of resuming it
+simulator connect ... --boot-reason Watchdog     # the reason this process booted (default PowerOn)
+```
+
 **Ctrl+C announces the departure.** The station publishes `ConnectionLost` with
 `reason: "PlannedShutdown"` and then closes with an ordinary clean DISCONNECT
 (`connection-lost.md` §4.3). `SIGTERM` does the same, so `docker stop` is as
