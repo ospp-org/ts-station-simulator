@@ -28,9 +28,10 @@ const { Station } = await import('../../station/Station.js');
 const { StartServiceHandler } = await import('../../handlers/StartServiceHandler.js');
 const { StopServiceHandler } = await import('../../handlers/StopServiceHandler.js');
 const { BootNotificationHandler } = await import('../../handlers/BootNotificationHandler.js');
+const { ReserveBayHandler } = await import('../../handlers/ReserveBayHandler.js');
 
 type StationInstance = InstanceType<typeof Station>;
-type Restartable = StationInstance & { restoreSessions?: () => Promise<unknown> };
+type Restartable = StationInstance & { restoreSessions?: () => Promise<unknown>; restart?: (reason: string) => Promise<void> };
 
 let cleanup: () => Promise<void>;
 
@@ -131,5 +132,31 @@ describe('stop-service.md §6 rule 10 - the answer outlives a restart', () => {
     const again = frames('StopService', 'Response', since)[0];
     expect(again.messageId).toBe('cmd_stop_after');
     expect(again.payload, 'the restart turned the cached answer into a refusal').toEqual(answered);
+  });
+});
+
+describe('a restart is a power cycle of the sessions, not of the reservations', () => {
+  it('a reservation the station holds keeps its bay Reserved through restart(): the boot report says so', async () => {
+    const station = power();
+    await bootOnline(station, 0);
+    await new ReserveBayHandler().handle(
+      request('ReserveBay', {
+        reservationId: 'rsv_keptacross',
+        bayId: BAY_ID,
+        expirationTime: new Date(Date.now() + 600_000).toISOString(),
+        sessionSource: 'MobileApp',
+      }),
+      station as never,
+    );
+    expect(station.getBayState(BAY_ID)).toBe('Reserved');
+    const since = wire.frames.length;
+
+    await station.restart?.('Watchdog');
+    station.handleMessage(bootAccepted());
+    await until(() => frames('StatusNotification', undefined, since).length > 0, 'the boot report after the restart');
+
+    expect(frames('StatusNotification', undefined, since).find((f) => f.payload.bayId === BAY_ID)?.payload.status)
+      .toBe('Reserved');
+    expect(station.reservations.has(BAY_ID)).toBe(true);
   });
 });

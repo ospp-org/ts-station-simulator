@@ -1138,6 +1138,15 @@ export class Station extends EventEmitter {
     for (const bay of this.config.bays) {
       this.bayMachines.set(bay.bayId, new BayStateMachine(EffectedBy.STATION, BayStatus.AVAILABLE));
     }
+    // Reservations are not session state and restart() leaves them as they were; their bays go
+    // back to Reserved so the bay machines agree with the reservations the station still holds.
+    for (const reservation of this.reservations.values()) {
+      try {
+        this.setBayState(reservation.bayId, BayStatus.RESERVED);
+      } catch {
+        // A reservation for a bay this station no longer declares: nothing to restore.
+      }
+    }
 
     await this.connection.disconnect();
     this.lifecycle = StationLifecycle.OFFLINE;
