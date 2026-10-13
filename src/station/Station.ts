@@ -10,11 +10,24 @@ import {
 } from './heartbeatStats.js';
 import { TopologyStore, type DeclaredBay } from './TopologyStore.js';
 import { CatalogStore } from './CatalogStore.js';
+import {
+  FileSessionStore,
+  MemorySessionStore,
+  SESSION_CHECKPOINT_INTERVAL_SECONDS,
+  STOP_ANSWER_RETENTION_MS,
+  type HeldSessionEnded,
+  type SessionStore,
+  type StoppedSessionAnswer,
+  type StoredSessionState,
+} from './SessionStore.js';
+import { armWashTimer, clearWashTimer, deliveredSeconds, endSession } from './sessionEnd.js';
+import type { StationContext } from '../handlers/Handler.js';
 import type {
   OsppEnvelope,
   BootNotificationRequest,
   BayId,
   ServiceId,
+  StopServiceResponse,
 } from '@ospp/protocol';
 import {
   EffectedBy,
@@ -74,6 +87,41 @@ export interface SessionInfo {
    * scenario read, wrote and advanced; see SequenceCounter for what that cost.
    */
   seq: SequenceCounter;
+  /**
+   * The rest of Handler.ts's declaration, kept in step for the reason above: the delivered seconds
+   * a restart carried in, the wash timer, the rule-9 record's program and messageId, the advisory
+   * price. Optional here because a scenario's sessions (SendStep) carry none of them.
+   */
+  deliveredBeforeRestartSeconds?: number;
+  washTimer?: ReturnType<typeof setTimeout>;
+  programNumber?: number;
+  startMessageId?: string;
+  priceCreditsPerMinute?: number;
+}
+
+/**
+ * The six boot reasons that keep a session: after any of them the station may resume a wash it
+ * held (session-end rule S6). RemoteReset and FirmwareUpdate are the two at which no session may
+ * be live - a Reset settles first, an update installs only once its sessions ended - so a session
+ * still held at either cannot be resumed.
+ */
+const SESSION_KEEPING_BOOT_REASONS: ReadonlySet<BootReason> = new Set([
+  BootReason.POWER_ON,
+  BootReason.WATCHDOG,
+  BootReason.ERROR_RECOVERY,
+  BootReason.RECONNECT,
+  BootReason.MANUAL_RESET,
+  BootReason.SCHEDULED_RESET,
+]);
+
+/** What a power-on found on disk and did with it (Station.restoreSessions). */
+export interface RestoredSessions {
+  /** Washes running on for the rest of their booked duration. */
+  resumed: string[];
+  /** Washes ended at once: SessionEnded Fault (or TimerExpired, for one already fully delivered), held for the boot. */
+  ended: string[];
+  /** SessionEnded events an earlier process could not send, still held. */
+  held: number;
 }
 
 export interface ReservationInfo {
@@ -120,6 +168,24 @@ export class Station extends EventEmitter {
   // TriggerCertificateRenewalHandler, consumed by CertificateInstallHandler.
   public pendingRenewalKeyPem: string | null = null;
 
+  /** StationContext.heldSessionEnded: the end records waiting for a boot they can be sent after. Mutated in place. */
+  public readonly heldSessionEnded: HeldSessionEnded[] = [];
+  /** StationContext.lastReportedBayStatus: what the boot report, and every report since, said each bay was. */
+  public readonly lastReportedBayStatus: Map<string, BayStatus> = new Map();
+  /** The stops answered `Accepted`, by sessionId - the cached RESPONSE a repeated StopService gets (stop-service.md §6 rule 10). */
+  private readonly stoppedSessions: Map<string, StoppedSessionAnswer> = new Map();
+  /** Where the sessions are kept; built once, on first use (sessionStore()). */
+  private sessionStoreInstance: SessionStore | null | undefined = undefined;
+  /** Every write of the record, in order: two writers racing on one temporary file would corrupt it. */
+  private sessionWrites: Promise<void> = Promise.resolve();
+  private checkpointTimer: ReturnType<typeof setInterval> | null = null;
+  /** The socket is up (MqttConnection's `connect` and `close`) - tracked for a station that acts on its link. */
+  private linkUp = false;
+  /** Inside connect(): the `connect` that follows is the one connect() waits for, not mqtt.js reconnecting on its own. */
+  private connectInFlight = false;
+  /** One replay at a time: a second Accepted boot must not send the same held events twice. */
+  private replayInFlight: Promise<void> | null = null;
+
   private readonly connection: MqttConnection;
 
   /**
@@ -146,17 +212,21 @@ export class Station extends EventEmitter {
    * is a value that gets DIFFERENCED, and a wall-clock step between construction
    * and a boot corrupted it. It is a per-process reading and is never serialised;
    * what goes on the wire is the difference, in seconds.
+   *
+   * Not readonly any more: restart() is the in-process power cycle (a Reset, an
+   * installed update), and the uptime of the boot that follows it starts again at 0.
    */
-  private readonly poweredOnAt: number = monotonicNowMs();
+  private poweredOnAt: number = monotonicNowMs();
 
   /**
    * Why the station is sending its CURRENT BootNotification. Defaults to
-   * POWER_ON (this instance did just power on) and is updated by whatever
-   * non-power-on event re-boots the station — today only a cert-renewal
-   * re-handshake (see reconnectWithRenewedCertificate). Retries of the same
-   * boot re-send the same reason, since a retry is not a new boot episode.
+   * POWER_ON (this instance did just power on), or to the reason the process was
+   * started with (`config.bootReason`), and is updated by whatever re-boots the
+   * station — a cert-renewal re-handshake or a reconnect (`Reconnect`), a restart()
+   * (its reason). Retries of the same boot re-send the same reason, since a retry
+   * is not a new boot episode.
    */
-  private currentBootReason: BootReason = BootReason.POWER_ON;
+  private currentBootReason: BootReason;
 
   private readonly handlers: Map<OsppAction, Handler> = new Map();
   private readonly registeredListeners: Set<OsppAction> = new Set();
@@ -166,6 +236,7 @@ export class Station extends EventEmitter {
   constructor(config: StationConfig, mqttOptions: MqttConnectionOptions) {
     super();
     this.config = config;
+    this.currentBootReason = config.bootReason ?? BootReason.POWER_ON;
     this.connection = new MqttConnection(mqttOptions);
     this.journal = mqttOptions.journal;
     // The getter, not a captured value: the session key arrives in the
@@ -202,6 +273,14 @@ export class Station extends EventEmitter {
       this.emit('kicked', reasonCode);
     });
 
+    // THE LINK, AS THE STATION SEES IT. Wired once here, like the two above - and only for a station
+    // that drives its own sessions (`rebootOnReconnect`, connect mode). A scenario's YAML sends the
+    // boot a reconnect needs as a step of its own, so a scenario's station must not send a second
+    // one, and its canTransmit() does not read the link.
+    if (config.rebootOnReconnect === true) {
+      this.wireLinkEvents();
+    }
+
     // Bays start AVAILABLE, not at the FSM's `Unknown` default.
     //
     // `Unknown` is the state a station holds between power-on and the end of its
@@ -225,25 +304,59 @@ export class Station extends EventEmitter {
     }
   }
 
+  /** The link's two events, for a station that acts on them (constructor). */
+  private wireLinkEvents(): void {
+    this.connection.on('close', () => {
+      this.linkUp = false;
+      // A dead link carries nothing. A Heartbeat or an event handed to mqtt.js now would be queued
+      // and flushed on the next connection AHEAD of the BootNotification that must open it
+      // (connection-lost.md §6 step 1), signed with a key the server discarded on the will. So the
+      // station stops beating, drops the key, and holds every SessionEnded until the next boot.
+      this.stopHeartbeat();
+      this.bootAccepted = false;
+      this.sessionKey = null;
+    });
+    this.connection.on('connect', () => {
+      this.linkUp = true;
+      if (this.connectInFlight) return;
+      // mqtt.js reconnected on its own: the firmware did not restart, so this is `Reconnect`, with the
+      // uptime running on (boot-notification.md §5.2 rule 1), and it is the first message on the new
+      // connection. The bays are reported and the held SessionEnded events sent once it is Accepted
+      // (BootNotificationHandler).
+      this.lifecycle = StationLifecycle.ONLINE;
+      this.bootAccepted = false;
+      this.currentBootReason = Station.RECONNECT_BOOT_REASON;
+      console.log('[Station] %s reconnected - booting again (Reconnect)', this.config.stationId);
+      this.retryBoot().catch((err: unknown) => {
+        console.error('[Station] the BootNotification after the reconnect failed: %s', err instanceof Error ? err.message : String(err));
+      });
+    });
+  }
+
   async connect(): Promise<void> {
+    this.connectInFlight = true;
     this.connection.connect();
 
-    await new Promise<void>((resolve, reject) => {
-      const onConnect = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-      const cleanup = () => {
-        this.connection.removeListener('connect', onConnect);
-        this.connection.removeListener('error', onError);
-      };
-      this.connection.once('connect', onConnect);
-      this.connection.once('error', onError);
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onConnect = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (err: Error) => {
+          cleanup();
+          reject(err);
+        };
+        const cleanup = () => {
+          this.connection.removeListener('connect', onConnect);
+          this.connection.removeListener('error', onError);
+        };
+        this.connection.once('connect', onConnect);
+        this.connection.once('error', onError);
+      });
+    } finally {
+      this.connectInFlight = false;
+    }
 
     const topic = toStationTopic(this.config.stationId);
     await this.connection.subscribe(topic, 1);
@@ -776,74 +889,315 @@ export class Station extends EventEmitter {
    * credits for a wash that was delivered, so nothing downstream could see it.
    */
   async settleSessionAsOperatorStop(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (session === undefined) {
-      return;
-    }
-
-    const actualDurationSeconds = Math.max(
-      0,
-      Math.round((monotonicNowMs() - session.startedAtMonotonicMs) / 1000),
-    );
-    // Station.SessionInfo carries no price; the SERVER is the authoritative
-    // billing engine (§04-flows.md "5a. Full Offline Session — BLE" / "Error Paths") and this value is advisory. 100 cr/min
-    // is the same default the sim uses elsewhere.
-    const creditsCharged = Math.ceil((actualDurationSeconds / 60) * 100);
-
-    this.sessions.delete(sessionId);
-
-    // A bay-transition hiccup must not abort the reboot. The forced reset
-    // iterates every running session, and the settle's job is to REPORT the
-    // session — the delivered time the server then settles by service kind.
-    // Losing that report because a bay was already Available would be the "drop
-    // it on the floor" the clause rules out, and it would strand the remaining
-    // sessions too.
-    try {
-      // Occupied -> Finishing -> Available, the same two steps StopServiceHandler
-      // takes. The FSM has no direct Occupied -> Available edge, and a live
-      // forced reset proved it: the settle went straight to Available and threw
-      // "Invalid bay transition for Station: Occupied → Available". A wash that
-      // is ending still passes through Finishing whether an operator ended it or
-      // a timer did.
-      if (this.getBayState(session.bayId) === BayStatus.OCCUPIED) {
-        this.setBayState(session.bayId, BayStatus.FINISHING);
-      }
-      this.setBayState(session.bayId, BayStatus.AVAILABLE);
-    } catch (err) {
+    // The ONE end path (sessionEnd.ts): the delivered time on the monotonic clock, the bay
+    // Occupied -> Finishing -> Available (a hiccup there is logged, never thrown - the forced reset
+    // iterates every running session and must not strand the rest), the SessionEnded held on disk
+    // until it is published. It was this method's own body, the only SessionEnded the simulator sent
+    // on its own; the wash timer and a restart now end sessions through the same path.
+    //
+    // 03-messages.md §5.4 (spec v0.44.0): `OperatorStopped` is the member for a session an operator
+    // ended deliberately (a forced Reset, a station disable). It carries the delivered time; the
+    // server settles it by service kind - pro-rata on delivered time for UserDuration, a full refund
+    // for FixedDuration and MultiUnit. It was `Deauthorized` until the member existed, and that
+    // carries "Session MUST be billed at zero", which erased the delivered time UserDuration bills on.
+    const ended = await endSession(this.asContext(), sessionId, SessionEndReason.OPERATOR_STOPPED);
+    if (ended !== null) {
       console.log(
-        '[Reset] bay %s could not transition to Available (%s) — settling the session anyway',
-        session.bayId, err instanceof Error ? err.message : String(err),
+        '[Reset] settled session %s as an operator stop — %ds, %d credits',
+        sessionId, ended.actualDurationSeconds, ended.creditsCharged,
+      );
+    }
+  }
+
+  /** This station as the context its handlers and the end path read - one object, two declared shapes. */
+  private asContext(): StationContext {
+    return this as unknown as StationContext;
+  }
+
+  // ---------------------------------------------------------------------------
+  // THE SESSIONS ACROSS A RESTART (session-end rule S2, S3) - connect mode
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Where this station keeps its sessions: beside its certificates (FileSessionStore), or in memory
+   * for a station that has no certificate directory - it then survives restart() and not a new
+   * process. Null when the config does not ask (a scenario's station keeps nothing).
+   */
+  sessionStore(): SessionStore | null {
+    if (this.sessionStoreInstance === undefined) {
+      if (this.config.persistSessions !== true) {
+        this.sessionStoreInstance = null;
+      } else {
+        const dir = this.topologyDir();
+        this.sessionStoreInstance = dir === null
+          ? new MemorySessionStore()
+          : new FileSessionStore(dir, this.config.stationId);
+      }
+    }
+    return this.sessionStoreInstance;
+  }
+
+  /**
+   * StationContext.persistSessions: write the whole record - the live sessions with their delivered
+   * time as of now, the held SessionEnded events, the stops answered within the horizon. Writes are
+   * queued so two never race on the temporary file; a failure reaches the caller (StartService
+   * refuses 5103 on it). Keeps the checkpoint timer running exactly while a session does.
+   */
+  async persistSessions(): Promise<void> {
+    const store = this.sessionStore();
+    if (store === null) return;
+    const write = this.sessionWrites.then(() => store.save(this.sessionSnapshot()));
+    this.sessionWrites = write.catch(() => undefined);
+    this.syncCheckpointing();
+    await write;
+  }
+
+  private sessionSnapshot(): StoredSessionState {
+    const now = monotonicNowMs();
+    const horizon = Date.now() - STOP_ANSWER_RETENTION_MS;
+    for (const [id, answer] of this.stoppedSessions) {
+      if (Date.parse(answer.answeredAt) < horizon) this.stoppedSessions.delete(id);
+    }
+    return {
+      stationId: this.config.stationId,
+      savedAt: new Date().toISOString(),
+      sessions: [...this.sessions.values()].map((s) => ({
+        sessionId: s.sessionId,
+        bayId: s.bayId,
+        serviceId: s.serviceId,
+        ...(s.startMessageId !== undefined ? { startMessageId: s.startMessageId } : {}),
+        ...(s.programNumber !== undefined ? { programNumber: s.programNumber } : {}),
+        startedAt: s.startedAt,
+        durationSeconds: s.durationSeconds,
+        deliveredSeconds: Math.min(s.durationSeconds, deliveredSeconds(s, now)),
+        checkpointedAt: new Date().toISOString(),
+        seqNo: s.seq.peek(),
+        priceCreditsPerMinute: s.priceCreditsPerMinute ?? 100,
+      })),
+      heldSessionEnded: [...this.heldSessionEnded],
+      stoppedSessions: [...this.stoppedSessions.values()],
+    };
+  }
+
+  /** The checkpoint: the delivered time on disk is never more than SESSION_CHECKPOINT_INTERVAL_SECONDS old while a wash runs. */
+  private syncCheckpointing(): void {
+    if (this.sessions.size > 0 && this.checkpointTimer === null) {
+      this.checkpointTimer = setInterval(() => {
+        this.persistSessions().catch((err: unknown) => {
+          console.error('[Session] checkpoint not written: %s', err instanceof Error ? err.message : String(err));
+        });
+      }, SESSION_CHECKPOINT_INTERVAL_SECONDS * 1000);
+      if (typeof (this.checkpointTimer as { unref?: () => void }).unref === 'function') {
+        (this.checkpointTimer as { unref: () => void }).unref();
+      }
+    } else if (this.sessions.size === 0 && this.checkpointTimer !== null) {
+      clearInterval(this.checkpointTimer);
+      this.checkpointTimer = null;
+    }
+  }
+
+  /** StationContext.canTransmit. Only a station that holds and replays its end records decides it (connect mode). */
+  canTransmit(): boolean {
+    if (this.config.rebootOnReconnect !== true) return true;
+    return this.lifecycle === StationLifecycle.ONLINE && this.linkUp && this.bootAccepted && this.sessionKey !== null;
+  }
+
+  /** StationContext.stopAnswerFor: the cached RESPONSE of a stop answered within the retention horizon. */
+  stopAnswerFor(sessionId: string): Extract<StopServiceResponse, { status: 'Accepted' }> | undefined {
+    const answer = this.stoppedSessions.get(sessionId);
+    if (answer === undefined) return undefined;
+    if (Date.parse(answer.answeredAt) < Date.now() - STOP_ANSWER_RETENTION_MS) {
+      this.stoppedSessions.delete(sessionId);
+      return undefined;
+    }
+    return answer.response;
+  }
+
+  /** StationContext.rememberStopAnswer. */
+  rememberStopAnswer(sessionId: string, bayId: string, response: Extract<StopServiceResponse, { status: 'Accepted' }>): void {
+    this.stoppedSessions.set(sessionId, { sessionId, bayId, response, answeredAt: new Date().toISOString() });
+  }
+
+  /**
+   * What a power-on does with the sessions on disk, before its boot (session-end rule S3): for every
+   * session the station held, resume the wash - its bay Occupied in the boot report, its timer
+   * re-armed for the rest of its booked duration, its SessionEnded sent at the end - or, when it
+   * cannot resume, end it at once with SessionEnded `Fault` and the delivered time the record holds,
+   * sent right after the boot is Accepted. `Fault` is "a hardware fault, or a restart the station
+   * could not resume the wash after" (Gabi, 2026-10-13).
+   *
+   * Resumed after the six boot reasons that keep a session unless `behavior.onRestart` is
+   * `interrupt`; never after RemoteReset or FirmwareUpdate, at which no session may be live. A wash
+   * the record says was fully delivered ends TimerExpired. Held SessionEnded events an earlier
+   * process could not send stay held, and the answered stops stay cached.
+   */
+  async restoreSessions(): Promise<RestoredSessions> {
+    const restored: RestoredSessions = { resumed: [], ended: [], held: 0 };
+    const store = this.sessionStore();
+    if (store === null) return restored;
+    const state = await store.load();
+    if (state === null) return restored;
+
+    this.heldSessionEnded.splice(0, this.heldSessionEnded.length, ...state.heldSessionEnded);
+    restored.held = this.heldSessionEnded.length;
+    this.stoppedSessions.clear();
+    for (const answer of state.stoppedSessions) this.stoppedSessions.set(answer.sessionId, answer);
+
+    const mayResume = SESSION_KEEPING_BOOT_REASONS.has(this.currentBootReason)
+      && this.config.behavior.onRestart !== 'interrupt';
+
+    for (const record of state.sessions) {
+      const seq = new SequenceCounter();
+      if (record.seqNo > 0) seq.forceTo(record.seqNo);
+      const session: SessionInfo = {
+        sessionId: record.sessionId,
+        bayId: record.bayId as BayId,
+        serviceId: record.serviceId as ServiceId,
+        startedAt: record.startedAt,
+        // The origin of what THIS process delivers: now. What came before is carried in seconds.
+        startedAtMonotonicMs: monotonicNowMs(),
+        deliveredBeforeRestartSeconds: record.deliveredSeconds,
+        durationSeconds: record.durationSeconds,
+        seq,
+        priceCreditsPerMinute: record.priceCreditsPerMinute,
+        ...(record.programNumber !== undefined ? { programNumber: record.programNumber } : {}),
+        ...(record.startMessageId !== undefined ? { startMessageId: record.startMessageId } : {}),
+      };
+      this.sessions.set(session.sessionId, session);
+
+      const fullyDelivered = record.deliveredSeconds >= record.durationSeconds;
+      if (mayResume && !fullyDelivered && this.bayAvailableForResume(record.bayId)) {
+        this.setBayState(record.bayId, BayStatus.OCCUPIED);
+        armWashTimer(this.asContext(), session);
+        restored.resumed.push(session.sessionId);
+        console.log(
+          '[Session] resumed %s on bay %s after %s - %ds of %ds delivered, %ds left',
+          session.sessionId, session.bayId, this.currentBootReason,
+          record.deliveredSeconds, record.durationSeconds, record.durationSeconds - record.deliveredSeconds,
+        );
+        continue;
+      }
+
+      // Not resumed: the end record goes out right after the Accepted boot (it is held now - no boot
+      // has been answered yet).
+      const reason = fullyDelivered ? SessionEndReason.TIMER_EXPIRED : SessionEndReason.FAULT;
+      await endSession(this.asContext(), session.sessionId, reason, {
+        deliveredSeconds: Math.min(record.deliveredSeconds, record.durationSeconds),
+      });
+      restored.ended.push(session.sessionId);
+      console.log(
+        '[Session] could not resume %s after %s - SessionEnded %s with %ds delivered, sent after the boot',
+        session.sessionId, this.currentBootReason, reason, Math.min(record.deliveredSeconds, record.durationSeconds),
       );
     }
 
-    await this.sender.send<SessionEndedPayload>(
-      OsppAction.SESSION_ENDED,
-      MessageType.EVENT,
-      {
-        sessionId: session.sessionId,
-        bayId: session.bayId,
-        // 03-messages.md §5.4 (spec v0.44.0) — the member for a session an operator
-        // ended deliberately (a forced Reset, a station disable), which is exactly
-        // what a forced reset produces. It carries the delivered time; the server
-        // settles it by service kind — pro-rata on delivered time for UserDuration,
-        // a full refund for FixedDuration and MultiUnit. This was `Deauthorized`
-        // until the member existed, and that carries "Session MUST be billed at
-        // zero" — so every forced reset erased the delivered time a UserDuration
-        // session is billed on, and charged nothing for a wash it delivered.
-        reason: SessionEndReason.OPERATOR_STOPPED,
-        actualDurationSeconds,
-        creditsCharged,
-        // peek, not next: SessionEnded reports the FINAL position, it does not
-        // issue a new one.
-        seqNo: session.seq.peek(),
-        finalSeqNo: session.seq.peek(),
-      },
-    );
+    await this.persistSessions();
+    return restored;
+  }
 
-    console.log(
-      '[Reset] settled session %s as an operator stop — %ds, %d credits',
-      sessionId, actualDurationSeconds, creditsCharged,
-    );
+  /** A resumed wash needs its bay idle at power-on - and a bay this station still declares. */
+  private bayAvailableForResume(bayId: string): boolean {
+    const machine = this.bayMachines.get(bayId);
+    return machine !== undefined && machine.state === BayStatus.AVAILABLE;
+  }
+
+  /**
+   * StationContext.restart - the in-process power cycle (a Reset, an installed update, a test).
+   *
+   * What a power loss takes: every timer (the heartbeat, each wash's, the checkpoint), the live
+   * session map, the held events and answered stops in memory, the boot verdict, the session key,
+   * the bays' state (back to Available, as at power-on) and the socket. What it leaves: the disk.
+   * The uptime starts again at 0 and the next BootNotification carries `reason`; then
+   * restoreSessions() decides each kept session exactly as for a new process, which is the point -
+   * one restart path, whether the process survived it or not. `Reconnect` is refused: it names the
+   * case where the firmware did NOT restart.
+   */
+  async restart(reason: BootReason): Promise<void> {
+    if (reason === BootReason.RECONNECT) {
+      throw new Error('Station.restart: Reconnect names a reconnection without a restart; a restart needs a restart reason');
+    }
+    console.log('[Station] %s restarting (%s)', this.config.stationId, reason);
+
+    this.stopHeartbeat();
+    for (const session of this.sessions.values()) clearWashTimer(session);
+    if (this.checkpointTimer !== null) {
+      clearInterval(this.checkpointTimer);
+      this.checkpointTimer = null;
+    }
+    // Nothing leaves from here on. An end record already being published finishes and is released;
+    // a write already handed to the disk completes (it is an atomic rename). Then the memory goes,
+    // and what the disk holds is all the next boot knows - held records included, sent once.
+    this.bootAccepted = false;
+    this.sessionKey = null;
+    while (this.replayInFlight !== null) await this.replayInFlight;
+    await this.sessionWrites;
+    this.sessions.clear();
+    this.heldSessionEnded.splice(0, this.heldSessionEnded.length);
+    this.stoppedSessions.clear();
+    this.lastReportedBayStatus.clear();
+    for (const bay of this.config.bays) {
+      this.bayMachines.set(bay.bayId, new BayStateMachine(EffectedBy.STATION, BayStatus.AVAILABLE));
+    }
+
+    await this.connection.disconnect();
+    this.lifecycle = StationLifecycle.OFFLINE;
+
+    this.poweredOnAt = monotonicNowMs();
+    this.currentBootReason = reason;
+    const restored = await this.restoreSessions();
+    if (restored.resumed.length + restored.ended.length + restored.held > 0) {
+      console.log(
+        '[Station] after %s: %d resumed, %d ended at once, %d end records held for the boot',
+        reason, restored.resumed.length, restored.ended.length, restored.held,
+      );
+    }
+
+    await this.connect();
+    await this.retryBoot();
+  }
+
+  /**
+   * StationContext.replayHeldSessionEnded - the ONE publisher of held SessionEnded events: after an
+   * Accepted boot and its bay reports, and after endSession() holds a new one. Sends every held
+   * SessionEnded, oldest first, with its original values and messageId (session-ended.md §5 rule 3;
+   * connection-lost.md §6 step 4), each released from the record once published. Stops at the first
+   * one that cannot leave - the rest wait for the next boot.
+   */
+  async replayHeldSessionEnded(): Promise<void> {
+    // Behind a pass already running, then a pass of its own: a record held after that pass looked
+    // at the list for the last time must not wait for the next boot.
+    while (this.replayInFlight !== null) await this.replayInFlight;
+    // Stored BEFORE anything can clear it, and cleared only by the pass it names: a pass with
+    // nothing to send finishes synchronously, and a `finally` inside it would run before the
+    // assignment and leave a settled promise behind that every later caller awaits for ever.
+    const pass = this.sendHeldSessionEnded();
+    this.replayInFlight = pass;
+    try {
+      await pass;
+    } finally {
+      if (this.replayInFlight === pass) this.replayInFlight = null;
+    }
+  }
+
+  private async sendHeldSessionEnded(): Promise<void> {
+    while (this.heldSessionEnded.length > 0 && this.canTransmit()) {
+      const held = this.heldSessionEnded[0];
+      try {
+        await this.sender.send<SessionEndedPayload>(OsppAction.SESSION_ENDED, MessageType.EVENT, held.payload, held.messageId);
+      } catch (err) {
+        console.log(
+          '[Session] the held SessionEnded of %s could not be sent (%s) - kept for the next boot',
+          held.payload.sessionId, err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+      const at = this.heldSessionEnded.indexOf(held);
+      if (at !== -1) this.heldSessionEnded.splice(at, 1);
+      console.log('[Session] sent the held SessionEnded of %s (%s)', held.payload.sessionId, held.payload.reason);
+      await this.persistSessions().catch((err: unknown) => {
+        console.error('[Session] could not record the release on disk: %s', err instanceof Error ? err.message : String(err));
+      });
+    }
   }
 
   async retryBoot(fixedMessageId?: string): Promise<void> {

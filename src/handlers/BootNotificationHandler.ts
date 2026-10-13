@@ -100,7 +100,17 @@ export class BootNotificationHandler implements Handler {
               programs: bay.programs.map(p => ({ programNumber: p.programNumber, available: p.available })),
             };
             await station.sender.send(OsppAction.STATUS_NOTIFICATION, MessageType.EVENT, statusPayload);
+            // What this bay was last reported as: the bay of a wash resumed after a restart is
+            // reported Occupied here, and Available again after that wash's SessionEnded.
+            station.lastReportedBayStatus?.set(bay.bayId, bayState);
           }
+
+          // Then what the station held: the SessionEnded of every wash that ended while it could not
+          // transmit, and of every wash a restart could not resume - after the bay reports, as
+          // connection-lost.md §6 orders a boot (step 2, then the replay of step 4). Nothing else
+          // gates it: no first Heartbeat ends a replay (the session-end rule removed that), and the
+          // Heartbeats keep their interval.
+          await station.replayHeldSessionEnded?.();
         }
 
         // Clock sync from serverTime (HB-010 -- also done on boot)

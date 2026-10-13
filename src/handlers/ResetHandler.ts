@@ -2,6 +2,7 @@ import {
   OsppAction,
   MessageType,
   OsppErrorCode,
+  BootReason,
   type OsppEnvelope,
   type ResetRequest,
   type ResetResponse,
@@ -73,10 +74,17 @@ export class ResetHandler implements Handler {
     }
     console.log('[Reset] Accepted — forced: %s', forced);
 
-    station.stopHeartbeat();
+    // THE REBOOT (reset.md §5 rule 6): "On reboot the station MUST restart its firmware ... After
+    // restarting it MUST send a BootNotification with `bootReason: "RemoteReset"`". This used to stop
+    // the heartbeat and drop the socket, and mqtt.js reconnected five seconds later to a station that
+    // sent nothing - no boot, the uptime not reset, no heartbeat: connected and silent. restart() is
+    // the station's one power cycle: the uptime starts again at 0, and what it kept on disk is read
+    // back as after any restart. A forced Reset left nothing running (settled above); an unforced one
+    // was refused while anything ran - so this boot finds no session to keep, which is what
+    // RemoteReset means.
     const delay = forced ? 2000 : 1000;
-    console.log('[Reset] reboot (forced=%s) — destroying connection in %dms', forced, delay);
+    console.log('[Reset] reboot (forced=%s) in %dms', forced, delay);
     await new Promise<void>(resolve => setTimeout(resolve, delay));
-    station.destroyConnection();
+    await station.restart(BootReason.REMOTE_RESET);
   }
 }

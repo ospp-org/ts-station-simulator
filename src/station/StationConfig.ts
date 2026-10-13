@@ -19,6 +19,28 @@ export interface StationConfig {
    * of which builds its own bays and must not inherit another's catalog.
    */
   persistCatalog?: boolean;
+  /**
+   * Keep every live session on disk, beside the certificates, with its delivered time updated at
+   * least every SESSION_CHECKPOINT_INTERVAL_SECONDS, plus the SessionEnded events not yet sent and
+   * the stops already answered - and read them back at the next power-on (Station.restoreSessions).
+   * The session-end rule's S2: after any restart a station MUST report every session it held, so it
+   * MUST still hold them. `connect` sets it; a scenario's station is a byte source whose sessions
+   * are the YAML's, and keeps none.
+   */
+  persistSessions?: boolean;
+  /**
+   * After the link comes back on its own (mqtt.js reconnected it), boot again with `Reconnect` before
+   * anything else, then report the bays and send what was held (connection-lost.md §6 steps 1, 2
+   * and 4); while the link is down, stop beating and hold every SessionEnded. `connect` sets it. A
+   * scenario does not: its YAML sends the BootNotification a reconnect needs, as its own step.
+   */
+  rebootOnReconnect?: boolean;
+  /**
+   * Why this process booted - its first BootNotification's `bootReason`. Absent: `PowerOn`. A process
+   * started after a watchdog or a manual reset says so (`simulator connect --boot-reason`); it decides
+   * what restoreSessions does with the sessions it finds on disk.
+   */
+  bootReason?: import('@ospp/protocol').BootReason;
 }
 
 export interface BayConfig {
@@ -63,6 +85,14 @@ export interface BehaviorConfig {
   heartbeatIntervalSec: number;
   meterValuesIntervalSec: number;
   autoRetryBoot: boolean;              // true = handler auto-retries on Rejected/Pending
+  /**
+   * What the station does, after a restart that keeps the session, with each wash it held:
+   * `resume` (the default) runs it on for the rest of its booked duration and sends its SessionEnded
+   * at the end; `interrupt` ends it at once with SessionEnded `Fault` and the delivered time it
+   * persisted - the station that could not resume (session-end rule S3). A RemoteReset or
+   * FirmwareUpdate boot interrupts whatever this says: no session may be live at either.
+   */
+  onRestart?: 'resume' | 'interrupt';
 }
 
 export function generateStationId(): StationId {

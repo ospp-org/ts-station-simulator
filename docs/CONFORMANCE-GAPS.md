@@ -14,6 +14,11 @@ rules, and obligations the spec itself calls unreachable for a station with no s
 and **I.3** — **11** closed, all on the integrator's path, pinned by
 `src/__tests__/handlers/ConformanceRefusals.test.ts` (16 tests: 11 refusals, **5 controls**).
 Codes emitted rose **13 → 17** of 118.
+**2026-10-13, the session-end rule: 35 implemented · 6 partial · 29 absent.** Group **E**'s r9a
+closes — connect mode writes the session record before the StartService `Accepted` leaves and
+refuses `5103` when it cannot (`src/__tests__/station/Station.sessionRecord.test.ts`); the 17
+codes are unchanged (`5103` was already emitted by CertificateInstall). See *Reversed for session
+ends* below for what else the station now does on its own.
 
 > **THE INSTRUMENT.** Codes are referenced **symbolically** in this tree
 > (`OsppErrorCode.BAY_NOT_FOUND`), never numerically. **A numeric grep is a broken instrument**
@@ -44,8 +49,8 @@ and radio last, because that path is not built.
 | ~~**A**~~ ✅ | unknown `bayId` → `3005` | **3** | one guard, three handlers. **Worse than absent today: all three `throw` and send nothing** | session |
 | ~~**B**~~ ✅ | bay-state arms on SetMaintenanceMode | **2** | reuse `bayRefusal.ts`, which already maps `Reserved`→`3014` and `Unknown`→`3002` | session |
 | **C** *(3 of 5 done)* | reservation lifecycle | **5** | needs **retention of terminal reservations** (`reserve-bay.md` §5.2). Two are currently **inverted** — answered `Accepted` where the spec requires a refusal | session |
-| **D** *(1 of 2 done)* | StopService validation | **2** | `3007` is a 3-line field comparison; the duplicate-replay rule needs retention | session |
-| **E** | StartService validation | **4** | `3003`/`3010` are small; `5103`/`3009` need a durable pre-effect record and a hardware model | session |
+| **D** *(1 of 2 done)* | StopService validation | **2** | `3007` is a 3-line field comparison; the duplicate-replay rule (r10, the cached RESPONSE) is implemented since 2026-10-13 | session |
+| **E** *(1 of 4 done)* | StartService validation | **4** | `3003`/`3010` are small; `5103` is done (the record is durable since 2026-10-13); `3009` needs a hardware model | session |
 | ~~**F**~~ ✅ | catalog binding validity → `5024` | **1** | the declared topology is already in the handler | catalog |
 | **G** | ChangeConfiguration | **4** | one key registry — mutability, type, range — serves all four | boot/config |
 | **H** | GetConfiguration WriteOnly | **1** | same registry | boot/config |
@@ -81,12 +86,17 @@ idempotent arm and is answered **`Accepted`**. The handler also never compares
 **D — StopService.** `stop-service.md` r1 (`3005` unknown bay) and r3 (`3007 SESSION_MISMATCH`
 when the `sessionId` is valid but names a different bay). The handler looks up by `sessionId`
 alone, so an unknown bay is answered `3006` — the wrong code — and a stop naming the right
-session and the wrong bay is **Accepted**.
+session and the wrong bay is **Accepted**. *(r3 closed in the first batch. r10 — a repeated
+StopService for a session the station stopped gets the cached RESPONSE, not `3006` — closed
+2026-10-13: under the session-end rule it is the server's only recovery for a lost RESPONSE;
+`StopServiceHandler.repeatAnswersCached.test.ts`.)*
 
 **E — StartService.** `start-service.md` r7 (`3003` service not physically available — the
 handler *comments* that availability is deliberately not consulted), r8b (`3010` duration above
 the station maximum — no such config key exists), r9a (`5103` cannot durably record the
 pre-effect record; sessions are an in-memory `Map`), r9b (`3009` hardware failed to activate).
+*(r9a closed 2026-10-13: the session record is written to disk before the `Accepted` leaves, and a
+write that fails is refused `5103` with nothing consumed and the bay untouched.)*
 
 **F — catalog.** `update-service-catalog.md` r8: a `bindings` entry naming a `(bayNumber,
 programNumber)` pair the station did not declare → `5024 UNSUPPORTED_SERVICE`, and the previous
@@ -191,6 +201,31 @@ different jobs and the same document should not be read as asking for both.
 not a retraction. And the handler default is untouched: no row here is closed by making the
 station refuse by default.
 
+### Reversed for session ends, 2026-10-13
+
+The session-end rule (Gabi, 2026-10-13) ends a session **only** on the station's end record: no
+bay report, boot, refused or unanswered stop ends one, and the server's only fallback is the
+sweep, which closes a session with no record `completed`, charged in full, with the anomaly
+mark. Under it a station that does not end its own sessions is not a lenient receiver — it is one
+whose every wash the server bills as unreported. So `connect` now **is** a session-driving
+station for the one thing the rule asks of a station (its S1–S6), and nothing else:
+
+| the station decides | what connect mode sends | pinned by |
+|---|---|---|
+| the booked duration is delivered | `SessionEnded TimerExpired`, the booked duration, then the bay Available | `Station.washEndsOnItsOwn.test.ts`, `StartServiceHandler.endsAtItsDuration.test.ts` |
+| a stop the server asked for | the `StopService` RESPONSE — no `SessionEnded`; a repeat gets the cached RESPONSE | `StopServiceHandler.test.ts`, `StopServiceHandler.repeatAnswersCached.test.ts` |
+| a forced Reset | `SessionEnded OperatorStopped` for each session, then a real reboot: `BootNotification RemoteReset`, uptime from 0 | `ResetHandler.rebootsAfterTheSettle.test.ts` |
+| an update | `Accepted` and the download at once; the install when no session runs and its end record has left; `BootNotification FirmwareUpdate` with the new version | `UpdateFirmwareHandler.installsWhenNoSessionRuns.test.ts` |
+| a restart (any boot reason) | every session it held, from `<stationId>-sessions.json` (delivered time ≤ 10 s old): resumed — bay `Occupied` in the boot report, `SessionEnded` at the end — or `SessionEnded Fault` at once with the persisted delivered time (`--on-restart interrupt`, and always after `RemoteReset`/`FirmwareUpdate`) | `Station.sessionRecord.test.ts`, `Station.restartReportsHeldSessions.test.ts` |
+| the link drops and returns | nothing while away; `BootNotification Reconnect` (uptime kept), the bay reports, then every `SessionEnded` it held | `Station.reconnectBootsAndReplays.test.ts` |
+
+What the 2026-09-11 decision still governs: the refusal rows above are closed only where the rule
+needs them (r9a, r10), and the scenario corpus is still where the **server** is driven — scenario
+mode registers BootNotificationHandler alone and none of the above runs there, so a scenario's
+YAML sends what a conforming station would (`scenarios/SCENARIOS.md`). Still not built: a meter
+cadence (`MeterValues` on `meterValuesIntervalSec`), bay reports at the start of a wash, and a
+bay-fault injector.
+
 ---
 
 ## Why none of the 149 scenarios could break — and why that is the bigger finding
@@ -257,6 +292,10 @@ grep -n 'setInterval\|setTimeout' src/station/Station.ts      -> 1 setInterval (
                                                                    waitForKick)
 ```
 
+*(Measured 2026-09-12. Two of its three bullets are no longer true since 2026-10-13 — an accepted
+`StartService` arms a wash timer that ends it with `SessionEnded TimerExpired`; see* Reversed for
+session ends *above. The meter cadence is still absent.)*
+
 **Zero of the four timers is session-bound**, and no `durationSeconds` site sits next to any of
 them. So in connect mode a station that accepted a `StartService`:
 
@@ -279,6 +318,8 @@ could say "wired" for as long as it has. `npm run check:doc-claims` passes with 
 **Consequence for anyone reading a green run:** connect mode is a wire-framing and signing peer,
 not a session-driving station. The guide's chapters 5–10 cannot be executed through it; the
 adversarial session wrote its own wire client for exactly that reason, and we use scenarios.
+*(Superseded for session ends on 2026-10-13: connect mode now ends, persists and reports its own
+sessions. It still meters nothing on its own.)*
 
 ### 2. Connect mode invents its own `serialNumber` instead of the provisioned one
 

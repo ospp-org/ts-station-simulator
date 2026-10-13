@@ -17,7 +17,7 @@ import {
 import { JUnitReporter } from '../reporting/JUnitReporter.js';
 import { JsonReporter } from '../reporting/JsonReporter.js';
 import { Station, type Handler } from '../station/Station.js';
-import { OsppAction } from '@ospp/protocol';
+import { OsppAction, BootReason } from '@ospp/protocol';
 import { inboundSchemaStats, resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
 import { heartbeatStats } from '../station/heartbeatStats.js';
 import { FrameJournal, resolveJournalSink, prepareJournalSink } from '../mqtt/FrameJournal.js';
@@ -808,7 +808,24 @@ interface ConnectCommandOptions {
   var: string[];
   journal?: string | boolean;
   reportBays?: string;
+  onRestart: string;
+  bootReason: string;
 }
+
+/**
+ * The boot reasons a NEW process may claim: the six that keep a session, and the two at which none
+ * may be live. `Reconnect` is not one - it names a reconnection at which the firmware did NOT
+ * restart, and a new process did.
+ */
+const PROCESS_BOOT_REASONS: readonly BootReason[] = [
+  BootReason.POWER_ON,
+  BootReason.WATCHDOG,
+  BootReason.ERROR_RECOVERY,
+  BootReason.MANUAL_RESET,
+  BootReason.SCHEDULED_RESET,
+  BootReason.REMOTE_RESET,
+  BootReason.FIRMWARE_UPDATE,
+];
 
 program
   .command('connect')
@@ -832,8 +849,29 @@ program
     (value: string, previous: string[]) => [...previous, value],
     [] as string[],
   )
+  .option(
+    '--on-restart <resume|interrupt>',
+    'What the station does with each wash it held across a restart that keeps the session: resume it ' +
+      'for the rest of its booked duration (SessionEnded at the end), or interrupt it (SessionEnded Fault ' +
+      'at once, with the delivered time it persisted)',
+    'resume',
+  )
+  .option(
+    '--boot-reason <reason>',
+    `Why this process booted - its first BootNotification's bootReason: ${PROCESS_BOOT_REASONS.join(', ')}. ` +
+      'A RemoteReset or FirmwareUpdate boot resumes no wash.',
+    BootReason.POWER_ON,
+  )
   .action(async (opts: ConnectCommandOptions) => {
     try {
+      if (opts.onRestart !== 'resume' && opts.onRestart !== 'interrupt') {
+        throw new Error(`--on-restart must be resume or interrupt, got "${opts.onRestart}"`);
+      }
+      const bootReason = PROCESS_BOOT_REASONS.find((r) => r === opts.bootReason);
+      if (bootReason === undefined) {
+        throw new Error(`--boot-reason must be one of ${PROCESS_BOOT_REASONS.join(', ')}, got "${opts.bootReason}"`);
+      }
+
       const targetName = opts.target ?? process.env['OSPP_TARGET'] ?? 'local';
       const target = await loadTarget(targetName);
 
@@ -978,10 +1016,18 @@ program
             heartbeatIntervalSec: 60,
             meterValuesIntervalSec: 30,
             autoRetryBoot: true,
+            onRestart: opts.onRestart,
           },
           // The catalog this station accepts is kept beside its certificates and held again at the
           // next start (update-service-catalog.md rule 5): the server does not push it twice.
           persistCatalog: true,
+          // THE STATION ENDS EVERY SESSION IT STARTED, and reports every one it held after a restart
+          // (the session-end rule of 2026-10-13: a session is ended only by the station's end record).
+          // Its live sessions are kept beside its certificates and read back below; after a reconnect
+          // it boots again and sends what it held while away.
+          persistSessions: true,
+          rebootOnReconnect: true,
+          bootReason,
         },
         {
           mqttUrl: effectiveMqttUrl,
@@ -1002,6 +1048,30 @@ program
       } else {
         console.log(chalk.gray('  No catalog kept for this station yet; it holds its seed until the server publishes one.'));
       }
+
+      // Before the boot too: the sessions it held when it last went down. Each one is resumed - its
+      // bay reported Occupied, its SessionEnded sent at the end - or ended at once with SessionEnded
+      // Fault and the delivered time it kept, sent as soon as the boot is Accepted (session-end rule S3).
+      const sessionStore = station.sessionStore();
+      if (sessionStore?.path === null) {
+        console.warn(chalk.yellow(
+          '  No certificate directory: the sessions are kept in memory only, so they survive a Reset or an ' +
+            'update and NOT a restart of this process.',
+        ));
+      }
+      const restored = await station.restoreSessions();
+      if (restored.resumed.length + restored.ended.length + restored.held > 0) {
+        console.log(chalk.yellow(
+          `  After ${bootReason}: ${restored.resumed.length} wash(es) resumed, ${restored.ended.length} ended at once, ` +
+            `${restored.held} end record(s) held - all reported once the boot is Accepted (${sessionStore?.path ?? 'memory'}).`,
+        ));
+      }
+
+      // A handler that throws must not take the station down with it: an EventEmitter with no
+      // `error` listener throws the event, and connect mode had none.
+      station.on('error', (err: Error) => {
+        console.error(chalk.red(`  [Station] ${err.message}`));
+      });
 
       // Register ALL handlers (cast needed: handlers use StationContext, registerHandler expects Station Handler)
       const reg = (a: typeof OsppAction[keyof typeof OsppAction], h: unknown) =>
