@@ -1,5 +1,5 @@
 name: "Boot Watchdog"
-description: "Boot with Watchdog reason after station was running for 1 hour, assert Accepted."
+description: "Boot with Watchdog reason, its uptime counted from the restart the watchdog forced, assert Accepted."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -22,7 +22,11 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 3600
+      # Measured from the restart the watchdog forced (boot-notification.md §5.2
+      # rule 2). It said 3600, the hour the station had run BEFORE it, until
+      # 2026-10-13 — a claim the server's cross-check (rule 3) refuses whenever the
+      # station's previous boot implies a later power-on.
+      uptimeSeconds: 0
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "Watchdog"

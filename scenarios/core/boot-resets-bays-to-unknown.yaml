@@ -1,5 +1,5 @@
 name: "Boot Resets Bays To Unknown — On A Restart, Not On A Reconnect"
-description: "Drive both bays to `available`, then Boot twice from the same state: a PowerOn reads them back `unknown`, a Reconnect reads them back `available`. Proves the server's boot-time bay reset FIRES (rather than that bays happen to start unknown) AND that it fires only on a genuine restart — the two Boots differ in `bootReason` alone."
+description: "Drive both bays to `available`, then Boot twice from the same state: a PowerOn reads them back `unknown`, a Reconnect reads them back `available`. Proves the server's boot-time bay reset FIRES (rather than that bays happen to start unknown) AND that it fires only on a genuine restart — the two Boots differ in `bootReason` and in the uptime that reason implies: 0 from the restart for the PowerOn, running on from it for the Reconnect."
 # WHY THIS FILE EXISTS. `unknown` is the one bay state the whole corpus names and
 # nothing asserts. Sixteen bay-status assertions cover `available`, `reserved`,
 # `faulted` and `unavailable`; fourteen files mention `unknown` in a comment, and
@@ -260,13 +260,21 @@ steps:
       data.bays[bayNumber=2].status: "available"
 
   # --- PROOF 2: a Reconnect Boot does NOT reset them — the reset is a RESTART's.
-  # uptimeSeconds is ~25h and the reason is `Reconnect`: the station is telling the
+  # The reason is `Reconnect` and uptimeSeconds runs on from PROOF 1's PowerOn at 0:
+  # the uptime the station already had (boot-notification.md §5.2 rule 2), about two
+  # seconds later (1.6 s on UAT, 2026-10-13), so 2. The station is telling the
   # server it never restarted, only re-established MQTT. That is the branch at
   # BootNotificationHandler.php:387 which then PRESERVED in-flight sessions (every boot
   # does since the session-end rule, 2026-10-13) — and as of csms-server f8f3af2b the
   # status wipe is INSIDE that branch, so the bays survive. This step is what
   # distinguishes "the reset fires on a reboot" from "the reset fires on every Boot",
   # and it now reads the FIRST of those.
+  #
+  # The uptime here was 90000 (~25 h) until 2026-10-13: not the uptime of the station
+  # PROOF 1 rebooted a second or two earlier. The server cannot see that — a
+  # `Reconnect` whose uptime did not go backwards is not a claim rule 3 refuses, so
+  # the falsehood was a coherent one — and the bays survived it all the same;
+  # BootClaimCheck reads it off the file.
   #
   # INVERTED, NOT DELETED, AND THE ARM IS WHY IT IS STILL A PROOF. Reading a value
   # that was already there proves nothing — which is the trap this file was built to
@@ -288,7 +296,7 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 90000
+      uptimeSeconds: 2
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "Reconnect"

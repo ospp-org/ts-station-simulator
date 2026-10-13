@@ -1,5 +1,5 @@
 name: "Boot Scheduled Reset"
-description: "Boot after scheduled daily reset with 24h uptime, assert Accepted."
+description: "Boot after the station's scheduled daily reset, its uptime counted from that reset, assert Accepted."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -22,7 +22,7 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 86400
+      uptimeSeconds: 0
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
       bootReason: "ScheduledReset"
@@ -57,12 +57,17 @@ steps:
   # session-end rule (2026-10-13) no boot ends a session at all: `ScheduledReset` is
   # one of the six reasons after which the station may resume a wash it held.
   #
-  # Note this file boots with uptimeSeconds 86400. Until that rule it was NOT inert:
-  # the force-fail arm called failStuckSessions(now()->subSeconds(uptimeSeconds)), so
-  # a 24h window spared any session started inside it, and a live session added to
-  # this file would have proved the uptime layer, not the reason. Both layers went with
-  # the force-fail: a live session added here would read `active` after this boot at
-  # any uptime.
+  # uptimeSeconds is 0: boot-notification.md §5.2 rule 2 has a restart reason carry
+  # the uptime measured FROM the restart it names, and the boot goes out right after
+  # the reset. Until 2026-10-13 this file sent 86400, the day the station had run
+  # BEFORE the reset ("with 24h uptime", its description said). On a pooled station
+  # an earlier lease had booted minutes before, the server's cross-check (rule 3)
+  # found that claim contradicted — a restart a day older than the previous boot —
+  # and did not act on the reason this file is about; the read-back below passed all
+  # the same, because stations.boot_reason is written either way. Before the
+  # session-end rule the 86400 also opened a 24 h window in which the force-fail
+  # spared any session; both went with the force-fail, and a live session added here
+  # would read `active` after this boot at any uptime.
   - action: delay
     ms: 1000
 
@@ -72,10 +77,9 @@ steps:
     expect_status: 200
     expect_body:
       data.bootReason: "ScheduledReset"
-      # Bounded, not equated — see happy-boot.yaml. Worth one extra note here: the
-      # boot reports uptimeSeconds 86400, and last_boot_at is `now()` regardless
-      # (BootNotificationHandler.php:217). The server does not derive the column
-      # from the station's self-reported uptime, so a 24h uptime does NOT make
-      # this timestamp a day old — if it ever does, this bound is what says so.
+      # Bounded, not equated — see happy-boot.yaml. BootNotificationHandler writes
+      # last_boot_at as `now()`, not from the station's self-reported uptime. While
+      # this file reported 86400 the bound also showed that (a column derived from
+      # the uptime would have been a day old); at uptime 0 the two coincide.
       data.lastBootAt:
         is_recent: 300
