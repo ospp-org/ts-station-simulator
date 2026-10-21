@@ -1,5 +1,5 @@
 name: "Status All Bay States"
-description: "Boot and send StatusNotification for every REPORTABLE bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable — then read each one back. FOUR of the six persist. Occupied and Finishing are session-bound and are DISCARDED without an active session (StatusNotificationHandler.php:87-100), which this scenario now proves by asserting the retained value instead. `Unknown` is the FSM's seventh state and is deliberately absent — no station may put it on the wire (spec v0.10.0, 05-state-machines.md 1.2)."
+description: "Boot and send StatusNotification for every REPORTABLE bay status: Available, Occupied, Reserved, Finishing, Faulted, Unavailable — then read each one back. FIVE of the six persist. Occupied is session-bound and is DISCARDED without an active session (the StartService race the gate exists for), which this scenario proves by asserting the retained value instead; Finishing, the state after a session, is written as the bay's state since csms-server 2026-10-21 (session-ended.md section 5 rule 6), and Reserved -> Finishing is journaled as an invalid transition. `Unknown` is the FSM's seventh state and is deliberately absent — no station may put it on the wire (spec v0.10.0, 05-state-machines.md 1.2)."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -173,17 +173,19 @@ steps:
   - action: delay
     ms: 1000
 
-  # NOT "finishing" — same gate as Occupied above. FINISHING is the second member
-  # of the session-bound pair at StatusNotificationHandler.php:87, so with no
-  # active session this report is discarded too and the bay holds `reserved`.
-  # Asserting the RETAINED value proves the discard; asserting "finishing" would
-  # be asserting a state this scenario cannot reach.
+  # "finishing" — NOT the gate above. Finishing is the state AFTER a session, and since
+  # csms-server 2026-10-21 the gate covers Occupied only: session-ended.md section 5 rule 6
+  # has the server process a wash's SessionEnded before the Finishing that follows it,
+  # "which reports the bay's new state", so a gate asking a live session of Finishing could
+  # only ever refuse it. The report is written; `Reserved -> Finishing` is not in the
+  # Station half of 05 section 2.3, so the server also journals it as an invalid transition
+  # (section 2.5 rules 1 and 2). Until then this asserted the retained `reserved`.
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
     expect_status: 200
     expect_body:
-      data.bays[bayNumber=1].status: "reserved"
+      data.bays[bayNumber=1].status: "finishing"
 
   # Status: Faulted
   - action: send
