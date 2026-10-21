@@ -275,16 +275,11 @@ describe('the report the server asks for (trigger-message.md §5 rule 3, status-
         reports: frames('StatusNotification', undefined, since).map((f) => f.payload),
       };
     };
-    // A reservation the station took without reporting it: bay 2 is Reserved, last reported Available.
-    await new ReserveBayHandler().handle(
-      request('ReserveBay', {
-        reservationId: 'rsv_e15a0001',
-        bayId: BAY_2,
-        expirationTime: new Date(Date.now() + 600_000).toISOString(),
-        sessionSource: 'MobileApp',
-      }),
-      station as never,
-    );
+    // A change the station made without reporting it: bay 2 is Reserved, last reported Available. Taken
+    // in the station's own state machine directly - a ReserveBay accepted reports its bay since
+    // 2026-10-21 (Station.reportsReservationAndMaintenance.test.ts), and this case is about the report
+    // the server asks for after a change it was not told of.
+    station.setBayState(BAY_2, 'Reserved' as never);
 
     const asked = await trigger({ requestedMessage: 'StatusNotification', bayId: BAY_2 });
     expect(asked.answer).toEqual({ status: 'Accepted' });

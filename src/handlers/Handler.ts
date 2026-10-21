@@ -41,6 +41,8 @@ export interface StationContext {
   setBayState(bayId: string, status: BayStatus): void;
   startHeartbeat(intervalSec: number): void;
   stopHeartbeat(): void;
+  /** A HeartbeatIntervalSeconds set by ChangeConfiguration: re-arm a running heartbeat at it. */
+  heartbeatIntervalChanged?(intervalSec: number): void;
   retryBoot(): Promise<void>;
   /**
    * The BootNotification the server asked for by TriggerMessage: `Reconnect`, the uptime running on -
@@ -48,9 +50,9 @@ export interface StationContext {
    */
   bootOnRequest(): Promise<void>;
   /**
-   * The configuration keys this station holds (08-configuration.md): MeterValuesInterval and
-   * MeterValuesSampleInterval. Absent on a handler test's hand-built context, where the spec defaults
-   * govern and a change is validated but kept nowhere.
+   * The configuration keys this station holds (08-configuration.md): every key of the SDK's registry,
+   * MeterValuesInterval and MeterValuesSampleInterval the meter reads. Absent on a handler test's
+   * hand-built context, where the spec defaults govern and a change is validated but kept nowhere.
    */
   configuration?: import('../station/StationConfiguration.js').StationConfiguration;
   /**

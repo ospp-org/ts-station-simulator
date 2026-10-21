@@ -151,6 +151,7 @@ export function connectConfig(extra: Record<string, unknown> = {}, behavior: Rec
     },
     persistCatalog: true,
     persistSessions: true,
+    persistConfiguration: true,
     rebootOnReconnect: true,
     ...extra,
   } as never;

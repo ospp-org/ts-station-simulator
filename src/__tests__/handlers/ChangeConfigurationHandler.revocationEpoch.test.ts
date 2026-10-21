@@ -53,7 +53,9 @@ describe('ChangeConfigurationHandler — RevocationEpoch, by the name the spec g
     const { station } = makeMockStation();
     await handler.handle(
       makeEnvelope([
-        { key: 'HeartbeatIntervalSec', value: '60' },
+        // HeartbeatIntervalSeconds, the spec's name: a key the spec does not have is NotSupported since
+        // 2026-10-21, and then nothing in the batch is applied (change-configuration.md §6 rule 2).
+        { key: 'HeartbeatIntervalSeconds', value: '60' },
         { key: 'RevocationEpoch', value: '7' },
       ]),
       station,

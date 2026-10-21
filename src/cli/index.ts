@@ -1124,6 +1124,8 @@ program
           // Its live sessions are kept beside its certificates and read back below; after a reconnect
           // it boots again and sends what it held while away.
           persistSessions: true,
+          // The configuration the server sets is kept the same way (08-configuration.md §8.4).
+          persistConfiguration: true,
           rebootOnReconnect: true,
           bootReason,
         },

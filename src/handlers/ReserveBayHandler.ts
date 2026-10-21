@@ -9,6 +9,7 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { bayRefusalCode, errorName, resolveBayOrRefuse } from './bayRefusal.js';
+import { reportBayStatus } from '../station/bayReport.js';
 
 export class ReserveBayHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -58,6 +59,8 @@ export class ReserveBayHandler implements Handler {
           });
           try {
             station.setBayState(request.bayId, BayStatus.AVAILABLE);
+            // Reserved -> Available, reported as every bay change is (05-state-machines.md §2).
+            void reportBayStatus(station, request.bayId, BayStatus.AVAILABLE, BayStatus.RESERVED);
           } catch {
             // Bay may already have transitioned
           }
@@ -93,6 +96,11 @@ export class ReserveBayHandler implements Handler {
         request.expirationTime,
         ttlMs,
       );
+
+      // Available -> Reserved, after the RESPONSE (05-state-machines.md §2: every bay change is
+      // reported, within 1 s). It was taken in the station's own state machine and never reported,
+      // so the server's bay stayed `available` for the life of the reservation.
+      await reportBayStatus(station, request.bayId, BayStatus.RESERVED, BayStatus.AVAILABLE);
     } else {
       // A bay that IS available and is refused anyway is the acceptRate arm: the
       // station is modelling itself as not ready, which is 3002's second clause.

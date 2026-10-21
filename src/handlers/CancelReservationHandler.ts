@@ -9,6 +9,7 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { errorName, resolveBayOrRefuse } from './bayRefusal.js';
+import { reportBayStatus } from '../station/bayReport.js';
 
 export class CancelReservationHandler implements Handler {
   /** One refusal shape, so the four rules above cannot drift apart in wording. */
@@ -126,6 +127,9 @@ export class CancelReservationHandler implements Handler {
         request.reservationId,
         request.bayId,
       );
+
+      // Reserved -> Available, after the RESPONSE (05-state-machines.md §2).
+      await reportBayStatus(station, request.bayId, BayStatus.AVAILABLE, BayStatus.RESERVED);
     } else if (bayState !== BayStatus.RESERVED) {
       // No reservation tracked and bay is not Reserved — already cancelled (CR-003 idempotent)
       const response: CancelReservationResponse = { status: 'Accepted' };

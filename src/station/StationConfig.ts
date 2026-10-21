@@ -29,6 +29,12 @@ export interface StationConfig {
    */
   persistSessions?: boolean;
   /**
+   * Keep the configuration keys on disk, beside the certificates, and start a new process from them
+   * (StationConfiguration; 08-configuration.md §8.4 asks it of NVS). `connect` sets it; a scenario's
+   * station keeps none.
+   */
+  persistConfiguration?: boolean;
+  /**
    * After the link comes back on its own (mqtt.js reconnected it), boot again with `Reconnect` before
    * anything else, then report the bays and send what was held (connection-lost.md §6 steps 1, 2
    * and 4); while the link is down, stop beating and hold every SessionEnded. `connect` sets it. A

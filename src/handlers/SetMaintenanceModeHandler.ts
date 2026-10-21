@@ -9,6 +9,7 @@ import {
 } from '@ospp/protocol';
 import type { Handler, StationContext } from './Handler.js';
 import { bayRefusalCode, errorName, resolveBayOrRefuse } from './bayRefusal.js';
+import { reportBayStatus } from '../station/bayReport.js';
 
 export class SetMaintenanceModeHandler implements Handler {
   async handle(envelope: OsppEnvelope, station: StationContext): Promise<void> {
@@ -48,64 +49,45 @@ export class SetMaintenanceModeHandler implements Handler {
       }
     }
 
-    // Check if target bay(s) are Occupied before enabling maintenance
-    if (request.enabled) {
-      if (request.bayId) {
-        const bayState = station.getBayState(request.bayId);
-        if (bayState === BayStatus.OCCUPIED) {
-          const rejected: SetMaintenanceModeResponse = {
-            status: 'Rejected',
-            errorCode: OsppErrorCode.BAY_BUSY,
-            errorText: errorName(OsppErrorCode.BAY_BUSY),
-          };
+    // THE §6 TABLE, BAY BY BAY. `enabled: true` moves Available and Faulted to Unavailable and leaves
+    // an Unavailable bay as it is (rule 7); `enabled: false` moves only Unavailable to Available and
+    // leaves every other bay as it is (rule 7). The refusals are the table's: an Occupied or
+    // Finishing bay is 3001 (rule 2), and for the whole station the same row of every bay is asked,
+    // so a Reserved one refuses it 3014 and an Unknown one 3002 - §2.3 has no edge from either to
+    // Unavailable, which is why the table refuses them for one bay (the per-bay arms above).
+    // Off moved every bay it targeted to Available, an Occupied or Faulted one included, and on threw
+    // on a bay already in maintenance (Unavailable -> Unavailable) instead of answering Accepted.
+    const targets = request.bayId ? [request.bayId] : station.config.bays.map((b) => b.bayId);
+    const moves: Array<{ bayId: string; from: BayStatus; to: BayStatus }> = [];
+    for (const bayId of targets) {
+      const from = station.getBayState(bayId);
+      if (request.enabled) {
+        if (from === BayStatus.AVAILABLE || from === BayStatus.FAULTED) {
+          moves.push({ bayId, from, to: BayStatus.UNAVAILABLE });
+        } else if (from !== BayStatus.UNAVAILABLE) {
+          const code = bayRefusalCode(from);
+          const rejected: SetMaintenanceModeResponse = { status: 'Rejected', errorCode: code, errorText: errorName(code) };
           await station.sender.send<SetMaintenanceModeResponse>(
             OsppAction.SET_MAINTENANCE_MODE, MessageType.RESPONSE, rejected, envelope.messageId,
           );
-          console.log('[SetMaintenanceMode] Rejected — bay %s is Occupied', request.bayId);
+          console.log('[SetMaintenanceMode] Rejected — bay %s is %s', bayId, from);
           return;
         }
-      } else {
-        const occupiedBay = station.config.bays.find(b => station.getBayState(b.bayId) === BayStatus.OCCUPIED);
-        if (occupiedBay) {
-          const rejected: SetMaintenanceModeResponse = {
-            status: 'Rejected',
-            errorCode: OsppErrorCode.BAY_BUSY,
-            errorText: errorName(OsppErrorCode.BAY_BUSY),
-          };
-          await station.sender.send<SetMaintenanceModeResponse>(
-            OsppAction.SET_MAINTENANCE_MODE, MessageType.RESPONSE, rejected, envelope.messageId,
-          );
-          console.log('[SetMaintenanceMode] Rejected — bay %s is Occupied', occupiedBay.bayId);
-          return;
-        }
+      } else if (from === BayStatus.UNAVAILABLE) {
+        moves.push({ bayId, from, to: BayStatus.AVAILABLE });
       }
     }
 
-    if (request.bayId) {
-      // Target a specific bay
-      const targetStatus = request.enabled ? BayStatus.UNAVAILABLE : BayStatus.AVAILABLE;
-      station.setBayState(request.bayId, targetStatus);
-
-      console.log(
-        '[SetMaintenanceMode] Bay %s set to %s (reason: %s)',
-        request.bayId,
-        targetStatus,
-        request.reason ?? 'none',
-      );
-    } else {
-      // Target all bays
-      const targetStatus = request.enabled ? BayStatus.UNAVAILABLE : BayStatus.AVAILABLE;
-      for (const bay of station.config.bays) {
-        station.setBayState(bay.bayId, targetStatus);
-      }
-
-      console.log(
-        '[SetMaintenanceMode] All %d bays set to %s (reason: %s)',
-        station.config.bays.length,
-        targetStatus,
-        request.reason ?? 'none',
-      );
+    for (const move of moves) {
+      station.setBayState(move.bayId, move.to);
     }
+    console.log(
+      '[SetMaintenanceMode] maintenance %s on %s: %d bay(s) moved (reason: %s)',
+      request.enabled ? 'enabled' : 'disabled',
+      request.bayId ?? 'every bay',
+      moves.length,
+      request.reason ?? 'none',
+    );
 
     const response: SetMaintenanceModeResponse = { status: 'Accepted' };
 
@@ -120,5 +102,11 @@ export class SetMaintenanceModeHandler implements Handler {
       '[SetMaintenanceMode] Accepted — maintenance %s',
       request.enabled ? 'enabled' : 'disabled',
     );
+
+    // §5 rule 4: a StatusNotification for each bay it moved, after the RESPONSE, as every other bay
+    // change of this station is reported (05-state-machines.md §2).
+    for (const move of moves) {
+      await reportBayStatus(station, move.bayId, move.to, move.from);
+    }
   }
 }
