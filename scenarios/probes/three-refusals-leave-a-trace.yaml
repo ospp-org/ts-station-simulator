@@ -39,8 +39,8 @@ steps:
     timeout_ms: 15000
 
   # ── PROBE 1 — a session-bound bay state with no session ────────────────────
-  # Occupied and Finishing are the two session-bound states
-  # (StatusNotificationHandler:142). The bay has no session, so the report is
+  # Occupied is the session-bound state the gate holds (Finishing, the state after a
+  # session, is written since csms-server 2026-10-21). The bay has no session, so the report is
   # refused and DISCARDED — correctly. What is new is the journal row, and the
   # TriggerMessage asking the station to report again, which is why this probe
   # then waits for one.
