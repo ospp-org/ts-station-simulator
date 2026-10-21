@@ -12,14 +12,15 @@ import type { StationContext } from '../handlers/Handler.js';
  * (BootNotificationHandler builds that one, which never carries previousStatus).
  *
  * Two callers: a transition the station performed - the start of a wash (Available or Reserved ->
- * Occupied), its end (Occupied -> Finishing -> Available) - and a report the server asked for
- * (TriggerMessage StatusNotification). 05-state-machines.md §2: "The station MUST send a
+ * Occupied), its end (Occupied -> Finishing -> Available), a reservation accepted, expired or
+ * cancelled (Available <-> Reserved), maintenance on or off (Available or Faulted <-> Unavailable) -
+ * and a report the server asked for (TriggerMessage StatusNotification). 05-state-machines.md §2: "The station MUST send a
  * StatusNotification on every state transition", within 1 s (status-notification.md §7 rule 3).
  *
  * `previousStatus` (status-notification.md §5 rule 2) is carried when `status` differs from the last
  * status reported for the bay, and omitted otherwise. Its value is the bay's status before this
- * transition: `previous` when the caller performed one - the holder's start says Reserved although
- * the reservation itself was never reported - and otherwise the last status reported. A context that
+ * transition: `previous` when the caller performed one - the holder's start says Reserved, the
+ * reservation having been reported when it was accepted - and otherwise the last status reported. A context that
  * keeps no record of its reports (a handler test's) carries the transition's own `previous`.
  *
  * A report is regenerable (§7 rule 5): when the station cannot transmit it is dropped, not queued into
