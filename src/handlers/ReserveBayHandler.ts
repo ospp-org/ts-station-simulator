@@ -21,6 +21,21 @@ export class ReserveBayHandler implements Handler {
       return;
     }
 
+    // NO RESERVATION DURING A FIRMWARE INSTALL (05-state-machines.md §7.4): from the start of the
+    // write until the reboot the station answers ReserveBay `3002 BAY_NOT_READY`.
+    if (station.firmwareInstalling === true) {
+      const response: ReserveBayResponse = {
+        status: 'Rejected',
+        errorCode: OsppErrorCode.BAY_NOT_READY,
+        errorText: errorName(OsppErrorCode.BAY_NOT_READY),
+      };
+      await station.sender.send<ReserveBayResponse>(
+        OsppAction.RESERVE_BAY, MessageType.RESPONSE, response, envelope.messageId,
+      );
+      console.log('[ReserveBay] Rejected reservation %s — BAY_NOT_READY (a firmware install is in progress)', request.reservationId);
+      return;
+    }
+
     const canReserve = bayState === BayStatus.AVAILABLE;
     const accept = canReserve && Math.random() < station.config.behavior.acceptRate;
 

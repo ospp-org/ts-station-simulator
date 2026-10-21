@@ -175,6 +175,9 @@ export class Station extends EventEmitter {
   // TriggerCertificateRenewalHandler, consumed by CertificateInstallHandler.
   public pendingRenewalKeyPem: string | null = null;
 
+  /** StationContext.firmwareInstalling: from the start of a firmware write until the reboot. */
+  public firmwareInstalling = false;
+
   /**
    * StationContext.configuration: the configuration keys this station holds (StationConfiguration.ts) -
    * MeterValuesInterval and MeterValuesSampleInterval, from the factory values this station was built
@@ -1178,6 +1181,8 @@ export class Station extends EventEmitter {
     // and what the disk holds is all the next boot knows - held records included, sent once.
     this.bootAccepted = false;
     this.sessionKey = null;
+    // The reboot ends a firmware write's refusal of sessions (05-state-machines.md §7.4).
+    this.firmwareInstalling = false;
     while (this.replayInFlight !== null) await this.replayInFlight;
     await this.sessionWrites;
     this.sessions.clear();

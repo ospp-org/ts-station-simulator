@@ -96,6 +96,23 @@ export class StartServiceHandler implements Handler {
       return;
     }
 
+    // NO SESSION BEGINS DURING A FIRMWARE INSTALL (05-state-machines.md §7.4): from the start of the
+    // write until the reboot the station answers StartService `3002 BAY_NOT_READY`, so no session
+    // runs when it reboots.
+    if (station.firmwareInstalling === true) {
+      const response: StartServiceResponse = {
+        status: 'Rejected',
+        errorCode: OsppErrorCode.BAY_NOT_READY,
+        errorText: errorName(OsppErrorCode.BAY_NOT_READY),
+        programNumber: request.programNumber,
+      };
+      await station.sender.send<StartServiceResponse>(
+        OsppAction.START_SERVICE, MessageType.RESPONSE, response, envelope.messageId,
+      );
+      console.log('[StartService] Rejected session %s — BAY_NOT_READY (a firmware install is in progress)', request.sessionId);
+      return;
+    }
+
     // Validate durationSeconds > 0
     if (request.durationSeconds <= 0) {
       const response: StartServiceResponse = {
