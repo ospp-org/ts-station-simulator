@@ -82,6 +82,10 @@ export class UpdateFirmwareHandler implements Handler {
       await new Promise<void>(resolve => setTimeout(resolve, INSTALL_GATE_POLL_MS));
     }
 
+    // FROM THE START OF THE WRITE UNTIL THE REBOOT THE STATION BEGINS NO SESSION (05-state-machines.md
+    // §7.4, Gabi's decision of 2026-10-21): StartService and ReserveBay are answered `3002`, so no
+    // session runs when it reboots. Raised before `Installing` goes out; restart() lowers it.
+    station.firmwareInstalling = true;
     await this.stages(station, request.firmwareVersion, ['Installing', 'Installed']);
 
     // Installed, then the reboot into the new image (update-firmware.md §6 stage 4): the next

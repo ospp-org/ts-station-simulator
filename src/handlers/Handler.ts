@@ -86,6 +86,13 @@ export interface StationContext {
    */
   canTransmit?(): boolean;
   /**
+   * True from the start of a firmware write until the reboot into the new image: the station begins
+   * no session then, answering StartService and ReserveBay `3002 BAY_NOT_READY`
+   * (05-state-machines.md §7.4). Set by UpdateFirmwareHandler, cleared by `restart()`. Absent on a
+   * handler test's hand-built context, which installs nothing.
+   */
+  firmwareInstalling?: boolean;
+  /**
    * The SessionEnded events the station could not publish (offline, restricted, or the publish
    * failed), oldest first, sent after the next `Accepted` boot with their original values
    * (session-ended.md §5 rule 3: buffered, never discarded). Absent on a hand-built context.
