@@ -1,8 +1,8 @@
 name: "Reconnect Recovery"
-description: "Boot, arm the liveness state, drop the link, observe the server record the station OFFLINE, then reconnect with ErrorRecovery and observe it come back. The transition is asserted at all three points, not only at the end."
+description: "Boot, arm the liveness state, drop the link, observe the server record the station OFFLINE, then reconnect - a Reconnect boot, the uptime running on, since dropping the link restarted nothing - and observe it come back. The transition is asserted at all three points, not only at the end."
 # WHY THE MIDDLE ASSERTION WAS ADDED. This file already booted, dropped the link,
 # re-booted and read the row back — but everything it asserted was the state the
-# arc ENDED in (`data.bootReason: ErrorRecovery`). Nothing observed the station
+# arc ENDED in (`data.bootReason: Reconnect`). Nothing observed the station
 # leaving. A server that never moved `is_online` at all — that treated the drop as
 # a no-op and simply accepted the second Boot — passed this file identically, and
 # so did a server whose offline transition was broken in every way that still let a
@@ -14,7 +14,7 @@ description: "Boot, arm the liveness state, drop the link, observe the server re
 #
 #   after the first Boot   isOnline true,  bays available   <- ARM
 #   after the drop         isOnline false, bays unknown     <- THE TRANSITION
-#   after the ErrorRecovery Boot  isOnline true             <- THE RETURN
+#   after the Reconnect Boot      isOnline true             <- THE RETURN
 #
 # WHAT DRIVES THE MIDDLE, AND WHY IT IS NOT A SLEEP. `fault: disconnect` destroys
 # the socket and the client returns on LIVE_RECONNECT_PERIOD_MS. Scenarios default
@@ -61,7 +61,7 @@ description: "Boot, arm the liveness state, drop the link, observe the server re
 # `PowerOn` — and proves nothing about the RETURN. Reusing the predicate the handler
 # already computes at :381-385 leaves steps 0-15 byte-identical and inverts exactly
 # one assertion: `data.isOnline: true` at the RETURN fails while
-# `data.bootReason: ErrorRecovery` beside it still passes, because boot_reason is
+# `data.bootReason: Reconnect` beside it still passes, because boot_reason is
 # written separately at :212. That green half is the point — it proves the Boot was
 # accepted and committed and that only the reachability write is missing.
 #
@@ -216,10 +216,10 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 0
+      uptimeSeconds: 12
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "ErrorRecovery"
+      bootReason: "Reconnect"
       capabilities:
         bleSupported: false
         offlineModeSupported: true
@@ -242,13 +242,13 @@ steps:
   # Server-recorded. The value is ECHOED, not derived — see boot-watchdog.yaml —
   # but this file gets more out of it than its siblings do, because it boots
   # TWICE on one station across a real disconnect. The column starts at `PowerOn`
-  # from the first boot at the top of this file; reading `ErrorRecovery` back
+  # from the first boot at the top of this file; reading `Reconnect` back
   # proves the SECOND boot was accepted and committed AFTER the fault, which is
   # the whole subject of the scenario. A `payload.status == Accepted` assertion
   # alone cannot distinguish that from a Response to the FIRST boot.
   #
   # What it does NOT prove: that in-flight state survived the reconnect. This
-  # scenario has no live session, so the {Reconnect, ErrorRecovery} preserve arm
+  # scenario has no live session, so the arm that keeps sessions across a Reconnect
   # at BootNotificationHandler.php:343 is entered with nothing to preserve. That
   # branch is proven by boot-error-recovery.yaml, and by
   # boot-reconnect-preserves-live-session.yaml for the other member of the pair.
@@ -260,8 +260,8 @@ steps:
     url: "{{target_url}}/api/v1/admin/stations/{{stationId}}"
     expect_status: 200
     expect_body:
-      data.bootReason: "ErrorRecovery"
-      # THE RETURN. Read false ten seconds ago; only the ErrorRecovery Boot above
+      data.bootReason: "Reconnect"
+      # THE RETURN. Read false ten seconds ago; only the Reconnect Boot above
       # can have moved it back, because `is_online => true` is written in exactly
       # one place in the whole server: the accepted-Boot update at
       # BootNotificationHandler.php:224. (This comment used to cite :165-176, which

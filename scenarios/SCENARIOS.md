@@ -186,7 +186,7 @@ branch that `core/happy-boot.yaml` does not.
 | `core/status-notification.yaml` | Status Notification | StatusNotification Available with services | migrated |
 | `core/status-all-bay-states.yaml` | Status All Bay States | StatusNotification for the 6 REPORTABLE bay statuses; 4 persist, Occupied/Finishing are session-gated and discarded | new |
 | `core/connection-lost-lwt.yaml` | Connection Lost LWT | `fault: sever` under `clean_session: false` → the BROKER publishes the will and the server marks the station offline (`cause: broker_will`). Swap to `disconnect` and it goes red | new |
-| `core/reconnect-recovery.yaml` | Reconnect Recovery | Disconnect → reconnect → ErrorRecovery boot, with `isOnline` asserted at all THREE points (true → false → true) rather than only at the end | migrated |
+| `core/reconnect-recovery.yaml` | Reconnect Recovery | Disconnect → reconnect → Reconnect boot (the uptime running on), with `isOnline` asserted at all THREE points (true → false → true) rather than only at the end | migrated |
 | `core/boot-resets-bays-to-unknown.yaml` | Boot Resets Bays To Unknown | Arm both bays to `available`, then Boot and read `unknown` back — twice, PowerOn and Reconnect, so the reset is proven to FIRE and to be unconditional | new |
 | `core/data-transfer.yaml` | Data Transfer | Station sends DataTransfer event | migrated |
 | `core/data-transfer-response.yaml` | Data Transfer Response | Wait for DataTransfer from server | new |
