@@ -637,8 +637,19 @@ steps:
     payload:
       bayId: "{{captured.bayId_1}}"
       bayNumber: 1
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true
@@ -713,8 +724,19 @@ steps:
     payload:
       bayId: "{{captured.bayId_2}}"
       bayNumber: 2
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_2}}"
+      bayNumber: 2
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true
@@ -845,8 +867,19 @@ steps:
     payload:
       bayId: "{{captured.bayId_3}}"
       bayNumber: 3
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_3}}"
+      bayNumber: 3
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true
@@ -995,8 +1028,19 @@ steps:
     payload:
       bayId: "{{captured.bayId_4}}"
       bayNumber: 4
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{captured.bayId_4}}"
+      bayNumber: 4
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true

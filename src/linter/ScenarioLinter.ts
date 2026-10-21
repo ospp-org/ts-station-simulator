@@ -14,6 +14,7 @@ import { ConnectLifecycleCheck } from './checks/ConnectLifecycleCheck.js';
 import { RequiredStepArgsCheck } from './checks/RequiredStepArgsCheck.js';
 import { SkipMarkerShapeCheck } from './checks/SkipMarkerShapeCheck.js';
 import { BootClaimCheck } from './checks/BootClaimCheck.js';
+import { BayEdgeCheck } from './checks/BayEdgeCheck.js';
 
 export class ScenarioLinter {
   private checks: LintCheck[];
@@ -32,6 +33,7 @@ export class ScenarioLinter {
       new RequiredStepArgsCheck(),
       new SkipMarkerShapeCheck(),
       new BootClaimCheck(),
+      new BayEdgeCheck(),
     ];
   }
 

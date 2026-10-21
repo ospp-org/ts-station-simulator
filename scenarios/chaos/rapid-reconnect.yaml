@@ -1,5 +1,5 @@
 name: "Rapid Reconnect"
-description: "Multiple disconnect/reconnect cycles in quick succession. Tests server stability under rapid connection churn and ErrorRecovery boot handling."
+description: "Multiple disconnect/reconnect cycles in quick succession. Tests server stability under rapid connection churn and Reconnect boot handling: a dropped link restarts nothing, so each boot after one is a Reconnect with the uptime running on."
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -49,7 +49,7 @@ steps:
 
   - action: wait_for_connect
 
-  # --- First reconnect with ErrorRecovery ---
+  # --- First reconnect: Reconnect, the uptime running on from the first boot ---
   - action: send
     message: BootNotification
     payload:
@@ -63,10 +63,10 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 0
+      uptimeSeconds: 2
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "ErrorRecovery"
+      bootReason: "Reconnect"
       capabilities:
         bleSupported: false
         offlineModeSupported: true
@@ -85,7 +85,7 @@ steps:
 
   - action: wait_for_connect
 
-  # --- Second reconnect with ErrorRecovery ---
+  # --- Second reconnect: Reconnect, the uptime running on ---
   - action: send
     message: BootNotification
     payload:
@@ -99,10 +99,10 @@ steps:
           programNumbers: [1]
         - bayNumber: 2
           programNumbers: [1]
-      uptimeSeconds: 0
+      uptimeSeconds: 4
       pendingOfflineTransactions: 0
       timezone: "Europe/Bucharest"
-      bootReason: "ErrorRecovery"
+      bootReason: "Reconnect"
       capabilities:
         bleSupported: false
         offlineModeSupported: true
@@ -128,10 +128,11 @@ steps:
   #
   #   data.isOnline true  — the station is registered connected after the final
   #                         cycle. Server-decided.
-  #   data.bootReason     — the LAST boot in the sequence is ErrorRecovery (the
-  #                         first is PowerOn), so reading it back proves the final
-  #                         reconnect is the one that committed, rather than an
-  #                         earlier boot whose row survived the churn.
+  #   data.bootReason     — Reconnect, where the first boot is PowerOn, and
+  #   data.uptimeSeconds    4, the LAST boot's uptime (the middle one said 2), so
+  #                         reading them back proves the final reconnect is the
+  #                         one that committed, rather than an earlier boot whose
+  #                         row survived the churn.
   #
   # Together they say the server converged on the last cycle instead of being left
   # in a state from the middle of it — which is what "stability under churn"
@@ -142,4 +143,5 @@ steps:
     expect_status: 200
     expect_body:
       data.isOnline: true
-      data.bootReason: "ErrorRecovery"
+      data.bootReason: "Reconnect"
+      data.uptimeSeconds: 4
