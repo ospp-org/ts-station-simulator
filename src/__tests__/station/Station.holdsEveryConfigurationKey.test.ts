@@ -129,6 +129,8 @@ describe('ChangeConfiguration judges every key (change-configuration.md §6, 08-
     expect(valueOf(now, ConfigKey.STATION_NAME)).toBe('');
 
     await station.restart(BootReason.REMOTE_RESET);
+    await station.retryBoot();
+    station.handleMessage(bootAccepted());
     expect(valueOf(await read(station), ConfigKey.STATION_NAME)).toBe('Spalatoria Nord - boxa 1');
   });
 });

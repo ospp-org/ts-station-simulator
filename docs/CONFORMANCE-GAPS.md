@@ -19,6 +19,13 @@ closes — connect mode writes the session record before the StartService `Accep
 refuses `5103` when it cannot (`src/__tests__/station/Station.sessionRecord.test.ts`); the 17
 codes are unchanged (`5103` was already emitted by CertificateInstall). See *Reversed for session
 ends* below for what else the station now does on its own.
+**2026-10-21, the configuration keys: 40 implemented · 6 partial · 24 absent.** Groups **G** and **H**
+close: the station holds every key of the SDK's registry and judges a write of each as
+`change-configuration.md` §6 says - unknown `NotSupported`, ReadOnly `Rejected` `5108`, wrong type or
+out of range `Rejected` `5109`, nothing in a batch applied unless all pass, a Static key
+`RebootRequired` and in force from the next boot - and GetConfiguration reports the keys by their
+spec names, a WriteOnly one in neither array (`src/__tests__/station/Station.holdsEveryConfigurationKey.test.ts`).
+`5108` is emitted for the first time.
 
 > **THE INSTRUMENT.** Codes are referenced **symbolically** in this tree
 > (`OsppErrorCode.BAY_NOT_FOUND`), never numerically. **A numeric grep is a broken instrument**
@@ -52,8 +59,8 @@ and radio last, because that path is not built.
 | **D** *(1 of 2 done)* | StopService validation | **2** | `3007` is a 3-line field comparison; the duplicate-replay rule (r10, the cached RESPONSE) is implemented since 2026-10-13 | session |
 | **E** *(1 of 4 done)* | StartService validation | **4** | `3003`/`3010` are small; `5103` is done (the record is durable since 2026-10-13); `3009` needs a hardware model | session |
 | ~~**F**~~ ✅ | catalog binding validity → `5024` | **1** | the declared topology is already in the handler | catalog |
-| **G** | ChangeConfiguration | **4** | one key registry — mutability, type, range — serves all four | boot/config |
-| **H** | GetConfiguration WriteOnly | **1** | same registry | boot/config |
+| ~~**G**~~ ✅ | ChangeConfiguration | **4** | one key registry — mutability, type, range — serves all four (2026-10-21) | boot/config |
+| ~~**H**~~ ✅ | GetConfiguration WriteOnly | **1** | same registry (2026-10-21) | boot/config |
 | **I** *(1 of 2 done)* | GetDiagnostics | **2** | `5020` is a field comparison; `1011` needs a probe | device-mgmt |
 | **J** | firmware integrity | **2** | needs a download model | device-mgmt |
 | **K** | certificate validation | **3** | chain walk + type binding + keygen failure | provisioning/signing |
@@ -241,19 +248,18 @@ change of a wash, so the server's bay stayed `available` through it. Now:
 | accepts a StartService | after the RESPONSE, `StatusNotification Occupied`, `previousStatus` `Available` - or `Reserved` for the holder's start | `Station.reportsTheBayAtTheWash.test.ts` |
 | runs a wash | a `MeterValues` every `MeterValuesInterval`, none at or after the booked end; cumulative readings derived from the delivered time (`liquidMl` 125 and `energyWh` 0.25 a second, `consumableMl` omitted); `seqNo` from 0 per session, on disk before each publish (`05` §3.5 rule 1); dropped, taking no number, while the link is down | `Station.metersTheWash.test.ts` |
 | ends a wash, any way | the final `MeterValues` when it can transmit, then the end record carrying the same reading - `SessionEnded` with the next `seqNo` as its own and as `finalSeqNo`, or the `StopService` RESPONSE with `finalSeqNo` the highest emitted - then `Finishing` and `Available` | both files above, `StopServiceHandler.test.ts` |
-| holds `MeterValuesInterval` and `MeterValuesSampleInterval` (`08-configuration.md` §3) | factory values - the spec defaults 60 and 10, `--meter-values-interval` for the first - changed by ChangeConfiguration (validated: `Rejected` `5109 INVALID_CONFIGURATION_VALUE`, nothing in the batch applied) and by an Accepted boot's `configuration` (an invalid entry warned about and ignored); reported by GetConfiguration under these names; the delivered time on disk never older than `MeterValuesSampleInterval` (nor than 10 s) | `Station.metersTheWash.test.ts`, `StationConfiguration.test.ts` |
+| holds every configuration key of the registry (`08-configuration.md` §3) | the spec defaults, the firmware version and time zone it was built with, `--meter-values-interval` for `MeterValuesInterval`; changed by ChangeConfiguration (§6: `NotSupported`, `Rejected` `5108`/`5109`, nothing in the batch applied unless all pass; `RebootRequired` for a Static key, in force from the next boot) and by an Accepted boot's `configuration` (entry by entry, an invalid entry warned about and ignored); kept beside the certificates, `<stationId>-configuration.json`, so a new process starts from what the server set (§8.4); reported by GetConfiguration under the spec names, a WriteOnly key in neither array; `MeterValuesInterval`, `MeterValuesSampleInterval`, `HeartbeatIntervalSeconds` and `RevocationEpoch` drive the station, every other key is held and reported; the delivered time on disk never older than `MeterValuesSampleInterval` (nor than 10 s) | `Station.holdsEveryConfigurationKey.test.ts`, `Station.metersTheWash.test.ts`, `StationConfiguration.test.ts` |
+| reports the bay a reservation or maintenance moves (`05-state-machines.md` §2, `set-maintenance-mode.md` §5 rule 4) | Available -> Reserved when a ReserveBay is accepted, Reserved -> Available when it expires or is cancelled, Available or Faulted -> Unavailable and back on maintenance, each after the RESPONSE; maintenance moves only what §6's table moves | `Station.reportsReservationAndMaintenance.test.ts` |
 | answers TriggerMessage | `MeterValues`: the session on the bay asked for, its next `seqNo`, its reading now - `Rejected` for a bay with no session; `StatusNotification`: the bay asked for with its own `bayNumber`, `previousStatus` only when it is not what was last reported; `BootNotification`: `Reconnect`, the uptime running on (`boot-notification.md` §5.2) | `Station.metersTheWash.test.ts`, `Station.reportsTheBayAtTheWash.test.ts`, `TriggerMessageHandler.bootTruthful.test.ts` |
 
 `behavior.meterValuesIntervalSec` (30), which no code read, is gone.
 
-Still not built: the two keys live in memory - they survive a Reset or an update, not a new process
-(`08` §8.4 asks for non-volatile storage); every other key is still answered `Accepted` by
-ChangeConfiguration and not applied (`RevocationEpoch` excepted), and GetConfiguration still lists
-non-spec keys beside these two; ReserveBay, a reservation's expiry or cancellation and maintenance
-mode still move the bay without reporting it; the bay-fault injector. On the server's side
-(csms-server `15e0b30f`, `StatusNotificationHandler.php`): the `Finishing` report that follows a
-conforming end record is refused as a change of a settled session's bay - one journal row per wash,
-the case `05` §7.2 warns about; the `Available` after it is accepted.
+Still not built: the bay-fault injector; behaviour for the configuration keys the simulator holds
+and does not act on (every key but the four above), and the maintenance flag's persistence across a
+boot (`set-maintenance-mode.md` §5 rule 9). Built 2026-10-21: every key of the registry held, judged
+and kept on disk, and the bay a reservation or maintenance moves reported (the two rows above). The
+server's refusal of the `Finishing` after a conforming end record went with csms-server `e1f1b11b`
+(2026-10-21).
 
 ---
 

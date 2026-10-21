@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { SequenceCounter } from './SequenceCounter.js';
 import { monotonicNowMs } from './monotonicClock.js';
 import {
@@ -24,6 +24,7 @@ import { armWashTimer, clearWashTimer, endSession } from './sessionEnd.js';
 import { deliveredSeconds } from './delivered.js';
 import { armMeterTimer, clearMeterTimer } from './sessionMeter.js';
 import { StationConfiguration } from './StationConfiguration.js';
+import { resolveWireProtocolVersion } from '../mqtt/protocolVersion.js';
 import type { StationContext } from '../handlers/Handler.js';
 import type {
   OsppEnvelope,
@@ -252,9 +253,14 @@ export class Station extends EventEmitter {
   constructor(config: StationConfig, mqttOptions: MqttConnectionOptions) {
     super();
     this.config = config;
-    this.configuration = new StationConfiguration(config.factoryConfiguration);
     this.currentBootReason = config.bootReason ?? BootReason.POWER_ON;
     this.connection = new MqttConnection(mqttOptions);
+    // After the connection, which says where the station keeps its state (beside its certificates).
+    this.configuration = new StationConfiguration(
+      config.factoryConfiguration,
+      { firmwareVersion: config.firmwareVersion, timezone: config.timezone, protocolVersion: resolveWireProtocolVersion() },
+      this.configurationFile(),
+    );
     this.journal = mqttOptions.journal;
     // The getter, not a captured value: the session key arrives in the
     // BootNotification response, necessarily AFTER this router exists. Passing
@@ -780,6 +786,22 @@ export class Station extends EventEmitter {
     });
   }
 
+  /**
+   * StationContext.heartbeatIntervalChanged: a HeartbeatIntervalSeconds the server set by
+   * ChangeConfiguration is in force at once (a Dynamic key, 08-configuration.md §8.2) - a heartbeat
+   * already running is re-armed at it; one not yet armed starts at the boot's interval as before.
+   */
+  heartbeatIntervalChanged(intervalSec: number): void {
+    if (this.heartbeatTimer !== null) this.startHeartbeat(intervalSec);
+  }
+
+  /** Where the configuration is kept: beside the certificates when the config asks, else nowhere. */
+  private configurationFile(): string | null {
+    if (this.config.persistConfiguration !== true) return null;
+    const dir = this.topologyDir();
+    return dir === null ? null : join(dir, `${this.config.stationId}-configuration.json`);
+  }
+
   startHeartbeat(intervalSec: number): void {
     this.stopHeartbeat();
     // Counted, because the default's correct behaviour and its total absence print the same
@@ -1183,6 +1205,8 @@ export class Station extends EventEmitter {
     this.sessionKey = null;
     // The reboot ends a firmware write's refusal of sessions (05-state-machines.md §7.4).
     this.firmwareInstalling = false;
+    // A Static key's RebootRequired value is in force from this boot on (08-configuration.md §8.2).
+    this.configuration.takePendingIntoForce();
     while (this.replayInFlight !== null) await this.replayInFlight;
     await this.sessionWrites;
     this.sessions.clear();

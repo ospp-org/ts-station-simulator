@@ -62,7 +62,7 @@ describe('the values a held key takes (08-configuration.md §3, §8.2 rule 1)', 
 });
 
 describe('the boot\'s configuration (08-configuration.md §8.3) - entry by entry, never failing the boot', () => {
-  it('applies a valid held key beside an invalid one, warns about the invalid one, and leaves keys it does not hold alone', () => {
+  it('applies every valid key it holds beside an invalid one, warns about the invalid one, and leaves a key it does not know alone', () => {
     const station = { configuration: new StationConfiguration() };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -72,12 +72,16 @@ describe('the boot\'s configuration (08-configuration.md §8.3) - entry by entry
         MeterValuesSampleInterval: '61',
         HeartbeatIntervalSeconds: '30',
         SessionTimeout: '0',
+        VendorTurboMode: 'on',
       });
       expect(station.configuration.get(INTERVAL)).toBe(15);
       expect(station.configuration.get(SAMPLE)).toBe(10);
+      // Every key of the registry is held since 2026-10-21: the ones csms-server sends at every boot are taken.
+      expect(station.configuration.value('HeartbeatIntervalSeconds')).toBe('30');
+      expect(station.configuration.value('VendorTurboMode')).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0].map(String).join(' ')).toContain('MeterValuesSampleInterval');
-      expect(log.mock.calls.map((c) => c.map(String).join(' '))).toContain('[BootNotification] configuration applied: %s MeterValuesInterval=15');
+      expect(log.mock.calls.map((c) => c.map(String).join(' '))).toContain('[BootNotification] configuration applied: %s MeterValuesInterval=15, HeartbeatIntervalSeconds=30, SessionTimeout=0');
     } finally {
       warn.mockRestore();
       log.mockRestore();
