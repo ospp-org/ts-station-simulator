@@ -433,8 +433,19 @@ steps:
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true
@@ -487,8 +498,19 @@ steps:
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true
@@ -543,8 +565,19 @@ steps:
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1
-      status: "Available"
+      status: "Finishing"
       previousStatus: "Occupied"
+      programs:
+        - programNumber: 1
+          available: false
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      previousStatus: "Finishing"
       programs:
         - programNumber: 1
           available: true

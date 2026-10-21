@@ -137,9 +137,17 @@ steps:
       data.bays[bayNumber=1].status: "available"
 
   # Status: Reserved
+  #
+  # A DELIBERATE PROBE, AND MARKED AS ONE. Occupied -> Reserved is not a Station row of
+  # 05-state-machines.md section 2.3, and nor is Reserved -> Finishing below: this file walks the bay
+  # through every reportable status one report at a time, so two of its edges are ones no conforming
+  # station takes, and what it reads back is the server writing the report anyway and journaling the
+  # edge as invalid. `expect_invalid_transition: true` is what tells BayEdgeCheck so; every other
+  # report in the corpus takes an edge the table has.
   - action: send
     message: StatusNotification
     messageType: Event
+    expect_invalid_transition: true
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1
@@ -158,10 +166,11 @@ steps:
     expect_body:
       data.bays[bayNumber=1].status: "reserved"
 
-  # Status: Finishing
+  # Status: Finishing - the second deliberate probe (see Reserved above).
   - action: send
     message: StatusNotification
     messageType: Event
+    expect_invalid_transition: true
     payload:
       bayId: "{{bayId_1}}"
       bayNumber: 1
