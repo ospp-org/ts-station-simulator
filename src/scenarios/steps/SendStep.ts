@@ -198,7 +198,7 @@ export function stripSignedOnlyFields(payload: Record<string, unknown>, envelope
  * encoding), removing the local `crypto.createSign('SHA256')` divergence
  * surface flagged in Phase B audit (b).
  */
-async function signTransactionEventReceipt(
+export async function signTransactionEventReceipt(
   payload: Record<string, unknown>,
   station: Station,
   context: ScenarioContext,
