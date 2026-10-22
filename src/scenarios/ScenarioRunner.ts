@@ -30,6 +30,7 @@ import { AssertStep } from './steps/AssertStep.js';
 import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
 import { FundWalletStep } from './steps/FundWalletStep.js';
+import { AttestDeviceStep } from './steps/AttestDeviceStep.js';
 import { MULTIUNIT_SERVICE_ID } from './bootstrap/uatPrivileged.js';
 import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
 import { FaultStep } from './steps/FaultStep.js';
@@ -572,6 +573,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['provision_station_pool', new ProvisionStationPoolStep()],
   ['connect_mqtt', new ConnectMqttStep()],
   ['fund_wallet', new FundWalletStep()],
+  ['attest_device', new AttestDeviceStep()],
 ]);
 
 // ---------------------------------------------------------------------------
