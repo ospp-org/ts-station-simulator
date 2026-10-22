@@ -967,6 +967,48 @@ export function runAppPhp(code: string, cfg: UatDbConfig = uatDbConfigFromEnv())
   });
 }
 
+/**
+ * The remote command that runs `php artisan <args>` in the APPLICATION container, from the
+ * application's root, every argument single-quoted for the remote shell.
+ */
+export function buildAppArtisanCommand(args: readonly string[], appContainer: string): string {
+  return `docker exec -i -w /var/www/html ${appContainer} php artisan ${args.map(shellSingleQuote).join(' ')}`;
+}
+
+/**
+ * Run an artisan command in the APPLICATION container and return its stdout.
+ *
+ * For the one grant no API hands out: a platform role (`ospp:assign-platform-role`), which a
+ * bootstrapped run gives the platform super admin it mints for itself and deletes at teardown -
+ * see acquireEphemeralSuperAdmin. Through the server's own command rather than SQL, so the role
+ * is assigned exactly as an operator assigns it.
+ */
+export function runAppArtisan(args: readonly string[], cfg: UatDbConfig = uatDbConfigFromEnv()): Promise<string> {
+  const local = isLocalDbHost(cfg);
+  const spawnArgs = local
+    ? ['exec', '-i', '-w', '/var/www/html', cfg.appContainer, 'php', 'artisan', ...args]
+    : [
+        ...sshIdentityArgs(cfg),
+        '-o', 'ConnectTimeout=15',
+        '-o', 'BatchMode=yes',
+        cfg.sshHost,
+        buildAppArtisanCommand(args, cfg.appContainer),
+      ];
+
+  return new Promise<string>((resolve, reject) => {
+    const child = local ? spawn('docker', spawnArgs) : spawn('ssh', spawnArgs);
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += String(d); });
+    child.stderr.on('data', (d) => { err += String(d); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(out.trim());
+      else reject(new Error(`runAppArtisan exited ${code}: ${err.trim() || out.trim()}`));
+    });
+  });
+}
+
 /** The BT iPay sandbox account, as `database/seeders/BtSandboxCredentialSeeder.php` carries it. */
 const BT_SANDBOX_USERNAME = 'test_iPay3_api';
 const BT_SANDBOX_PASSWORD = 'test_iPay3_ap!e4r';

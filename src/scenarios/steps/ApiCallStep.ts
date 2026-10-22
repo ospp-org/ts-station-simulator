@@ -689,6 +689,45 @@ async function reauthenticate(context: ScenarioContext): Promise<string | undefi
   return ensureAuth(context);
 }
 
+/**
+ * The identity a step authenticates as: the scenario's own, or - when the step declares
+ * `auth: { email_env, password_env }` - the one those two environment variables name, for this
+ * step alone.
+ *
+ * WHY A STEP NEEDS ITS OWN. An offline pass is issued to the customer that asks for it and
+ * revoked by a platform role, and the platform revocation epoch is raised by platform_super_admin
+ * alone: a file that proves a wash after either is refused needs two identities, and the
+ * file-wide `auth:` names one. Read from the environment, as that override is, so the password
+ * reaches no template and no request body the runner prints.
+ *
+ * The copy shares everything but the identity - captures, cookies, the base URL - and holds its
+ * own token, so the scenario's token and credentials are untouched when the step ends.
+ */
+function stepAuthContext(definition: StepDefinition, context: ScenarioContext): ScenarioContext {
+  const auth = definition.auth;
+  if (auth === undefined) return context;
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) {
+    throw new Error('api_call: "auth" names the identity of one step, as { email_env, password_env }');
+  }
+  const { email_env: emailEnv, password_env: passwordEnv } = auth as Record<string, unknown>;
+  if (typeof emailEnv !== 'string' || typeof passwordEnv !== 'string') {
+    throw new Error('api_call: "auth" needs both "email_env" and "password_env"');
+  }
+  const email = process.env[emailEnv];
+  const password = process.env[passwordEnv];
+  if (!email || !password) {
+    throw new Error(
+      `api_call: step auth declared but env var "${!email ? emailEnv : passwordEnv}" is unset or empty`,
+    );
+  }
+
+  const stepContext = Object.create(context) as ScenarioContext;
+  stepContext.apiCredentials = { email, password };
+  stepContext.authToken = undefined;
+  stepContext.orgId = undefined;
+  return stepContext;
+}
+
 function methodRequiresIdempotencyKey(method: string): boolean {
   const m = method.toUpperCase();
   return m === 'POST' || m === 'PUT' || m === 'PATCH';
@@ -911,8 +950,9 @@ export class ApiCallStep implements Step {
       ? JSON.stringify(substituteTemplates(definition.body, context))
       : undefined;
 
-    // Auto-authenticate if credentials are available
-    const token = await ensureAuth(context);
+    // Auto-authenticate if credentials are available - as the step's own identity when it names one.
+    const authContext = stepAuthContext(definition, context);
+    const token = await ensureAuth(authContext);
 
     // Auto-inject X-Organization-Id for admin endpoints when not explicitly
     // supplied via scenario `headers:`. Skip for non-admin URLs (auth/login,
@@ -924,7 +964,9 @@ export class ApiCallStep implements Step {
     // permission:platform.certificates.manage) resolves at the NULL/platform team instead of an
     // org team — where a platform_admin's NULL-scoped permission would be filtered out (403).
     // Confirmed empirically on UAT: org-less platform admin is authorized; org-scoped is 403.
-    const omitOrgHeader = definition.omit_org_header === true;
+    // A step that names its own identity names no organization for it either: the scenario's
+    // organization is the scenario identity's, and the doors such a step is for are the platform's.
+    const omitOrgHeader = definition.omit_org_header === true || authContext !== context;
     let autoOrgId: string | undefined;
     if (token && requiresOrgHeader(url) && !explicitOrgHeader && !omitOrgHeader) {
       autoOrgId = await ensureOrgId(context, token);
@@ -1136,8 +1178,8 @@ export class ApiCallStep implements Step {
     // one: the header is generated per-request at fetchHeaders above, and reusing
     // the original would let the server replay a cached response for a request it
     // never actually authorized.
-    if (response.status === 401 && token && context.apiCredentials) {
-      const freshToken = await reauthenticate(context);
+    if (response.status === 401 && token && authContext.apiCredentials) {
+      const freshToken = await reauthenticate(authContext);
       if (freshToken && freshToken !== token) {
         console.warn(
           `[ApiCallStep] 401 for ${method} ${url} — token expired mid-scenario, ` +

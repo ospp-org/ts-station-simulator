@@ -12,7 +12,9 @@ description: "Boot station and send a TransactionEvent request to reconcile an o
 # fraud_score, not its fraud_signals. The score is also deliberately off the wire
 # (transaction-event-response.schema.json is {status, reason},
 # additionalProperties:false). So the row this file writes is observable only by
-# querying the database out of band.
+# querying the database out of band. What the customer CAN read is the debit the
+# settlement wrote into its wallet, keyed on the offlineTxId - read at the end
+# since 2026-10-22.
 #
 # The ids ARE per-run generated ({{runOfflineTxId}}) since 2026-08-10. Do not
 # reintroduce a literal: the Reconciler dedups on the id before verify/score/debit,
@@ -70,21 +72,42 @@ steps:
   # full Reconciler pipeline (this is Phase 1: rejected branch — placeholder
   # receipt sig fails verification and the §5:62 Critical SecurityEvent fires;
   # Phase 2 adds receipt signing per §4.8 for the Accepted branch).
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "dev_smoke_recon01"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 10
-      maxTotalCredits: 5000
-      durationHours: 24
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
     capture:
-      offlinePassId: "data.attributes.passId"
-      offlineUserSub: "data.attributes.sub"
-      passDeviceId: "data.attributes.deviceId"
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passDeviceId: "offlinePass.deviceId"
+      passIssuedAt: "offlinePass.issuedAt"
+
+  # The wash is dated from the pass's own issuedAt: check #9 judges its signed start against the
+  # pass's whole validity window (reconciliation.md 6.1), and a pass issued a moment ago does not
+  # cover the fixed 2026-01-01 this file signed until 2026-10-22. Both sends sign the same times.
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      washStartedAt: 0
+      washEndedAt: 300
 
   # --- TransactionEvent: Offline reconciliation (rejected branch — placeholder sig) ---
   - action: send
@@ -97,8 +120,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:00:00.000Z"
-      endedAt: "2026-01-01T10:05:00.000Z"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -150,8 +173,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:00:00.000Z"
-      endedAt: "2026-01-01T10:05:00.000Z"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -171,3 +194,14 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Duplicate"
+
+  # --- The settled wash is in the customer's wallet, once: the debit names this transaction.
+  # The amount is the one the server recomputed from the station's tariff, not the envelope's
+  # creditsCharged (BillingAuthority), so this reads the entry by its reference, not its figure.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_transaction&per_page=100"
+    expect_status: 200
+    expect_body:
+      "data[reference_id={{runOfflineTxId}}].type": "debit"
+      "data[reference_id={{runOfflineTxId}}].reference_type": "offline_transaction"

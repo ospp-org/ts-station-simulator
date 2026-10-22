@@ -782,3 +782,14 @@ describe('certPathsFor — the station chain must not overwrite a shared broker 
     ).toThrow(/no \{\{stationId\}\}/);
   });
 });
+
+describe('the teardown names only columns the server still has', () => {
+  // csms-server's offline group 1 (2026-10-22) dropped offline_passes.organization_id: a pass
+  // belongs to its user and names no organization. The teardown is ONE transaction, so a statement
+  // naming the column would abort it whole and leave the run's world behind.
+  it('reaches no offline transaction through offline_passes.organization_id', () => {
+    const sql = buildTeardownSql(handle({ createdOrgId: '019e674f-aa63-7309-ab7a-c71fcd6178de', stationIds: ['stn_00000001'] }));
+
+    expect(sql).not.toMatch(/offline_passes WHERE organization_id/);
+  });
+});

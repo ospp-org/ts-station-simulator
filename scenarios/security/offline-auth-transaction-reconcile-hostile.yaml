@@ -141,19 +141,30 @@ steps:
   #
   # The pass is swept with this run's identity — `buildTeardownTestUsersSql` deletes
   # `offline_passes` by user_id — so it leaves nothing behind.
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "{{runDeviceId}}"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 1
-      maxTotalCredits: 100
-      durationHours: 1
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
     capture:
-      actingUserSub: "data.attributes.sub"
+      actingUserSub: "offlinePass.sub"
 
   # --- Mint the auth-form grant this file settles -------------------------------
   # THE PREMISE THAT KEPT THIS FILE SKIPPED WAS FALSE. It carried

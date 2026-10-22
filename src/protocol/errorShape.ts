@@ -48,8 +48,9 @@
  * csms-server puts on the wire, which is what `src/protocol/` is for.
  *
  * KEEP IN SYNC WITH csms-server. The authority is the middleware, not this file:
- *   routes/api/v1/sessions.php:36,38,53,62  ·  routes/api/v1/provisioning.php:26
- *   bootstrap/app.php:286 states the same five in prose.
+ *   routes/api/v1/sessions.php:36,38,53,62  ·  routes/api/v1/provisioning.php:26  ·
+ *   routes/api/v1/offline.php:33-38 (the two app-contract doors, offline group 1, 2026-10-22);
+ *   OsppErrorSurface::MARKED_URIS_BEFORE_BOOT lists the seven.
  */
 
 /** Human-readable name of each `OsppErrorSurface`-marked route, or undefined. */
@@ -61,6 +62,8 @@ export function markedErrorRoute(url: string): string | undefined {
   if (/\/api\/v1\/sessions\/[^/]+\/stop$/.test(u)) return 'POST /sessions/{id}/stop';
   if (/\/api\/v1\/sessions\/offline-auth$/.test(u)) return 'POST /sessions/offline-auth';
   if (/\/api\/v1\/stations\/provision$/.test(u)) return 'POST /stations/provision';
+  if (/\/api\/v1\/offline\/attestation-challenges$/.test(u)) return 'POST /offline/attestation-challenges';
+  if (/\/api\/v1\/offline\/passes$/.test(u)) return 'POST /offline/passes';
   if (/\/api\/v1\/sessions\/[^/]+$/.test(u)) return 'GET /sessions/{id}';
   return undefined;
 }

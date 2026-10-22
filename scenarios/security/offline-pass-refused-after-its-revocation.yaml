@@ -1,0 +1,198 @@
+name: "Offline Pass Refused After Its Revocation"
+description: "A platform admin revokes a customer's offline pass. The wash its station accepted at the moment the pass was issued, before the revocation, settles; the wash accepted a minute before the pass expires, after the revocation, is rejected OFFLINE_PASS_REVOKED (2014). Both are judged at their signed startedAt, the moment the station accepted the pass, and not at their reconciliation (reconciliation.md 6.1 check #11; csms-server offline group 1)."
+# WHAT THIS PROVES. A pass is revoked one at a time by the platform - platform_admin holds
+# platform.offline_passes.revoke, the persistent UAT platform admin the pool bootstrap mints its
+# owner from - and a revocation applies to the washes accepted after its moment: "a wash accepted
+# before the revocation moment settles normally, however long it ran" (check #11). Both washes are
+# reported after the revocation, so the only thing that tells them apart is the time each was
+# accepted.
+#
+# THE TIMES ARE THE SERVER'S. Each wash is dated from a moment the server wrote - the pass's own
+# `issuedAt` and `expiresAt` (capture_time `from:`) - so the runner's clock plays no part: the
+# first wash begins when the pass was issued, before the revocation that follows it; the second a
+# minute before the pass expires, after the revocation and inside the pass's validity whatever the
+# platform lifetime is (300 s at least, OfflinePolicyService). A wash dated in the runner's "now"
+# would sit on whichever side of the revocation the two clocks put it.
+#
+# The customer is the run's worker identity, whose funded wallet backs the pass, and the station is
+# a pool station of a tenant it is no member of: a pass is valid at any station that accepts
+# offline (offline-pass.md 2.3).
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 2
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- The customer, and a pass issued to its attested device key ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_revocation"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passIssuedAt: "offlinePass.issuedAt"
+      passExpiresAt: "offlinePass.expiresAt"
+
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      firstStartedAt: 0
+      firstEndedAt: 2
+  - action: capture_time
+    from: "{{captured.passExpiresAt}}"
+    capture:
+      secondStartedAt: -60
+      secondEndedAt: -30
+
+  # --- The platform admin finds the pass by its passId and revokes it ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[passId={{captured.offlinePassId}}].status": "active"
+      "data[passId={{captured.offlinePassId}}].deviceId": "dev_g1_revocation"
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/revoke"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    body:
+      reason: "sim: the customer reported the phone lost ({{stationId}})"
+    expect_status: 200
+    expect_body:
+      success: true
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/offline/passes/{{captured.offlinePassId}}/status"
+    expect_status: 200
+    expect_body:
+      data.attributes.status: "revoked"
+
+  # --- The wash accepted when the pass was issued, before the revocation: it settles ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_1}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "dev_g1_revocation"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.firstStartedAt}}"
+      endedAt: "{{captured.firstEndedAt}}"
+      durationSeconds: 2
+      creditsCharged: 120
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- The wash accepted after the revocation: rejected 2014 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_2}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 2
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "dev_g1_revocation"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.secondStartedAt}}"
+      endedAt: "{{captured.secondEndedAt}}"
+      durationSeconds: 30
+      creditsCharged: 120
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 2
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_PASS_REVOKED"

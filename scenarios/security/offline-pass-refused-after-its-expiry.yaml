@@ -1,0 +1,124 @@
+name: "Offline Pass Refused After Its Expiry"
+description: "A wash its station accepted one second after the customer's offline pass expired is rejected OFFLINE_PASS_EXPIRED (2003): the pass is judged at the signed startedAt, the moment the station accepted it (reconciliation.md 6.1 check #9; csms-server offline group 1)."
+# WHAT THIS PROVES. The pass's lifetime is the platform's (offline-pass.md: 259200 s by default,
+# 864000 s at most) and a pass is valid until its `expiresAt` - for the wash accepted before it,
+# however late that wash is reported. A station that accepts an expired pass has done what the pass
+# forbids, and the server refuses the wash at reconciliation.
+#
+# THE TIME IS THE SERVER'S: the wash is dated from the pass's own `expiresAt` (capture_time
+# `from:`), so the proof does not wait out a lifetime and does not depend on the runner's clock.
+# Dating from the second after the expiry rather than from it is deliberate: check #9 requires the
+# expiry to be AFTER the transaction time, so a wash begun at the expiry itself is refused too, and
+# one second keeps this file off that edge.
+#
+# NO SETTLED WASH BESIDE IT, on purpose. The other side of the edge - a wash accepted before the
+# expiry and reported after it - would be dated days ahead of the run, and a settled wash stays in
+# the pool station's history, where the rapid-consecutive factor of every later wash at that station
+# reads it (FraudScorer::checkRapidConsecutive, the previous transaction by txCounter). A rejected
+# wash writes no row. That side is offline-pass-refused-after-its-revocation.yaml's first wash,
+# dated at the pass's issuance, and the server's RevalidationGateRealDbTest.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 1
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_expiry"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passExpiresAt: "offlinePass.expiresAt"
+
+  - action: capture_time
+    from: "{{captured.passExpiresAt}}"
+    capture:
+      afterExpiryStartedAt: 1
+      afterExpiryEndedAt: 301
+
+  # --- Accepted one second after the expiry: rejected 2003 ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "dev_g1_expiry"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.afterExpiryStartedAt}}"
+      endedAt: "{{captured.afterExpiryEndedAt}}"
+      durationSeconds: 300
+      creditsCharged: 130
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_PASS_EXPIRED"

@@ -88,21 +88,51 @@ steps:
   # Captured pass/sub used by all 5 rapid TransactionEvents below (the (α-bag)
   # boundary resolver requires real opass_/sub_ — hardcoded literals were
   # rejected by the resolver post-csms-server d106044).
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "dev_smoke_fraud01"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 10
-      maxTotalCredits: 5000
-      durationHours: 24
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
     capture:
-      offlinePassId: "data.attributes.passId"
-      offlineUserSub: "data.attributes.sub"
-      passDeviceId: "data.attributes.deviceId"
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passDeviceId: "offlinePass.deviceId"
+      passIssuedAt: "offlinePass.issuedAt"
+
+  # The five washes are dated from the pass's own issuedAt, with the gaps they had at the fixed
+  # 2026-01-01T10:00 this file signed until 2026-10-22: check #9 judges a signed start against the
+  # pass's whole validity window (reconciliation.md 6.1), and a pass issued a moment ago does not
+  # cover that date.
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      wash1StartedAt: 0
+      wash1EndedAt: 300
+      wash2StartedAt: 330
+      wash2EndedAt: 630
+      wash3StartedAt: 660
+      wash3EndedAt: 960
+      wash4StartedAt: 990
+      wash4EndedAt: 1290
+      wash5StartedAt: 1320
+      wash5EndedAt: 1620
 
   # --- Rapid TransactionEvent #1 ---
   - action: send
@@ -114,8 +144,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:00:00.000Z"
-      endedAt: "2026-01-01T10:05:00.000Z"
+      startedAt: "{{captured.wash1StartedAt}}"
+      endedAt: "{{captured.wash1EndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -153,8 +183,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:05:30.000Z"
-      endedAt: "2026-01-01T10:10:30.000Z"
+      startedAt: "{{captured.wash2StartedAt}}"
+      endedAt: "{{captured.wash2EndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -192,8 +222,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:11:00.000Z"
-      endedAt: "2026-01-01T10:16:00.000Z"
+      startedAt: "{{captured.wash3StartedAt}}"
+      endedAt: "{{captured.wash3EndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -231,8 +261,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:16:30.000Z"
-      endedAt: "2026-01-01T10:21:30.000Z"
+      startedAt: "{{captured.wash4StartedAt}}"
+      endedAt: "{{captured.wash4EndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:
@@ -270,8 +300,8 @@ steps:
       deviceId: "{{captured.passDeviceId}}"
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
-      startedAt: "2026-01-01T10:22:00.000Z"
-      endedAt: "2026-01-01T10:27:00.000Z"
+      startedAt: "{{captured.wash5StartedAt}}"
+      endedAt: "{{captured.wash5EndedAt}}"
       durationSeconds: 300
       creditsCharged: 150
       receipt:

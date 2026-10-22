@@ -1,5 +1,16 @@
 name: "Offline Pass Authorization Accepted"
 description: "Boot a station, obtain a genuine server-signed offline pass via POST /api/v1/offline/passes, then present it via AuthorizeOfflinePass and verify the server accepts it."
+skip: true
+skip_reason: >-
+  BLOCKED ON THE SDK RELEASE (2026-10-22, csms-server offline group 1). Since group 1 the server
+  issues the frozen pass of offline-pass.md - devicePublicKey and keyId in, the station limits
+  out - and the released SDK pair (ospp/protocol and @ospp/protocol 0.41.0, schemas of spec
+  v0.44.0) still validates AuthorizeOfflinePass against the pass it replaces, additionalProperties
+  false at both levels: no pass is valid under both. This file presents an issued pass in that
+  message, so this simulator's outbound check and the server's inbound one refuse it before any
+  handler runs. It runs again when the release lands (csms-server TODO, offline group 2, step 1);
+  the Partial-B proofs it leads to - an exact authorization, a refusal above the per-wash limit -
+  are group 3's.
 # --- C-015 (issue-then-present) -------------------------------------------
 # OSPP offline passes are signed by the SERVER (the issuer) and verified
 # against the server's own ECDSA P-256 key — the station never holds a pass
@@ -140,21 +151,32 @@ steps:
   # api_call auto-authenticates with the target's credentials. We scope the pass
   # to the service we will request so it is in the pass's allowedServiceTypes.
   # The full signed pass (data.attributes) is captured for verbatim presentation.
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "dev_test001"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 10
-      maxTotalCredits: 5000
-      durationHours: 24
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
     capture:
-      offlinePass: "data.attributes"
-      offlinePassId: "data.attributes.passId"
-      passDeviceId: "data.attributes.deviceId"
+      offlinePass: "offlinePass"
+      offlinePassId: "offlinePass.passId"
+      passDeviceId: "offlinePass.deviceId"
 
   # --- Present the pass via AuthorizeOfflinePass ---
   # offlinePass is injected as a TYPED object (not String()-coerced), so the

@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 159** across 12 categories, counted on disk
+**Total scenarios: 162** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113
@@ -144,7 +144,7 @@ branch that `core/happy-boot.yaml` does not.
 | Sessions | 30 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
 | Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
 | Device Management | 40 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
-| Security | 26 | SecurityEvent (11 types), Certificates (3), OfflinePass (3), TransactionEvent (1) |
+| Security | 29 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1) |
 | Chaos | 8 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
 | Fleet | 3 | Parallel boot, Mixed workload, Meter flood |
 | e2e | 3 | New-customer onboarding, returning-customer session, session-end matrix — each self-provisions its own org, location and station |
@@ -249,7 +249,7 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/maintenance-mode-all-bays.yaml` | Maintenance All Bays | SetMaintenanceMode (no bayId) → all Unavailable | new |
 | `device-management/service-catalog-update.yaml` | Service Catalog Update | UpdateServiceCatalog → Accepted | migrated |
 
-## Security (26 scenarios)
+## Security (29 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -271,6 +271,9 @@ branch that `core/happy-boot.yaml` does not.
 | `security/offline-pass-rejected.yaml` | Offline Pass Rejected | AuthorizeOfflinePass expired → Rejected | new |
 | `security/offline-transaction-reconcile.yaml` | Offline Transaction Reconcile | TransactionEvent with receipt → Accepted | migrated |
 | `security/offline-fraud-rapid-transactions.yaml` | Offline Fraud: Rapid Transactions | 5 rapid TransactionEvents (fraud pattern) | migrated |
+| `security/offline-pass-attested-issuance.yaml` | Offline Pass Issued Only To An Attested Device Key | a pass for an attested key; 403 2008 for no attestation, an untrusted root, a reused or another user's challenge, a software key | new |
+| `security/offline-pass-refused-after-its-revocation.yaml` | Offline Pass Refused After Its Revocation | the wash before the revocation settles, the one after is Rejected 2014 | new |
+| `security/offline-pass-refused-after-its-expiry.yaml` | Offline Pass Refused After Its Expiry | a wash after expiresAt is Rejected 2003 | new |
 
 > **Not in this table, and deliberately not in the corpus — `SignCertificate` originated from a
 > restricted (`Pending`) station.** Measured on the wire 2026-08-15 against csms-server `99cab60`:

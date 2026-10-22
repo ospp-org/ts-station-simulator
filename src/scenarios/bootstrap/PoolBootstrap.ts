@@ -28,6 +28,7 @@ import {
   readBaySlugs,
   seedBtCredentialForOrg,
   verifyMultiUnitSeed,
+  runAppArtisan,
   runUatSql,
   sqlLiteral,
   uatDbConfigFromEnv,
@@ -206,6 +207,12 @@ export interface PoolBootstrapHandle {
    */
   ephemeralOwnerEmail?: string;
   /**
+   * The platform super admin this run minted for itself - the one identity that may raise the
+   * platform revocation epoch (acquireEphemeralSuperAdmin). Deleted at teardown with the owner.
+   * Absent on handles written before it.
+   */
+  ephemeralSuperAdminEmail?: string;
+  /**
    * The organization this run CREATED (platform_admin POST /organizations). Teardown
    * deletes ONLY this id — never a pre-existing org.
    */
@@ -267,6 +274,8 @@ export interface SerializedPoolHandle {
   /** Optional for backwards-compat: a handle written before 2026-10-13 has none. */
   apiBaseUrl?: string;
   ephemeralOwnerEmail?: string;
+  /** Optional for backwards-compat: a handle written before 2026-10-22 has none. */
+  ephemeralSuperAdminEmail?: string;
   createdOrgId?: string;
   locationId?: string;
   stationIds: string[];
@@ -293,6 +302,7 @@ export function serializePoolHandle(handle: PoolBootstrapHandle): SerializedPool
     orgId: handle.orgId,
     apiBaseUrl: handle.apiBaseUrl,
     ephemeralOwnerEmail: handle.ephemeralOwnerEmail,
+    ephemeralSuperAdminEmail: handle.ephemeralSuperAdminEmail,
     createdOrgId: handle.createdOrgId,
     locationId: handle.locationId,
     stationIds: handle.stationIds,
@@ -309,6 +319,7 @@ export function handleFromSerialized(s: SerializedPoolHandle): PoolBootstrapHand
     orgId: s.orgId,
     apiBaseUrl: s.apiBaseUrl,
     ephemeralOwnerEmail: s.ephemeralOwnerEmail,
+    ephemeralSuperAdminEmail: s.ephemeralSuperAdminEmail,
     createdOrgId: s.createdOrgId,
     locationId: s.locationId,
     stationIds: s.stationIds ?? [],
@@ -573,6 +584,55 @@ export function clearEphemeralOwnerFromEnv(): void {
 }
 
 /**
+ * The env names a step's or a file's `auth:` reads to act AS this run's platform super admin -
+ * the one identity that may raise the platform revocation epoch (06-security.md 6.6). Published
+ * and cleared exactly as the owner's are, for the same reasons.
+ */
+export const POOL_SUPER_ADMIN_EMAIL_ENV = 'SIM_POOL_SUPER_ADMIN_EMAIL';
+export const POOL_SUPER_ADMIN_PASSWORD_ENV = 'SIM_POOL_SUPER_ADMIN_PASSWORD';
+
+export function exportEphemeralSuperAdminToEnv(identity: { email: string; password: string }): void {
+  process.env[POOL_SUPER_ADMIN_EMAIL_ENV] = identity.email;
+  process.env[POOL_SUPER_ADMIN_PASSWORD_ENV] = identity.password;
+}
+
+export function clearEphemeralSuperAdminFromEnv(): void {
+  delete process.env[POOL_SUPER_ADMIN_EMAIL_ENV];
+  delete process.env[POOL_SUPER_ADMIN_PASSWORD_ENV];
+}
+
+/**
+ * Mint the run's own platform super admin: a fresh account registered under the run stamp, given
+ * platform_super_admin through the server's own command (`ospp:assign-platform-role`; no API hands
+ * a platform role out, as none should), deleted at teardown with the owner.
+ *
+ * WHY THE POOL NEEDS ONE. Raising the platform revocation epoch is platform_super_admin's alone
+ * (06-security.md 6.6), and none of the pool's identities is one: the persistent anchor is a
+ * platform_admin, the owner a tenant_owner, the workers tenant_operators. A run that proves the
+ * epoch reaches a station, or refuses a wash after it, has to raise it. `grant` is the command,
+ * injectable so a unit test runs no SSH.
+ */
+export async function acquireEphemeralSuperAdmin(
+  apiBaseUrl: string,
+  runStamp: string,
+  grant: (email: string) => Promise<void> = async (email) => {
+    await runAppArtisan(['ospp:assign-platform-role', email, 'platform_super_admin']);
+  },
+): Promise<{ email: string; password: string }> {
+  const email = `sim-pool-psa-${runStamp}@${EPHEMERAL_OWNER_DOMAIN}`;
+  const password = generateOwnerPassword();
+  await apiCall({
+    method: 'POST',
+    url: `${apiBaseUrl}/api/v1/auth/register`,
+    body: { name: `Sim Pool Platform ${runStamp}`, email, password, password_confirmation: password },
+    expectStatus: 201,
+  });
+  await grant(email);
+
+  return { email, password };
+}
+
+/**
  * Generate a random password meeting typical complexity (upper + lower + digit + special +
  * entropy). The `Pp1!` prefix guarantees one of each class; the UUID hex supplies the entropy.
  */
@@ -694,6 +754,16 @@ export async function bootstrapPool(
     handle.ephemeralOwnerEmail = identity.ownerEmail;
     exportEphemeralOwnerToEnv(identity);
     console.log(`[bootstrap] ephemeral owner ${identity.ownerEmail} → org ${handle.orgId}`);
+
+    // 2b. The run's own platform super admin - the one identity that may raise the platform
+    //     revocation epoch. Recorded on the handle before anything else can fail, so a teardown
+    //     after a partial bootstrap deletes it too.
+    const superAdmin = await acquireEphemeralSuperAdmin(apiBaseUrl, runStamp, async (email) => {
+      handle.ephemeralSuperAdminEmail = email;
+      await runAppArtisan(['ospp:assign-platform-role', email, 'platform_super_admin'], dbConfig);
+    });
+    exportEphemeralSuperAdminToEnv(superAdmin);
+    console.log(`[bootstrap] ephemeral platform super admin ${superAdmin.email}`);
 
     // 3. Fresh location
     const locRes = await apiCall({
@@ -1114,6 +1184,7 @@ export async function teardownPool(
   // teardown that keeps the pool leaves them naming an account that still authenticates. A
   // variable that survives the user it authenticates as is a 401 nobody can attribute.
   clearEphemeralOwnerFromEnv();
+  clearEphemeralSuperAdminFromEnv();
 
   // 2. Local cert artifacts - only now, when the stations they authenticate are gone.
   const errors: string[] = [];
@@ -1231,16 +1302,10 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const orRunOrgStationBizId = runOrg
     ? ` OR station_id IN (SELECT station_id FROM stations WHERE organization_id = ${runOrg})`
     : '';
-  // Offline transactions that name one of the org's passes. `DELETE FROM organizations` cascades
-  // to offline_passes, and offline_transactions.offline_pass_id is NO ACTION, so a surviving
-  // transaction naming one of them blocks the org delete — and one can sit at a station outside
-  // the run: csms-server's Reconciler::persistTransaction stores a rejected transaction without
-  // the RevalidationGate check of the pass's organization against the station's, and the
-  // dashboard issues a pass to a user who need not be a member, so neither the station arms below
-  // nor the user sweep need reach it. A pass of the minted org is this run's by construction.
-  const orRunOrgPass = runOrg
-    ? ` OR offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = ${runOrg})`
-    : '';
+  // No arm reaches offline transactions through the org's PASSES any more: a pass names no
+  // organization since csms-server's offline group 1 (2026-10-22), so the org delete removes no
+  // pass. A pass and its transactions are its user's, and the identity sweep removes both by
+  // user_id - a transaction's user_id is the user_id of its pass (teardownFkCoverage).
   // Ledger rows and adjustments that one of the minted org's monthly statements holds (G12). A
   // statement holds what it closed through their statement_id, NO ACTION, so the org's statements
   // can only be deleted once every row naming one is gone; StatementCloser::closeMonth gives a
@@ -1374,7 +1439,7 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
-    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess})${orRunOrgPass};`,
+    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
     // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
     // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
@@ -1524,14 +1589,15 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //     `offline_auth_grants` and `settlement_adjustments` by their org arms, `sessions` with
   //     the run's bays (csms-server writes no sessions.organization_id), and
   //     `platform_settlement_ledger` with the run's intents and sessions. DELETE FROM
-  //     organizations then CASCADE-removes its 7 CASCADE children: the per-org cloned `roles`
+  //     organizations then CASCADE-removes its 6 CASCADE children: the per-org cloned `roles`
   //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
   //     `revocation_epochs`, `service_definitions` (whose RESTRICT child station_services went
-  //     with the stations), `offline_passes` (whose NO-ACTION child offline_transactions went
-  //     above, by the pass arm), `station_models` (+ station_model_programs;
+  //     with the stations), `station_models` (+ station_model_programs;
   //     stations.station_model_id is SET NULL), and any remaining `stations`.
-  if (handle.ephemeralOwnerEmail) {
-    lines.push(...buildTeardownTestUsersSql([handle.ephemeralOwnerEmail]));
+  const ephemeralUsers = [handle.ephemeralOwnerEmail, handle.ephemeralSuperAdminEmail]
+    .filter((email): email is string => typeof email === 'string' && email !== '');
+  if (ephemeralUsers.length > 0) {
+    lines.push(...buildTeardownTestUsersSql(ephemeralUsers));
   }
   if (handle.createdOrgId) {
     const createdOrgLit = sqlLiteral(handle.createdOrgId);
