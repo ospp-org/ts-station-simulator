@@ -177,6 +177,10 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   // SettlementReversalRecorder::record finds the settlement by payment_intent_id, which a wallet
   // row does not carry.
   platform_settlement_ledger: [],
+  // 0 FKs point at offline_attestation_challenges or offline_device_keys (2026-10-22, offline group
+  // 1): each holds a user's challenges and attested keys, and is removed with the user (CASCADE).
+  offline_attestation_challenges: [],
+  offline_device_keys: [],
   // 2 FKs point at tenant_statements, both NO ACTION (G12): a closed month holds the ledger rows
   // and the adjustments it closed through their statement_id, and StatementCloser::closeMonth
   // gives it rows of its own organization alone.
@@ -1041,9 +1045,12 @@ describe('teardown FK coverage — the pool half reaches every row that points a
 describe('teardown FK coverage — the checks follow CASCADE edges and treat RESTRICT as blocking (positive controls)', () => {
   const planted = (...stmts: string[]): string => ['BEGIN;', ...stmts, 'COMMIT;'].join('\n');
 
-  it('the P1 check reports offline_transactions before an organizations delete, through the offline_passes CASCADE', () => {
+  // These three controls stood on organizations -> offline_passes (CASCADE) until a pass named
+  // no organization (csms-server offline group 1, 2026-10-22); organizations -> stations is the
+  // CASCADE that still reaches offline_transactions.
+  it('the P1 check reports offline_transactions before an organizations delete, through the stations CASCADE', () => {
     expect(unmetOrderings(planted("DELETE FROM organizations WHERE id = 'org-x';")))
-      .toContain('organizations -> offline_passes <- offline_transactions.offline_pass_id');
+      .toContain('organizations -> stations <- offline_transactions.station_id');
   });
 
   it('the P1 check reports station_services before a service_definitions delete (RESTRICT)', () => {
@@ -1056,13 +1063,13 @@ describe('teardown FK coverage — the checks follow CASCADE edges and treat RES
       .toContain('stations -> station_services <- sessions.service_id');
   });
 
-  it("the row check reports an offline_transactions delete that misses the passes an organizations delete cascades to", () => {
+  it("the row check reports an offline_transactions delete that misses the stations an organizations delete cascades to", () => {
     const stmts = [
-      "DELETE FROM offline_transactions WHERE station_id IN (SELECT id FROM stations WHERE organization_id = 'org-x');",
+      "DELETE FROM offline_transactions WHERE user_id = 'user-x';",
       "DELETE FROM organizations WHERE id = 'org-x';",
     ];
     expect(unmetRows(stmts, {}))
-      .toContain('organizations -> offline_passes <- offline_transactions.offline_pass_id');
+      .toContain('organizations -> stations <- offline_transactions.station_id');
   });
 
   // The other direction: what the checks must NOT report.
@@ -1085,12 +1092,14 @@ describe('teardown FK coverage — the checks follow CASCADE edges and treat RES
   });
 
   it('the row check accepts a child delete that selects through the rows a CASCADE reaches', () => {
+    const key = 'organizations -> stations <- offline_transactions.station_id';
     const stmts = [
-      "DELETE FROM offline_transactions WHERE offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = 'org-x');",
+      "DELETE FROM offline_transactions WHERE station_id IN (SELECT id FROM stations WHERE organization_id = 'org-x');",
       "DELETE FROM organizations WHERE id = 'org-x';",
     ];
-    expect(unmetRows(stmts, {}))
-      .not.toContain('organizations -> offline_passes <- offline_transactions.offline_pass_id');
+    // Not vacuous: the organizations delete alone does leave the requirement unmet.
+    expect(unmetRows(stmts.slice(1), {})).toContain(key);
+    expect(unmetRows(stmts, {})).not.toContain(key);
   });
 
   it('the row check stops at a CASCADE whose rows an earlier delete already removed through the same FK', () => {
