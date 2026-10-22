@@ -36,6 +36,30 @@ describe('CaptureTimeStep', () => {
     expect(now - Date.parse(String(ctx.captured.get('earlier')))).toBeGreaterThanOrEqual(58_000);
   });
 
+  it('moves from the moment `from` names instead of the runner clock, so a wash is dated on the server clock', async () => {
+    const ctx = createContext();
+    ctx.captured.set('passExpiresAt', '2026-10-25T09:00:00.000Z');
+    await new CaptureTimeStep().execute(
+      // The runner pre-substitutes the step, so `from` arrives as the captured value itself.
+      { action: 'capture_time', from: '2026-10-25T09:00:00.000Z', capture: { lastMinute: -60, after: 1 } },
+      ctx,
+      station,
+    );
+
+    expect(ctx.captured.get('lastMinute')).toBe('2026-10-25T08:59:00.000Z');
+    expect(ctx.captured.get('after')).toBe('2026-10-25T09:00:01.000Z');
+  });
+
+  it('refuses a `from` that is no OSPP timestamp', async () => {
+    const step = new CaptureTimeStep();
+    await expect(
+      step.execute({ action: 'capture_time', from: 'yesterday', capture: { t: 0 } }, createContext(), station),
+    ).rejects.toThrow(/from/);
+    await expect(
+      step.execute({ action: 'capture_time', from: '2026-10-25T09:00:00Z', capture: { t: 0 } }, createContext(), station),
+    ).rejects.toThrow(/from/);
+  });
+
   it('refuses a step with no capture map, or an offset that is no whole number of seconds', async () => {
     const step = new CaptureTimeStep();
     await expect(step.execute({ action: 'capture_time' }, createContext(), station)).rejects.toThrow(/capture/);
