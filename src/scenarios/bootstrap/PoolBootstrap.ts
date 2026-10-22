@@ -1302,16 +1302,10 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const orRunOrgStationBizId = runOrg
     ? ` OR station_id IN (SELECT station_id FROM stations WHERE organization_id = ${runOrg})`
     : '';
-  // Offline transactions that name one of the org's passes. `DELETE FROM organizations` cascades
-  // to offline_passes, and offline_transactions.offline_pass_id is NO ACTION, so a surviving
-  // transaction naming one of them blocks the org delete — and one can sit at a station outside
-  // the run: csms-server's Reconciler::persistTransaction stores a rejected transaction without
-  // the RevalidationGate check of the pass's organization against the station's, and the
-  // dashboard issues a pass to a user who need not be a member, so neither the station arms below
-  // nor the user sweep need reach it. A pass of the minted org is this run's by construction.
-  const orRunOrgPass = runOrg
-    ? ` OR offline_pass_id IN (SELECT id FROM offline_passes WHERE organization_id = ${runOrg})`
-    : '';
+  // No arm reaches offline transactions through the org's PASSES any more: a pass names no
+  // organization since csms-server's offline group 1 (2026-10-22), so the org delete removes no
+  // pass. A pass and its transactions are its user's, and the identity sweep removes both by
+  // user_id - a transaction's user_id is the user_id of its pass (teardownFkCoverage).
   // Ledger rows and adjustments that one of the minted org's monthly statements holds (G12). A
   // statement holds what it closed through their statement_id, NO ACTION, so the org's statements
   // can only be deleted once every row naming one is gone; StatementCloser::closeMonth gives a
@@ -1445,7 +1439,7 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
-    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess})${orRunOrgPass};`,
+    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
     // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
     // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which
@@ -1595,11 +1589,10 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   //     `offline_auth_grants` and `settlement_adjustments` by their org arms, `sessions` with
   //     the run's bays (csms-server writes no sessions.organization_id), and
   //     `platform_settlement_ledger` with the run's intents and sessions. DELETE FROM
-  //     organizations then CASCADE-removes its 7 CASCADE children: the per-org cloned `roles`
+  //     organizations then CASCADE-removes its 6 CASCADE children: the per-org cloned `roles`
   //     (+ their model_has_roles + role_has_permissions), `model_has_roles`,
   //     `revocation_epochs`, `service_definitions` (whose RESTRICT child station_services went
-  //     with the stations), `offline_passes` (whose NO-ACTION child offline_transactions went
-  //     above, by the pass arm), `station_models` (+ station_model_programs;
+  //     with the stations), `station_models` (+ station_model_programs;
   //     stations.station_model_id is SET NULL), and any remaining `stations`.
   const ephemeralUsers = [handle.ephemeralOwnerEmail, handle.ephemeralSuperAdminEmail]
     .filter((email): email is string => typeof email === 'string' && email !== '');
