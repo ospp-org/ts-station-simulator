@@ -175,7 +175,18 @@ steps:
 
   # --- A pass for the owner, issued BEFORE the raise: after it, a wash its station accepts under
   # that pass is one the platform has revoked (reconciliation.md 6.1 check #10, below). Issued
-  # while the wallet is funded and before the session takes its authorization out of it.
+  # while the wallet is funded and before the session takes its authorization out of it. The owner
+  # turns offline use on first, as a customer does in the app: users.offline_enabled is the user's
+  # own preference, false for a new account, and the pool turns it on for its worker identities only.
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/offline/preference"
+    body:
+      enabled: true
+    expect_status: 200
+    expect_body:
+      data.enabled: true
+      data.blocked: false
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/attestation-challenges"
