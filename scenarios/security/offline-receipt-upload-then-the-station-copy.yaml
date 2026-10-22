@@ -1,0 +1,171 @@
+# THE APP'S COPY OF A RECEIPT, AND THE STATION'S (spec v0.45.0, app-contract.md 4; reconciliation.md 3;
+# csms-server offline group 2, OM12). The app uploads the Receipt exactly as the station handed it over
+# FFF6 - the identifiers beside the station-signed receipt - to POST /api/v1/offline/receipts, and the
+# server processes it as it processes the station's TransactionEvent: deduplication, the signature under
+# the receipt-signing key of the station the signed receipt names, the gate, settlement, scoring. Whichever
+# copy arrives first settles; the other is a Duplicate, however late. Here the app's copy comes first
+# (`sign_receipt: true` signs the body's receipt with this station's receipt key, the four signed-only
+# fields inside it), then the station sends the same wash - the same canonical bytes - and is answered
+# Duplicate, and the platform's read of the pass's transactions shows the one row, settled by the upload.
+name: "Offline Receipt Uploaded By The App, Then The Station's Copy"
+description: "The app uploads a station-signed receipt to POST /api/v1/offline/receipts and is answered 200 Accepted; the station's TransactionEvent of the same wash is then a Duplicate; the pass's transactions show one reconciled row whose channel is the upload (app-contract.md 4; reconciliation.md 3; csms-server offline group 2)."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 1
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- A pass for an attested device key (app-contract.md 3, 3.6) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passIssuedAt: "offlinePass.issuedAt"
+
+  # The wash ran in the pass's validity window (reconciliation.md 6.1 check #9).
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      washStartedAt: 0
+      washEndedAt: 300
+
+  # --- The app's copy, first. ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/receipts"
+    sign_receipt: true
+    body:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 300
+      bookedDurationSeconds: 300
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 500
+      txCounter: 1
+      receipt: {}
+    expect_status: 200
+    expect_body:
+      status: "Accepted"
+
+  # --- The station's copy of the same wash: the same signed bytes, so a Duplicate. ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 300
+      bookedDurationSeconds: 300
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 500
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Duplicate"
+
+  # --- One row, settled by the upload, read back as the platform reads it. ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId}}].status": "reconciled"
+      "data[offlineTxId={{runOfflineTxId}}].channel": "upload"
+      "data[offlineTxId={{runOfflineTxId}}].settledCredits": 500

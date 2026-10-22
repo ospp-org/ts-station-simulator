@@ -1,0 +1,107 @@
+# THE FIVE OFFLINE KEYS AT EVERY BOOT (spec v0.45.0, 08-configuration.md 8.3; csms-server offline group 2,
+# OM4). To a station that declares the Offline / BLE profile, every Accepted BootNotification RESPONSE
+# carries a configuration with the five offline keys: OfflinePassPublicKey - the server key set, a CSV of
+# Base64 DER SubjectPublicKeyInfo, each a P-256 key and so each opening with the same 36 characters -
+# RevocationEpoch, OfflineModeEnabled, OfflineWindowHours and OfflineTransactionLimit, the last three
+# the station's own values or the registry defaults (true, 240, 1000). A station that does not declare
+# the profile gets none of them: its second boot below says it has no BLE.
+name: "Offline Boot Carries The Five Offline Keys"
+description: "A station that declares the Offline / BLE profile receives, in its Accepted BootNotification RESPONSE, the five offline keys of 08-configuration.md 8.3 - the server key set as a CSV of P-256 SPKIs, the platform revocation epoch, OfflineModeEnabled, OfflineWindowHours and OfflineTransactionLimit at their defaults; the same station booting without the profile receives none (csms-server offline group 2)."
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: true
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # The server key set: every key a P-256 SPKI, whose DER opens with the same 26 bytes.
+  - action: assert
+    field: "payload.configuration.OfflinePassPublicKey"
+    contains: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE"
+  - action: assert
+    field: "payload.configuration.RevocationEpoch"
+    exists: true
+  - action: assert
+    field: "payload.configuration.OfflineModeEnabled"
+    equals: "true"
+  - action: assert
+    field: "payload.configuration.OfflineWindowHours"
+    equals: "240"
+  - action: assert
+    field: "payload.configuration.OfflineTransactionLimit"
+    equals: "1000"
+
+  # --- The same station, booting without the BLE profile: no offline key at all.
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+  - action: assert
+    field: "payload.configuration.OfflinePassPublicKey"
+    exists: false
+  - action: assert
+    field: "payload.configuration.OfflineWindowHours"
+    exists: false

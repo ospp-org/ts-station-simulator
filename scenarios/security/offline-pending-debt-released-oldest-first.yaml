@@ -1,0 +1,269 @@
+# PENDING DEBT, RELEASED OLDEST FIRST, IN PART (spec v0.45.0, reconciliation.md 8.1 rules 5 and 6;
+# csms-server offline group 2, OM8 and OM22). A debit that leaves the wallet below zero leaves its
+# transaction pending for the part the wallet did not cover, with no time limit; every credit that raises
+# the balance - a top-up, a refund or any other - releases pending transactions in the order they became
+# pending, the one where the credit runs out covered in part.
+#
+# THE ARITHMETIC, every price the pool catalog's 100 credits a minute. The identity is funded at exactly
+# 150 (`wallet_balance: 150`). A Partial-A authorization of 60 seconds pre-debits 100 (balance 50). Two
+# offline washes of 60 seconds each settle at 100: the first leaves the wallet at -50 and 50 of it pending,
+# the second at -150 and all 100 of it pending. Then the Partial-A session's receipt arrives `Deauthorized`
+# - refunded in full by its service kind (04-flows.md 6) - and its true-up credits the 100 back: the wallet
+# goes to -50, and the credit releases the first wash in full and 50 of the second, which stays pending
+# for the other 50.
+#
+# WHY A REFUND AND NOT A CARD TOP-UP: rule 6 releases on any credit, and a refund is one this harness can
+# drive on the wire; the card top-up is the payment processor's sandbox. The UAT proof of group 2 drives
+# the top-up too (csms-server audit evidence, offline-g2-20261022).
+name: "Offline Pending Debt Released Oldest First"
+description: "Two offline washes debit a wallet below zero and stay pending for what it did not cover; a later credit - a Partial-A authorization refunded in full - releases the older one in full and the newer one in part, which stays pending for the rest (reconciliation.md 8.1 rules 5 and 6; csms-server offline group 2)."
+wallet_balance: 150
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 3
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A pass, while the balance is positive (app-contract.md 3.5) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passIssuedAt: "offlinePass.issuedAt"
+
+  # --- The Partial-A authorization: 60 seconds pre-debited, 100 credits (balance 150 -> 50) ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/organizations"
+    expect_status: 200
+    capture:
+      org_id: "data.0.id"
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/offline-auth"
+    headers:
+      X-Organization-Id: "{{captured.org_id}}"
+    body:
+      stationId: "{{stationId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 60
+      appNonce: "{{runAppNonce}}"
+      deviceId: "{{runDeviceId}}"
+    expect_status: 201
+    capture:
+      authId: "data.authId"
+      grantSessionId: "data.sessionId"
+
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      firstStartedAt: 0
+      firstEndedAt: 60
+      secondStartedAt: 120
+      secondEndedAt: 180
+      authStartedAt: 240
+      authEndedAt: 250
+
+  # --- Wash 1: 100 credits, the wallet 50 -> -50, 50 of it pending ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_1}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.firstStartedAt}}"
+      endedAt: "{{captured.firstEndedAt}}"
+      durationSeconds: 60
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 100
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Wash 2: 100 credits, the wallet -50 -> -150, all 100 pending ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_2}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 2
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.secondStartedAt}}"
+      endedAt: "{{captured.secondEndedAt}}"
+      durationSeconds: 60
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 100
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 2
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/balance"
+    expect_status: 200
+    expect_body:
+      data.balance: -150
+
+  # --- The credit: the Partial-A session ended Deauthorized, refunded in full - 100 back ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_3}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.authStartedAt}}"
+      endedAt: "{{captured.authEndedAt}}"
+      durationSeconds: 10
+      bookedDurationSeconds: 60
+      endReason: "Deauthorized"
+      clockState: "Synchronized"
+      creditsCharged: 0
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 3
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/balance"
+    expect_status: 200
+    expect_body:
+      data.balance: -50
+
+  # --- Oldest first, the last in part: wash 1 closed, wash 2 pending for 50 ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId_1}}].settledCredits": 100
+      "data[offlineTxId={{runOfflineTxId_1}}].pendingCredits": 0
+      "data[offlineTxId={{runOfflineTxId_1}}].coveredAt": { matches: "^\\d{4}-\\d{2}-\\d{2}T" }
+      "data[offlineTxId={{runOfflineTxId_2}}].settledCredits": 100
+      "data[offlineTxId={{runOfflineTxId_2}}].pendingCredits": 50
+      "data[offlineTxId={{runOfflineTxId_2}}].coveredAt": null

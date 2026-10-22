@@ -1,6 +1,7 @@
 import { OsppAction } from '@ospp/protocol';
 import { SchemaValidator } from '@ospp/protocol/server';
 import type { LintIssue, LintCheck, ParsedScenario } from '../types.js';
+import { stripSignedOnlyFields } from '../../scenarios/steps/SendStep.js';
 
 // Map YAML message names to schema keys
 // Schema key format: "boot-notification-request", "start-service-response", "status-notification", "meter-values-event"
@@ -176,12 +177,13 @@ export class PayloadSchemaCheck implements LintCheck {
       if (!schemaKey || !this.availableKeys.has(schemaKey)) continue;
 
       const resolved = replaceTemplates(payload) as Record<string, unknown>;
-      // Mirror SendStep: `deviceId` is a receipt-only convention field that SendStep
-      // signs into receipt.data and then strips before publishing a TransactionEvent
-      // Request, so it never reaches the wire. Drop it here too before schema-
-      // validating, else additionalProperties:false flags a field that is not sent.
+      // Mirror SendStep: `deviceId`, and since spec v0.45.0 the four signed-only members
+      // (stationId, endReason, bookedDurationSeconds, clockState), are receipt fields SendStep
+      // signs into receipt.data and then strips before publishing a TransactionEvent Request,
+      // so they never reach the wire. Strip them here too, with the send's own function,
+      // before schema-validating, else additionalProperties:false flags fields that are not sent.
       if (message === 'TransactionEvent') {
-        delete resolved.deviceId;
+        stripSignedOnlyFields(resolved, 'transaction-event');
       }
       // C-015: a field whose entire value is a single {{captured.X}} token is
       // populated at runtime with a value of statically-unknown type (the engine
