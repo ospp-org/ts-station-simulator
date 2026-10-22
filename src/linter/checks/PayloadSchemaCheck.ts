@@ -46,8 +46,9 @@ function replaceTemplates(obj: unknown): unknown {
       // that replaced the hardcoded `otx_a0000000001`. Listed explicitly because these hints
       // are case-sensitive substring matches and its capital O misses `offlineTxId`, which
       // would silently fall through to 'test_dummy_value' and fail the otx_ pattern.
+      // 32 digits: the 128-bit identifier of spec v0.45.0 (offline-tx-id.schema.json).
       if (obj.includes('offlineTxId') || obj.includes('runOfflineTxId') || obj.includes('otx_')) {
-        return 'otx_00000001';
+        return 'otx_00000000000000000000000000000001';
       }
       // Same case-sensitivity trap as runOfflineTxId: capital E misses 'eventId'.
       if (obj.includes('runSecurityEventId') || obj.includes('eventId') || obj.includes('sec_')) {

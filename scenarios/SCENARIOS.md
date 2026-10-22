@@ -332,10 +332,10 @@ branch that `core/happy-boot.yaml` does not.
 
 ## Spec Coverage
 
-All **27** MQTT actions are covered by at least one scenario.
+All **28** MQTT actions are covered by at least one scenario.
 
 > **The number was 26 and the table under it had 27 rows** — audit A9-40. The
-> denominator is `OsppAction`, which carries 27 members in the pinned
+> denominator is `OsppAction`, which carries 28 members in the pinned
 > `@ospp/protocol` (`dist/actions/OsppAction.d.ts`); the header was never
 > re-derived from it. `ScenarioCoverageClaims.test.ts` now reads the enum, the
 > table and the corpus and requires all three to agree, so this line cannot
@@ -407,6 +407,7 @@ each action; the station half is a fixture.*
 | StopService | Server→Station | stop-service, stop-service-rejected, full-session-lifecycle |
 | MeterValues | Station→Server | meter-values-streaming, fleet-stress-meter-flood |
 | SessionEnded | Station→Server | session-timeout-timer-expired, session-fault-during-service, stop-service |
+| SessionStarted | Station→Server | offline-pass-authorize (**sent, not yet judged** — the start of a Partial-B session, spec v0.45.0 [MSG-043]; what the server does with it, the session it opens and the 40-second lapse, is csms-server offline group 3) |
 | TransactionEvent | Station→Server | offline-transaction-reconcile, offline-fraud-rapid-transactions |
 | SecurityEvent | Station→Server | 11 security-event-* scenarios |
 | ChangeConfiguration | Server→Station | change-configuration-accepted, -reboot-required, -rejected |

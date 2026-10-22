@@ -2,6 +2,10 @@ name: "Offline Pass Authorization Rejected"
 description: "Boot station and send an AuthorizeOfflinePass request with an expired offline pass, then verify the server rejects it."
 skip: true
 skip_reason: >-
+  2026-10-22, spec v0.45.0: the literal pass carries the frozen pass's devicePublicKey and keyId and
+  the request the frozen forward's proof members, so the file lints against @ospp/protocol 0.42.0; the
+  verdict below is unchanged - the pass is still signed by no one.
+
   VERDICT SETTLED 2026-09-21: NOT RUNNABLE AS NAMED, AND SUPERSEDED FOR WHAT IT CAN REACH.
   (Recorded here because the status carried since 2026-08-15 was "UNKNOWN", and an unknown that
   nobody settles is indistinguishable from a scenario nobody runs.)
@@ -116,6 +120,8 @@ steps:
         passId: "opass_a000000002"
         sub: "sub_testuser01"
         deviceId: "dev_test001"
+        devicePublicKey: "ArmOxzyK4co6nLpgql13U0ldH0iFrwf4rsYP9yzIS55S"
+        keyId: "AAAAAAAAAAAAAAAAAAAAAA"
         issuedAt: "2024-01-01T00:00:00.000Z"
         expiresAt: "2024-06-01T00:00:00.000Z"
         policyVersion: 1
@@ -128,14 +134,16 @@ steps:
             - "svc_wash_basic"
         constraints:
           minIntervalSec: 60
-          stationOfflineWindowHours: 24
-          stationMaxOfflineTx: 100
         signatureAlgorithm: "ECDSA-P256-SHA256"
         signature: "test_sig"
-      deviceId: "dev_test001"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof:
+        format: "android-key"
+        signature: "MEUCIQDtestsignaturenotverifiable"
+      transcriptHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
   # --- Wait for response ---
   - action: wait_for

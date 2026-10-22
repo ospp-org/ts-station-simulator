@@ -284,7 +284,7 @@ npm run certs:sync       # Download sandbox certificates
 
 Built against `@ospp/protocol` (see `package.json`; the spec revision it implements is that
 SDK's own `.spec-ref`, which is the only artefact that answers "which spec?"). Emits
-**wire version 0.3.0**. All 27 MQTT actions covered.
+**wire version 0.3.0**. All 28 MQTT actions covered.
 
 > **That wire version said `0.2.1` until 2026-09-06, and it is the number that costs a day.**
 > `0.2.1` is exactly what this server refuses with `1007 PROTOCOL_VERSION_MISMATCH`, and a

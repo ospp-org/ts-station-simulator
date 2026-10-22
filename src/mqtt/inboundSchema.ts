@@ -83,6 +83,7 @@ export function resolveInboundSchemaMode(
 const EVENT_SUFFIX_ACTIONS: ReadonlySet<OsppAction> = new Set([
   OsppAction.METER_VALUES,
   OsppAction.SESSION_ENDED,
+  OsppAction.SESSION_STARTED,
 ]);
 
 function toKebab(action: string): string {
