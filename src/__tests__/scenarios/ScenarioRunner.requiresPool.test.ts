@@ -210,8 +210,12 @@ describe('the corpus uses the pair consistently', () => {
   // pair — is still refused. That was the defect worth catching all along: a file claiming a
   // pool dependency while authenticating as an account the pool does not mint would be
   // skipped outside a pool for no reason, and inside one would measure the wrong identity.
+  // `offline-pass-attested-issuance.yaml` (2026-10-22) is the second, and on purpose: its customer
+  // is the per-scenario identity the pool funds and turns offline use on for, the one a pass is
+  // issued to; it names the owner for one step alone, to obtain a challenge as ANOTHER user.
   const POOL_DEFAULT_IDENTITY_FILES = [
     'device-management/bay-edit-requires-the-topology-tier.yaml',
+    'security/offline-pass-attested-issuance.yaml',
   ];
 
   it('every file declaring requires_pool authenticates as an identity the bootstrap mints', () => {

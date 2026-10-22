@@ -6,6 +6,9 @@ description: "A customer obtains an attestation challenge, attests a fresh devic
 # attested as an Android Keystore attests them (attest_device), rooted in the test root the target
 # trusts (SIM_ATTESTATION_ROOT_CERT / _KEY; csms-server OSPP_OFFLINE_ATTESTATION_TEST_ROOTS, refused
 # in production), which is the one difference from a phone.
+requires_pool: >-
+  The challenge another user obtained is asked for by the run's ephemeral tenant_owner, which only a
+  bootstrapped run mints, and the pass is used at a pool station.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -163,14 +166,16 @@ steps:
       errorCode: 2008
       details.reason: "challenge_used"
 
-  # --- 6. A challenge another user obtained: the platform admin asks for it, this customer attests
-  # over it. The server does not tell an unknown challenge from another user's (challenge_invalid).
+  # --- 6. A challenge another user obtained: the run's pool owner asks for it, this customer
+  # attests over it. The server does not tell an unknown challenge from another user's
+  # (challenge_invalid). The owner is the run's own account, so its challenge goes with it at
+  # teardown (offline_attestation_challenges.user_id, ON DELETE CASCADE).
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/attestation-challenges"
     auth:
-      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
-      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+      email_env: SIM_POOL_OWNER_EMAIL
+      password_env: SIM_POOL_OWNER_PASSWORD
     expect_status: 200
     capture:
       othersChallenge: "challenge"
