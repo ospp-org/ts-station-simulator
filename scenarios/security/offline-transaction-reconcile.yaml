@@ -12,9 +12,9 @@ description: "Boot station and send a TransactionEvent request to reconcile an o
 # fraud_score, not its fraud_signals. The score is also deliberately off the wire
 # (transaction-event-response.schema.json is {status, reason},
 # additionalProperties:false). So the row this file writes is observable only by
-# querying the database out of band. What the customer CAN read is the debit the
-# settlement wrote into its wallet, keyed on the offlineTxId - read at the end
-# since 2026-10-22.
+# querying the database out of band - or through the platform's own read of a
+# pass's transactions, GET /admin/offline-passes/{id}/transactions, which this file
+# makes at the end since 2026-10-22 (the row `reconciled`).
 #
 # The ids ARE per-run generated ({{runOfflineTxId}}) since 2026-08-10. Do not
 # reintroduce a literal: the Reconciler dedups on the id before verify/score/debit,
@@ -195,13 +195,33 @@ steps:
     field: "payload.status"
     equals: "Duplicate"
 
-  # --- The settled wash is in the customer's wallet, once: the debit names this transaction.
-  # The amount is the one the server recomputed from the station's tariff, not the envelope's
-  # creditsCharged (BillingAuthority), so this reads the entry by its reference, not its figure.
+  # --- The settled wash, read back as the platform reads it: one row for this transaction under
+  # the pass, `reconciled`. The platform admin reads it (platform.support.read_any), since a
+  # pooled run's own identity is the pool organization's tenant_operator, which holds no wallet
+  # permission of a customer's. A pass is the user's, so the platform finds it by its user.
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_transaction&per_page=100"
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
     expect_status: 200
     expect_body:
-      "data[reference_id={{runOfflineTxId}}].type": "debit"
-      "data[reference_id={{runOfflineTxId}}].reference_type": "offline_transaction"
+      "data[passId={{captured.offlinePassId}}].deviceId": "dev_smoke_recon01"
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId}}].status": "reconciled"

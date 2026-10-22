@@ -75,14 +75,13 @@ steps:
       offlinePass.deviceId: "dev_g1_issuance"
       offlinePass.devicePublicKey: "{{captured.key1}}"
       offlinePass.signatureAlgorithm: "ECDSA-P256-SHA256"
-    expect_body_text:
-      - '"keyId":"'
-      - '-----BEGIN CERTIFICATE-----'
-      - '-----BEGIN X509 CRL-----'
     capture:
       firstPassId: "offlinePass.passId"
 
-  # --- 2. The same key again, with no attestation: a new pass, and the first is superseded ---
+  # --- 2. The same key again, with no attestation: a new pass with the trust bundle, and the
+  # first pass superseded. The bundle is read as text here because api_call reads a body once:
+  # its exact members (step 1) and its text cannot be asserted on one step. Every issuance
+  # answers the bundle (app-contract.md 3.4), so this one stands for both.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
@@ -90,10 +89,12 @@ steps:
       deviceId: "dev_g1_issuance"
       devicePublicKey: "{{captured.key1}}"
     expect_status: 200
-    expect_body:
-      offlinePass.devicePublicKey: "{{captured.key1}}"
-    capture:
-      secondPassId: "offlinePass.passId"
+    expect_body_text:
+      - '"offlinePass":{'
+      - '"keyId":"'
+      - '"trustBundle":{"stationCas":[{'
+      - '-----BEGIN CERTIFICATE-----'
+      - '-----BEGIN X509 CRL-----'
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/offline/passes/{{captured.firstPassId}}/status"
