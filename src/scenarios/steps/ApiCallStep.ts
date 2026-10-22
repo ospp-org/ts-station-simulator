@@ -369,6 +369,56 @@ function isRecentComparator(want: unknown): want is Record<string, unknown> {
   );
 }
 
+/**
+ * `{ matches: "<pattern>" }` in the value position of `expect_body`: the value at the path is a
+ * string the pattern matches, as written (anchor it with ^ and $ to mean the whole value). For
+ * what a scenario cannot predict but can describe - a certificate's PEM, a key id - where
+ * `expect_body_text` is refused on JSON, since a substring passes wherever it appears. The path is
+ * resolved first, so a value elsewhere in the body cannot stand in for it, and absence never
+ * matches. Like `is_recent`, it must be the only key of its object.
+ */
+function isMatchesComparator(want: unknown): want is Record<string, unknown> {
+  return (
+    want !== null &&
+    typeof want === 'object' &&
+    !Array.isArray(want) &&
+    Object.prototype.hasOwnProperty.call(want, 'matches')
+  );
+}
+
+function assertMatches(path: string, got: unknown, want: Record<string, unknown>, body: unknown): void {
+  const siblings = Object.keys(want).filter((k) => k !== 'matches');
+  if (siblings.length > 0) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — "matches" must be the only key in its comparator, got ` +
+        `extra ${JSON.stringify(siblings)}. A sibling key here would be silently ignored.`,
+    );
+  }
+  const pattern = want.matches;
+  let re: RegExp;
+  try {
+    if (typeof pattern !== 'string') throw new Error(`a ${typeof pattern}`);
+    re = new RegExp(pattern);
+  } catch (e) {
+    throw new Error(
+      `ApiCallStep: expect_body "${path}" — "matches" needs a pattern that compiles as a regular ` +
+        `expression, got ${JSON.stringify(pattern)} (${e instanceof Error ? e.message : String(e)})`,
+    );
+  }
+  if (typeof got !== 'string') {
+    throw new Error(
+      `ApiCallStep: expected body "${path}" to be a string matching ${re}, but got ` +
+        `${JSON.stringify(got)} (full body: ${JSON.stringify(body)})`,
+    );
+  }
+  if (!re.test(got)) {
+    throw new Error(
+      `ApiCallStep: expected body "${path}" to match ${re}, but got ${JSON.stringify(got)} ` +
+        `(full body: ${JSON.stringify(body)})`,
+    );
+  }
+}
+
 function parseRecentBound(want: Record<string, unknown>, path: string): RecentBound {
   const siblings = Object.keys(want).filter((k) => k !== 'is_recent');
   if (siblings.length > 0) {
@@ -1542,6 +1592,10 @@ export class ApiCallStep implements Step {
               response.headers.get('date'),
               responseBody,
             );
+            continue;
+          }
+          if (isMatchesComparator(want)) {
+            assertMatches(path, got, want, responseBody);
             continue;
           }
 
