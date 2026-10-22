@@ -75,10 +75,11 @@ steps:
       offlinePass.deviceId: "dev_g1_issuance"
       offlinePass.devicePublicKey: "{{captured.key1}}"
       offlinePass.signatureAlgorithm: "ECDSA-P256-SHA256"
-    expect_body_text:
-      - '"keyId":"'
-      - '-----BEGIN CERTIFICATE-----'
-      - '-----BEGIN X509 CRL-----'
+      # keyId: base64url of the first 16 octets of the SHA-256 of the signing key (06-security.md 6.7)
+      offlinePass.keyId: { matches: "^[A-Za-z0-9_-]{22}$" }
+      # The trust bundle (app-contract.md 3.4): the Station CA's certificate and its current CRL.
+      trustBundle.stationCas.0.certificate: { matches: "^-----BEGIN CERTIFICATE-----\\n" }
+      trustBundle.stationCas.0.crl: { matches: "^-----BEGIN X509 CRL-----\\n" }
     capture:
       firstPassId: "offlinePass.passId"
 
@@ -92,8 +93,6 @@ steps:
     expect_status: 200
     expect_body:
       offlinePass.devicePublicKey: "{{captured.key1}}"
-    capture:
-      secondPassId: "offlinePass.passId"
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/offline/passes/{{captured.firstPassId}}/status"
