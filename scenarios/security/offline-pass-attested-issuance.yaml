@@ -1,0 +1,217 @@
+name: "Offline Pass Issued Only To An Attested Device Key"
+description: "A customer obtains an attestation challenge, attests a fresh device key over it and is issued an offline pass bound to that key, with the trust bundle; a second request for the same key needs no attestation and supersedes the first pass. The server refuses a key it never attested, an attestation under a root it does not trust, a challenge used twice, a challenge another user obtained and a key kept in software (csms-server offline group 1; app-contract.md 3, 3.6)."
+# WHAT THIS PROVES, AND WHERE. The app-facing half of the offline pass, end to end against the
+# deployed server: the pass is issued to the attested device key and to no organization, and every
+# refusal is the flat Error Object of 07-errors.md 2.4 - 403 `2008` naming its reason. The keys are
+# attested as an Android Keystore attests them (attest_device), rooted in the test root the target
+# trusts (SIM_ATTESTATION_ROOT_CERT / _KEY; csms-server OSPP_OFFLINE_ATTESTATION_TEST_ROOTS, refused
+# in production), which is the one difference from a phone.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- 1. An attested key is issued a pass bound to it, with the trust bundle ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      challenge1: "challenge"
+  - action: attest_device
+    challenge: "{{captured.challenge1}}"
+    capture:
+      key1: devicePublicKey
+      attestation1: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_issuance"
+      devicePublicKey: "{{captured.key1}}"
+      deviceKeyAttestation: "{{captured.attestation1}}"
+    expect_status: 200
+    expect_body:
+      offlinePass.deviceId: "dev_g1_issuance"
+      offlinePass.devicePublicKey: "{{captured.key1}}"
+      offlinePass.signatureAlgorithm: "ECDSA-P256-SHA256"
+    expect_body_text:
+      - '"keyId":"'
+      - '-----BEGIN CERTIFICATE-----'
+      - '-----BEGIN X509 CRL-----'
+    capture:
+      firstPassId: "offlinePass.passId"
+
+  # --- 2. The same key again, with no attestation: a new pass, and the first is superseded ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_issuance"
+      devicePublicKey: "{{captured.key1}}"
+    expect_status: 200
+    expect_body:
+      offlinePass.devicePublicKey: "{{captured.key1}}"
+    capture:
+      secondPassId: "offlinePass.passId"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/offline/passes/{{captured.firstPassId}}/status"
+    expect_status: 200
+    expect_body:
+      data.attributes.status: "revoked"
+
+  # --- 3. A key the server never attested, sent with no attestation ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      challenge2: "challenge"
+  - action: attest_device
+    challenge: "{{captured.challenge2}}"
+    capture:
+      key2: devicePublicKey
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_unattested"
+      devicePublicKey: "{{captured.key2}}"
+    expect_status: 403
+    expect_body:
+      errorCode: 2008
+      details.reason: "attestation_required"
+
+  # --- 4. An attestation under a root the server does not trust ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      challenge3: "challenge"
+  - action: attest_device
+    challenge: "{{captured.challenge3}}"
+    root: untrusted
+    capture:
+      key3: devicePublicKey
+      attestation3: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_untrusted"
+      devicePublicKey: "{{captured.key3}}"
+      deviceKeyAttestation: "{{captured.attestation3}}"
+    expect_status: 403
+    expect_body:
+      errorCode: 2008
+      details.reason: "attestation_untrusted_root"
+
+  # --- 5. A challenge is accepted once: a second key attested over the first one's challenge ---
+  - action: attest_device
+    challenge: "{{captured.challenge1}}"
+    capture:
+      key4: devicePublicKey
+      attestation4: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_replayed"
+      devicePublicKey: "{{captured.key4}}"
+      deviceKeyAttestation: "{{captured.attestation4}}"
+    expect_status: 403
+    expect_body:
+      errorCode: 2008
+      details.reason: "challenge_used"
+
+  # --- 6. A challenge another user obtained: the platform admin asks for it, this customer attests
+  # over it. The server does not tell an unknown challenge from another user's (challenge_invalid).
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      othersChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.othersChallenge}}"
+    capture:
+      key6: devicePublicKey
+      attestation6: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_others"
+      devicePublicKey: "{{captured.key6}}"
+      deviceKeyAttestation: "{{captured.attestation6}}"
+    expect_status: 403
+    expect_body:
+      errorCode: 2008
+      details.reason: "challenge_invalid"
+
+  # --- 7. A key kept in software, not in hardware ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      challenge5: "challenge"
+  - action: attest_device
+    challenge: "{{captured.challenge5}}"
+    security_level: Software
+    capture:
+      key5: devicePublicKey
+      attestation5: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_software"
+      devicePublicKey: "{{captured.key5}}"
+      deviceKeyAttestation: "{{captured.attestation5}}"
+    expect_status: 403
+    expect_body:
+      errorCode: 2008
+      details.reason: "attestation_security_level"

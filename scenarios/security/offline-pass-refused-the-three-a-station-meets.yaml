@@ -1,5 +1,16 @@
 name: "Offline Pass Refused — the wrong device, the retry that came too soon, the used-up pass"
 description: "Present a real server-signed pass three ways a station gets it wrong: bound to another device, retried inside the minimum interval, and after its last use is spent. Each is Rejected and each carries a DIFFERENT reason string — which is the only discriminator the protocol allows on this action."
+skip: true
+skip_reason: >-
+  BLOCKED ON THE SDK RELEASE (2026-10-22, csms-server offline group 1). Since group 1 the server
+  issues the frozen pass of offline-pass.md - devicePublicKey and keyId in, the station limits
+  out - and the released SDK pair (ospp/protocol and @ospp/protocol 0.41.0, schemas of spec
+  v0.44.0) still validates AuthorizeOfflinePass against the pass it replaces, additionalProperties
+  false at both levels: no pass is valid under both. This file presents an issued pass in that
+  message, so this simulator's outbound check and the server's inbound one refuse it before any
+  handler runs. It runs again when the release lands (csms-server TODO, offline group 2, step 1);
+  its three refusals are the station-side checks of the same message, group 3's with the rest of
+  Partial B.
 # ── WE MATCH PROSE HERE, AND IT IS NOT A SHORTCUT ─────────────────────────────────────────
 #
 # Every other refusal file in this corpus pins a NUMERIC code, because a code is a contract and
@@ -149,20 +160,31 @@ steps:
     ms: 1000
 
   # --- PASS A — room for several uses, so arms 1 and 2 do not exhaust it.
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "dev_bound001"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 10
-      maxTotalCredits: 5000
-      durationHours: 24
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
     capture:
-      passA: "data.attributes"
-      passAId: "data.attributes.passId"
+      passA: "offlinePass"
+      passAId: "offlinePass.passId"
 
   # --- ARM 1 — THE PASS IS BOUND TO ANOTHER DEVICE. The pass object is presented verbatim, so
   # the signature verifies (check 1 passes) and the refusal is the device binding at check 4.
@@ -287,20 +309,31 @@ steps:
 
   # --- PASS B — exactly one use, so its second presentation is the exhausted case rather than
   # a replay. A second pass is needed because pass A still has nine uses left.
+  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
+  # a challenge, the attestation over it, then the request with the key. The limits and the
+  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge_2: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge_2}}"
+    capture:
+      devicePublicKey_2: devicePublicKey
+      deviceKeyAttestation_2: deviceKeyAttestation
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
     body:
       deviceId: "dev_bound002"
-      serviceIds:
-        - "{{serviceId_1}}"
-      maxUses: 1
-      maxTotalCredits: 5000
-      durationHours: 24
-    expect_status: 201
+      devicePublicKey: "{{captured.devicePublicKey_2}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation_2}}"
+    expect_status: 200
     capture:
-      passB: "data.attributes"
-      passBId: "data.attributes.passId"
+      passB: "offlinePass"
+      passBId: "offlinePass.passId"
 
   - action: send
     message: AuthorizeOfflinePass

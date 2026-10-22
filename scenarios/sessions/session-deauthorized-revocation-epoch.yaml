@@ -3,7 +3,7 @@
 #   simulator run --scenario scenarios/sessions/session-deauthorized-revocation-epoch.yaml \
 #     --target uat --bootstrap-pool --pool-size 1
 name: "Session Deauthorized via RevocationEpoch Bump"
-description: "Mid-session, the tenant revokes its offline-pass epoch (POST /admin/offline-passes/epochs/revoke) and the server pushes the new RevocationEpoch to the station as ChangeConfiguration. The station ends the session Deauthorized; the server settles it failed with a full refund (creditsCharged 0) and a reason that names the revocation."
+description: "Mid-session, the platform super admin raises the platform revocation epoch (POST /admin/offline-passes/epochs/revoke) and the server pushes the new RevocationEpoch to the station, which declares the Offline / BLE profile, as ChangeConfiguration. A wash the station accepts after the raise under a pass issued before it is rejected OFFLINE_EPOCH_REVOKED. The station ends the session Deauthorized; the server settles it failed with a full refund (creditsCharged 0) and a reason that names the revocation."
 # ── THE BUMP GOES THROUGH THE EPOCH REVOKE ROUTE, since csms-server b0235a9f (2026-09-25) ──────
 #
 # This file used to bump the epoch by WRITING the key: POST /api/v1/testing/trigger-command with
@@ -23,14 +23,18 @@ description: "Mid-session, the tenant revokes its offline-pass epoch (POST /admi
 # the tenant's epoch, pushes ChangeConfiguration RevocationEpoch=<new epoch> to every ONLINE
 # station of that organization, and revokes the organization's passes issued under an older epoch.
 #
-# ── WHO CALLS IT: the run's tenant_owner ──────────────────────────────────────────────────────
+# ── WHO RAISES IT: the run's platform super admin, since 2026-10-22 ──────────────────────────
 #
-# The route asks `permission:offline_passes.revoke` in the organization context and
-# OfflinePassPolicy::revokeEpoch asks it again (permissionForActiveOrganization). tenant_owner
-# and tenant_admin hold it (RolesAndPermissionsSeeder.php:501 and :547);
-# tenant_operator, the pool's per-scenario identity, does not (:559-581). The one tenant_owner a
-# pooled run mints is its ephemeral owner, published as SIM_POOL_OWNER_* — hence `auth:` and
-# `requires_pool` below.
+# The epoch is the PLATFORM's (06-security.md 6.6: one value, raised only by a Platform Admin as
+# a governance action), so the route asks `permission:platform.offline.manage`, which
+# platform_super_admin alone holds. No identity of the pool held it, so a bootstrapped run mints
+# one (PoolBootstrap::acquireEphemeralSuperAdmin), published as SIM_POOL_SUPER_ADMIN_*; the two
+# steps that raise the epoch and read its history name it with their own `auth:`. The run's
+# tenant_owner, published as SIM_POOL_OWNER_*, stays the file's identity: it starts the session
+# - hence the file-wide `auth:` and `requires_pool` below.
+#
+# Until then the route asked `permission:offline_passes.revoke` in the organization context and
+# the tenant_owner raised its tenant's epoch.
 #
 # `auth:` is file-wide, so the owner also STARTS the session, and the owner's wallet is the one
 # RegisterAction opened at 0: a card-free start is refused 402 / 4001 when the balance is below
@@ -52,9 +56,12 @@ description: "Mid-session, the tenant revokes its offline-pass epoch (POST /admi
 #
 # ── WHAT THE BUMP REACHES BESIDES THIS FILE ──────────────────────────────────────────────────
 #
-# The epoch is per organization, and a pooled run is ONE organization. So in a `--parallel` run
-# the push also reaches every other pool station online at that instant, and every offline pass
-# of the run's organization issued before it is revoked. MEASURED over the 159 files on
+# The epoch is the platform's since 2026-10-22: the push reaches every station of every tenant
+# online at that instant that declares the Offline / BLE profile (`bleSupported` and
+# `offlineModeSupported`), and every offline pass on the platform issued before it is revoked. A
+# wash already accepted settles still (reconciliation.md 6.1 #10 judges the pass at the moment the
+# wash was accepted), so a sibling reconciling a wash it signed earlier is unaffected. Until then
+# the epoch was per organization, and the push reached the run's other pool stations. MEASURED over the 159 files on
 # 2026-09-28: 6 issue offline passes (all security/offline-*), 3 wait for a ChangeConfiguration
 # Request (device-management/change-configuration-*), 0 assert its silence. In sorted order the
 # nearest of them is 20 files before this one and the change-configuration trio 85; in the corpus
@@ -64,9 +71,9 @@ description: "Mid-session, the tenant revokes its offline-pass epoch (POST /admi
 # file that waits for ChangeConfiguration or holds a pass, placed near this one, would share the
 # organization's epoch with it — that is the dependency to keep in view.
 requires_pool: >-
-  The epoch revoke route asks offline_passes.revoke, which the pool's per-scenario tenant_operator
-  does not hold; the only identity that does is the ephemeral tenant_owner a bootstrapped run mints
-  and deletes.
+  The epoch is raised by platform_super_admin alone, and the only one a run has is the ephemeral
+  platform super admin a bootstrapped run mints and deletes; the session is started by the
+  ephemeral tenant_owner it mints beside it.
 auth:
   email_env: SIM_POOL_OWNER_EMAIL
   password_env: SIM_POOL_OWNER_PASSWORD
@@ -98,7 +105,9 @@ steps:
       timezone: "Europe/Bucharest"
       bootReason: "PowerOn"
       capabilities:
-        bleSupported: false
+        # LOAD-BEARING SINCE 2026-10-22: the server pushes the platform epoch, at a raise and at a
+        # boot, only to a station that declares the Offline / BLE profile (06-security.md 6.6).
+        bleSupported: true
         offlineModeSupported: true
         meterValuesSupported: true
         # LOAD-BEARING, and now for the push rather than for a write. The server delivers the
@@ -125,7 +134,7 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- The boot REPLAY of the organization's current epoch, drained here on purpose.
+  # --- The boot REPLAY of the platform's current epoch, drained here on purpose.
   # IncludeEpochInBootListener pushes RevocationEpoch=<current> at every boot, unconditionally
   # (measured: 52 ms after the Boot Response on the re-run above). `wait_for` resolves with the
   # NEWEST buffered match and drains the rest (MessageRouter.drainBuffered), so if this replay were
@@ -163,6 +172,33 @@ steps:
 
   - action: fund_wallet
     user_id: "{{captured.owner_id}}"
+
+  # --- A pass for the owner, issued BEFORE the raise: after it, a wash its station accepts under
+  # that pass is one the platform has revoked (reconciliation.md 6.1 check #10, below). Issued
+  # while the wallet is funded and before the session takes its authorization out of it.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "dev_g1_epoch"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passExpiresAt: "offlinePass.expiresAt"
 
   # --- Trigger StartService via API ---
   - action: api_call
@@ -204,7 +240,7 @@ steps:
         - programNumber: 1
           available: false
 
-  # --- Mid-session: the tenant revokes its epoch. OSPP spec ch.08 §5 defines the station-side
+  # --- Mid-session: the platform super admin raises the epoch. OSPP spec ch.08 §5 defines the station-side
   # config key as `RevocationEpoch` (PascalCase); the OfflinePass JSON field is the lowercase
   # `revocationEpoch` — a different identifier. The answer carries the new epoch
   # (DashboardOfflinePassController::revokeEpoch). NOTE: no ChangeConfigurationHandler runs in
@@ -214,6 +250,9 @@ steps:
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/admin/offline-passes/epochs/revoke"
+    auth:
+      email_env: SIM_POOL_SUPER_ADMIN_EMAIL
+      password_env: SIM_POOL_SUPER_ADMIN_PASSWORD
     body:
       reason: "sim revocation-epoch deauthorization on {{stationId}}"
     expect_status: 200
@@ -242,6 +281,9 @@ steps:
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/offline-passes/epochs"
+    auth:
+      email_env: SIM_POOL_SUPER_ADMIN_EMAIL
+      password_env: SIM_POOL_SUPER_ADMIN_PASSWORD
     expect_status: 200
     expect_body:
       "data[epoch={{captured.pushed_epoch}}].epoch": "{{captured.new_epoch}}"
@@ -251,6 +293,50 @@ steps:
   # station's currentRevocationEpoch is never updated. Plain wait.
   - action: delay
     ms: 500
+
+  # --- A wash accepted on bay 2 after the raise, under the pass issued before it: rejected
+  # OFFLINE_EPOCH_REVOKED (2004). Check #10 judges the pass's epoch against the platform epoch in
+  # force at the transaction time, the signed start, which is dated from the pass's own expiresAt
+  # (a minute before it), so it falls after the raise and inside the pass's validity whatever the
+  # runner's clock says. A wash accepted BEFORE a raise settles and is flagged (the same check);
+  # the server's RevalidationGateTest holds that side.
+  - action: capture_time
+    from: "{{captured.passExpiresAt}}"
+    capture:
+      afterRaiseStartedAt: -60
+      afterRaiseEndedAt: -30
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "dev_g1_epoch"
+      bayId: "{{bayId_2}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.afterRaiseStartedAt}}"
+      endedAt: "{{captured.afterRaiseEndedAt}}"
+      durationSeconds: 30
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_EPOCH_REVOKED"
 
   # --- SessionEnded (Deauthorized) — full refund per spec.
   # NO seqNo/finalSeqNo is published: injectSeqNoFields early-returns because

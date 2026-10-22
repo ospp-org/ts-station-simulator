@@ -249,12 +249,13 @@ steps:
   #   - `--bootstrap-pool` does not give it: pool stations are shared in turn, and on
   #     2026-09-28 Accepted had applied "30" to this file's station three seconds earlier.
   #     `owns_station` (header) is what gives it now.
-  #   - it is not the only row: every boot of a station declaring device management replays
-  #     the organization's epoch as ChangeConfiguration RevocationEpoch
-  #     (IncludeEpochInBootListener), which records a `RevocationEpoch` row desired by
-  #     `system` — the second row of the failing body. The list is ordered by key
-  #     (ReadConfigurationAction.php:105), so index 0 was right by the alphabet rather than
-  #     by construction; the row is addressed by its key below, as the two siblings address it.
+  #   - it was not the only row: every boot of a station declaring device management replayed
+  #     its organization's epoch as ChangeConfiguration RevocationEpoch
+  #     (IncludeEpochInBootListener), which recorded a `RevocationEpoch` row desired by
+  #     `system` — the second row of the failing body. Since csms-server's offline group 1
+  #     (2026-10-22) the epoch is the platform's and is replayed only to a station declaring the
+  #     Offline / BLE profile, which this one does not; the row is still addressed by its key
+  #     below, as the two siblings address it, so no other row's presence decides the file.
   - action: delay
     ms: 1500
 
