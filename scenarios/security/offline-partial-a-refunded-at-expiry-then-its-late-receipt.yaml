@@ -5,6 +5,13 @@ description: "A Partial-A authorization no receipt reconciled by its expiresAt i
 # receipt that arrived after the refund was refused as needing manual settlement; check #9 read the signed END. The
 # refund now comes at expiresAt, check #9 reads the signed START, and the late receipt of a wash started in time is
 # debited once. This file waits out the expiry - five minutes and one sweep - so it runs for about seven minutes.
+#
+# THIS FILE RUNS FOR ~7 MINUTES and REQUIRES A RUNNING SCHEDULER: the authorization lives 300 s
+# (ServerSignedAuthSigner::TTL_SECONDS) and is refunded by `offline:expire-stale-grants`, every minute - on UAT the
+# scheduler runs it; locally `docker exec -d csms-app php artisan schedule:work`. Without it the refund read fails and
+# says nothing about the server. Its budget covers its 400 s of delay and the requests around it; at the default 90 s the
+# corpus abandoned it on 2026-10-23 (ScenarioRunner.scenarioTimeout.test.ts holds the argument).
+scenario_timeout_ms: 480000
 station:
   stationId: "{{stationId}}"
   bayCount: 2
