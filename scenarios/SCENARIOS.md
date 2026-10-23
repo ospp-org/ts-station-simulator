@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 166** across 12 categories, counted on disk
+**Total scenarios: 171** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113
@@ -143,8 +143,8 @@ branch that `core/happy-boot.yaml` does not.
 | Core | 25 | Boot (all 6 reasons), Heartbeat, StatusNotification, ConnectionLost, DataTransfer, Reconnect |
 | Sessions | 30 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
 | Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
-| Device Management | 40 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
-| Security | 33 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1), the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band |
+| Device Management | 41 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1), the server key set written by no one |
+| Security | 37 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1), the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, the Partial-B session (settled on its receipt, on the server's stop, by its lapse), the Partial-A authorization refunded at its expiry and its late receipt |
 | Chaos | 8 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
 | Fleet | 3 | Parallel boot, Mixed workload, Meter flood |
 | e2e | 3 | New-customer onboarding, returning-customer session, session-end matrix — each self-provisions its own org, location and station |
@@ -225,7 +225,7 @@ branch that `core/happy-boot.yaml` does not.
 | `reservations/reserve-rejected-maintenance.yaml` | Reserve Rejected - Maintenance | SERVER refuses `POST /reservations` on a bay in maintenance, 409 + `ospp_code 3011`; nothing on the wire | new |
 | `reservations/reserve-rejected-already-reserved.yaml` | Reserve Rejected - Already Reserved | First reservation ACCEPTED on the wire; SERVER refuses the second, 409 + `ospp_code 3014` | new |
 
-## Device Management (40 scenarios)
+## Device Management (41 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -247,9 +247,10 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/maintenance-mode-on.yaml` | Maintenance Mode On | SetMaintenanceMode enabled → Unavailable | migrated |
 | `device-management/maintenance-mode-off.yaml` | Maintenance Mode Off | SetMaintenanceMode disabled → Available | new |
 | `device-management/maintenance-mode-all-bays.yaml` | Maintenance All Bays | SetMaintenanceMode (no bayId) → all Unavailable | new |
+| `device-management/offline-server-key-set-written-by-no-one.yaml` | The Server Key Set Is Written By No One | the platform super admin's write of OfflinePassPublicKey is refused 422; the configuration reads it server-managed (decision D1, csms-server offline group 3) | new |
 | `device-management/service-catalog-update.yaml` | Service Catalog Update | UpdateServiceCatalog → Accepted | migrated |
 
-## Security (33 scenarios)
+## Security (37 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -278,6 +279,10 @@ branch that `core/happy-boot.yaml` does not.
 | `security/offline-receipt-upload-then-the-station-copy.yaml` | Offline Receipt Uploaded By The App, Then The Station's Copy | POST /api/v1/offline/receipts settles the wash (200 Accepted); the station's TransactionEvent of the same receipt is a Duplicate; one row, channel upload (spec v0.45.0) | new |
 | `security/offline-pending-debt-released-oldest-first.yaml` | Offline Pending Debt Released Oldest First | two washes below zero stay pending for what the wallet did not cover; a later credit releases the older in full and the newer in part (spec v0.45.0) | new |
 | `security/offline-fraud-record-in-the-review-band.yaml` | Offline Fraud Record In The Review Band | a settled wash scoring 0.35 (RapidConsecutive, DurationExceedsAllowance) is Accepted and recorded as a server-originated FraudDetected, Warning, FlaggedForReview (spec v0.45.0) | new |
+| `security/offline-partial-b-session-settled-on-its-receipt.yaml` | Partial-B Session Settled On Its Receipt | the acceptance opens the session (Authorized), SessionStarted starts it, the app's receipt uploaded first settles it and is scored FirstUseOfStation, the station's SessionEnded after it changes nothing (csms-server offline group 3) | new |
+| `security/offline-partial-b-server-stop-settles-on-its-stop-record.yaml` | Partial-B Session Stopped By The Server Settles On Its Stop Record | the customer's stop, StopService Accepted settles it; the ServerStopped receipt after it is a Duplicate, recorded as the session's, unflagged (OM24) | new |
+| `security/offline-partial-b-authorization-lapses.yaml` | Partial-B Authorization Lapses Without Its SessionStarted | no SessionStarted 40 s after the acceptance: failed, nothing charged, the debit refunded; a late SessionStarted starts nothing | new |
+| `security/offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml` | Partial-A Authorization Refunded At Its Expiry, Its Late Receipt Debited Once | refunded at expiresAt under its own key; the receipt of a wash started before it, arriving after, is Accepted and debited once; its copy a Duplicate (OM38, OM41; about seven minutes) | new |
 
 > **Not in this table, and deliberately not in the corpus — `SignCertificate` originated from a
 > restricted (`Pending`) station.** Measured on the wire 2026-08-15 against csms-server `99cab60`:
@@ -411,7 +416,7 @@ each action; the station half is a fixture.*
 | StopService | Server→Station | stop-service, stop-service-rejected, full-session-lifecycle |
 | MeterValues | Station→Server | meter-values-streaming, fleet-stress-meter-flood |
 | SessionEnded | Station→Server | session-timeout-timer-expired, session-fault-during-service, stop-service |
-| SessionStarted | Station→Server | offline-pass-authorize (**sent, not yet judged** — the start of a Partial-B session, spec v0.45.0 [MSG-043]; what the server does with it, the session it opens and the 40-second lapse, is csms-server offline group 3) |
+| SessionStarted | Station→Server | offline-pass-authorize, offline-partial-b-session-settled-on-its-receipt and offline-partial-b-server-stop-settles-on-its-stop-record (the start of a Partial-B session, judged since csms-server offline group 3: the session it starts on the server's clock), offline-partial-b-authorization-lapses (a start after the 40-second lapse, which starts nothing) |
 | TransactionEvent | Station→Server | offline-transaction-reconcile, offline-fraud-rapid-transactions, offline-receipt-upload-then-the-station-copy (a Duplicate after the app's copy), offline-pending-debt-released-oldest-first, offline-fraud-record-in-the-review-band |
 | SecurityEvent | Station→Server | 11 security-event-* scenarios |
 | ChangeConfiguration | Server→Station | change-configuration-accepted, -reboot-required, -rejected |

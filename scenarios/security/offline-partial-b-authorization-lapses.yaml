@@ -1,0 +1,172 @@
+name: "Partial-B Authorization Lapses Without Its SessionStarted"
+description: "An accepted AuthorizeOfflinePass whose SessionStarted never arrives lapses 40 seconds after the acceptance: the session fails partial_b_lapsed, nothing charged, the authorize-time debit refunded; a SessionStarted that arrives after the lapse starts nothing (authorize-offline-pass.md 6 rule 4c; csms-server offline group 3)."
+# --- csms-server offline group 3 (2026-10-23), OM35 -----------------------------------------------------------
+# The server's sweep (offline:close-partial-b-sessions, every ten seconds) lapses an Authorized Partial-B session
+# 40 seconds after its acceptance; the SessionStarted handler lapses one whose start arrives late.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The pass, issued to a device key the phone attested (app-contract.md 3, 3.6) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+      devicePrivateKeyPem: devicePrivateKeyPem
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePass: "offlinePass"
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+
+  # --- Partial B: the phone presents the pass over BLE, the station forwards it (authorize-offline-pass.md 3) ---
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.offlinePassId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      presentationProof: deviceProof
+      presentationTranscript: transcriptHash
+
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.offlinePassId}}"
+      offlinePass: "{{captured.offlinePass}}"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.presentationProof}}"
+      transcriptHash: "{{captured.presentationTranscript}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      offlineSessionId: "payload.sessionId"
+      offlineCreditsAuthorized: "payload.creditsAuthorized"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- The session the acceptance opened is the customer's, under the answer's sessionId (rule 4) ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "authorized"
+      data.credits_authorized: "{{captured.offlineCreditsAuthorized}}"
+      data.duration_requested: 300
+
+  # --- No SessionStarted: 40 seconds after the acceptance, and one sweep beyond them ---
+  - action: delay
+    ms: 55000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+      data.credits_charged: 0
+
+  # --- The start that arrives after the lapse changes nothing ---
+  - action: capture_time
+    capture:
+      lateStartedAt: 0
+  - action: send
+    message: SessionStarted
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      startedAt: "{{captured.lateStartedAt}}"
+  - action: delay
+    ms: 2000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "failed"
+
+  # --- The authorize-time debit came back in full: the refund the lapse ordered, relayed to the wallet by the
+  #     settlement outbox within its 30-second cadence, of the whole authorized amount ---
+  - action: delay
+    ms: 35000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=refund"
+    expect_status: 200
+    expect_body:
+      "data[type=credit].amount": "{{captured.offlineCreditsAuthorized}}"

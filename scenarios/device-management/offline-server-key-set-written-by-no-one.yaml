@@ -1,0 +1,81 @@
+name: "The Server Key Set Is Written By No One"
+description: "OfflinePassPublicKey is the server's key set, which the server pushes at every Accepted boot and on every change: the platform super admin's write is refused 422 and the station's configuration reads it server-managed, written by no one (decision D1 of 2026-10-23; 06-security.md 6.7; csms-server offline group 3)."
+# --- csms-server offline group 3 (2026-10-23), decision D1 ------------------------------------------------------
+# Until group 3 the platform super admin could write the key set by hand (G4, the security keys), and a manual
+# write left a station verifying passes under keys the server may not hold. It is server-managed now, as
+# RevocationEpoch is.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/configuration"
+    auth:
+      email_env: SIM_POOL_SUPER_ADMIN_EMAIL
+      password_env: SIM_POOL_SUPER_ADMIN_PASSWORD
+    body:
+      key: "OfflinePassPublicKey"
+      value: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETcU5Avi0ynJ80stmB278S/u1AeE8KZMtHUpXsMjpwi5YeNuvDUpCSLyU2pogrT9S46HgBYRGuGuBuGA4j3Lf7Q=="
+    expect_status: 422
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/stations/{{stationId}}/configuration"
+    auth:
+      email_env: SIM_POOL_SUPER_ADMIN_EMAIL
+      password_env: SIM_POOL_SUPER_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[key=OfflinePassPublicKey].serverManaged": true
+      "data[key=OfflinePassPublicKey].writable": false

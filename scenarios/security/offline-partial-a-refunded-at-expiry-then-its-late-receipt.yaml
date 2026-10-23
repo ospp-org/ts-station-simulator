@@ -1,0 +1,194 @@
+name: "Partial-A Authorization Refunded At Its Expiry, Its Late Receipt Debited Once"
+description: "A Partial-A authorization no receipt reconciled by its expiresAt is refunded in full then, under a key of its own; the receipt of a wash started before expiresAt that arrives afterwards settles it once by 8.1 - debited with no prior debit, the authorization reconciled - and its copy is a Duplicate (reconciliation.md 6.7, 8.1, 8.2 rule 3; OM38, OM41; csms-server offline group 3)."
+# --- csms-server offline group 3 (2026-10-23), OM41 and OM38 ---------------------------------------------------
+# Until group 3 an unused authorization was refunded `station_offline_window_hours` (24) after its expiresAt, and a
+# receipt that arrived after the refund was refused as needing manual settlement; check #9 read the signed END. The
+# refund now comes at expiresAt, check #9 reads the signed START, and the late receipt of a wash started in time is
+# debited once. This file waits out the expiry - five minutes and one sweep - so it runs for about seven minutes.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # The TransactionEvent's `userId` is the customer's subject, which a pass publishes (offline-auth-transaction-
+  # reconcile.yaml says why); the pass is swept with this run's identity.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      actingUserSub: "offlinePass.sub"
+
+  # --- The phone is online, the station not: the app obtains the authorization, debited at issue ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/offline-auth"
+    body:
+      stationId: "{{stationId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 60
+      appNonce: "{{runAppNonce}}"
+      deviceId: "{{runDeviceId}}"
+    expect_status: 201
+    capture:
+      authId: "data.authId"
+      grantSessionId: "data.sessionId"
+      grantExpiresAt: "data.expiresAt"
+      grantCredits: "data.creditsAuthorized"
+
+  # The wash starts 30 seconds before the authorization expires and runs its 60 seconds past it (ble-session.md 1
+  # rule 2a: a start within the validity; how long the wash runs after it does not matter).
+  - action: capture_time
+    from: "{{captured.grantExpiresAt}}"
+    capture:
+      washStartedAt: -30
+      washEndedAt: 30
+
+  # --- No receipt by expiresAt: refunded then (one sweep a minute), the whole issue-time debit ---
+  - action: delay
+    ms: 400000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_expiry"
+    expect_status: 200
+    expect_body:
+      "data[reference_id={{captured.authId}}].type": "credit"
+      "data[reference_id={{captured.authId}}].amount": "{{captured.grantCredits}}"
+
+  # --- The station reconnects and reports the wash: settled once by 8.1, with no prior debit ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 60
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 1
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_transaction"
+    expect_status: 200
+    expect_body:
+      "data[reference_id={{runOfflineTxId}}].type": "debit"
+
+  # --- Its copy again: a Duplicate, nothing debited twice ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 60
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 1
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Duplicate"

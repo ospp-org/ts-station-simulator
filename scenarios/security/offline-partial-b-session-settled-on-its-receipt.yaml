@@ -1,0 +1,254 @@
+name: "Partial-B Session Settled On Its Receipt"
+description: "An accepted AuthorizeOfflinePass opens the session its answer names, Authorized, debited at the authorization; SessionStarted starts it; the app's copy of the wash's receipt, uploaded before any end record, settles the open session through the gate - refund-only against the authorize-time debit - and scores it, FirstUseOfStation at a station the customer never used; the station's SessionEnded after it changes nothing (authorize-offline-pass.md 6 rules 4-4c; reconciliation.md 3 rule 5, 7, 8.2; csms-server offline group 3)."
+# --- csms-server offline group 3 (2026-10-23), OM21, OM35, OM9 ------------------------------------------------
+# Until group 3 the sessionId of an accepted AuthorizeOfflinePass named nothing the server held: no session row,
+# so no record could settle anything, and the receipt was settled as a Full Offline wash. The server now opens a
+# `sessions` row under it (Authorized), starts it on the SessionStarted's arrival, and settles it once, on the first
+# of its SessionEnded, StopService RESPONSE or signed receipt. This file proves the receipt arm and its score.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The pass, issued to a device key the phone attested (app-contract.md 3, 3.6) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+      devicePrivateKeyPem: devicePrivateKeyPem
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePass: "offlinePass"
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+
+  # --- Partial B: the phone presents the pass over BLE, the station forwards it (authorize-offline-pass.md 3) ---
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.offlinePassId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      presentationProof: deviceProof
+      presentationTranscript: transcriptHash
+
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.offlinePassId}}"
+      offlinePass: "{{captured.offlinePass}}"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.presentationProof}}"
+      transcriptHash: "{{captured.presentationTranscript}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      offlineSessionId: "payload.sessionId"
+      offlineCreditsAuthorized: "payload.creditsAuthorized"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- The session the acceptance opened is the customer's, under the answer's sessionId (rule 4) ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "authorized"
+      data.credits_authorized: "{{captured.offlineCreditsAuthorized}}"
+      data.duration_requested: 300
+
+  # --- The station reports the start; the authorized duration runs from its arrival (rule 4c) ---
+  - action: capture_time
+    capture:
+      washStartedAt: 0
+      washEndedAt: 30
+  - action: send
+    message: SessionStarted
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+
+  - action: delay
+    ms: 2000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "active"
+
+  # --- The customer stops the wash over BLE after 30 seconds; the app uploads the station-signed receipt ---
+  # Uploaded once its end has passed, before the station's own end record: it settles the open session (3 rule 5).
+  - action: delay
+    ms: 31000
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/receipts"
+    sign_receipt: true
+    body:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 30
+      bookedDurationSeconds: 300
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 1
+      txCounter: 1
+      receipt: {}
+    expect_status: 200
+    expect_body:
+      status: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+    capture:
+      settledCharge: "data.credits_charged"
+
+  # --- The receipt is the session's transaction, settled and scored (7) ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId}}].status": "reconciled"
+      "data[offlineTxId={{runOfflineTxId}}].channel": "upload"
+      "data[offlineTxId={{runOfflineTxId}}].settledCredits": "{{captured.settledCharge}}"
+      "data[offlineTxId={{runOfflineTxId}}].fraudScore": 0.1
+      "data[offlineTxId={{runOfflineTxId}}].fraudFactors": ["FirstUseOfStation"]
+      "data[offlineTxId={{runOfflineTxId}}].fraudBand": null
+
+  # --- The station's SessionEnded after the receipt settled the session is ignored ---
+  - action: send
+    message: SessionEnded
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      reason: "Local"
+      actualDurationSeconds: 30
+      creditsCharged: 1
+  - action: delay
+    ms: 2000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: "{{captured.settledCharge}}"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
