@@ -14,7 +14,16 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  * sessions-before-reservations missing; commit #3: offline_passes-before-users missing). Both
  * slipped because the unit tests asserted SQL TEXT, not the FK GRAPH.
  *
- * THE SNAPSHOT, 2026-10-22. csms-server's offline group 1 (branch feat/offline-g1-pass-foundation,
+ * THE SNAPSHOT, 2026-10-23. csms-server's offline group 2 (master 416c7eca, 211 migrations, read with the
+ * query below, `AND chi.relnamespace = 'public'::regnamespace`, from csms_test): 89 foreign keys - 54 NO
+ * ACTION, 25 CASCADE, 7 SET NULL, 3 RESTRICT. Against the snapshot of 2026-10-22 three edges came, and
+ * none changed or went: station_clock_offsets.station_id CASCADE into stations, and into
+ * offline_transactions, which nothing pointed at before, offline_debt_releases.offline_transaction_id
+ * CASCADE and platform_settlement_ledger.offline_transaction_id SET NULL. The SET NULL is the one that
+ * mattered: an offline wash's ledger row names its organization NO ACTION, and the offline_transactions
+ * delete only nulls its key, so both halves delete those rows themselves (TeardownMoneyPath.test.ts).
+ *
+ * THE SNAPSHOT OF 2026-10-22. csms-server's offline group 1 (branch feat/offline-g1-pass-foundation,
  * 209 migrations, read with the query below from its side test database csms_side_g1_test_1):
  * 86 foreign keys - 54 NO ACTION, 23 CASCADE, 6 SET NULL, 3 RESTRICT. Against the snapshot of
  * 2026-10-12 below, two CASCADE edges into users came (offline_attestation_challenges.user_id,
@@ -188,9 +197,10 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'platform_settlement_ledger', column: 'statement_id', onDelete: 'NO ACTION' },
     { child: 'settlement_adjustments',     column: 'statement_id', onDelete: 'NO ACTION' },
   ],
-  // 10 FKs point at stations: 7 NO ACTION; station_services CASCADE; security_events and
-  // station_journal SET NULL, which neither block nor cascade - the delete nulls the key and the
-  // row stays, so buildTeardownSql deletes both itself. (The 4 partition clones of the
+  // 11 FKs point at stations: 7 NO ACTION; station_services and (since csms-server's offline group 2,
+  // 2026-10-23) station_clock_offsets CASCADE; security_events and station_journal SET NULL, which
+  // neither block nor cascade - the delete nulls the key and the row stays, so buildTeardownSql
+  // deletes both itself. (The 4 partition clones of the
   // security_events FK are left out; see the docblock.)
   stations: [
     { child: 'bays',                   column: 'station_id', onDelete: 'NO ACTION' },
@@ -200,6 +210,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'offline_transactions',   column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'security_events',        column: 'station_id', onDelete: 'SET NULL'  },
     { child: 'service_catalogs',       column: 'station_id', onDelete: 'NO ACTION' },
+    { child: 'station_clock_offsets',  column: 'station_id', onDelete: 'CASCADE'   },
     { child: 'station_configurations', column: 'station_id', onDelete: 'NO ACTION' },
     { child: 'station_journal',        column: 'station_id', onDelete: 'SET NULL'  },
     { child: 'station_services',       column: 'station_id', onDelete: 'CASCADE'   },
@@ -289,14 +300,26 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
     { child: 'station_model_programs', column: 'station_model_id', onDelete: 'CASCADE'  },
     { child: 'stations',               column: 'station_model_id', onDelete: 'SET NULL' },
   ],
-  // No FK points at any of these 11, each removed only through a CASCADE: api_keys and
+  // 2 FKs point at offline_transactions, since csms-server's offline group 2 (2026-10-23):
+  // offline_debt_releases CASCADE, removed with it; platform_settlement_ledger SET NULL, which
+  // neither blocks nor cascades - the delete nulls the key and the row stays, naming its
+  // organization NO ACTION, so both halves delete an offline wash's ledger row themselves, before
+  // the offline_transactions delete.
+  offline_transactions: [
+    { child: 'offline_debt_releases',      column: 'offline_transaction_id', onDelete: 'CASCADE'  },
+    { child: 'platform_settlement_ledger', column: 'offline_transaction_id', onDelete: 'SET NULL' },
+  ],
+  // No FK points at any of these 13, each removed only through a CASCADE: api_keys and
   // refresh_tokens (users), session_settlement_retries (sessions), bay_programs (bays),
   // bay_services (bays, station_services), offline_pass_consumptions (offline_passes),
-  // provisioning_bound_bays and provisioning_bound_keys (provisioning_tokens), revocation_epochs
-  // (organizations), role_has_permissions (roles), station_model_programs (station_models).
+  // offline_debt_releases (offline_transactions), provisioning_bound_bays and
+  // provisioning_bound_keys (provisioning_tokens), revocation_epochs (organizations),
+  // role_has_permissions (roles), station_clock_offsets (stations), station_model_programs
+  // (station_models).
   api_keys: [],
   bay_programs: [],
   bay_services: [],
+  offline_debt_releases: [],
   offline_pass_consumptions: [],
   provisioning_bound_bays: [],
   provisioning_bound_keys: [],
@@ -304,8 +327,9 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   revocation_epochs: [],
   role_has_permissions: [],
   session_settlement_retries: [],
+  station_clock_offsets: [],
   station_model_programs: [],
-  // No FK points at any of these 23, so nothing can block their deletes (the FKs they carry
+  // No FK points at any of these 22, so nothing can block their deletes (the FKs they carry
   // as children are in the entries above).
   diagnostics_uploads: [],
   firmware_updates: [],
@@ -314,7 +338,6 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   model_has_permissions: [],
   model_has_roles: [],
   offline_auth_grants: [],
-  offline_transactions: [],
   organization_members: [],
   organization_vat_terms: [],
   payment_ledger: [],
