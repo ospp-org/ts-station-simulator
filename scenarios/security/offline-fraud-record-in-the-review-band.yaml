@@ -188,23 +188,23 @@ steps:
       "data[offlineTxId={{runOfflineTxId_2}}].fraudBand": "Review"
       "data[offlineTxId={{runOfflineTxId_2}}].status": "reconciled"
 
-  # --- The record: server-originated, keyed on the transaction, the one FraudDetected at this station ---
+  # --- The record: server-originated, in the Review band, at this station ---
+  # The station is a pool station other scenarios share in a pooled run, and other settled washes score in the Review
+  # band too (two washes past a pass's total, offline-pending-debt-released-oldest-first), so the station can hold
+  # more than one record by now and this read names no count and no transaction: the newest Review record at the
+  # station is one the server wrote as FraudDetected, Warning, FlaggedForReview. Which transaction it was scored on is
+  # the read above; run alone (csms-server offline group 2, 2026-10-23) the station held exactly this one.
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/admin/security/events?type=FraudDetected&station_id={{stationId}}"
+    url: "{{target_url}}/api/v1/admin/security/events?type=FraudDetected&station_id={{stationId}}&severity=warning"
     auth:
       email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
       password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
     expect_status: 200
     expect_body:
-      meta.total: 1
       data.0.type: "FraudDetected"
       # Stored and served lowercase, as every SecurityEvent's severity is; Warning on the wire.
       data.0.severity: "warning"
       data.0.eventId: { matches: "^sec_[0-9a-f]{16}$" }
       data.0.details.band: "Review"
       data.0.details.action: "FlaggedForReview"
-      data.0.details.score: 0.35
-      data.0.details.factors: ["DurationExceedsAllowance", "RapidConsecutive"]
-      data.0.details.offlineTxId: "{{runOfflineTxId_2}}"
-      data.0.details.offlinePassId: "{{captured.offlinePassId}}"

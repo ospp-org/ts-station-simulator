@@ -16,8 +16,9 @@ description: "Mid-session, the platform super admin raises the platform revocati
 #   403 {"error_code":"CONFIGURATION_KEY_READONLY","ospp_error_code":5108,
 #        "reason":"Configuration key 'RevocationEpoch' is managed by the server ..."}
 #
-# The key is the server's to push, from two places: PushEpochToStationsListener on every
-# revocation (EpochRevoked, from RevokeEpochAction) and IncludeEpochInBootListener on every boot.
+# The key is the server's to deliver, from two places: PushEpochToStationsListener on every
+# revocation (EpochRevoked, from RevokeEpochAction), and - since csms-server's offline group 2 - the
+# configuration of every Accepted boot RESPONSE (IncludeEpochInBootListener pushed it after the boot until then).
 # So the bump is now what an operator really does to revoke: POST
 # /api/v1/admin/offline-passes/epochs/revoke {reason} (dashboard.php:223-224), which increments
 # the tenant's epoch, pushes ChangeConfiguration RevocationEpoch=<new epoch> to every ONLINE
@@ -134,20 +135,15 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  # --- The boot REPLAY of the platform's current epoch, drained here on purpose.
-  # IncludeEpochInBootListener pushes RevocationEpoch=<current> at every boot, unconditionally
-  # (measured: 52 ms after the Boot Response on the re-run above). `wait_for` resolves with the
-  # NEWEST buffered match and drains the rest (MessageRouter.drainBuffered), so if this replay were
-  # still buffered when the revocation's push is awaited below, that wait could resolve on the
-  # replay whenever the push had not landed yet. Taking it here leaves the later wait only the push.
-  - action: wait_for
-    message: ChangeConfiguration
-    messageType: Request
-    timeout_ms: 15000
-
+  # --- The platform's current epoch, carried by the boot RESPONSE (csms-server offline group 2, spec v0.45.0,
+  # 08-configuration.md 8.3): an Accepted boot of a station that declares the Offline / BLE profile carries the five
+  # offline keys in its configuration, RevocationEpoch among them, and no ChangeConfiguration follows the boot. Until
+  # then IncludeEpochInBootListener pushed RevocationEpoch=<current> 52 ms after the Boot Response, and this file
+  # drained that replay here so that the wait for the revocation's push below could not resolve on it; with no
+  # replay, the only ChangeConfiguration this station receives is the push.
   - action: assert
-    field: "payload.keys.0.key"
-    equals: "RevocationEpoch"
+    field: "payload.configuration.RevocationEpoch"
+    exists: true
 
   # --- Bay Available ---
   - action: send
