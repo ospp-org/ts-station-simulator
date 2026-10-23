@@ -387,6 +387,15 @@ export class SendStep implements Step {
       stripSignedOnlyFields(payload, 'transaction-event');
     }
 
+    // `envelope_overrides:` - members set on the published payload AFTER its receipt is signed, templates substituted
+    // as the payload's. The station signs its receipt from the members it puts beside it, so without this a scenario
+    // cannot state an envelope that differs from the signed body - the case reconciliation.md 6.1 checks #1-#3
+    // refuse (the close of the offline server arc, 2026-10-23).
+    const overrides = definition.envelope_overrides;
+    if (overrides !== undefined && overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides)) {
+      Object.assign(payload, substituteTemplates(overrides as Record<string, unknown>, context) as Record<string, unknown>);
+    }
+
     const { id: correlationId, source } = resolveSendCorrelation(
       definition,
       messageType,

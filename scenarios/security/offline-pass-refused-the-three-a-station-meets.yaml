@@ -187,7 +187,7 @@ steps:
   # the signature verifies (check 1 passes) and the refusal is the device binding at check 4: since
   # spec v0.45.0 the proof of possession of the pass's device key (authorize-offline-pass.md 3), made
   # here by another phone's key - a second attested key the pass does not name. The key is the ONLY
-  # thing that differs from the accepted presentation below, but for the counter that refusal spends.
+  # thing that differs from the accepted presentation below.
   - action: attest_device
     challenge: "{{captured.attestationChallenge}}"
     capture:
@@ -232,14 +232,15 @@ steps:
     field: "payload.reason"
     equals: "OFFLINE_PASS_INVALID: The device proof does not verify under the pass device key"
 
-  # --- THE CONTROL, and the first use. The proof is the bound device's, and the counter the next one: arm 1's
-  # refusal spent counter 1 - a presentation whose pass passed check #1 spends its counter whichever later check refuses
-  # it, so presenting 1 again fails check #10 (authorize-offline-pass.md 5, "A refused presentation spends its counter
-  # value"; csms-server offline group 3, 2026-10-23 - the corpus of that day measured 2005 OFFLINE_COUNTER_REPLAY here).
+  # --- THE CONTROL, and the first use. One thing changes: the proof is the bound device's. Counter 1 again, and
+  # accepted: arm 1's proof failed check #4, and a presentation spends its counter only once its device proof has
+  # verified (authorize-offline-pass.md 5; D6, Gabi, 2026-10-23 - freeze item 30), so a station that saw the pass could
+  # not spend its counter by forwarding a presentation it cannot prove. Group 3's server spent it after check #1, and
+  # the corpus of 2026-10-23 measured this control refused 2005 OFFLINE_COUNTER_REPLAY.
   - action: device_proof
     device_private_key: "{{captured.devicePrivateKeyPem}}"
     offline_pass_id: "{{captured.passAId}}"
-    counter: 2
+    counter: 1
     bay_id: "{{bayId_1}}"
     service_id: "{{serviceId_1}}"
     requested_duration_seconds: 300
@@ -251,7 +252,7 @@ steps:
     payload:
       offlinePassId: "{{captured.passAId}}"
       offlinePass: "{{captured.passA}}"
-      counter: 2
+      counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       requestedDurationSeconds: 300
@@ -306,7 +307,7 @@ steps:
   - action: delay
     ms: 1000
 
-  # --- ARM 2 — THE RETRY CAME TOO SOON. Byte-for-byte the accepted presentation above, counter 2. A
+  # --- ARM 2 — THE RETRY CAME TOO SOON. Byte-for-byte the accepted presentation above, counter 1. A
   # station that did not see its answer and re-sends is refused for TIMING, not for the
   # counter — check 9 is ahead of check 10 and the interval is 60s.
   - action: send
@@ -314,7 +315,7 @@ steps:
     payload:
       offlinePassId: "{{captured.passAId}}"
       offlinePass: "{{captured.passA}}"
-      counter: 2
+      counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
       requestedDurationSeconds: 300

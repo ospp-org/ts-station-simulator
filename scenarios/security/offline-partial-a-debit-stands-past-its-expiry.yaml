@@ -1,16 +1,23 @@
-name: "Partial-A Authorization Refunded At Its Expiry, Its Late Receipt Debited Once"
-description: "A Partial-A authorization no receipt reconciled by its expiresAt is refunded in full then, under a key of its own; the receipt of a wash started before expiresAt that arrives afterwards settles it once by 8.1 - debited with no prior debit, the authorization reconciled - and its copy is a Duplicate (reconciliation.md 6.7, 8.1, 8.2 rule 3; OM38, OM41; csms-server offline group 3)."
-# --- csms-server offline group 3 (2026-10-23), OM41 and OM38 ---------------------------------------------------
-# Until group 3 an unused authorization was refunded `station_offline_window_hours` (24) after its expiresAt, and a
-# receipt that arrived after the refund was refused as needing manual settlement; check #9 read the signed END. The
-# refund now comes at expiresAt, check #9 reads the signed START, and the late receipt of a wash started in time is
-# debited once. This file waits out the expiry - five minutes and one sweep - so it runs for about seven minutes.
+name: "Partial-A Debit Stands Past Its Expiry, Its Late Receipt Refunds Only The Shortfall"
+description: "A Partial-A authorization's issue-time debit stands past its expiresAt - nothing is refunded at the expiry; the receipt of a wash started before expiresAt that arrives afterwards settles it by the refund-only true-up - the 30 seconds of 60 it did not deliver given back, nothing debited - and its copy is a Duplicate (reconciliation.md 6.7, 8.2; D5, Gabi, 2026-10-23; freeze item 18)."
+# --- D5 (Gabi, 2026-10-23; freeze item 18): the station is the only source, as online --------------------------------
+# Until 2026-10-23 an authorization no receipt had reconciled was refunded in full AT its expiresAt
+# (`offline:expire-stale-grants`), and a receipt arriving after that refund was debited once more by 8.1 (this file was
+# offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml, which asserted both). Now the debit taken at issue
+# stands until the receipt arrives, whenever it does, and the receipt can only give back what the wash did not deliver.
+# A session no receipt reaches by the deadline the sweep gives a session whose station is away - expiresAt + its
+# duration + 60 s + the station's ConnectionLostGracePeriod (300 s), here 720 s after issue - is closed charged in full
+# with the anomaly mark (`offline:close-partial-a-sessions`); this file's receipt comes long before that.
 #
 # THIS FILE RUNS FOR ~7 MINUTES and REQUIRES A RUNNING SCHEDULER: the authorization lives 300 s
-# (ServerSignedAuthSigner::TTL_SECONDS) and is refunded by `offline:expire-stale-grants`, every minute - on UAT the
-# scheduler runs it; locally `docker exec -d csms-app php artisan schedule:work`. Without it the refund read fails and
-# says nothing about the server. Its budget covers its 400 s of delay and the requests around it; at the default 90 s the
-# corpus abandoned it on 2026-10-23 (ScenarioRunner.scenarioTimeout.test.ts holds the argument).
+# (ServerSignedAuthSigner::TTL_SECONDS) and the file waits past it and a minute of `offline:close-partial-a-sessions`,
+# which the scheduler runs every minute, before the receipt arrives - so a refund at the expiry, were there one, would
+# have been made. On UAT the scheduler runs it; locally `docker exec -d csms-app php artisan schedule:work` - without it
+# the absence asserted here says nothing about the server. Its budget covers its 400 s of delay and the requests
+# around it (ScenarioRunner.scenarioTimeout.test.ts holds the argument).
+#
+# The pool's services are priced 100 credits a minute (uatPrivileged.ts DEFAULT_SEED_SERVICES): the 60 seconds
+# authorized cost 100, the 30 delivered 50.
 scenario_timeout_ms: 480000
 station:
   stationId: "{{stationId}}"
@@ -142,26 +149,34 @@ steps:
       grantExpiresAt: "data.expiresAt"
       grantCredits: "data.creditsAuthorized"
 
-  # The wash starts 30 seconds before the authorization expires and runs its 60 seconds past it (ble-session.md 1
-  # rule 2a: a start within the validity; how long the wash runs after it does not matter).
+  # The issue-time debit, taken as the authorization was issued.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_grant"
+    expect_status: 200
+    expect_body:
+      "data[reference_id={{captured.authId}}].type": "debit"
+      "data[reference_id={{captured.authId}}].amount": "{{captured.grantCredits}}"
+
+  # The wash starts 30 seconds before the authorization expires and the customer stops it from the app 30 seconds in, at
+  # expiresAt (ble-session.md 1 rule 2a: a start within the validity).
   - action: capture_time
     from: "{{captured.grantExpiresAt}}"
     capture:
       washStartedAt: -30
-      washEndedAt: 30
+      washEndedAt: 0
 
-  # --- No receipt by expiresAt: refunded then (one sweep a minute), the whole issue-time debit ---
+  # --- No receipt by expiresAt, and a sweep minute after it: nothing refunded, the debit stands ---
   - action: delay
     ms: 400000
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_expiry"
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_settlement"
     expect_status: 200
-    expect_body:
-      "data[reference_id={{captured.authId}}].type": "credit"
-      "data[reference_id={{captured.authId}}].amount": "{{captured.grantCredits}}"
+    expect_body_absent:
+      - "data[reference_id={{captured.authId}}]"
 
-  # --- The station reconnects and reports the wash: settled once by 8.1, with no prior debit ---
+  # --- The station reconnects and reports the wash: the true-up gives back the 30 seconds it did not deliver ---
   - action: send
     message: TransactionEvent
     payload:
@@ -174,11 +189,11 @@ steps:
       serviceId: "{{serviceId_1}}"
       startedAt: "{{captured.washStartedAt}}"
       endedAt: "{{captured.washEndedAt}}"
-      durationSeconds: 60
+      durationSeconds: 30
       bookedDurationSeconds: 60
-      endReason: "TimerExpired"
+      endReason: "Local"
       clockState: "Synchronized"
-      creditsCharged: 1
+      creditsCharged: 50
       receipt:
         data: "placeholder-overwritten-by-SendStep-sign"
         signature: "placeholder-overwritten-by-SendStep-sign"
@@ -196,12 +211,21 @@ steps:
 
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_transaction"
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_settlement"
     expect_status: 200
     expect_body:
-      "data[reference_id={{runOfflineTxId}}].type": "debit"
+      "data[reference_id={{captured.authId}}].type": "credit"
+      "data[reference_id={{captured.authId}}].amount": 50
 
-  # --- Its copy again: a Duplicate, nothing debited twice ---
+  # Never a debit of its own: the issue-time debit was the charge (8.2 rule 2).
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_transaction"
+    expect_status: 200
+    expect_body_absent:
+      - "data[reference_id={{runOfflineTxId}}]"
+
+  # --- Its copy again: a Duplicate, nothing given back twice ---
   - action: send
     message: TransactionEvent
     payload:
@@ -214,11 +238,11 @@ steps:
       serviceId: "{{serviceId_1}}"
       startedAt: "{{captured.washStartedAt}}"
       endedAt: "{{captured.washEndedAt}}"
-      durationSeconds: 60
+      durationSeconds: 30
       bookedDurationSeconds: 60
-      endReason: "TimerExpired"
+      endReason: "Local"
       clockState: "Synchronized"
-      creditsCharged: 1
+      creditsCharged: 50
       receipt:
         data: "placeholder-overwritten-by-SendStep-sign"
         signature: "placeholder-overwritten-by-SendStep-sign"

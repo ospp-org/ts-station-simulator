@@ -335,8 +335,8 @@ describe('the legitimate overrides in the corpus', () => {
       // --- the two multi-unit card drives, added 2026-09-22. Argument below. ---
       'multiunit-batch-drive.yaml',
       'multiunit-jam-drive.yaml',
-      // --- added 2026-10-23: the Partial-A authorization waits out its expiry. Argument below. ---
-      'offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml',
+      // --- added 2026-10-23: the Partial-A authorization waits out its expiry (renamed the same day, D5). Argument below. ---
+      'offline-partial-a-debit-stands-past-its-expiry.yaml',
       // --- added 2026-09-11. Argument below. ---
       'reserve-bay-unanswered-compensates-with-a-cancel.yaml',
       'reserve-expire.yaml',
@@ -592,11 +592,13 @@ describe('the legitimate overrides in the corpus', () => {
       runtimeNote: /~7 MINUTES/,
     },
     {
-      // Added 2026-10-23 (csms-server offline group 3), after the corpus abandoned it at the default 90s on UAT: an
-      // authorization no receipt reconciled is refunded AT its expiresAt, by a sweep - the file must out-wait both.
-      rel: 'scenarios/security/offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml',
-      // ServerSignedAuthSigner::TTL_SECONDS = 300 (the claims schema's 5-minute cap), swept by
-      // offline:expire-stale-grants everyMinute() -> 360s
+      // Added 2026-10-23 (csms-server offline group 3), after the corpus abandoned it at the default 90s on UAT. Since
+      // D5 (the same day) the expiry refunds nothing, and the file proves it: it must out-wait the expiresAt and a
+      // minute of the sweep that would have refunded it - and stays under the close of a session no receipt reached
+      // (expiresAt + 60 s of wash + 60 s + ConnectionLostGracePeriod 300 s = 720 s from issue).
+      rel: 'scenarios/security/offline-partial-a-debit-stands-past-its-expiry.yaml',
+      // ServerSignedAuthSigner::TTL_SECONDS = 300 (the claims schema's 5-minute cap), the sweep
+      // offline:close-partial-a-sessions everyMinute() -> 360s
       mustOutwaitMs: 6 * 60_000,
       runtimeNote: /~7 MINUTES/,
     },

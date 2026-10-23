@@ -1,0 +1,463 @@
+name: "Partial-A Receipt Meets Every Check Of The Gate, And Its Replay Is Rejected 2005"
+description: "Each check reconciliation.md 6.1 gives the auth form refuses its own forgery - #3 an envelope userId that is not the signed one, #4 an authId the registry does not hold and a sessionId that is not its authorization's, #5 a userId its authorization was not issued to, #6 a deviceId that is not its authorization's - each Rejected with its registry code and nothing settled; the genuine receipt then settles; the same authorization under another offlineTxId is Rejected 2005 (6.7), not a Duplicate; and its own copy is a Duplicate (the close of the offline server arc, 2026-10-23)."
+# --- The close of the offline server arc (csms-server, 2026-10-23), Part A ------------------------------------------
+# Until then the auth-form gate checked the envelope's creditsCharged - which settlement never reads - and not #3, #5
+# or #6, and answered a settled authorization's receipt under another offlineTxId with Duplicate, which tells the
+# station to delete it. Every receipt here is signed with the station's own receipt key, so the signature (5) holds and
+# each refusal is the check it names. `envelope_overrides` sets the envelope's userId after the receipt is signed, the
+# one way a station's TransactionEvent can carry an envelope that differs from its signed body.
+#
+# The pool's services are priced 100 credits a minute (uatPrivileged.ts DEFAULT_SEED_SERVICES): the 60 seconds
+# authorized cost 100, the 30 delivered 50, so the settlement gives 50 back.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A customer of its own, who reads its own wallet (the pool's identities are tenant operators, who hold no
+  #     self.wallet.view), funded and with offline use on; removed by the run's teardown ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "Partial-A Gate Customer {{stationId}}"
+      email: "partial-a-gate-{{runOfflineTxId}}@onestoppay.dev"
+      password: "PartialA-Gate-1023!"
+      password_confirmation: "PartialA-Gate-1023!"
+    expect_status: 201
+    capture:
+      user_email: "user.email"
+      user_id: "user.id"
+    creates:
+      user: "user.email"
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.user_email}}"
+      password: "PartialA-Gate-1023!"
+    expect_status: 200
+    set_auth_token: "data.access_token"
+  - action: fund_wallet
+    user_id: "{{captured.user_id}}"
+    credits: 1000
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/offline/preference"
+    body:
+      enabled: true
+    expect_status: 200
+
+  # The TransactionEvent's `userId` is the customer's subject, which a pass publishes (offline-auth-transaction-
+  # reconcile.yaml says why); the pass is swept with the customer.
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      actingUserSub: "offlinePass.sub"
+
+  # --- The phone is online, the station not: the app obtains the authorization, debited at issue ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/offline-auth"
+    body:
+      stationId: "{{stationId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 60
+      appNonce: "{{runAppNonce}}"
+      deviceId: "{{runDeviceId}}"
+    expect_status: 201
+    capture:
+      authId: "data.authId"
+      grantSessionId: "data.sessionId"
+      grantExpiresAt: "data.expiresAt"
+      grantCredits: "data.creditsAuthorized"
+
+  # --- #3: the envelope names another user than the signed body (2017, the field named) ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_1}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+    envelope_overrides:
+      userId: "sub_envelopeforged"
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_RECEIPT_MISMATCH"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "userId"
+
+  # --- #4: an authId the registry does not hold (2002), before any key is chosen ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_2}}"
+      authId: "auth_00000000deadbeef"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_PASS_INVALID"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "No issued authorization"
+
+  # --- #4: the authorization's, but under a sessionId that is not its (2002) ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_3}}"
+      authId: "{{captured.authId}}"
+      sessionId: "sess_00000000deadbeef"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_PASS_INVALID"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "sessionId"
+
+  # --- #5: signed and enveloped alike for a user the authorization was not issued to (2016) ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_4}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "sub_notitsowner"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_USER_MISMATCH"
+
+  # --- #6: a deviceId that is not the authorization's (2017, the field named) ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_5}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "dev_00000000deadbeef"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_RECEIPT_MISMATCH"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "deviceId"
+
+  # Five refusals, and nothing settled: no true-up for the authorization.
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_settlement"
+    expect_status: 200
+    expect_body_absent:
+      - "data[reference_id={{captured.authId}}]"
+
+  # --- The genuine receipt settles: the 30 seconds of 60 not delivered given back ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=offline_auth_settlement"
+    expect_status: 200
+    expect_body:
+      "data[reference_id={{captured.authId}}].type": "credit"
+      "data[reference_id={{captured.authId}}].amount": 50
+
+  # --- The settled authorization under another offlineTxId: the replay 6.7 rejects 2005 - not a Duplicate, which
+  #     would tell the station to delete it ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_6}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Rejected"
+
+  - action: assert
+    field: "payload.reason"
+    contains: "OFFLINE_COUNTER_REPLAY"
+
+  # --- Its own copy: a Duplicate ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId}}"
+      authId: "{{captured.authId}}"
+      sessionId: "{{captured.grantSessionId}}"
+      userId: "{{captured.actingUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "2026-01-01T10:00:00.000Z"
+      endedAt: "2026-01-01T10:00:30.000Z"
+      durationSeconds: 30
+      bookedDurationSeconds: 60
+      endReason: "Local"
+      clockState: "Synchronized"
+      creditsCharged: 50
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 15000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Duplicate"

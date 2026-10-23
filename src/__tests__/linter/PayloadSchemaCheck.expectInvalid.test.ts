@@ -5,8 +5,9 @@ import type { ParsedScenario } from '../../linter/types.js';
 const check = new PayloadSchemaCheck();
 
 // status-notification (Event) requires `bayNumber` and `services` (>=1 item).
-// This payload omits both -- genuinely schema-invalid, mirroring
-// scenarios/chaos/malformed-messages.yaml's deliberate-invalid sends.
+// This payload omits both -- genuinely schema-invalid, the shape chaos/malformed-messages.yaml sent
+// until it left the corpus on 2026-10-23: the server dead-letters a schema-invalid EVENT, which no
+// scenario can observe (noCorpusFileLeavesADeadLetter.test.ts). The linter's marker is tested here.
 function invalidStatusStep(expectInvalid?: boolean): Record<string, unknown> {
   const step: Record<string, unknown> = {
     action: 'send',
