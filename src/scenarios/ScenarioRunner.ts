@@ -31,6 +31,7 @@ import { ApiCallStep } from './steps/ApiCallStep.js';
 import { DelayStep } from './steps/DelayStep.js';
 import { FundWalletStep } from './steps/FundWalletStep.js';
 import { AttestDeviceStep } from './steps/AttestDeviceStep.js';
+import { DeviceProofStep } from './steps/DeviceProofStep.js';
 import { CaptureTimeStep } from './steps/CaptureTimeStep.js';
 import { MULTIUNIT_SERVICE_ID } from './bootstrap/uatPrivileged.js';
 import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
@@ -575,6 +576,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['connect_mqtt', new ConnectMqttStep()],
   ['fund_wallet', new FundWalletStep()],
   ['attest_device', new AttestDeviceStep()],
+  ['device_proof', new DeviceProofStep()],
   ['capture_time', new CaptureTimeStep()],
 ]);
 

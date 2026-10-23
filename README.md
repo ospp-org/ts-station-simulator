@@ -25,7 +25,7 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-162 YAML-driven test scenarios across 12 categories:
+166 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
@@ -38,7 +38,7 @@ npx simulator run --all --target sandbox
 | `probes` | 1 | Refusals leave a durable trace |
 | `provisioning` | 2 | Provision refusals — the request and token layers, then the key and topology rungs |
 | `reservations` | 8 | Reserve+Start, Cancel, Expire, Station refusal, Server-side rejections (busy, maintenance, already reserved) |
-| `security` | 29 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, MAC verification |
+| `security` | 33 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, MAC verification |
 | `sessions` | 30 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
 | `tls-floor` | 10 | TLS version floor, mTLS, Expired and revoked certificates (broker CRL and local CRL), each with a positive control |
 
@@ -284,7 +284,7 @@ npm run certs:sync       # Download sandbox certificates
 
 Built against `@ospp/protocol` (see `package.json`; the spec revision it implements is that
 SDK's own `.spec-ref`, which is the only artefact that answers "which spec?"). Emits
-**wire version 0.3.0**. All 27 MQTT actions covered.
+**wire version 0.3.0**. All 28 MQTT actions covered.
 
 > **That wire version said `0.2.1` until 2026-09-06, and it is the number that costs a day.**
 > `0.2.1` is exactly what this server refuses with `1007 PROTOCOL_VERSION_MISMATCH`, and a

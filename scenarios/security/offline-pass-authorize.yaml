@@ -1,16 +1,5 @@
 name: "Offline Pass Authorization Accepted"
 description: "Boot a station, obtain a genuine server-signed offline pass via POST /api/v1/offline/passes, then present it via AuthorizeOfflinePass and verify the server accepts it."
-skip: true
-skip_reason: >-
-  BLOCKED ON THE SDK RELEASE (2026-10-22, csms-server offline group 1). Since group 1 the server
-  issues the frozen pass of offline-pass.md - devicePublicKey and keyId in, the station limits
-  out - and the released SDK pair (ospp/protocol and @ospp/protocol 0.41.0, schemas of spec
-  v0.44.0) still validates AuthorizeOfflinePass against the pass it replaces, additionalProperties
-  false at both levels: no pass is valid under both. This file presents an issued pass in that
-  message, so this simulator's outbound check and the server's inbound one refuse it before any
-  handler runs. It runs again when the release lands (csms-server TODO, offline group 2, step 1);
-  the Partial-B proofs it leads to - an exact authorization, a refusal above the per-wash limit -
-  are group 3's.
 # --- C-015 (issue-then-present) -------------------------------------------
 # OSPP offline passes are signed by the SERVER (the issuer) and verified
 # against the server's own ECDSA P-256 key — the station never holds a pass
@@ -27,49 +16,13 @@ skip_reason: >-
 # matches the original signature.
 # --------------------------------------------------------------------------
 #
-# STATUS 2026-08-10: THIS FILE CANNOT PASS. THE SERVER ISSUES A PASS THE WIRE
-# SCHEMA FORBIDS. No assertion was added, because a shape that has never been
-# observed working cannot be asserted against.
-#
-# Measured, with the reason read off the wire rather than inferred:
-#
-#   AuthorizeOfflinePass -> Response {status: "Rejected", reason:
-#     "/offlinePass: Additional object properties are not allowed: organization_id"}
-#
-# The two halves, each verified:
-#   - The server PUTS it there. OfflinePassDto::toArray():38 and :65 emit
-#     `'organization_id' => $this->organizationId`, and the comment at :54 cites
-#     "Per OSPP v0.4.2 offline-pass.md §2, `organization_id` is a REQUIRED..."
-#   - The schema FORBIDS it. common/offline-pass.schema.json (@ospp/protocol
-#     0.13.0) is `additionalProperties: false` over exactly passId, sub, deviceId,
-#     issuedAt, expiresAt, policyVersion, revocationEpoch, offlineAllowance,
-#     constraints, signatureAlgorithm, signature. `organization_id` is not among
-#     them.
-#
-# So this is a VERSION CONFLICT, not a scenario bug and not a forgery: the server
-# implements the v0.4.2 pass shape while the deployed schema is the v0.11.x one.
-# The consequence is not confined to this file — a real mobile app doing exactly
-# what this scenario does (fetch a pass online, present it verbatim) is rejected
-# too. Offline pass authorization is broken end to end on the money path, and it
-# fails at schema validation BEFORE any wallet, signature or replay check runs.
-#
-# THIS CORRECTS A STANDING ATTRIBUTION. The offline-pass failures have been
-# recorded as the wallet gap (pooled wallets seed at balance 0 and
-# AuthorizeOfflineSessionAction pre-debits with allowNegative:false). That is a
-# real gap, but it is NOT what fails here — the request never gets far enough to
-# touch a wallet. Do not "fix" this by funding the fixture or by flipping
-# allowNegative; neither would move this file.
-#
-# WHAT TO ASSERT ONCE THE CONFLICT IS RESOLVED — the surface exists and is good:
-# GET /api/v1/offline/passes/{passId}/status returns OfflinePassStatusResource,
-# whose usage block is SERVER-DERIVED, not echoed:
-#     data.attributes.usage.usedCount        1   (after this one presentation)
-#     data.attributes.usage.remainingUses    9   (maxUses 10 minus usedCount)
-#     data.attributes.usage.remainingCredits     (maxTotalCredits minus spent)
-# That is the assertion this file wants, and the only read-back surface in the
-# whole offline block: routes/api/v1/offline.php exposes GET /passes, POST
-# /passes, POST /reconcile and GET /passes/{passId}/status — and nothing that
-# reads an offline_transactions row back at all.
+# STATUS 2026-10-22 (csms-server offline group 2, the release of spec v0.45.0): the forward is the
+# frozen request of authorize-offline-pass.md 3 - no deviceId; the phone's deviceProof, signed by the
+# pass's device key over this presentation at this station, with the handshake's transcriptHash and the
+# requestedDurationSeconds - and the server's check #4 verifies it under the pass's devicePublicKey. The
+# 2026-08-10 conflict this block recorded (a pass the wire schema forbade) ended with group 1's frozen
+# pass and the SDK pair of this release; the file runs again. The exact authorization of the request's
+# bay, service and duration, and the session SessionStarted opens, are group 3's (OM30, OM35).
 # --------------------------------------------------------------------------
 station:
   stationId: "{{stationId}}"
@@ -165,6 +118,7 @@ steps:
     capture:
       devicePublicKey: devicePublicKey
       deviceKeyAttestation: deviceKeyAttestation
+      devicePrivateKeyPem: devicePrivateKeyPem
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
@@ -176,22 +130,38 @@ steps:
     capture:
       offlinePass: "offlinePass"
       offlinePassId: "offlinePass.passId"
-      passDeviceId: "offlinePass.deviceId"
+
+  # --- The phone proves it holds the pass's device key, over this presentation at this station ---
+  # authorize-offline-pass.md 3 and check #4: the station forwards no deviceId, which any station that
+  # held the pass could copy, but the phone's deviceProof over the proof input of 06-security.md 6.5.4 -
+  # the handshake's transcriptHash, this station, the pass, the counter, the bay, the service and the
+  # requested duration - signed by the key the pass names.
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.offlinePassId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      presentationProof: deviceProof
+      presentationTranscript: transcriptHash
 
   # --- Present the pass via AuthorizeOfflinePass ---
-  # offlinePass is injected as a TYPED object (not String()-coerced), so the
-  # server re-canonicalizes the exact bytes it signed and the ECDSA check passes.
-  # deviceId mirrors the issued pass (check 4 device binding); counter=1 is the
-  # first use of a freshly-issued pass (check 10 anti-replay).
+  # offlinePass and deviceProof are injected as TYPED objects (not String()-coerced), so the server
+  # re-canonicalizes the exact bytes it signed and the ECDSA check passes; counter=1 is the first use
+  # of a freshly-issued pass (check 10 anti-replay).
   - action: send
     message: AuthorizeOfflinePass
     payload:
       offlinePassId: "{{captured.offlinePassId}}"
       offlinePass: "{{captured.offlinePass}}"
-      deviceId: "{{captured.passDeviceId}}"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.presentationProof}}"
+      transcriptHash: "{{captured.presentationTranscript}}"
 
   # --- Wait for response ---
   - action: wait_for
@@ -204,6 +174,22 @@ steps:
   - action: assert
     field: "payload.status"
     equals: "Accepted"
+
+  # --- The station reports the start (authorize-offline-pass.md 6 rule 4c, SessionStarted [MSG-043]) ---
+  # A Partial-B start is reported by a session-bound message, within 30 seconds of the acceptance. The
+  # server is its receiver and takes it before any station sends it; what it does with it - the session it
+  # opens, the 40-second lapse of an authorization never started - is group 3's (OM35), so nothing here
+  # asserts a reaction.
+  - action: capture_time
+    capture:
+      offlineSessionStartedAt: 0
+  - action: send
+    message: SessionStarted
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      startedAt: "{{captured.offlineSessionStartedAt}}"
 
   # --- The station ends the session the pass opened (the session-end rule, 2026-10-13: a
   #     session is ended only by the station's end record), as

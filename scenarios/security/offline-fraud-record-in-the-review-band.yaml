@@ -1,0 +1,209 @@
+# A FRAUD RECORD IN THE REVIEW BAND (spec v0.45.0; csms-server offline group 2, OM9). Once the server has settled
+# an offline transaction it scores it on the factors of 06-security.md 7.4, and for a score in the Review band
+# (0.30-0.59) it records a server-originated FraudDetected SecurityEvent - severity Warning, action FlaggedForReview -
+# carrying the score, the factors that fired, the band and the transaction's identifiers; the wash stays settled and
+# is answered Accepted: scoring never rejects (reconciliation.md 7).
+#
+# Two washes of one pass. The first is the user's first at the station (FirstUseOfStation, 0.10): Normal, no record.
+# The second starts 30 seconds after the first, under the pass's minIntervalSec of 60 (RapidConsecutive, 0.15), on
+# bay 2, and signs 70 seconds delivered against 60 booked (DurationExceedsAllowance, 0.20): 0.35, the Review band.
+# The scenario's identity is its own (single-use), so no earlier wash of the user moves either score.
+name: "Offline Fraud Record In The Review Band"
+description: "A settled offline wash scoring 0.35 - RapidConsecutive and DurationExceedsAllowance - is answered Accepted and recorded as a server-originated FraudDetected SecurityEvent, Warning, FlaggedForReview; the pass's transactions show its score, factors and band."
+wallet_balance: 500
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 3
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- A pass, while the balance is positive (app-contract.md 3.5) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+      passIssuedAt: "offlinePass.issuedAt"
+
+  - action: capture_time
+    from: "{{captured.passIssuedAt}}"
+    capture:
+      firstStartedAt: 0
+      firstEndedAt: 60
+      secondStartedAt: 30
+      secondEndedAt: 100
+
+  # --- Wash 1: the user's first at the station - 0.10, Normal, no record ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_1}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.firstStartedAt}}"
+      endedAt: "{{captured.firstEndedAt}}"
+      durationSeconds: 60
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 100
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 1
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- Wash 2: 30 s after the first, on bay 2, 70 s delivered against 60 booked - 0.35, Review ---
+  - action: send
+    message: TransactionEvent
+    payload:
+      offlineTxId: "{{runOfflineTxId_2}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 2
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_2}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.secondStartedAt}}"
+      endedAt: "{{captured.secondEndedAt}}"
+      durationSeconds: 70
+      bookedDurationSeconds: 60
+      endReason: "TimerExpired"
+      clockState: "Synchronized"
+      creditsCharged: 100
+      receipt:
+        data: "placeholder-overwritten-by-SendStep-sign"
+        signature: "placeholder-overwritten-by-SendStep-sign"
+        signatureAlgorithm: "ECDSA-P256-SHA256"
+      txCounter: 2
+  - action: wait_for
+    message: TransactionEvent
+    messageType: Response
+    timeout_ms: 10000
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId_1}}].fraudBand": null
+      "data[offlineTxId={{runOfflineTxId_2}}].fraudScore": 0.35
+      "data[offlineTxId={{runOfflineTxId_2}}].fraudFactors": ["DurationExceedsAllowance", "RapidConsecutive"]
+      "data[offlineTxId={{runOfflineTxId_2}}].fraudBand": "Review"
+      "data[offlineTxId={{runOfflineTxId_2}}].status": "reconciled"
+
+  # --- The record: server-originated, keyed on the transaction, the one FraudDetected at this station ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/security/events?type=FraudDetected&station_id={{stationId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      meta.total: 1
+      data.0.type: "FraudDetected"
+      data.0.severity: "Warning"
+      data.0.eventId: { matches: "^sec_[0-9a-f]{16}$" }
+      data.0.details.band: "Review"
+      data.0.details.action: "FlaggedForReview"
+      data.0.details.score: 0.35
+      data.0.details.factors: ["DurationExceedsAllowance", "RapidConsecutive"]
+      data.0.details.offlineTxId: "{{runOfflineTxId_2}}"
+      data.0.details.offlinePassId: "{{captured.offlinePassId}}"

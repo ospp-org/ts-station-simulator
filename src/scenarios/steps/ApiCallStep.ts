@@ -1,3 +1,4 @@
+import { signTransactionEventReceipt, stripSignedOnlyFields } from './SendStep.js';
 import { randomUUID } from 'node:crypto';
 import { monotonicNowMs } from '../../station/monotonicClock.js';
 import type { Step, StepDefinition } from './Step.js';
@@ -984,7 +985,7 @@ export class ApiCallStep implements Step {
   private async executeOnce(
     definition: StepDefinition,
     context: ScenarioContext,
-    _station: Station,
+    station: Station,
   ): Promise<void> {
     const method = (definition.method as string) ?? 'GET';
     const rawUrl = definition.url as string;
@@ -996,9 +997,19 @@ export class ApiCallStep implements Step {
     const headers = definition.headers
       ? (substituteTemplates(definition.headers, context) as Record<string, string>)
       : undefined;
-    const body = definition.body
-      ? JSON.stringify(substituteTemplates(definition.body, context))
-      : undefined;
+    const bodyValue = definition.body ? substituteTemplates(definition.body, context) : undefined;
+    // `sign_receipt: true` - the body is the FFF6 Receipt an app uploads (app-contract.md 4): its
+    // `receipt` is signed with the station's receipt-signing key, as a TransactionEvent's is, and the
+    // four signed-only fields of spec v0.45.0 go into the signed body and out of the envelope, which
+    // keeps `deviceId`.
+    if (definition.sign_receipt === true) {
+      if (!bodyValue || typeof bodyValue !== 'object' || Array.isArray(bodyValue) || typeof (bodyValue as Record<string, unknown>).receipt !== 'object') {
+        throw new Error('api_call: sign_receipt needs a body that is the Receipt to upload, with a "receipt" member to sign');
+      }
+      await signTransactionEventReceipt(bodyValue as Record<string, unknown>, station, context);
+      stripSignedOnlyFields(bodyValue as Record<string, unknown>, 'receipt');
+    }
+    const body = bodyValue === undefined ? undefined : JSON.stringify(bodyValue);
 
     // Auto-authenticate if credentials are available - as the step's own identity when it names one.
     const authContext = stepAuthContext(definition, context);

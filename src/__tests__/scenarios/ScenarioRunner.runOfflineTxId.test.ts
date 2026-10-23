@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { generateVariables, type ScenarioDefinition, type TargetConfig } from '../../scenarios/ScenarioRunner.js';
 import { generateOfflineTxId, generateSecurityEventId } from '../../station/StationConfig.js';
 
@@ -27,15 +28,31 @@ function scenario(): ScenarioDefinition {
   };
 }
 
-// common/offline-tx-id.schema.json
-const OFFLINE_TX_ID = /^otx_[a-f0-9]{8,}$/;
+// common/offline-tx-id.schema.json at spec v0.45.0: `otx_` and at least 32 hexadecimal digits, 128
+// random bits (reconciliation.md §3 rule 1), 36 to 64 characters. Until @ospp/protocol 0.42.0 the
+// pattern allowed 8 digits and this generator drew 64 bits, which the server's inbound schema refuses.
+const OFFLINE_TX_ID = /^otx_[a-f0-9]{32,}$/;
+
+/** The schema the installed SDK ships, read rather than restated. */
+function offlineTxIdSchema(): { pattern: string; minLength: number; maxLength: number } {
+  const sdkRoot = fileURLToPath(new URL('../../../node_modules/@ospp/protocol', import.meta.url));
+  return JSON.parse(fs.readFileSync(path.join(sdkRoot, 'src/schemas/common/offline-tx-id.schema.json'), 'utf-8'));
+}
 
 describe('generateOfflineTxId — schema shape and uniqueness', () => {
-  it('matches the wire schema pattern and minLength', () => {
+  it('matches the wire schema pattern and its length bounds', () => {
     const id = generateOfflineTxId();
     expect(id).toMatch(OFFLINE_TX_ID);
-    expect(id.length).toBeGreaterThanOrEqual(12);
+    expect(id.length).toBeGreaterThanOrEqual(36);
     expect(id.length).toBeLessThanOrEqual(64);
+  });
+
+  it('satisfies the schema the installed SDK ships, read from it', () => {
+    const schema = offlineTxIdSchema();
+    const id = generateOfflineTxId();
+    expect(id).toMatch(new RegExp(schema.pattern));
+    expect(id.length).toBeGreaterThanOrEqual(schema.minLength);
+    expect(id.length).toBeLessThanOrEqual(schema.maxLength);
   });
 
   it('is distinct across calls — the whole point', () => {
@@ -65,8 +82,8 @@ describe('generateVariables — runOfflineTxId', () => {
   });
 
   it('lets --var override it', () => {
-    const vars = generateVariables(scenario(), TARGET, null, new Map([['runOfflineTxId', 'otx_deadbeefcafe']]));
-    expect(vars.get('runOfflineTxId')).toBe('otx_deadbeefcafe');
+    const vars = generateVariables(scenario(), TARGET, null, new Map([['runOfflineTxId', 'otx_deadbeefcafedeadbeefcafedeadbeef']]));
+    expect(vars.get('runOfflineTxId')).toBe('otx_deadbeefcafedeadbeefcafedeadbeef');
   });
 });
 

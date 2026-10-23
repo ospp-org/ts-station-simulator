@@ -130,8 +130,11 @@ export function generateSerialNumber(): string {
 }
 
 /**
- * A per-run offline transaction id, matching common/offline-tx-id.schema.json
- * (`^otx_[a-f0-9]{8,}$`, minLength 12).
+ * A per-run offline transaction id, matching common/offline-tx-id.schema.json at spec v0.45.0
+ * (`^otx_[a-f0-9]{32,}$`, 36 to 64 characters): 128 random bits, every digit from a
+ * cryptographically secure source (reconciliation.md §3 rule 1), since naming it is what entitles an app
+ * to the transaction's receipt over BLE. Until @ospp/protocol 0.42.0 the schema allowed 8 digits and
+ * this drew 64 bits, which the server's inbound schema now refuses.
  *
  * Exists because a scenario must not hardcode one. `offline_transactions` is keyed on
  * offlineTxId and the server's Reconciler dedups on it BEFORE verify/score/debit, so a
@@ -142,11 +145,11 @@ export function generateSerialNumber(): string {
  * Teardown is not the fix. It already sweeps the table (uatPrivileged.ts, `DELETE FROM
  * offline_transactions WHERE user_id IN (...)`), and the row survived anyway because that
  * sweep is user-scoped and the poisoning run was outside its scope. Even a perfect sweep
- * would not make a fixed global id safe under two concurrent runs. 16 hex chars, so
+ * would not make a fixed global id safe under two concurrent runs. 32 hex chars, so
  * collisions are not a practical concern.
  */
 export function generateOfflineTxId(): string {
-  const hex = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
   return `otx_${hex}`;

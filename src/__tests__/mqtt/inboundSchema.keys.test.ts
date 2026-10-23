@@ -48,12 +48,17 @@ describe('inbound schema key mapping', () => {
     ).toEqual([]);
   });
 
-  it('maps exactly 47 (action, messageType) pairs — pinned so an SDK bump is visible', () => {
+  it('keys SessionStarted [MSG-043], the Event of spec v0.45.0, on its -event schema', () => {
+    expect(schemaKeyFor(OsppAction.SESSION_STARTED, MessageType.EVENT)).toBe('session-started-event');
+    expect(availableSchemaKeys().has('session-started-event')).toBe(true);
+  });
+
+  it('maps exactly 48 (action, messageType) pairs — pinned so an SDK bump is visible', () => {
     // Not a magic number: it is |allKeys|, and the test above proves the two sets
     // coincide. Pinned as a literal so adding a message to @ospp/protocol without
     // teaching this simulator about it reds here instead of passing quietly.
-    expect(availableSchemaKeys().size).toBe(47);
-    expect(mappedPairs()).toHaveLength(47);
+    expect(availableSchemaKeys().size).toBe(48);
+    expect(mappedPairs()).toHaveLength(48);
   });
 
   it('every mapped pair names a schema that actually exists', () => {

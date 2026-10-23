@@ -1,16 +1,5 @@
 name: "Offline Pass Refused — the wrong device, the retry that came too soon, the used-up pass"
 description: "Present a real server-signed pass three ways a station gets it wrong: bound to another device, retried inside the minimum interval, and after its last use is spent. Each is Rejected and each carries a DIFFERENT reason string — which is the only discriminator the protocol allows on this action."
-skip: true
-skip_reason: >-
-  BLOCKED ON THE SDK RELEASE (2026-10-22, csms-server offline group 1). Since group 1 the server
-  issues the frozen pass of offline-pass.md - devicePublicKey and keyId in, the station limits
-  out - and the released SDK pair (ospp/protocol and @ospp/protocol 0.41.0, schemas of spec
-  v0.44.0) still validates AuthorizeOfflinePass against the pass it replaces, additionalProperties
-  false at both levels: no pass is valid under both. This file presents an issued pass in that
-  message, so this simulator's outbound check and the server's inbound one refuse it before any
-  handler runs. It runs again when the release lands (csms-server TODO, offline group 2, step 1);
-  its three refusals are the station-side checks of the same message, group 3's with the rest of
-  Partial B.
 # ── WE MATCH PROSE HERE, AND IT IS NOT A SHORTCUT ─────────────────────────────────────────
 #
 # Every other refusal file in this corpus pins a NUMERIC code, because a code is a contract and
@@ -174,6 +163,7 @@ steps:
     capture:
       devicePublicKey: devicePublicKey
       deviceKeyAttestation: deviceKeyAttestation
+      devicePrivateKeyPem: devicePrivateKeyPem
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
@@ -187,17 +177,35 @@ steps:
       passAId: "offlinePass.passId"
 
   # --- ARM 1 — THE PASS IS BOUND TO ANOTHER DEVICE. The pass object is presented verbatim, so
-  # the signature verifies (check 1 passes) and the refusal is the device binding at check 4.
-  # `deviceId` is the ONLY field that differs from the accepted presentation below.
+  # the signature verifies (check 1 passes) and the refusal is the device binding at check 4: since
+  # spec v0.45.0 the proof of possession of the pass's device key (authorize-offline-pass.md 3), made
+  # here by another phone's key - a second attested key the pass does not name. The key is the ONLY
+  # thing that differs from the accepted presentation below.
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      anotherDevicePrivateKeyPem: devicePrivateKeyPem
+  - action: device_proof
+    device_private_key: "{{captured.anotherDevicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.passAId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      arm1Proof: deviceProof
+      arm1Transcript: transcriptHash
   - action: send
     message: AuthorizeOfflinePass
     payload:
       offlinePassId: "{{captured.passAId}}"
       offlinePass: "{{captured.passA}}"
-      deviceId: "dev_someoneelse"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.arm1Proof}}"
+      transcriptHash: "{{captured.arm1Transcript}}"
 
   - action: wait_for
     message: AuthorizeOfflinePass
@@ -215,18 +223,30 @@ steps:
   # SECONDARY — the exact bytes. A reword reds THIS line and the server is fine; see header.
   - action: assert
     field: "payload.reason"
-    equals: "OFFLINE_PASS_INVALID: Device ID does not match the pass binding"
+    equals: "OFFLINE_PASS_INVALID: The device proof does not verify under the pass device key"
 
-  # --- THE CONTROL, and the first use. One field changes: the device is the bound one.
+  # --- THE CONTROL, and the first use. One thing changes: the proof is the bound device's.
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.passAId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      controlProof: deviceProof
+      controlTranscript: transcriptHash
   - action: send
     message: AuthorizeOfflinePass
     payload:
       offlinePassId: "{{captured.passAId}}"
       offlinePass: "{{captured.passA}}"
-      deviceId: "dev_bound001"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.controlProof}}"
+      transcriptHash: "{{captured.controlTranscript}}"
 
   - action: wait_for
     message: AuthorizeOfflinePass
@@ -284,10 +304,12 @@ steps:
     payload:
       offlinePassId: "{{captured.passAId}}"
       offlinePass: "{{captured.passA}}"
-      deviceId: "dev_bound001"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.controlProof}}"
+      transcriptHash: "{{captured.controlTranscript}}"
 
   - action: wait_for
     message: AuthorizeOfflinePass
@@ -323,6 +345,7 @@ steps:
     capture:
       devicePublicKey_2: devicePublicKey
       deviceKeyAttestation_2: deviceKeyAttestation
+      devicePrivateKeyPem_2: devicePrivateKeyPem
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/passes"
@@ -335,15 +358,27 @@ steps:
       passB: "offlinePass"
       passBId: "offlinePass.passId"
 
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem_2}}"
+    offline_pass_id: "{{captured.passBId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      passBFirstProof: deviceProof
+      passBFirstTranscript: transcriptHash
   - action: send
     message: AuthorizeOfflinePass
     payload:
       offlinePassId: "{{captured.passBId}}"
       offlinePass: "{{captured.passB}}"
-      deviceId: "dev_bound002"
       counter: 1
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.passBFirstProof}}"
+      transcriptHash: "{{captured.passBFirstTranscript}}"
 
   - action: wait_for
     message: AuthorizeOfflinePass
@@ -396,15 +431,27 @@ steps:
   # the 60s interval, because the usage-limit check (:220-225) runs BEFORE the interval one
   # (:266-283) — the ordering that put arm 2 where it is now works in this arm's favour. A NEW
   # counter, so nothing here is a replay: the pass is simply out of uses.
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem_2}}"
+    offline_pass_id: "{{captured.passBId}}"
+    counter: 2
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      passBSecondProof: deviceProof
+      passBSecondTranscript: transcriptHash
   - action: send
     message: AuthorizeOfflinePass
     payload:
       offlinePassId: "{{captured.passBId}}"
       offlinePass: "{{captured.passB}}"
-      deviceId: "dev_bound002"
       counter: 2
       bayId: "{{bayId_1}}"
       serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.passBSecondProof}}"
+      transcriptHash: "{{captured.passBSecondTranscript}}"
 
   - action: wait_for
     message: AuthorizeOfflinePass

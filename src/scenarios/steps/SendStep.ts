@@ -84,6 +84,16 @@ function substituteTemplates(
  * body when absent per §6.2 Note 4 — an empty `meterValues: {}` would
  * change canonical bytes and break server-side verification).
  *
+ * Spec v0.45.0 adds four SIGNED-ONLY fields (§6.2 Note 7), in the signed body and in no envelope:
+ * `stationId` - the station that signs it, so any holder of the receipt names its signer to the
+ * server; `endReason` - why the session ended, the SessionEnded reasons and `ServerStopped`;
+ * `bookedDurationSeconds` - the duration the station started the service for; `clockState` - whether
+ * the station's clock had been set from the server since it last booted. Settlement by service kind
+ * reads the first two with the durations, the gate's time checks read the clock through the offset
+ * the server measured at reconnection (reconciliation.md §6.8, §8). A scenario names the last three on
+ * the payload, as it names `deviceId`; unnamed, the receipt is of a wash that ran its booked time on a
+ * synchronized clock. `stripSignedOnlyFields` takes them back out of the envelope after signing.
+ *
  * The three identity fields offlinePassId / userId / deviceId are the
  * cryptographic-binding anchors for the server's RevalidationGate
  * cross-checks #2 (offlinePassId envelope ↔ signed body), #3 (userId
@@ -135,11 +145,33 @@ export function buildTransactionEventReceiptFields(
     durationSeconds: payload.durationSeconds,
     creditsCharged: payload.creditsCharged,
     txCounter: payload.txCounter,
+    stationId,
+    endReason: payload.endReason ?? 'TimerExpired',
+    bookedDurationSeconds: payload.bookedDurationSeconds ?? payload.durationSeconds,
+    clockState: payload.clockState ?? 'Synchronized',
   };
   if (payload.meterValues !== undefined) {
     receiptFields.meterValues = payload.meterValues;
   }
   return receiptFields;
+}
+
+/** The members a scenario names on the payload only to have them signed into the receipt. */
+const SIGNED_ONLY_FIELDS = ['endReason', 'bookedDurationSeconds', 'clockState', 'stationId'] as const;
+
+/**
+ * Take the signed-only members back out of the payload once the receipt is signed, for the envelope
+ * that carries it: the TransactionEvent (`transaction-event-request.schema.json`), which carries no
+ * `deviceId` either, or the FFF6 Receipt an app uploads (`receipt.schema.json`), which does. Both
+ * schemas are closed, so a member left in would be refused.
+ */
+export function stripSignedOnlyFields(payload: Record<string, unknown>, envelope: 'transaction-event' | 'receipt'): void {
+  for (const member of SIGNED_ONLY_FIELDS) {
+    delete payload[member];
+  }
+  if (envelope === 'transaction-event') {
+    delete payload.deviceId;
+  }
 }
 
 /**
@@ -166,7 +198,7 @@ export function buildTransactionEventReceiptFields(
  * encoding), removing the local `crypto.createSign('SHA256')` divergence
  * surface flagged in Phase B audit (b).
  */
-async function signTransactionEventReceipt(
+export async function signTransactionEventReceipt(
   payload: Record<string, unknown>,
   station: Station,
   context: ScenarioContext,
@@ -350,8 +382,9 @@ export class SendStep implements Step {
       // but it is NOT part of the on-the-wire TransactionEvent schema
       // (transaction-event-request is additionalProperties:false). Strip it after
       // signing so the published envelope validates while the signed receipt still
-      // carries it. (Scoped to TransactionEvent Request — does not touch other sends.)
-      delete payload.deviceId;
+      // carries it - and with it the four signed-only fields of spec v0.45.0.
+      // (Scoped to TransactionEvent Request — does not touch other sends.)
+      stripSignedOnlyFields(payload, 'transaction-event');
     }
 
     const { id: correlationId, source } = resolveSendCorrelation(

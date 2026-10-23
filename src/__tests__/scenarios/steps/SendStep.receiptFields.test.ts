@@ -34,7 +34,7 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
     passCounter: 5,
   };
 
-  it('builds the 12 mandatory pass-form fields incl passCounter (N7 / spec 0.6.2) when meterValues is absent', () => {
+  it('builds the 16 mandatory pass-form fields incl passCounter (N7 / spec 0.6.2) and the four signed-only fields of spec v0.45.0 when meterValues is absent', () => {
     const fields = buildTransactionEventReceiptFields(fullPayload, 'stn_test');
 
     expect(Object.keys(fields).sort()).toEqual(
@@ -51,6 +51,11 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
         'durationSeconds',
         'creditsCharged',
         'txCounter',
+        // spec v0.45.0, signed only (06-security.md §6.2 Note 7; SendStep.frozenReceipt.test.ts)
+        'stationId',
+        'endReason',
+        'bookedDurationSeconds',
+        'clockState',
       ].sort(),
     );
     // passCounter (5) is distinct from txCounter (1) — proves it is read from
@@ -83,14 +88,14 @@ describe('SendStep — buildTransactionEventReceiptFields (spec v0.4.2+ §6.2)',
     expect(fields.deviceId).toBe('dev_stn_alpha');
   });
 
-  it('includes meterValues when present (13-field pass-form body: 12 + meterValues)', () => {
+  it('includes meterValues when present (17-field pass-form body: 16 + meterValues)', () => {
     const payloadWithMeter = {
       ...fullPayload,
       meterValues: { liquidMl: 42800, consumableMl: 470, energyWh: 138 },
     };
     const fields = buildTransactionEventReceiptFields(payloadWithMeter, 'stn_test');
 
-    expect(Object.keys(fields)).toHaveLength(13);
+    expect(Object.keys(fields)).toHaveLength(17);
     expect(fields.meterValues).toEqual({ liquidMl: 42800, consumableMl: 470, energyWh: 138 });
   });
 
@@ -146,6 +151,11 @@ describe('SendStep — buildTransactionEventReceiptFields (auth-form / Partial A
         'durationSeconds',
         'creditsCharged',
         'txCounter',
+        // spec v0.45.0, signed only (06-security.md §6.2 Note 7; SendStep.frozenReceipt.test.ts)
+        'stationId',
+        'endReason',
+        'bookedDurationSeconds',
+        'clockState',
       ].sort(),
     );
   });
