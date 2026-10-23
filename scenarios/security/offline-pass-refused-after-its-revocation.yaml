@@ -102,6 +102,16 @@ steps:
       secondStartedAt: -60
       secondEndedAt: -30
 
+  # --- Five seconds before the revocation, the margin of the station clock offset (csms-server offline group 2,
+  # spec v0.45.0, reconciliation.md 6.8): the gate reads a receipt's times through the offset measured at the first
+  # boot of its station after the wash - the simulator's clock less the server's receive time - and in a pooled run
+  # that is any scenario's boot of this pool station, its offset a few hundred milliseconds of latency under load.
+  # The first wash is signed at the pass's issuance; with the revocation a second later, the measured offset alone
+  # moved it past the revocation (2014, the corpus of 2026-10-23). Five seconds leaves it before the revocation on
+  # either clock, and the second wash, a minute before the pass expires, after it.
+  - action: delay
+    ms: 5000
+
   # --- The platform admin finds the pass by its passId and revokes it ---
   - action: api_call
     method: GET
