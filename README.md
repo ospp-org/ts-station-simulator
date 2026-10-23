@@ -25,11 +25,11 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-171 YAML-driven test scenarios across 12 categories:
+170 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
-| `chaos` | 8 | Disconnect (boot, session), Connection timeout, Slow responses, Malformed and out-of-order frames, Rapid reconnect |
+| `chaos` | 7 | Disconnect (boot, session), Connection timeout, Slow responses, Out-of-order frames, a schema-invalid request answered with silence, Rapid reconnect |
 | `core` | 25 | Boot (all reasons, and the Pending/Rejected arms), Heartbeat, StatusNotification, ConnectionLost/LWT, DataTransfer, Topology mismatch, Planned shutdown |
 | `device-management` | 41 | Firmware (14), Configuration, Diagnostics, Reset, TriggerMessage, Maintenance, Service catalog, Bay edit, the server key set written by no one |
 | `e2e` | 3 | New-customer onboarding, Returning-customer session, Session-end reason matrix |

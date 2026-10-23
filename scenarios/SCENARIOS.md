@@ -1,6 +1,6 @@
 # OSPP Station Simulator — Scenario Inventory
 
-**Total scenarios: 171** across 12 categories, counted on disk
+**Total scenarios: 170** across 12 categories, counted on disk
 (`find scenarios -name '*.yaml' | wc -l`).
 
 > The header said 116 from the moment it was written until 2026-08-11, then 113
@@ -145,7 +145,7 @@ branch that `core/happy-boot.yaml` does not.
 | Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
 | Device Management | 41 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1), the server key set written by no one |
 | Security | 37 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1), the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, the Partial-B session (settled on its receipt, on the server's stop, by its lapse), the Partial-A authorization refunded at its expiry and its late receipt |
-| Chaos | 8 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
+| Chaos | 7 | Disconnect (3), Timeout, Slow responses, Out-of-order, a schema-invalid request answered with silence |
 | Fleet | 3 | Parallel boot, Mixed workload, Meter flood |
 | e2e | 3 | New-customer onboarding, returning-customer session, session-end matrix — each self-provisions its own org, location and station |
 | multiunit-e2e | 3 | Multi-unit batch drive, jam mid-batch, and the single-session control |
@@ -301,14 +301,13 @@ branch that `core/happy-boot.yaml` does not.
 > true. **A skip reason is the least-verified sentence in the corpus** — nothing runs it, so nothing
 > checks it, and it survives exactly the change that falsifies it.
 
-## Chaos (8 scenarios)
+## Chaos (7 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
 | `chaos/disconnect-during-session.yaml` | Disconnect During Session | Disconnect mid-session → the session stays `active` through the blip and the `Reconnect` boot → the station's `SessionEnded Local` ends it | migrated |
 | `chaos/disconnect-during-boot.yaml` | Disconnect During Boot | Incomplete boot handshake | new |
 | `chaos/slow-responses.yaml` | Slow Responses | 3-5s response delays | migrated |
-| `chaos/malformed-messages.yaml` | Malformed Messages | Unusual/minimal payloads | migrated |
 | `chaos/rapid-reconnect.yaml` | Rapid Reconnect | Multiple disconnect/reconnect cycles | new |
 | `chaos/out-of-order-messages.yaml` | Out-of-Order Messages | Orphaned MeterValues/SessionEnded | migrated |
 | `chaos/connection-timeout.yaml` | Connection Timeout | Very short heartbeat timeout | new |

@@ -373,7 +373,9 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // 166 -> 171 on 2026-10-23: csms-server's offline group 3 - the Partial-B session settled on its receipt, on
     // the server's stop and by its lapse, the Partial-A authorization refunded at its expiry with its late receipt,
     // and the server key set written by no one; the lapse and the expiry wait online, under the default heartbeat.
-    expect(files.length).toBe(171);
+    // 171 -> 170 on 2026-10-23: chaos/malformed-messages.yaml left the corpus - it sent two schema-invalid events,
+    // which the server dead-letters and no scenario can observe (noCorpusFileLeavesADeadLetter.test.ts).
+    expect(files.length).toBe(170);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {
