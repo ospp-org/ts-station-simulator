@@ -335,6 +335,8 @@ describe('the legitimate overrides in the corpus', () => {
       // --- the two multi-unit card drives, added 2026-09-22. Argument below. ---
       'multiunit-batch-drive.yaml',
       'multiunit-jam-drive.yaml',
+      // --- added 2026-10-23: the Partial-A authorization waits out its expiry. Argument below. ---
+      'offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml',
       // --- added 2026-09-11. Argument below. ---
       'reserve-bay-unanswered-compensates-with-a-cancel.yaml',
       'reserve-expire.yaml',
@@ -586,6 +588,15 @@ describe('the legitimate overrides in the corpus', () => {
     {
       rel: 'scenarios/device-management/firmware-command-timeout-no-response.yaml',
       // command_timeouts.UpdateFirmware = 300s, scanned everyMinute() -> 360s
+      mustOutwaitMs: 6 * 60_000,
+      runtimeNote: /~7 MINUTES/,
+    },
+    {
+      // Added 2026-10-23 (csms-server offline group 3), after the corpus abandoned it at the default 90s on UAT: an
+      // authorization no receipt reconciled is refunded AT its expiresAt, by a sweep - the file must out-wait both.
+      rel: 'scenarios/security/offline-partial-a-refunded-at-expiry-then-its-late-receipt.yaml',
+      // ServerSignedAuthSigner::TTL_SECONDS = 300 (the claims schema's 5-minute cap), swept by
+      // offline:expire-stale-grants everyMinute() -> 360s
       mustOutwaitMs: 6 * 60_000,
       runtimeNote: /~7 MINUTES/,
     },
