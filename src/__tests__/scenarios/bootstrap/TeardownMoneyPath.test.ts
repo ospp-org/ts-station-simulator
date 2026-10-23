@@ -324,3 +324,33 @@ describe('teardown — the offline washes in the monthly statement (csms-server 
     expect(ledgerAt).toBeLessThan(lines.findIndex((l) => /^DELETE FROM offline_transactions\b/.test(l)));
   });
 });
+
+/**
+ * csms-server offline group 3 (2026-10-23) - THE PARTIAL-A WASH IN THE STATEMENT.
+ *
+ * A Partial-A receipt is stored as the offline transaction it is, naming its authorization: offline_transactions.auth_id
+ * -> offline_auth_grants.auth_id, ON DELETE CASCADE. So deleting a grant deletes its transaction, and that delete nulls the
+ * ledger row's offline_transaction_id (SET NULL) - the row stays, naming its organization NO ACTION. Measured on UAT
+ * 2026-10-23: the Partial-A expiry scenario's customer swept its grant first, and the pool's organizations delete was
+ * refused on platform_settlement_ledger_organization_id_fkey. Every sweep that deletes grants deletes the ledger rows of
+ * the swept offline transactions BEFORE it.
+ */
+describe('teardown — the Partial-A wash in the monthly statement (csms-server offline group 3)', () => {
+  it("the user sweep deletes the swept users' offline-wash ledger rows before their grants, whose cascade nulls the key", () => {
+    const lines = buildTeardownTestUsersSql(OUTBOX_EMAILS, { protectedEmails: [] });
+    const ledgerAt = lines.findIndex((l) => /^DELETE FROM platform_settlement_ledger\b/.test(l));
+    const grantsAt = lines.findIndex((l) => /^DELETE FROM offline_auth_grants\b/.test(l));
+    expect(ledgerAt).toBeGreaterThanOrEqual(0);
+    expect(grantsAt).toBeGreaterThanOrEqual(0);
+    expect(ledgerAt).toBeLessThan(grantsAt);
+  });
+
+  it('the pool half does too', () => {
+    const lines = buildTeardownSql(handle()).split('\n');
+    const ledgerAt = lines.findIndex((l) => /^DELETE FROM platform_settlement_ledger\b/.test(l));
+    const grantsAt = lines.findIndex((l) => /^DELETE FROM offline_auth_grants\b/.test(l));
+    expect(ledgerAt).toBeGreaterThanOrEqual(0);
+    expect(grantsAt).toBeGreaterThanOrEqual(0);
+    expect(ledgerAt).toBeLessThan(grantsAt);
+  });
+});
