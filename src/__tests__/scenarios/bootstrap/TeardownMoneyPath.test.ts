@@ -288,3 +288,39 @@ describe('teardown — the settlement outbox (CW110)', () => {
     );
   });
 });
+
+/**
+ * csms-server offline group 2 (spec v0.45.0, OM13) - THE OFFLINE WASHES IN THE MONTHLY STATEMENT.
+ *
+ * A settled offline wash now enters its station's tenant's statement: a platform_settlement_ledger row
+ * keyed on its offline_transaction_id, with no session and no intent, NO ACTION to the organization. Its
+ * FK to the offline transaction is SET NULL, so the offline_transactions delete is not refused - it nulls
+ * the column and leaves the row naming the organization, and the organizations delete at the end refused
+ * the whole transaction. Measured on UAT 2026-10-23, the first pooled runs of the group 2 scenarios:
+ * platform_settlement_ledger_organization_id_fkey, every run whose wash settled leaving its pool behind.
+ */
+describe('teardown — the offline washes in the monthly statement (csms-server offline group 2)', () => {
+  const ledgerOfOfflineWashes = (offlineWhere: string): string =>
+    ` OR offline_transaction_id IN (SELECT id FROM offline_transactions WHERE ${offlineWhere})`;
+
+  it("the pool half finds an offline wash's ledger row by the transaction it names - exactly the offline transactions it deletes, before them", () => {
+    const sql = buildTeardownSql(handle());
+    const lines = sql.split('\n');
+    const offlineWhere = /^DELETE FROM offline_transactions WHERE (.*);$/m.exec(sql)?.[1];
+    expect(offlineWhere).toBeDefined();
+    const ledger = lines.filter((l) => /^DELETE FROM platform_settlement_ledger\b/.test(l));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toContain(ledgerOfOfflineWashes(offlineWhere as string));
+    expect(lines.findIndex((l) => /^DELETE FROM platform_settlement_ledger\b/.test(l)))
+      .toBeLessThan(lines.findIndex((l) => /^DELETE FROM offline_transactions\b/.test(l)));
+  });
+
+  it("the user sweep finds the ledger rows of the swept users' offline washes the same way, before their offline transactions", () => {
+    const lines = buildTeardownTestUsersSql(OUTBOX_EMAILS, { protectedEmails: [] });
+    const offlineWhere = lines.map((l) => /^DELETE FROM offline_transactions WHERE (.*);$/.exec(l)?.[1]).find(Boolean);
+    expect(offlineWhere).toBeDefined();
+    const ledgerAt = lines.findIndex((l) => /^DELETE FROM platform_settlement_ledger\b/.test(l));
+    expect(lines[ledgerAt]).toContain(ledgerOfOfflineWashes(offlineWhere as string));
+    expect(ledgerAt).toBeLessThan(lines.findIndex((l) => /^DELETE FROM offline_transactions\b/.test(l)));
+  });
+});

@@ -1318,6 +1318,9 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
   const sids = `SELECT id FROM stations WHERE station_id = ANY(${stationArray})${orRunOrgOwned}`;
   const bays = `SELECT id FROM bays WHERE station_id IN (${sids})`;
   const sess = `SELECT id FROM sessions WHERE bay_id IN (${bays})`;
+  // The run's offline transactions - at its stations, its bays, or naming one of its sessions - which
+  // the offline_transactions delete removes and the ledger's offline arm reaches first.
+  const runOfflineWhere = `station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess})`;
   // The BUSINESS ids of this run's bays (`bay_<hex>`), distinct from the UUIDs above.
   // `unit_batches.bay_id` and `payment_intents.reference_id` both carry the OSPP string, and
   // scoping the money sweep by them is what keeps it strictly inside rows this run created —
@@ -1420,7 +1423,15 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // writes these rows leaves one, platform_settlement_ledger_session_id_fkey refuses the
     // `sessions` delete below, and the whole per-run world stays behind. It selects exactly the
     // sessions that delete removes. The statement arm: see orRunOrgStatement.
-    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${runIntents}) OR session_id IN (${sess}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents}))${orRunOrgStatement};`,
+    //
+    // The offline arm (csms-server offline group 2, 2026-10-23, OM13): a settled offline wash enters
+    // its station's tenant's statement as a row keyed on its offline_transaction_id, with no session
+    // and no intent. That FK is SET NULL, so the offline_transactions delete below does not refuse
+    // it - it nulls the key and leaves the row naming the organization NO ACTION, and the
+    // organizations delete refused the whole transaction on platform_settlement_ledger_organization_id_fkey
+    // (measured on UAT, the first pooled runs of the group 2 scenarios). It selects exactly the
+    // offline transactions that delete removes.
+    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${runIntents}) OR session_id IN (${sess}) OR refund_id IN (SELECT id FROM refunds WHERE payment_intent_id IN (${runIntents})) OR offline_transaction_id IN (SELECT id FROM offline_transactions WHERE ${runOfflineWhere})${orRunOrgStatement};`,
     // settlement_adjustments (G12): the chargebacks the platform super admin enters against a
     // tenant, NO ACTION to organizations, payment_intents, users (created_by) and
     // tenant_statements. Those of the org this run minted, and only when it minted one - never a
@@ -1439,7 +1450,7 @@ export function buildTeardownSql(handle: PoolBootstrapHandle): string {
     // never blocked this transaction and nothing here ever removed it. Before the sessions and
     // payment_intents deletes below, because it finds its rows through them.
     buildSettlementOutboxDeleteSql(runSessionsWhere, runIntentsWhere),
-    `DELETE FROM offline_transactions WHERE station_id IN (${sids}) OR bay_id IN (${bays}) OR reconciled_session_id IN (${sess});`,
+    `DELETE FROM offline_transactions WHERE ${runOfflineWhere};`,
     // offline_auth_grants (0.6.2 / B1): NO-ACTION FKs to users, organizations and stations —
     // no ON DELETE CASCADE. (Its FK to sessions, via reconciled_session_id, was dropped by
     // csms-server's 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id, which

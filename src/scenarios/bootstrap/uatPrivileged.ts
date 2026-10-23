@@ -1446,6 +1446,7 @@ export function buildTeardownTestUsersSql(
   const userSessions = `SELECT id FROM sessions WHERE ${sessionsWhere}`;
   const refundsWhere = `payment_intent_id IN (${userIntents}) OR session_id IN (${userSessions})`;
   const userRefunds = `SELECT id FROM refunds WHERE ${refundsWhere}`;
+  const offlineWhere = `user_id IN (${userIds})`;
 
   return [
     // 0. offline_auth_grants — NO-ACTION FK user_id → users (0.6.2 / B1). Must precede the
@@ -1461,7 +1462,11 @@ export function buildTeardownTestUsersSql(
     //      settlement they reverse; a wallet wash's row (G12) names its session alone, which the
     //      session arm reaches.
     `DELETE FROM payment_ledger WHERE payment_intent_id IN (${userIntents}) OR refund_id IN (${userRefunds});`,
-    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${userIntents}) OR session_id IN (${userSessions}) OR refund_id IN (${userRefunds});`,
+    //      An offline wash's row (csms-server offline group 2, OM13) names its offline transaction
+    //      alone, SET NULL, so the offline_transactions delete below would leave it naming its
+    //      organization: the offline arm reaches it first, through exactly the users' offline
+    //      transactions that delete removes.
+    `DELETE FROM platform_settlement_ledger WHERE payment_intent_id IN (${userIntents}) OR session_id IN (${userSessions}) OR refund_id IN (${userRefunds}) OR offline_transaction_id IN (SELECT id FROM offline_transactions WHERE ${offlineWhere});`,
     // settlement_adjustments (G12): a chargeback naming one of the users' intents, or entered
     // by one of them (created_by, NO ACTION → users). See THE MONTHLY SETTLEMENT above.
     `DELETE FROM settlement_adjustments WHERE payment_intent_id IN (${userIntents}) OR created_by IN (${userIds});`,
@@ -1482,7 +1487,7 @@ export function buildTeardownTestUsersSql(
     // had them the other way round, which is why the order looked deliberate; it was not
     // covered because the FK-coverage test asserts that every NO-ACTION FK is REACHED,
     // not that the statements are in a topological order among themselves.
-    `DELETE FROM offline_transactions WHERE user_id IN (${userIds});`,
+    `DELETE FROM offline_transactions WHERE ${offlineWhere};`,
     `DELETE FROM offline_passes WHERE user_id IN (${userIds});`,
     `DELETE FROM sessions WHERE ${sessionsWhere};`,
     `DELETE FROM unit_batches WHERE ${batchesWhere};`,
