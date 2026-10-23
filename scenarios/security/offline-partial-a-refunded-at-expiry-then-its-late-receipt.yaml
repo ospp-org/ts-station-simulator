@@ -59,8 +59,42 @@ steps:
         - programNumber: 1
           available: true
 
+  # --- A customer of its own, who reads its own wallet (the pool's identities are tenant operators, who hold no
+  #     self.wallet.view), funded and with offline use on; removed by the run's teardown ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/register"
+    body:
+      name: "Partial-A Customer {{stationId}}"
+      email: "partial-a-{{runOfflineTxId}}@onestoppay.dev"
+      password: "PartialA-Expiry-1023!"
+      password_confirmation: "PartialA-Expiry-1023!"
+    expect_status: 201
+    capture:
+      user_email: "user.email"
+      user_id: "user.id"
+    creates:
+      user: "user.email"
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/auth/login"
+    body:
+      email: "{{captured.user_email}}"
+      password: "PartialA-Expiry-1023!"
+    expect_status: 200
+    set_auth_token: "data.access_token"
+  - action: fund_wallet
+    user_id: "{{captured.user_id}}"
+    credits: 1000
+  - action: api_call
+    method: PUT
+    url: "{{target_url}}/api/v1/offline/preference"
+    body:
+      enabled: true
+    expect_status: 200
+
   # The TransactionEvent's `userId` is the customer's subject, which a pass publishes (offline-auth-transaction-
-  # reconcile.yaml says why); the pass is swept with this run's identity.
+  # reconcile.yaml says why); the pass is swept with the customer.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/offline/attestation-challenges"
