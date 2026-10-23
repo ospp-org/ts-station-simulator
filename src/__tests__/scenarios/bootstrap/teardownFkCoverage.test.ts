@@ -14,6 +14,14 @@ import { StationPool } from '../../../scenarios/stations/StationPool.js';
  * sessions-before-reservations missing; commit #3: offline_passes-before-users missing). Both
  * slipped because the unit tests asserted SQL TEXT, not the FK GRAPH.
  *
+ * THE SNAPSHOT, 2026-10-23, offline group 3. csms-server master e05f08a8 (216 migrations): 92 foreign keys - 54 NO ACTION,
+ * 27 CASCADE, 8 SET NULL, 3 RESTRICT. Against offline group 2's below three edges came, and none changed or went:
+ * offline_transactions.auth_id CASCADE into offline_auth_grants (a Partial-A receipt is the offline transaction of its
+ * grant), offline_debt_releases.session_id CASCADE into sessions and sessions.offline_pass_id SET NULL into
+ * offline_passes (the Partial-B session). The CASCADE into offline_auth_grants is the one that mattered: a grant's
+ * delete takes its transaction, which nulls the ledger row's key, so every sweep deletes the offline-wash ledger rows
+ * before the grants (TeardownMoneyPath.test.ts, the Partial-A wash).
+ *
  * THE SNAPSHOT, 2026-10-23. csms-server's offline group 2 (master 416c7eca, 211 migrations, read with the
  * query below, `AND chi.relnamespace = 'public'::regnamespace`, from csms_test): 89 foreign keys - 54 NO
  * ACTION, 25 CASCADE, 7 SET NULL, 3 RESTRICT. Against the snapshot of 2026-10-22 three edges came, and
@@ -146,6 +154,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   // 2026_08_19_000005_retype_offline_auth_grant_reconciled_session_id dropped its FK and
   // retyped the column to the varchar business id.
   sessions: [
+    { child: 'offline_debt_releases',      column: 'session_id',            onDelete: 'CASCADE'   },
     { child: 'offline_transactions',       column: 'reconciled_session_id', onDelete: 'NO ACTION' },
     { child: 'platform_settlement_ledger', column: 'session_id',            onDelete: 'NO ACTION' },
     { child: 'refunds',                    column: 'session_id',            onDelete: 'NO ACTION' },
@@ -268,6 +277,12 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   offline_passes: [
     { child: 'offline_pass_consumptions', column: 'offline_pass_id', onDelete: 'CASCADE'   },
     { child: 'offline_transactions',      column: 'offline_pass_id', onDelete: 'NO ACTION' },
+    { child: 'sessions',                  column: 'offline_pass_id', onDelete: 'SET NULL'  },
+  ],
+  // 1 FK points at offline_auth_grants since csms-server's offline group 3: the Partial-A transaction's auth_id,
+  // CASCADE (references auth_id, its business key).
+  offline_auth_grants: [
+    { child: 'offline_transactions', column: 'auth_id', onDelete: 'CASCADE', references: 'auth_id' },
   ],
   // 2 FKs point at provisioning_tokens, both CASCADE.
   provisioning_tokens: [
@@ -329,7 +344,7 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   session_settlement_retries: [],
   station_clock_offsets: [],
   station_model_programs: [],
-  // No FK points at any of these 22, so nothing can block their deletes (the FKs they carry
+  // No FK points at any of these 21, so nothing can block their deletes (the FKs they carry
   // as children are in the entries above).
   diagnostics_uploads: [],
   firmware_updates: [],
@@ -337,7 +352,6 @@ const SCHEMA_FK_GRAPH: Record<string, FkEdge[]> = {
   meter_values: [],
   model_has_permissions: [],
   model_has_roles: [],
-  offline_auth_grants: [],
   organization_members: [],
   organization_vat_terms: [],
   payment_ledger: [],

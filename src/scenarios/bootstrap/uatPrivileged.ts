@@ -1449,10 +1449,6 @@ export function buildTeardownTestUsersSql(
   const offlineWhere = `user_id IN (${userIds})`;
 
   return [
-    // 0. offline_auth_grants — NO-ACTION FK user_id → users (0.6.2 / B1). Must precede the
-    //    users delete. Mirrors offline_transactions (swept in both station- and user-scoped
-    //    teardowns); idempotent if the station-scoped sweep already removed the run's grants.
-    `DELETE FROM offline_auth_grants WHERE user_id IN (${userIds});`,
     // 1. wallet_entries — child of wallets (NO ACTION). Must precede the wallets delete.
     `DELETE FROM wallet_entries WHERE wallet_id IN (SELECT id FROM wallets WHERE user_id IN (${userIds}));`,
     // 2-5. The money trail, children first. Both ledgers point at payment_intents AND refunds
@@ -1488,6 +1484,13 @@ export function buildTeardownTestUsersSql(
     // covered because the FK-coverage test asserts that every NO-ACTION FK is REACHED,
     // not that the statements are in a topological order among themselves.
     `DELETE FROM offline_transactions WHERE ${offlineWhere};`,
+    // offline_auth_grants — NO-ACTION FK user_id → users (0.6.2 / B1). Must precede the users
+    // delete. AFTER the ledger's offline arm (csms-server offline group 3): a Partial-A receipt is
+    // an offline transaction naming its grant, offline_transactions.auth_id ON DELETE CASCADE, so a
+    // grant deleted first takes its transaction with it, the ledger row's offline_transaction_id is
+    // nulled (SET NULL) and the row stays naming its organization - the pool's organizations delete
+    // was refused on UAT for it. Idempotent if the station-scoped sweep already removed the grants.
+    `DELETE FROM offline_auth_grants WHERE user_id IN (${userIds});`,
     `DELETE FROM offline_passes WHERE user_id IN (${userIds});`,
     `DELETE FROM sessions WHERE ${sessionsWhere};`,
     `DELETE FROM unit_batches WHERE ${batchesWhere};`,

@@ -456,7 +456,7 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
 
   it('emits one DELETE per table, children first: the money trail, every NO-ACTION user FK, Spatie, users', () => {
     const stmts = buildTeardownTestUsersSql(['e1@t', 'e2@t']);
-    // Children before parents: offline_auth_grants → wallet_entries → the money trail of the
+    // Children before parents: wallet_entries → the money trail of the
     // users' intents and sessions → (NO-ACTION FKs) → Spatie (2) → users. The reverse-graph
     // static check (teardownFkCoverage.test.ts) is the authoritative contract — this test just
     // pins the count + the per-statement table targets.
@@ -480,8 +480,10 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
     // R8 (csms-server 1d4b1c0d): organization_vat_terms points at users through created_by alone,
     // so it goes beside tenant_settlement_terms, before users. 21 statements -> 22.
     expect(stmts).toHaveLength(22);
+    // csms-server offline group 3: offline_auth_grants after offline_transactions - a grant's delete cascades into
+    // its Partial-A transaction (auth_id), which nulls that wash's ledger row's key, so the ledger's offline arm and
+    // the transactions go first (TeardownMoneyPath.test.ts, the Partial-A wash).
     const tables = [
-      'offline_auth_grants',
       'wallet_entries',
       'payment_ledger',
       'platform_settlement_ledger',
@@ -496,6 +498,7 @@ describe('buildTeardownTestUsersSql — per-scenario identity sweep (full FK cov
       // REACHED, not that the statements are topologically ordered among themselves,
       // which is why nothing else caught the swap.
       'offline_transactions',
+      'offline_auth_grants',
       'offline_passes',
       'sessions',
       'unit_batches',
