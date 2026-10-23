@@ -58,7 +58,7 @@ skip_reason: >-
   WHAT IS BUILDABLE, and it is the only thing that is: assert the `reason` TOKEN and RENAME the
   file to what it actually exercises — a SIGNATURE refusal. `payload.reason` would read
   `OFFLINE_PASS_INVALID: Offline pass signature verification failed`, matched the way
-  offline-pass-refused-the-three-a-station-meets.yaml matches its three (token prefix primary,
+  offline-pass-refused-the-three-a-station-meets.yaml matches its two (token prefix primary,
   exact bytes secondary). That is a real proof of a real branch.
   NOT DONE HERE, deliberately: that sibling already covers OFFLINE_PASS_INVALID via device
   binding, so a fourth signature file buys one arm of check 1 and costs the corpus a file whose

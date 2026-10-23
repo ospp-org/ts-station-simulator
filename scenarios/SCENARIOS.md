@@ -353,8 +353,8 @@ All **28** MQTT actions are covered by at least one scenario.
 > `e2e/*` files are `skip_when_pooled`), so it is exercised in BOTH run modes —
 > the two pool-only files in a pooled run, the three e2e files standalone. The row
 > also said the `AuthorizeOfflinePass` refusal branch was `skip: true`: it is not
-> any more. `offline-pass-refused-the-three-a-station-meets.yaml` drives three
-> refusals and is unskipped. `offline-pass-rejected.yaml` is still `skip: true`,
+> any more. `offline-pass-refused-the-three-a-station-meets.yaml` drives two
+> refusals - the third, the used-up pass, withdrawn on 2026-10-23, see its header - and is unskipped. `offline-pass-rejected.yaml` is still `skip: true`,
 > but it is no longer the only refusal on that action.
 
 **Read the scenario names below as a guide, not an index.** They are file stems
@@ -426,7 +426,7 @@ each action; the station half is a fixture.*
 | SignCertificate | Station→Server | trigger-cert-renewal |
 | CertificateInstall | Server→Station | certificate-install, certificate-install-rejected |
 | TriggerCertificateRenewal | Server→Station | trigger-cert-renewal |
-| AuthorizeOfflinePass | Station→Server | offline-pass-authorize, offline-pass-refused-the-three-a-station-meets (three refusals, runnable), offline-pass-rejected (**`skip: true`** — 163d, see the skip-age report) |
+| AuthorizeOfflinePass | Station→Server | offline-pass-authorize, offline-pass-refused-the-three-a-station-meets (two refusals, runnable), offline-pass-rejected (**`skip: true`** — 163d, see the skip-age report) |
 
 ### Uncovered Spec Areas
 

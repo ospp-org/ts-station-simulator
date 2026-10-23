@@ -1,4 +1,4 @@
-name: "Offline Pass Refused — the wrong device, the retry that came too soon, the used-up pass"
+name: "Offline Pass Refused — the wrong device, the retry that came too soon"
 description: "Present a real server-signed pass three ways a station gets it wrong: bound to another device, retried inside the minimum interval, and after its last use is spent. Each is Rejected and each carries a DIFFERENT reason string — which is the only discriminator the protocol allows on this action."
 # ── WE MATCH PROSE HERE, AND IT IS NOT A SHORTCUT ─────────────────────────────────────────
 #
@@ -30,9 +30,8 @@ description: "Present a real server-signed pass three ways a station gets it wro
 #
 #   arm 1   check 4   OFFLINE_PASS_INVALID     2002    PassValidator.php:200-215
 #   arm 2   check 9   OFFLINE_RATE_LIMITED     4003    PassValidator.php:305-327
-#   arm 3   check 6   OFFLINE_LIMIT_EXCEEDED   4002    PassValidator.php:256-269
 #
-# The middle row read 2005 here until today. 2005 is OFFLINE_COUNTER_REPLAY — the check this arm
+# The second row read 2005 here until today. 2005 is OFFLINE_COUNTER_REPLAY — the check this arm
 # was ORIGINALLY written against. The first UAT run corrected the PROSE below and left the code
 # column uncorrected; the wire says 4003. Verified in the server source, not copied from a report.
 #
@@ -59,10 +58,18 @@ description: "Present a real server-signed pass three ways a station gets it wro
 # was attempted the other way and withdrawn; see finding 15 in
 # docs/MEASURED-server-refusal-defects-*.md. The boundary prefix is what exists in the meantime.
 #
-# ── WHY THESE THREE ─────────────────────────────────────────────────────────────────────────
+# ── WHY THESE TWO, AND THE THIRD THAT WENT ─────────────────────────────────────────────────
 # They are what a station meets in integration, in the order it meets them: a pass issued for a
-# different device (a copy-paste between two test handsets), a retry sent after a timeout it
-# did not see answered, and a pass whose last use is spent.
+# different device (a copy-paste between two test handsets), and a retry sent after a timeout it
+# did not see answered.
+#
+# THE THIRD - a pass whose last use is spent, check 6, OFFLINE_LIMIT_EXCEEDED 4002 - is withdrawn,
+# measured on UAT 2026-10-23 (csms-server offline group 2): it answered OFFLINE_RATE_LIMITED. Since
+# csms-server's offline group 1 (2026-10-22) a pass's limits are the platform offline policy's -
+# ten uses on UAT - and the issuance request names none, so the pass this arm issued "with exactly
+# one use" had nine left, and its second presentation inside the interval met check 9. Spending a
+# pass needs ten uses sixty seconds apart, or a narrower platform policy, which no scenario may set
+# inside a parallel corpus. Check 6 is pinned by csms-server's PassValidator tests.
 #
 # ARM 2 WAS WRITTEN AS THE REPLAY CHECK AND THE FIRST UAT RUN CORRECTED IT — kept here because
 # the correction is the more useful fact. Re-presenting the identical counter answered
@@ -89,9 +96,9 @@ description: "Present a real server-signed pass three ways a station gets it wro
 #
 # ── THE SESSIONS THIS FILE OPENS ARE CLOSED ────────────────────────────────────────────────
 # An ACCEPTED AuthorizeOfflinePass opens a real session and claims the bay against
-# `/sessions/start` — see finding 13. Two acceptances are unavoidable here (a replay needs a
-# first use, an exhausted pass needs its use spent), so each is ended with `SessionEnded` and
-# the bay reported back to Available before the station returns to the pool.
+# `/sessions/start` — see finding 13. One acceptance is unavoidable here (a retry needs a first
+# use), so it is ended with `SessionEnded` and the bay reported back to Available before the
+# station returns to the pool.
 station:
   stationId: "{{stationId}}"
   bayCount: 2
@@ -328,145 +335,3 @@ steps:
   - action: assert
     field: "payload.reason"
     equals: "OFFLINE_RATE_LIMITED: Minimum interval between uses not yet elapsed"
-
-  # --- PASS B — exactly one use, so its second presentation is the exhausted case rather than
-  # a replay. A second pass is needed because pass A still has nine uses left.
-  # A pass is issued only to a device key the phone attested (app-contract.md 3, 3.6):
-  # a challenge, the attestation over it, then the request with the key. The limits and the
-  # lifetime are the platform offline policy's, and the answer is 200 {offlinePass, trustBundle}.
-  - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/offline/attestation-challenges"
-    expect_status: 200
-    capture:
-      attestationChallenge_2: "challenge"
-  - action: attest_device
-    challenge: "{{captured.attestationChallenge_2}}"
-    capture:
-      devicePublicKey_2: devicePublicKey
-      deviceKeyAttestation_2: deviceKeyAttestation
-      devicePrivateKeyPem_2: devicePrivateKeyPem
-  - action: api_call
-    method: POST
-    url: "{{target_url}}/api/v1/offline/passes"
-    body:
-      deviceId: "dev_bound002"
-      devicePublicKey: "{{captured.devicePublicKey_2}}"
-      deviceKeyAttestation: "{{captured.deviceKeyAttestation_2}}"
-    expect_status: 200
-    capture:
-      passB: "offlinePass"
-      passBId: "offlinePass.passId"
-
-  - action: device_proof
-    device_private_key: "{{captured.devicePrivateKeyPem_2}}"
-    offline_pass_id: "{{captured.passBId}}"
-    counter: 1
-    bay_id: "{{bayId_1}}"
-    service_id: "{{serviceId_1}}"
-    requested_duration_seconds: 300
-    capture:
-      passBFirstProof: deviceProof
-      passBFirstTranscript: transcriptHash
-  - action: send
-    message: AuthorizeOfflinePass
-    payload:
-      offlinePassId: "{{captured.passBId}}"
-      offlinePass: "{{captured.passB}}"
-      counter: 1
-      bayId: "{{bayId_1}}"
-      serviceId: "{{serviceId_1}}"
-      requestedDurationSeconds: 300
-      deviceProof: "{{captured.passBFirstProof}}"
-      transcriptHash: "{{captured.passBFirstTranscript}}"
-
-  - action: wait_for
-    message: AuthorizeOfflinePass
-    messageType: Response
-    timeout_ms: 10000
-    capture:
-      sessionB: "payload.sessionId"
-
-  - action: assert
-    field: "payload.status"
-    equals: "Accepted"
-
-  - action: send
-    message: SessionEnded
-    messageType: Event
-    payload:
-      sessionId: "{{captured.sessionB}}"
-      bayId: "{{bayId_1}}"
-      reason: "Local"
-      actualDurationSeconds: 2
-      creditsCharged: 0
-
-  - action: send
-    message: StatusNotification
-    messageType: Event
-    payload:
-      bayId: "{{bayId_1}}"
-      bayNumber: 1
-      status: "Finishing"
-      previousStatus: "Occupied"
-      programs:
-        - programNumber: 1
-          available: false
-  - action: send
-    message: StatusNotification
-    messageType: Event
-    payload:
-      bayId: "{{bayId_1}}"
-      bayNumber: 1
-      status: "Available"
-      previousStatus: "Finishing"
-      programs:
-        - programNumber: 1
-          available: true
-
-  - action: delay
-    ms: 1000
-
-  # --- ARM 3 — THE LAST USE IS SPENT. Reached even though this presentation is also inside
-  # the 60s interval, because the usage-limit check (:220-225) runs BEFORE the interval one
-  # (:266-283) — the ordering that put arm 2 where it is now works in this arm's favour. A NEW
-  # counter, so nothing here is a replay: the pass is simply out of uses.
-  - action: device_proof
-    device_private_key: "{{captured.devicePrivateKeyPem_2}}"
-    offline_pass_id: "{{captured.passBId}}"
-    counter: 2
-    bay_id: "{{bayId_1}}"
-    service_id: "{{serviceId_1}}"
-    requested_duration_seconds: 300
-    capture:
-      passBSecondProof: deviceProof
-      passBSecondTranscript: transcriptHash
-  - action: send
-    message: AuthorizeOfflinePass
-    payload:
-      offlinePassId: "{{captured.passBId}}"
-      offlinePass: "{{captured.passB}}"
-      counter: 2
-      bayId: "{{bayId_1}}"
-      serviceId: "{{serviceId_1}}"
-      requestedDurationSeconds: 300
-      deviceProof: "{{captured.passBSecondProof}}"
-      transcriptHash: "{{captured.passBSecondTranscript}}"
-
-  - action: wait_for
-    message: AuthorizeOfflinePass
-    messageType: Response
-    timeout_ms: 10000
-
-  - action: assert
-    field: "payload.status"
-    equals: "Rejected"
-
-  # PRIMARY — the structured discriminator: which of the thirteen checks fired.
-  - action: assert
-    field: "payload.reason"
-    contains: "OFFLINE_LIMIT_EXCEEDED: "
-  # SECONDARY — the exact bytes. A reword reds THIS line and the server is fine; see header.
-  - action: assert
-    field: "payload.reason"
-    equals: "OFFLINE_LIMIT_EXCEEDED: Offline pass usage limit exceeded"

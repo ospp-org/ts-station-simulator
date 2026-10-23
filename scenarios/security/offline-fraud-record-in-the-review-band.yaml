@@ -199,7 +199,8 @@ steps:
     expect_body:
       meta.total: 1
       data.0.type: "FraudDetected"
-      data.0.severity: "Warning"
+      # Stored and served lowercase, as every SecurityEvent's severity is; Warning on the wire.
+      data.0.severity: "warning"
       data.0.eventId: { matches: "^sec_[0-9a-f]{16}$" }
       data.0.details.band: "Review"
       data.0.details.action: "FlaggedForReview"

@@ -192,12 +192,39 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
+  # --- Both pending: wash 1 for the 50 the wallet did not cover, wash 2 for all of its 100 ---
+  # Read as the platform reads them, the pass's transactions: the pool's identity is a tenant
+  # operator and holds no self.wallet.view, so its wallet is not this scenario's to read; what
+  # settlement decided is on each transaction (csms-server offline group 2, the console's door).
   - action: api_call
     method: GET
-    url: "{{target_url}}/api/v1/wallet/balance"
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
     expect_status: 200
     expect_body:
-      data.balance: -150
+      "data[offlineTxId={{runOfflineTxId_1}}].settledCredits": 100
+      "data[offlineTxId={{runOfflineTxId_1}}].pendingCredits": 50
+      "data[offlineTxId={{runOfflineTxId_1}}].coveredAt": null
+      "data[offlineTxId={{runOfflineTxId_2}}].settledCredits": 100
+      "data[offlineTxId={{runOfflineTxId_2}}].pendingCredits": 100
+      "data[offlineTxId={{runOfflineTxId_2}}].coveredAt": null
 
   # --- The credit: the Partial-A session ended Deauthorized, refunded in full - 100 back ---
   - action: send
@@ -230,29 +257,7 @@ steps:
     field: "payload.status"
     equals: "Accepted"
 
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/wallet/balance"
-    expect_status: 200
-    expect_body:
-      data.balance: -50
-
   # --- Oldest first, the last in part: wash 1 closed, wash 2 pending for 50 ---
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/me"
-    expect_status: 200
-    capture:
-      customerId: "data.id"
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
-    auth:
-      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
-      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
-    expect_status: 200
-    capture:
-      passUuid: "data[passId={{captured.offlinePassId}}].id"
   - action: api_call
     method: GET
     url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
