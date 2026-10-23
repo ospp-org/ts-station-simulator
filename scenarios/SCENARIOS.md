@@ -144,7 +144,7 @@ branch that `core/happy-boot.yaml` does not.
 | Sessions | 30 | Full lifecycle, Start/Stop, Rejections (4 types), Timeout, Fault, Local, LocalOutOfCredit, Deauthorized, seqNo, finalSeqNo, MeterValues, Reservation, WebPayment |
 | Reservations | 8 | Reserve+Start, Cancel, Expire, Rejected (3 types) |
 | Device Management | 40 | Firmware (3), Diagnostics (2), Config (5), Reset (3), TriggerMessage (3), Maintenance (3), ServiceCatalog (1) |
-| Security | 32 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1), the five offline keys at boot, the app's receipt upload, pending debt released oldest first |
+| Security | 33 | SecurityEvent (11 types), Certificates (3), OfflinePass (6), TransactionEvent (1), the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band |
 | Chaos | 8 | Disconnect (3), Timeout, Slow responses, Malformed, Out-of-order |
 | Fleet | 3 | Parallel boot, Mixed workload, Meter flood |
 | e2e | 3 | New-customer onboarding, returning-customer session, session-end matrix — each self-provisions its own org, location and station |
@@ -249,7 +249,7 @@ branch that `core/happy-boot.yaml` does not.
 | `device-management/maintenance-mode-all-bays.yaml` | Maintenance All Bays | SetMaintenanceMode (no bayId) → all Unavailable | new |
 | `device-management/service-catalog-update.yaml` | Service Catalog Update | UpdateServiceCatalog → Accepted | migrated |
 
-## Security (32 scenarios)
+## Security (33 scenarios)
 
 | File | Name | What it tests | Status |
 |------|------|---------------|--------|
@@ -277,6 +277,7 @@ branch that `core/happy-boot.yaml` does not.
 | `security/offline-boot-carries-the-five-offline-keys.yaml` | Offline Boot Carries The Five Offline Keys | an Accepted boot of a station declaring the Offline / BLE profile carries OfflinePassPublicKey (a CSV of P-256 SPKIs), RevocationEpoch, OfflineModeEnabled, OfflineWindowHours and OfflineTransactionLimit; without the profile, none (spec v0.45.0) | new |
 | `security/offline-receipt-upload-then-the-station-copy.yaml` | Offline Receipt Uploaded By The App, Then The Station's Copy | POST /api/v1/offline/receipts settles the wash (200 Accepted); the station's TransactionEvent of the same receipt is a Duplicate; one row, channel upload (spec v0.45.0) | new |
 | `security/offline-pending-debt-released-oldest-first.yaml` | Offline Pending Debt Released Oldest First | two washes below zero stay pending for what the wallet did not cover; a later credit releases the older in full and the newer in part (spec v0.45.0) | new |
+| `security/offline-fraud-record-in-the-review-band.yaml` | Offline Fraud Record In The Review Band | a settled wash scoring 0.35 (RapidConsecutive, DurationExceedsAllowance) is Accepted and recorded as a server-originated FraudDetected, Warning, FlaggedForReview (spec v0.45.0) | new |
 
 > **Not in this table, and deliberately not in the corpus — `SignCertificate` originated from a
 > restricted (`Pending`) station.** Measured on the wire 2026-08-15 against csms-server `99cab60`:
@@ -411,7 +412,7 @@ each action; the station half is a fixture.*
 | MeterValues | Station→Server | meter-values-streaming, fleet-stress-meter-flood |
 | SessionEnded | Station→Server | session-timeout-timer-expired, session-fault-during-service, stop-service |
 | SessionStarted | Station→Server | offline-pass-authorize (**sent, not yet judged** — the start of a Partial-B session, spec v0.45.0 [MSG-043]; what the server does with it, the session it opens and the 40-second lapse, is csms-server offline group 3) |
-| TransactionEvent | Station→Server | offline-transaction-reconcile, offline-fraud-rapid-transactions, offline-receipt-upload-then-the-station-copy (a Duplicate after the app's copy), offline-pending-debt-released-oldest-first |
+| TransactionEvent | Station→Server | offline-transaction-reconcile, offline-fraud-rapid-transactions, offline-receipt-upload-then-the-station-copy (a Duplicate after the app's copy), offline-pending-debt-released-oldest-first, offline-fraud-record-in-the-review-band |
 | SecurityEvent | Station→Server | 11 security-event-* scenarios |
 | ChangeConfiguration | Server→Station | change-configuration-accepted, -reboot-required, -rejected |
 | GetConfiguration | Server→Station | get-configuration, get-configuration-filtered |

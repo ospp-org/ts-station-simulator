@@ -25,7 +25,7 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-165 YAML-driven test scenarios across 12 categories:
+166 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
@@ -38,7 +38,7 @@ npx simulator run --all --target sandbox
 | `probes` | 1 | Refusals leave a durable trace |
 | `provisioning` | 2 | Provision refusals — the request and token layers, then the key and topology rungs |
 | `reservations` | 8 | Reserve+Start, Cancel, Expire, Station refusal, Server-side rejections (busy, maintenance, already reserved) |
-| `security` | 32 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, the five offline keys at boot, the app's receipt upload, pending debt released oldest first, MAC verification |
+| `security` | 33 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, MAC verification |
 | `sessions` | 30 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
 | `tls-floor` | 10 | TLS version floor, mTLS, Expired and revoked certificates (broker CRL and local CRL), each with a positive control |
 
