@@ -81,4 +81,34 @@ describe('ApiCallStep - auth: for one step', () => {
     ).rejects.toThrow(/SIM_TEST_STEP_EMAIL/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it('re-authenticates a 401 of its own as the step identity, not as the customer a file signed in', async () => {
+    // An address no other case signs in, so the token cache of the module holds nothing for it.
+    process.env.SIM_TEST_STEP_EMAIL = 'psa-step-reauth@test.local';
+    process.env.SIM_TEST_STEP_PASSWORD = 'step-pw';
+    const ctx = scenarioContext();
+    // The scenario runs on a token a set_auth_token step installed from its customer's sign-in.
+    ctx.installedTokenIdentity = { email: 'customer@test.local', password: 'pw' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json(200, { data: { access_token: 'STEP_TOKEN' } }))
+      .mockResolvedValueOnce(json(401, { error: 'token_expired' }))
+      .mockResolvedValueOnce(json(200, { data: { access_token: 'STEP_FRESH' } }))
+      .mockResolvedValueOnce(json(200, { success: true }));
+
+    await new ApiCallStep().execute(
+      {
+        action: 'api_call',
+        method: 'GET',
+        url: 'http://test.local/api/v1/admin/offline-passes/epochs',
+        auth: { email_env: 'SIM_TEST_STEP_EMAIL', password_env: 'SIM_TEST_STEP_PASSWORD' },
+        expect_status: 200,
+      },
+      ctx,
+      station,
+    );
+
+    expect(JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)).email).toBe('psa-step-reauth@test.local');
+    const retried = (fetchMock.mock.calls[3]![1] as RequestInit).headers as Record<string, string>;
+    expect(retried.Authorization).toBe('Bearer STEP_FRESH');
+    expect(ctx.authToken).toBe('CUSTOMER_TOKEN');
+  });
 });

@@ -98,6 +98,14 @@ export interface ScenarioContext {
   /** API credentials for JWT login */
   apiCredentials?: { email: string; password: string };
   /**
+   * The identity of the token a step installed with `set_auth_token` (2026-10-23): the `email` and
+   * `password` of the sign-in that answered it, or null when the call that answered it named none.
+   * Undefined while the scenario runs on its own identity's token. A 401 is re-authenticated as this
+   * identity, never as `apiCredentials`, which is the run's: re-authenticating a customer's expired
+   * token as the pool's operator read the next answer as another user (403 SESSION_MISMATCH).
+   */
+  installedTokenIdentity?: { email: string; password: string } | null;
+  /**
    * Organization UUID for multi-tenant routing. Auto-injected as
    * `X-Organization-Id` header on /api/v1/admin/* calls by ApiCallStep.
    *
