@@ -129,7 +129,8 @@ steps:
       data.credits_authorized: "{{captured.offlineCreditsAuthorized}}"
       data.duration_requested: 300
 
-  # --- No SessionStarted: 40 seconds after the acceptance, and one sweep beyond them ---
+  # --- No SessionStarted: 40 seconds after the acceptance, and one sweep beyond them. Failed, nothing charged, the whole
+  #     authorize-time debit owed back (the refund the lapse orders; the settlement outbox pays it to the wallet) ---
   - action: delay
     ms: 55000
   - action: api_call
@@ -139,6 +140,7 @@ steps:
     expect_body:
       data.status: "failed"
       data.credits_charged: 0
+      data.refund_amount: "{{captured.offlineCreditsAuthorized}}"
 
   # --- The start that arrives after the lapse changes nothing ---
   - action: capture_time
@@ -159,14 +161,3 @@ steps:
     expect_status: 200
     expect_body:
       data.status: "failed"
-
-  # --- The authorize-time debit came back in full: the refund the lapse ordered, relayed to the wallet by the
-  #     settlement outbox within its 30-second cadence, of the whole authorized amount ---
-  - action: delay
-    ms: 35000
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/wallet/transactions?reference_type=refund"
-    expect_status: 200
-    expect_body:
-      "data[type=credit].amount": "{{captured.offlineCreditsAuthorized}}"
