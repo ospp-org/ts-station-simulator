@@ -734,10 +734,39 @@ async function ensureAuth(context: ScenarioContext): Promise<string | undefined>
  * third. Clearing one leaves the stale token reachable through the other.
  */
 async function reauthenticate(context: ScenarioContext): Promise<string | undefined> {
-  if (!context.apiBaseUrl || !context.apiCredentials) return undefined;
+  if (!context.apiBaseUrl) return undefined;
+  // A token a step installed is its own user's (2026-10-23): signed in again with the credentials of
+  // the sign-in that answered it, or not at all - a 401 re-authenticated as the run's identity would
+  // read the retry as another user.
+  if (context.installedTokenIdentity !== undefined) {
+    const identity = context.installedTokenIdentity;
+    if (identity === null) return undefined;
+    const installed = Object.create(context) as ScenarioContext;
+    installed.apiCredentials = identity;
+    installed.authToken = undefined;
+    installed.installedTokenIdentity = undefined;
+    tokenCache.delete(`${context.apiBaseUrl}::${identity.email}`);
+    const fresh = await ensureAuth(installed);
+    if (fresh !== undefined) context.authToken = fresh;
+    return fresh;
+  }
+  if (!context.apiCredentials) return undefined;
   tokenCache.delete(`${context.apiBaseUrl}::${context.apiCredentials.email}`);
   context.authToken = undefined;
   return ensureAuth(context);
+}
+
+/**
+ * The credentials a call carried in its body - `email` and `password`, both non-empty strings, as a
+ * sign-in or a registration sends them - or null when it carried none: the identity of a token
+ * `set_auth_token` installs from its answer.
+ */
+function credentialsOf(bodyValue: unknown): { email: string; password: string } | null {
+  if (!bodyValue || typeof bodyValue !== 'object' || Array.isArray(bodyValue)) return null;
+  const { email, password } = bodyValue as Record<string, unknown>;
+  return typeof email === 'string' && email !== '' && typeof password === 'string' && password !== ''
+    ? { email, password }
+    : null;
 }
 
 /**
@@ -775,6 +804,8 @@ function stepAuthContext(definition: StepDefinition, context: ScenarioContext): 
   const stepContext = Object.create(context) as ScenarioContext;
   stepContext.apiCredentials = { email, password };
   stepContext.authToken = undefined;
+  // Not the scenario's installed token's identity either: the step's 401 is its own identity's.
+  stepContext.installedTokenIdentity = undefined;
   stepContext.orgId = undefined;
   return stepContext;
 }
@@ -1213,9 +1244,13 @@ export class ApiCallStep implements Step {
     // SUBJECT is a refusal. Three conditions, and they are not equally strong —
     // said plainly rather than listed as if they were:
     //
-    //   `context.apiCredentials`  THE OPERATIVE GUARD. Without credentials there
-    //                             is nothing to re-login with, so a 401 on an
-    //                             unauthenticated call stands as the answer.
+    //   `reauthIdentity`          THE OPERATIVE GUARD. The identity of the token that
+    //                             was refused: the credentials of the sign-in a
+    //                             `set_auth_token` step installed it from, or the
+    //                             run's (or the step's) own. Without one there is
+    //                             nothing to re-login with as that user - a token
+    //                             installed from a call that named no credentials,
+    //                             or an unauthenticated call - and the 401 stands.
     //   `token`                   REDUNDANT, kept for intent. `ensureAuth` returns
     //                             a token whenever credentials exist, so this can
     //                             only be false when the guard above is too. It
@@ -1239,7 +1274,10 @@ export class ApiCallStep implements Step {
     // one: the header is generated per-request at fetchHeaders above, and reusing
     // the original would let the server replay a cached response for a request it
     // never actually authorized.
-    if (response.status === 401 && token && authContext.apiCredentials) {
+    const reauthIdentity = authContext.installedTokenIdentity !== undefined
+      ? authContext.installedTokenIdentity
+      : authContext.apiCredentials;
+    if (response.status === 401 && token && reauthIdentity) {
       const freshToken = await reauthenticate(authContext);
       if (freshToken && freshToken !== token) {
         console.warn(
@@ -1633,6 +1671,7 @@ export class ApiCallStep implements Step {
           );
         }
         context.authToken = value;
+        context.installedTokenIdentity = credentialsOf(bodyValue);
       }
 
       if (definition.capture && typeof definition.capture === 'object') {

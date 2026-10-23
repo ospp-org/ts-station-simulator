@@ -204,4 +204,97 @@ describe('ApiCallStep — re-auth once on 401, and only where it is safe', () =>
     // reusing it would replay the 401 rather than issue the authorized request.
     expect(retryKey).not.toBe(firstKey);
   });
+
+  /**
+   * THE IDENTITY OF THE RE-AUTH IS THE IDENTITY OF THE TOKEN THAT EXPIRED (2026-10-23).
+   *
+   * A file that signs a customer in with `set_auth_token` runs its later steps as that customer.
+   * Until this case the re-auth signed in as the run's identity (`apiCredentials`, the pool's
+   * operator) whatever token had expired, so a file that waited longer than the token lives read
+   * the next answer as another user: `403 SESSION_MISMATCH` on the D5 proof of 2026-10-23 16:26Z.
+   */
+  it('re-authenticates as the customer a set_auth_token step signed in, not as the run identity', async () => {
+    const ctx = ctxWithStaleToken();
+    ctx.authToken = 'POOL_TOKEN';
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(loginOk('CUSTOMER_TOKEN'))       // 1. the file's own sign-in of its customer
+      .mockResolvedValueOnce(expired())                        // 2. the customer's call, its token expired
+      .mockResolvedValueOnce(loginOk('CUSTOMER_FRESH'))        // 3. the re-login
+      .mockResolvedValueOnce(ok({ data: { balance: 7 } }));    // 4. the retry
+
+    await new ApiCallStep().execute(
+      {
+        action: 'api_call',
+        method: 'POST',
+        url: 'http://test.local/api/v1/auth/login',
+        body: { email: 'customer@test.local', password: 'customer-pw' },
+        expect_status: 200,
+        set_auth_token: 'data.access_token',
+      },
+      ctx,
+      dummyStation,
+    );
+    expect(ctx.authToken).toBe('CUSTOMER_TOKEN');
+
+    await new ApiCallStep().execute(
+      {
+        action: 'api_call',
+        method: 'GET',
+        url: 'http://test.local/api/v1/wallet',
+        expect_status: 200,
+        expect_body: { 'data.balance': 7 },
+      },
+      ctx,
+      dummyStation,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[2]![0]).toBe('http://test.local/api/v1/auth/login');
+    const relogin = JSON.parse(String((fetchMock.mock.calls[2]![1] as RequestInit).body)) as Record<string, unknown>;
+    expect(relogin).toEqual({ email: 'customer@test.local', password: 'customer-pw' });
+    const retry = (fetchMock.mock.calls[3]![1] as RequestInit).headers as Record<string, string>;
+    expect(retry.Authorization).toBe('Bearer CUSTOMER_FRESH');
+    expect(ctx.authToken).toBe('CUSTOMER_FRESH');
+    // The run's identity is untouched: what the file signed in is the token's, not the run's.
+    expect(ctx.apiCredentials).toEqual({ email: 'admin@test.local', password: 'pw' });
+  });
+
+  it('lets a 401 stand when the installed token came from a call that named no credentials', async () => {
+    const ctx = ctxWithStaleToken();
+    ctx.authToken = 'POOL_TOKEN';
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(ok({ data: { access_token: 'HANDED_TOKEN' } })) // a token handed over, no sign-in
+      .mockResolvedValueOnce(expired())
+      // What a re-auth as the run's identity would be answered - it must never be asked.
+      .mockResolvedValueOnce(loginOk('POOL_FRESH'))
+      .mockResolvedValueOnce(ok({ data: { balance: 0 } }));
+
+    await new ApiCallStep().execute(
+      {
+        action: 'api_call',
+        method: 'POST',
+        url: 'http://test.local/api/v1/invitations/accept',
+        body: { token: 'inv_1' },
+        expect_status: 200,
+        set_auth_token: 'data.access_token',
+      },
+      ctx,
+      dummyStation,
+    );
+
+    await new ApiCallStep().execute(
+      {
+        action: 'api_call',
+        method: 'GET',
+        url: 'http://test.local/api/v1/wallet',
+        expect_status: 401,
+      },
+      ctx,
+      dummyStation,
+    );
+
+    // No re-login as the run's identity: the token's own user cannot be signed in again, so the
+    // 401 is the answer rather than another user's.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
