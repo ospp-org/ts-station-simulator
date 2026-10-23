@@ -1,0 +1,250 @@
+name: "Partial-B Session Stopped By The Server Settles On Its Stop Record"
+description: "The customer stops a running Partial-B session from the app; the server sends StopService and the station's Accepted RESPONSE settles it as the stop the server issued; the receipt the app then uploads, signed endReason ServerStopped, is a Duplicate with no effect, recorded as the session's, and nothing flags the stop as unrecorded (authorize-offline-pass.md 6 rule 4a; receipt-data.schema.json; reconciliation.md 3 rule 5; OM24; csms-server offline group 3)."
+# --- csms-server offline group 3 (2026-10-23), OM24 -----------------------------------------------------------
+# Group 2 settled a ServerStopped pass-form receipt as the operator's stop, flagged `server_stop_unrecorded`: with
+# no Partial-B session row the server held no record of the stop it issued. The session row holds it now, and the
+# StopService RESPONSE settles the session; the receipt after it is the session's, a Duplicate.
+station:
+  stationId: "{{stationId}}"
+  bayCount: 2
+  stationModel: "WashPro X200"
+  stationVendor: "SimCorp"
+  behavior:
+    accept_rate: 1.0
+    response_delay_ms: [50, 200]
+steps:
+  # --- Boot, and declare the bay this file uses Available (a pooled run shares the bay's state) ---
+  - action: send
+    message: BootNotification
+    payload:
+      stationId: "{{stationId}}"
+      firmwareVersion: "1.0.0"
+      stationModel: "WashPro X200"
+      stationVendor: "SimCorp"
+      serialNumber: "{{serialNumber}}"
+      bays:
+        - bayNumber: 1
+          programNumbers: [1]
+        - bayNumber: 2
+          programNumbers: [1]
+      uptimeSeconds: 0
+      pendingOfflineTransactions: 0
+      timezone: "Europe/Bucharest"
+      bootReason: "PowerOn"
+      capabilities:
+        bleSupported: false
+        offlineModeSupported: true
+        meterValuesSupported: true
+      networkInfo:
+        connectionType: "Ethernet"
+
+  - action: wait_for
+    message: BootNotification
+    messageType: Response
+    timeout_ms: 10000
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true
+
+  # --- The pass, issued to a device key the phone attested (app-contract.md 3, 3.6) ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/attestation-challenges"
+    expect_status: 200
+    capture:
+      attestationChallenge: "challenge"
+  - action: attest_device
+    challenge: "{{captured.attestationChallenge}}"
+    capture:
+      devicePublicKey: devicePublicKey
+      deviceKeyAttestation: deviceKeyAttestation
+      devicePrivateKeyPem: devicePrivateKeyPem
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/passes"
+    body:
+      deviceId: "{{runDeviceId}}"
+      devicePublicKey: "{{captured.devicePublicKey}}"
+      deviceKeyAttestation: "{{captured.deviceKeyAttestation}}"
+    expect_status: 200
+    capture:
+      offlinePass: "offlinePass"
+      offlinePassId: "offlinePass.passId"
+      offlineUserSub: "offlinePass.sub"
+
+  # --- Partial B: the phone presents the pass over BLE, the station forwards it (authorize-offline-pass.md 3) ---
+  - action: device_proof
+    device_private_key: "{{captured.devicePrivateKeyPem}}"
+    offline_pass_id: "{{captured.offlinePassId}}"
+    counter: 1
+    bay_id: "{{bayId_1}}"
+    service_id: "{{serviceId_1}}"
+    requested_duration_seconds: 300
+    capture:
+      presentationProof: deviceProof
+      presentationTranscript: transcriptHash
+
+  - action: send
+    message: AuthorizeOfflinePass
+    payload:
+      offlinePassId: "{{captured.offlinePassId}}"
+      offlinePass: "{{captured.offlinePass}}"
+      counter: 1
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      requestedDurationSeconds: 300
+      deviceProof: "{{captured.presentationProof}}"
+      transcriptHash: "{{captured.presentationTranscript}}"
+
+  - action: wait_for
+    message: AuthorizeOfflinePass
+    messageType: Response
+    timeout_ms: 10000
+    capture:
+      offlineSessionId: "payload.sessionId"
+      offlineCreditsAuthorized: "payload.creditsAuthorized"
+
+  - action: assert
+    field: "payload.status"
+    equals: "Accepted"
+
+  # --- The session the acceptance opened is the customer's, under the answer's sessionId (rule 4) ---
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "authorized"
+      data.credits_authorized: "{{captured.offlineCreditsAuthorized}}"
+      data.duration_requested: 300
+
+  - action: capture_time
+    capture:
+      washStartedAt: 0
+      washEndedAt: 5
+  - action: send
+    message: SessionStarted
+    messageType: Event
+    payload:
+      sessionId: "{{captured.offlineSessionId}}"
+      bayId: "{{bayId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+
+  - action: delay
+    ms: 3000
+
+  # --- The customer stops it from the app: the server asks the station, which is online in Partial B ---
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}/stop"
+    expect_status: 200
+
+  - action: wait_for
+    message: StopService
+    messageType: Request
+    timeout_ms: 15000
+
+  - action: send
+    message: StopService
+    messageType: Response
+    payload:
+      status: "Accepted"
+      actualDurationSeconds: 5
+      creditsCharged: 1
+
+  - action: delay
+    ms: 3000
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+    capture:
+      settledCharge: "data.credits_charged"
+
+  # --- The app's copy of the receipt, signed ServerStopped, after the stop record settled the session ---
+  - action: delay
+    ms: 3000
+  - action: api_call
+    method: POST
+    url: "{{target_url}}/api/v1/offline/receipts"
+    sign_receipt: true
+    body:
+      offlineTxId: "{{runOfflineTxId}}"
+      offlinePassId: "{{captured.offlinePassId}}"
+      passCounter: 1
+      userId: "{{captured.offlineUserSub}}"
+      deviceId: "{{runDeviceId}}"
+      bayId: "{{bayId_1}}"
+      serviceId: "{{serviceId_1}}"
+      startedAt: "{{captured.washStartedAt}}"
+      endedAt: "{{captured.washEndedAt}}"
+      durationSeconds: 5
+      bookedDurationSeconds: 300
+      endReason: "ServerStopped"
+      clockState: "Synchronized"
+      creditsCharged: 1
+      txCounter: 1
+      receipt: {}
+    expect_status: 200
+    expect_body:
+      status: "Duplicate"
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/me"
+    expect_status: 200
+    capture:
+      customerId: "data.id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes?user_id={{captured.customerId}}"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    capture:
+      passUuid: "data[passId={{captured.offlinePassId}}].id"
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/admin/offline-passes/{{captured.passUuid}}/transactions"
+    auth:
+      email_env: UAT_E2E_PLATFORM_ADMIN_EMAIL
+      password_env: UAT_E2E_PLATFORM_ADMIN_PASSWORD
+    expect_status: 200
+    expect_body:
+      "data[offlineTxId={{runOfflineTxId}}].status": "session_receipt"
+      "data[offlineTxId={{runOfflineTxId}}].endReason": "ServerStopped"
+      "data[offlineTxId={{runOfflineTxId}}].reviewFlags": []
+
+  - action: api_call
+    method: GET
+    url: "{{target_url}}/api/v1/sessions/{{captured.offlineSessionId}}"
+    expect_status: 200
+    expect_body:
+      data.status: "completed"
+      data.credits_charged: "{{captured.settledCharge}}"
+
+  - action: send
+    message: StatusNotification
+    messageType: Event
+    payload:
+      bayId: "{{bayId_1}}"
+      bayNumber: 1
+      status: "Available"
+      programs:
+        - programNumber: 1
+          available: true

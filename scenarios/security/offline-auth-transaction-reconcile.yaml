@@ -143,22 +143,14 @@ steps:
   # the TransactionEvent below was said to need out of band, so the file mints its own grant
   # and captures them instead of demanding a --var.
   #
-  # The route is gated `feature:offline_mode_enabled` + `org.context` + `org.member` and it
-  # DEBITS the wallet at signing time, so it needs the per-scenario identity the pool mints
-  # (offline_enabled=true, funded) and that identity's organisation — which is why this works
-  # in a pooled run and could not have worked from a bare --station run.
-  - action: api_call
-    method: GET
-    url: "{{target_url}}/api/v1/organizations"
-    expect_status: 200
-    capture:
-      org_id: "data.0.id"
-
+  # The route is gated `feature:offline_mode_enabled` and it DEBITS the wallet at signing time, so it needs
+  # the per-scenario identity the pool mints (funded) - which is why this works in a pooled run and could not
+  # have worked from a bare --station run. Since csms-server offline group 3 (OM14) the grant is the STATION's
+  # tenant's and the route takes no organization context: until then this file read its identity's
+  # organization from GET /api/v1/organizations and sent it as X-Organization-Id.
   - action: api_call
     method: POST
     url: "{{target_url}}/api/v1/sessions/offline-auth"
-    headers:
-      X-Organization-Id: "{{captured.org_id}}"
     body:
       stationId: "{{stationId}}"
       bayId: "{{bayId_1}}"

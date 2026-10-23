@@ -25,20 +25,20 @@ npx simulator run --all --target sandbox
 
 ## Scenarios
 
-166 YAML-driven test scenarios across 12 categories:
+171 YAML-driven test scenarios across 12 categories:
 
 | Suite | Scenarios | Coverage |
 |-------|-----------|----------|
 | `chaos` | 8 | Disconnect (boot, session), Connection timeout, Slow responses, Malformed and out-of-order frames, Rapid reconnect |
 | `core` | 25 | Boot (all reasons, and the Pending/Rejected arms), Heartbeat, StatusNotification, ConnectionLost/LWT, DataTransfer, Topology mismatch, Planned shutdown |
-| `device-management` | 40 | Firmware (14), Configuration, Diagnostics, Reset, TriggerMessage, Maintenance, Service catalog, Bay edit |
+| `device-management` | 41 | Firmware (14), Configuration, Diagnostics, Reset, TriggerMessage, Maintenance, Service catalog, Bay edit, the server key set written by no one |
 | `e2e` | 3 | New-customer onboarding, Returning-customer session, Session-end reason matrix |
 | `fleet` | 3 | Parallel boot, Mixed workload, Meter flood |
 | `multiunit-e2e` | 3 | Multi-unit batch drive, Multi-unit jam drive, Single-session drive |
 | `probes` | 1 | Refusals leave a durable trace |
 | `provisioning` | 2 | Provision refusals — the request and token layers, then the key and topology rungs |
 | `reservations` | 8 | Reserve+Start, Cancel, Expire, Station refusal, Server-side rejections (busy, maintenance, already reserved) |
-| `security` | 33 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, MAC verification |
+| `security` | 37 | SecurityEvents (11 types), Certificates (install, sign, renewal), OfflinePass (issuance to an attested device key, refusal after revocation and after expiry), TransactionEvent, the five offline keys at boot, the app's receipt upload, pending debt released oldest first, the fraud record in the Review band, the Partial-B session settled on its receipt, on the server's stop and by its lapse, the Partial-A authorization refunded at its expiry and its late receipt, MAC verification |
 | `sessions` | 30 | Full lifecycle, Start/Stop, Refusals, Timeout, Fault, MeterValues, Web payment, Reservation-backed start |
 | `tls-floor` | 10 | TLS version floor, mTLS, Expired and revoked certificates (broker CRL and local CRL), each with a positive control |
 

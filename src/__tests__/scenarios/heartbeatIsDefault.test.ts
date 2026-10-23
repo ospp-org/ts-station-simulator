@@ -370,7 +370,10 @@ describe('heartbeat is the scenario default — the corpus', () => {
     // 162 -> 166 on 2026-10-23: csms-server's offline group 2 (spec v0.45.0) - the five offline
     // keys at boot, the app's receipt upload, pending debt released oldest first, and the fraud
     // record in the Review band; none of the four needs silence.
-    expect(files.length).toBe(166);
+    // 166 -> 171 on 2026-10-23: csms-server's offline group 3 - the Partial-B session settled on its receipt, on
+    // the server's stop and by its lapse, the Partial-A authorization refunded at its expiry with its late receipt,
+    // and the server key set written by no one; the lapse and the expiry wait online, under the default heartbeat.
+    expect(files.length).toBe(171);
   });
 
   it('exactly the files whose SUBJECT is application silence declare it', () => {
