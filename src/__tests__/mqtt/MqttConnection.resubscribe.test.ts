@@ -15,6 +15,11 @@ import { MqttConnection } from '../../mqtt/MqttConnection.js';
  * Against a broker on a socket that answers as EMQX does - CONNACK, SUBACK, PUBACK - and drops the first connection:
  * at Session Present 0 the reconnected connection subscribes to the station's topic again, at the QoS it had, before
  * its first publish; at Session Present 1 it does not, the broker having kept the subscription.
+ *
+ * And with no reconnectPeriod of its own mqtt.js fails every publish in flight with Error('Connection closed') when it
+ * forces a Clean Start connection closed - a keep-alive or CONNACK timeout, end(true) (its _flush in _cleanUp) - where
+ * it kept them for the resend before. Such a message was not acknowledged with success: the publish resolves null and
+ * the station holds it for the replay (freeze item 33), rather than rejecting what the caller sent.
  */
 
 interface Packet { cmd: string; topic?: string; subscriptions?: Array<{ topic: string; qos: number }>; messageId?: number; qos?: number }
@@ -33,7 +38,7 @@ afterEach(async () => {
 });
 
 /** A broker that answers each CONNECT with the Session Present `sessionPresent(n)` says for its nth connection. */
-async function broker(sessionPresent: (n: number) => boolean): Promise<{ port: number; seen: BrokerConnection[] }> {
+async function broker(sessionPresent: (n: number) => boolean, opts: { puback?: boolean } = {}): Promise<{ port: number; seen: BrokerConnection[] }> {
   const seen: BrokerConnection[] = [];
   const server = net.createServer((socket) => {
     const conn: BrokerConnection = { socket, packets: [] };
@@ -46,7 +51,7 @@ async function broker(sessionPresent: (n: number) => boolean): Promise<{ port: n
       conn.packets.push(packet);
       if (packet.cmd === 'connect') send({ cmd: 'connack', reasonCode: 0, sessionPresent: sessionPresent(n) });
       if (packet.cmd === 'subscribe') send({ cmd: 'suback', messageId: packet.messageId, granted: (packet.subscriptions ?? []).map((s) => s.qos) });
-      if (packet.cmd === 'publish' && packet.qos === 1) send({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 });
+      if (packet.cmd === 'publish' && packet.qos === 1 && opts.puback !== false) send({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 });
       if (packet.cmd === 'pingreq') send({ cmd: 'pingresp' });
     });
     socket.on('data', (data) => parser.parse(data));
@@ -102,5 +107,24 @@ describe('MqttConnection - a reconnect subscribes to what the station subscribed
 
     expect(packets.filter((p) => p.cmd === 'subscribe')).toEqual([]);
     expect(packets.some((p) => p.cmd === 'publish')).toBe(true);
+  }, 20_000);
+});
+
+describe('MqttConnection - a message in flight when mqtt.js forces the connection closed', () => {
+  it('resolves null, not an error: the broker never acknowledged it, and the station holds it for the replay', async () => {
+    const { port, seen } = await broker(() => false, { puback: false });
+    const conn = new MqttConnection({ mqttUrl: `mqtt://127.0.0.1:${port}`, stationId: STATION, cleanSession: true });
+    connections.push(conn);
+    let connected = false;
+    conn.on('connect', () => { connected = true; });
+    conn.connect();
+    await until(() => connected, 5000, 'the connection');
+    const inFlight = conn.publish(TO_SERVER, 'SessionEnded', 1);
+    await until(() => seen[0].packets.some((p) => p.cmd === 'publish'), 5000, 'the publish at the broker');
+
+    // end(true): what a keep-alive or CONNACK timeout does too (mqtt.js's _cleanUp with force).
+    conn.severConnection();
+
+    await expect(inFlight).resolves.toBeNull();
   }, 20_000);
 });
