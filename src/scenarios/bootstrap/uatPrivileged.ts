@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { perMinuteCredits } from '../../station/perMinuteCredits.js';
 
 /**
  * Privileged UAT database access for the per-run pool bootstrap/teardown.
@@ -377,7 +378,8 @@ export const MAX_SESSION_DURATION_SECONDS = 600;
 /**
  * Credits a single `POST /sessions/start` would authorize for {@link service} at the server's
  * maximum accepted duration. Mirrors the live quote of the `$creditsAuthorized` assignment in
- * `StartSessionAction::execute` exactly:
+ * `StartSessionAction::execute` exactly - in whole units, as the server computes it since csms-server
+ * 248b50d4 (`ServicePrice::perMinute`); at 600 s, ten whole minutes, floating point gave the same:
  *
  *   creditsAuthorized = pricingType === 'Fixed'
  *       ? priceCreditsFixed
@@ -385,7 +387,7 @@ export const MAX_SESSION_DURATION_SECONDS = 600;
  */
 export function maxCreditsAuthorizedFor(service: SeededService): number {
   if (service.pricingType === 'Fixed') return service.priceCreditsFixed ?? 0;
-  return Math.ceil(MAX_SESSION_DURATION_SECONDS / 60 * (service.priceCreditsPerMinute ?? 0));
+  return perMinuteCredits(MAX_SESSION_DURATION_SECONDS, service.priceCreditsPerMinute ?? 0);
 }
 
 /**
