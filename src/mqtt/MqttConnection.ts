@@ -350,6 +350,13 @@ export class MqttConnection extends EventEmitter {
    * matching subscribers" as on a 0x00, and says which to nobody.
    */
   private readonly unsettledPublishes = new Set<PacketCallback>();
+  /**
+   * WHAT THIS CLIENT SUBSCRIBED TO, AND AT WHICH QoS (2026-10-25). mqtt.js subscribes a client to its topics again after
+   * a reconnect that found no session, but records them only while its own `reconnectPeriod` is above 0 - and this
+   * connection reconnects itself, with mqtt.js's period at 0. So the connection records them and subscribes again
+   * itself (the 'connect' handler); a new client starts with none, Station.connect() subscribing it after its connect.
+   */
+  private readonly subscriptions = new Map<string, 0 | 1 | 2>();
   private readonly pubackReasonCodes = new Map<number, number>();
 
   constructor(options: MqttConnectionOptions) {
@@ -455,6 +462,7 @@ export class MqttConnection extends EventEmitter {
     this.currentClientId = this.stationId;
     const opts = this.buildConnectOptions();
 
+    this.subscriptions.clear();
     this.client = connect(this.mqttUrl, opts);
     this.wireClientEvents(this.client);
   }
@@ -556,6 +564,11 @@ export class MqttConnection extends EventEmitter {
       this.kickReasonCode = null;
       this.reconnectRefused = false;
       this.refusalReasonCode = null;
+      // A broker that kept no session kept no subscription: subscribed again before anything the listeners send - the
+      // BootNotification that opens a reconnection is answered on the station's topic (connection-lost.md §6 step 1).
+      if (connack.sessionPresent !== true) {
+        this.subscribeAgain(client);
+      }
       this.emit('connect', connack);
     });
 
@@ -640,6 +653,17 @@ export class MqttConnection extends EventEmitter {
       if (this.client !== client || client.disconnecting) return;
       client.reconnect({ incomingStore: client.incomingStore, outgoingStore: client.outgoingStore });
     }, delay);
+  }
+
+  /** Every topic this client subscribed to, at its QoS, on a connection that found no session (the 'connect' handler). */
+  private subscribeAgain(client: MqttClient): void {
+    for (const [topic, qos] of this.subscriptions) {
+      client.subscribe(topic, { qos }, (err) => {
+        if (err) {
+          console.error('[MqttConnection] %s: subscribing again to %s failed: %s', this.stationId, topic, err.message);
+        }
+      });
+    }
   }
 
   private clearReconnectTimer(): void {
@@ -917,8 +941,10 @@ export class MqttConnection extends EventEmitter {
         reject(new Error('MQTT client is not connected'));
         return;
       }
+      this.subscriptions.set(topic, qos);
       this.client.subscribe(topic, { qos }, (err) => {
         if (err) {
+          this.subscriptions.delete(topic);
           reject(err);
         } else {
           resolve();
