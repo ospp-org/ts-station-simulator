@@ -142,6 +142,36 @@ describe('MqttConnection — KICK detection (broker-initiated vs self-initiated 
     fakeClients[0].emit('connect', { cmd: 'connack', returnCode: 0 });
     expect(conn.getSeverance().kicked).toBe(false);
   });
+
+  it('counts the kicks, and the reconnect that clears `kicked` keeps the count (2026-10-25)', () => {
+    // A station reconnects 1.0-1.3 s after the link drops (02-transport.md §4.5, reconnectBackoff.ts) - a kick
+    // included - so by the time a scenario looks, `kicked` has usually been cleared by the reconnect. The count is
+    // the record a scenario asserts on: the disable of core/boot-disabled-station-boots-and-stays-gated.yaml
+    // read `kicked` 2 s after it, and failed on UAT once the station was back after 1 s.
+    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: nextStationId() });
+    conn.connect();
+    expect(conn.getSeverance().kicks).toBe(0);
+
+    fakeClients[0].emit('disconnect', { cmd: 'disconnect', reasonCode: DISCONNECT_REASON_ADMIN_ACTION });
+    fakeClients[0].emit('close');
+    fakeClients[0].emit('connect', { cmd: 'connack', returnCode: 0 });
+
+    expect(conn.getSeverance().kicked).toBe(false);
+    expect(conn.getSeverance().kicks).toBe(1);
+
+    fakeClients[0].emit('disconnect', { cmd: 'disconnect', reasonCode: DISCONNECT_REASON_ADMIN_ACTION });
+    expect(conn.getSeverance().kicks).toBe(2);
+  });
+
+  it('CONTROL: a close the broker did not send a DISCONNECT for is not counted as a kick', () => {
+    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: nextStationId() });
+    conn.connect();
+
+    fakeClients[0].emit('close');
+    fakeClients[0].emit('connect', { cmd: 'connack', returnCode: 0 });
+
+    expect(conn.getSeverance().kicks).toBe(0);
+  });
 });
 
 describe('MqttConnection — BAN detection (a refused reconnect is REFUSED, not retried forever)', () => {

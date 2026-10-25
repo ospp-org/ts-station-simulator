@@ -97,6 +97,7 @@ describe('AssertStep — "connection.*" transport-level assertions', () => {
     const fullSeverance: SeveranceState = {
       lastCloseCause: 'none',
       kicked: false,
+      kicks: 0,
       kickReasonCode: null,
       reconnectRefused: false,
       refusalReasonCode: null,
