@@ -131,6 +131,11 @@ export interface SeveranceState {
   lastCloseCause: SeveranceCause;
   /** True from a broker-sent DISCONNECT until the next successful connect. */
   kicked: boolean;
+  /**
+   * How many DISCONNECTs the broker has sent this connection - a record the reconnect that clears `kicked` keeps
+   * (2026-10-25): a kicked station is back 1.0-1.3 s later (02-transport.md §4.5), usually before a scenario looks.
+   */
+  kicks: number;
   /** Reason code carried by that DISCONNECT, if the broker supplied one. */
   kickReasonCode: number | null;
   /** True when the most recent reconnect probe was REFUSED by the broker. */
@@ -325,6 +330,7 @@ export class MqttConnection extends EventEmitter {
   private closeCause: SeveranceCause = 'none';
   private readonly willDelayIntervalSeconds: number;
   private kickReasonCode: number | null = null;
+  private kickCount = 0;
   private reconnectRefused = false;
   private refusalReasonCode: number | null = null;
   /**
@@ -594,6 +600,7 @@ export class MqttConnection extends EventEmitter {
     client.on('disconnect', (packet) => {
       this.closeCause = 'broker-kick';
       this.kickReasonCode = packet.reasonCode ?? null;
+      this.kickCount += 1;
       this.emit('kicked', this.kickReasonCode);
     });
 
@@ -722,6 +729,7 @@ export class MqttConnection extends EventEmitter {
     return {
       lastCloseCause: this.closeCause,
       kicked: this.closeCause === 'broker-kick',
+      kicks: this.kickCount,
       kickReasonCode: this.kickReasonCode,
       reconnectRefused: this.reconnectRefused,
       refusalReasonCode: this.refusalReasonCode,

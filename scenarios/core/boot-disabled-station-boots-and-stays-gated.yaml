@@ -72,9 +72,15 @@ steps:
   # Discovered by running: the first draft of this rewrite sent the boot straight
   # after the PATCH and timed out waiting for a response, because there was no
   # connection left to answer on. `is_active: false` severs the session.
+  #
+  # Asserted on the COUNT of the broker's DISCONNECTs, not on `kicked`: the station
+  # is back 1.0-1.3 s after the kick (02-transport.md §4.5), and the reconnect clears
+  # `kicked`, true only until then - read 2 s after the PATCH it was false on UAT
+  # (2026-10-25), and the scenario stopped before re-enabling the station. One kick,
+  # the disable's; the count survives the reconnect.
   - action: assert
-    field: "connection.kicked"
-    equals: true
+    field: "connection.kicks"
+    equals: 1
 
   # ...and the station can come BACK. This is the repair invariant `67aab07`
   # restored and the one that must not regress: the durable reconnect BAN was
