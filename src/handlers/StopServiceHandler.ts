@@ -11,6 +11,7 @@ import type { Handler, StationContext } from './Handler.js';
 import { errorName } from './bayRefusal.js';
 import { clearWashTimer } from '../station/sessionEnd.js';
 import { deliveredSeconds } from '../station/delivered.js';
+import { perMinuteCredits } from '../station/perMinuteCredits.js';
 import { clearMeterTimer, highestSeqNo, nextMeterValues, publishMeterValues, readingAt } from '../station/sessionMeter.js';
 import { reportBayStatus } from '../station/bayReport.js';
 
@@ -126,9 +127,7 @@ export class StopServiceHandler implements Handler {
     // after a restart it adds the delivered seconds the restart carried in, since the monotonic
     // origin of this process is the instant the wash resumed, not the instant it started.
     const actualDurationSeconds = deliveredSeconds(session);
-    const creditsCharged = Math.ceil(
-      (actualDurationSeconds / 60) * session.priceCreditsPerMinute,
-    );
+    const creditsCharged = perMinuteCredits(actualDurationSeconds, session.priceCreditsPerMinute);
 
     // THE FINAL READING (meter-values.md §5.1 rule 3): a MeterValues before this RESPONSE, which
     // carries the same reading (stop-service.md §6 rule 7). Its seqNo is issued here, before anything

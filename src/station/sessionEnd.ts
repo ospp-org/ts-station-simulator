@@ -9,6 +9,7 @@ import {
 import type { SessionInfo, StationContext } from '../handlers/Handler.js';
 import type { HeldSessionEnded } from './SessionStore.js';
 import { deliveredMs, deliveredSeconds } from './delivered.js';
+import { perMinuteCredits } from './perMinuteCredits.js';
 import { clearMeterTimer, nextMeterValues, publishMeterValues, readingAt } from './sessionMeter.js';
 import { reportBayStatus } from './bayReport.js';
 
@@ -107,7 +108,7 @@ export async function endSession(
   const actualDurationSeconds = Math.max(0, opts.deliveredSeconds ?? deliveredSeconds(session));
   const creditsCharged = ZERO_BILLED.has(reason)
     ? 0
-    : Math.ceil((actualDurationSeconds / 60) * (session.priceCreditsPerMinute ?? DEFAULT_PRICE_CREDITS_PER_MINUTE));
+    : perMinuteCredits(actualDurationSeconds, session.priceCreditsPerMinute ?? DEFAULT_PRICE_CREDITS_PER_MINUTE);
 
   // THE FINAL READING, before the end record that carries it too (meter-values.md §5.1 rule 3). It
   // makes rule 1 hold for a wash shorter than the interval. Dropped, taking no number, when the
