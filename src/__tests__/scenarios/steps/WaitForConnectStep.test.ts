@@ -67,18 +67,21 @@ describe('Station.waitForConnect()', () => {
     );
   });
 
+  // Against the station's own listeners: it tracks whether its socket is up on `connect` for good (2026-10-25).
   it('removes its `connect` listener after resolving (no leak)', async () => {
     const station = buildStation();
+    const before = conn(station).listenerCount('connect');
     const pending = station.waitForConnect(1000);
     conn(station).emit('connect', {});
     await pending;
-    expect(conn(station).listenerCount('connect')).toBe(0);
+    expect(conn(station).listenerCount('connect')).toBe(before);
   });
 
   it('removes its `connect` listener after timing out (no leak)', async () => {
     const station = buildStation();
+    const before = conn(station).listenerCount('connect');
     await station.waitForConnect(20).catch(() => undefined);
-    expect(conn(station).listenerCount('connect')).toBe(0);
+    expect(conn(station).listenerCount('connect')).toBe(before);
   });
 });
 
