@@ -19,7 +19,7 @@ type Callback = (err?: Error, packet?: { messageId?: number }) => void;
 class FakeClient extends EventEmitter {
   disconnecting = false;
   incomingStore = {};
-  outgoingStore = {};
+  outgoingStore = { del: vi.fn((_packet: { messageId: number }, cb?: () => void) => cb?.()) };
   outgoing: Record<number, { volatile: boolean; cb: Callback }> = {};
   stream = { destroy: vi.fn() };
   reconnect = vi.fn();
@@ -42,6 +42,18 @@ class FakeClient extends EventEmitter {
     delete this.outgoing[messageId];
     entry?.cb(new Error('Message removed'));
   });
+
+  /**
+   * mqtt.js's _flush, at a forced clean-up - a keep-alive or CONNACK timeout, end(true) - of a Clean Start client with
+   * no reconnectPeriod of its own: each outgoing publish leaves `outgoing` and is settled with Error('Connection
+   * closed'), and its packet stays in the store, which mqtt.js resends from at the next CONNACK.
+   */
+  flush(): void {
+    for (const [id, entry] of Object.entries(this.outgoing)) {
+      delete this.outgoing[Number(id)];
+      entry.cb(new Error('Connection closed'));
+    }
+  }
 
   /** The broker's PUBACK: mqtt.js emits the packet, then settles the publish - with an error for a refusal. */
   puback(messageId: number, reasonCode?: number): void {
@@ -151,5 +163,40 @@ describe('MqttConnection - a message in flight when the broker kept no session',
     fake.emit('packetreceive', { cmd: 'connack', sessionPresent: false });
 
     expect(fake.removeOutgoingMessage).not.toHaveBeenCalledWith(99);
+  });
+});
+
+describe('MqttConnection - a message mqtt.js failed when it forced the connection closed', () => {
+  it('resolves null: the broker never acknowledged it, so the station holds it for the replay', async () => {
+    const conn = connected();
+    const inFlight = conn.publish('t', 'a', 1);
+
+    fake.flush();
+
+    await expect(inFlight).resolves.toBeNull();
+  });
+
+  it('leaves the store at the next CONNACK, so mqtt.js does not resend it ahead of the BootNotification', async () => {
+    const conn = connected();
+    const inFlight = conn.publish('t', 'a', 1);
+    fake.flush();
+    await inFlight;
+    fake.emit('close');
+
+    fake.emit('packetreceive', { cmd: 'connack', sessionPresent: false });
+
+    expect(fake.outgoingStore.del).toHaveBeenCalledWith(expect.objectContaining({ messageId: 1 }), expect.any(Function));
+  });
+
+  it('CONTROL: a message the broker acknowledged is not taken from the store at the next CONNACK', async () => {
+    const conn = connected();
+    const sent = conn.publish('t', 'a', 1);
+    fake.puback(1, 0);
+    await sent;
+    fake.emit('close');
+
+    fake.emit('packetreceive', { cmd: 'connack', sessionPresent: false });
+
+    expect(fake.outgoingStore.del).not.toHaveBeenCalled();
   });
 });

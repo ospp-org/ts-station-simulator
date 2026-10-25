@@ -298,6 +298,13 @@ const lastDisconnectAt = new Map<string, number>();
  */
 const MQTT_JS_MESSAGE_REMOVED = 'Message removed';
 
+/**
+ * What mqtt.js settles each publish in flight with when it forces a Clean Start connection closed - a keep-alive or
+ * CONNACK timeout, end(true) - and has no reconnectPeriod of its own (its _flush in _cleanUp): the broker acknowledged
+ * none of them, and their packets stay in its store.
+ */
+const MQTT_JS_CONNECTION_CLOSED = 'Connection closed';
+
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
   private readonly mqttUrl: string;
@@ -350,6 +357,20 @@ export class MqttConnection extends EventEmitter {
    * matching subscribers" as on a 0x00, and says which to nobody.
    */
   private readonly unsettledPublishes = new Set<PacketCallback>();
+  /**
+   * WHAT THIS CLIENT SUBSCRIBED TO, AND AT WHICH QoS (2026-10-25). mqtt.js subscribes a client to its topics again after
+   * a reconnect that found no session, but records them only while its own `reconnectPeriod` is above 0 - and this
+   * connection reconnects itself, with mqtt.js's period at 0. So the connection records them and subscribes again
+   * itself (the 'connect' handler); a new client starts with none, Station.connect() subscribing it after its connect.
+   */
+  private readonly subscriptions = new Map<string, 0 | 1 | 2>();
+  /**
+   * The packet id mqtt.js gave each unsettled publish of this connection, read off `outgoing` as it is handed over, and
+   * the ids of those mqtt.js failed with 'Connection closed': their packets stay in its store, and it would resend them
+   * at the next CONNACK, ahead of the BootNotification, though the station holds each for the replay (forgetFlushed).
+   */
+  private readonly publishIds = new Map<PacketCallback, number>();
+  private readonly flushedIds = new Set<number>();
   private readonly pubackReasonCodes = new Map<number, number>();
 
   constructor(options: MqttConnectionOptions) {
@@ -455,6 +476,9 @@ export class MqttConnection extends EventEmitter {
     this.currentClientId = this.stationId;
     const opts = this.buildConnectOptions();
 
+    this.subscriptions.clear();
+    this.publishIds.clear();
+    this.flushedIds.clear();
     this.client = connect(this.mqttUrl, opts);
     this.wireClientEvents(this.client);
   }
@@ -556,6 +580,11 @@ export class MqttConnection extends EventEmitter {
       this.kickReasonCode = null;
       this.reconnectRefused = false;
       this.refusalReasonCode = null;
+      // A broker that kept no session kept no subscription: subscribed again before anything the listeners send - the
+      // BootNotification that opens a reconnection is answered on the station's topic (connection-lost.md §6 step 1).
+      if (connack.sessionPresent !== true) {
+        this.subscribeAgain(client);
+      }
       this.emit('connect', connack);
     });
 
@@ -601,8 +630,9 @@ export class MqttConnection extends EventEmitter {
     client.on('packetreceive', (packet) => {
       if (packet.cmd === 'puback' && typeof packet.messageId === 'number') {
         this.pubackReasonCodes.set(packet.messageId, packet.reasonCode ?? 0);
-      } else if (packet.cmd === 'connack' && packet.sessionPresent !== true) {
-        this.takeBackInFlight(client);
+      } else if (packet.cmd === 'connack') {
+        this.forgetFlushed(client);
+        if (packet.sessionPresent !== true) this.takeBackInFlight(client);
       }
     });
 
@@ -642,6 +672,17 @@ export class MqttConnection extends EventEmitter {
     }, delay);
   }
 
+  /** Every topic this client subscribed to, at its QoS, on a connection that found no session (the 'connect' handler). */
+  private subscribeAgain(client: MqttClient): void {
+    for (const [topic, qos] of this.subscriptions) {
+      client.subscribe(topic, { qos }, (err) => {
+        if (err) {
+          console.error('[MqttConnection] %s: subscribing again to %s failed: %s', this.stationId, topic, err.message);
+        }
+      });
+    }
+  }
+
   private clearReconnectTimer(): void {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -658,6 +699,18 @@ export class MqttConnection extends EventEmitter {
    * connection made is not touched. At Session Present 1 MQTT has the client resend it with its packet id, and
    * mqtt.js does.
    */
+  /**
+   * At a CONNACK, the packets of the publishes mqtt.js failed with 'Connection closed' leave its store: each was
+   * settled null and is held by the station for the replay after its next accepted boot, so mqtt.js is not to resend it
+   * at this CONNACK, ahead of the BootNotification (connection-lost.md §6 step 1).
+   */
+  private forgetFlushed(client: MqttClient): void {
+    for (const messageId of this.flushedIds) {
+      client.outgoingStore.del({ messageId }, () => undefined);
+    }
+    this.flushedIds.clear();
+  }
+
   private takeBackInFlight(client: MqttClient): void {
     for (const [id, entry] of Object.entries(client.outgoing ?? {})) {
       if (this.unsettledPublishes.has(entry.cb as PacketCallback)) client.removeOutgoingMessage(Number(id));
@@ -917,8 +970,10 @@ export class MqttConnection extends EventEmitter {
         reject(new Error('MQTT client is not connected'));
         return;
       }
+      this.subscriptions.set(topic, qos);
       this.client.subscribe(topic, { qos }, (err) => {
         if (err) {
+          this.subscriptions.delete(topic);
           reject(err);
         } else {
           resolve();
@@ -951,11 +1006,19 @@ export class MqttConnection extends EventEmitter {
       this.journal?.record('out', topic, payload, qos);
       const settle: PacketCallback = (err, packet) => {
         this.unsettledPublishes.delete(settle);
+        const publishedAs = this.publishIds.get(settle);
+        this.publishIds.delete(settle);
         const messageId = (packet as { messageId?: unknown } | undefined)?.messageId;
         const pubackCode = typeof messageId === 'number' ? this.pubackReasonCodes.get(messageId) : undefined;
         if (typeof messageId === 'number') this.pubackReasonCodes.delete(messageId);
         if (err) {
           if (err.message === MQTT_JS_MESSAGE_REMOVED) {
+            resolve(null);
+            return;
+          }
+          // Failed by mqtt.js as it forced the connection closed: not acknowledged, held by the station (freeze item 33).
+          if (err.message === MQTT_JS_CONNECTION_CLOSED) {
+            if (publishedAs !== undefined) this.flushedIds.add(publishedAs);
             resolve(null);
             return;
           }
@@ -971,7 +1034,11 @@ export class MqttConnection extends EventEmitter {
         resolve(pubackCode ?? 0);
       };
       this.unsettledPublishes.add(settle);
-      this.client.publish(topic, payload, { qos }, settle);
+      const client = this.client;
+      client.publish(topic, payload, { qos }, settle);
+      // mqtt.js registers a QoS 1 publish under its packet id as it takes it, unless it is resending its store.
+      const publishedAs = Object.entries(client.outgoing ?? {}).find(([, entry]) => entry.cb === settle)?.[0];
+      if (publishedAs !== undefined) this.publishIds.set(settle, Number(publishedAs));
     });
   }
 
