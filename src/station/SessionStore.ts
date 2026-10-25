@@ -44,6 +44,23 @@ export interface HeldSessionEnded {
   endedAt: string;
 }
 
+/**
+ * A message the broker did not acknowledge with success - a PUBACK 0x10 or any other code than 0x00, or none at a
+ * reconnection to a broker that kept no session - kept for the replay after the next accepted boot (freeze item 33,
+ * 01-architecture.md §6.5). A SessionEnded of the station's own sessions is held in `heldSessionEnded` instead.
+ */
+export interface HeldMessage {
+  action: string;
+  messageType: string;
+  /** Reused by the resend, so a copy the server did receive is a duplicate it discards (02-transport.md §3.3). */
+  messageId: string;
+  payload: unknown;
+  /** The PUBACK's reason code, or null when the broker kept no record of the message. */
+  acknowledgement: number | null;
+  /** Wall clock, ISO-8601: the order the replay keeps among records of one kind. */
+  heldAt: string;
+}
+
 /** A stop answered `Accepted`: the RESPONSE a repeated StopService gets again (stop-service.md §6 rule 10). */
 export interface StoppedSessionAnswer {
   sessionId: string;
@@ -59,6 +76,8 @@ export interface StoredSessionState {
   sessions: StoredSession[];
   heldSessionEnded: HeldSessionEnded[];
   stoppedSessions: StoppedSessionAnswer[];
+  /** Absent from a record written before 2026-10-25, which held none. */
+  heldMessages?: HeldMessage[];
 }
 
 export interface SessionStore {
@@ -103,6 +122,7 @@ export class FileSessionStore implements SessionStore {
       for (const key of ['sessions', 'heldSessionEnded', 'stoppedSessions'] as const) {
         if (!Array.isArray(parsed[key])) throw new Error(`missing ${key}[]`);
       }
+      if (parsed.heldMessages !== undefined && !Array.isArray(parsed.heldMessages)) throw new Error('heldMessages is not a list');
       for (const s of parsed.sessions as StoredSession[]) {
         if (typeof s.sessionId !== 'string' || typeof s.bayId !== 'string'
           || typeof s.durationSeconds !== 'number' || typeof s.deliveredSeconds !== 'number') {

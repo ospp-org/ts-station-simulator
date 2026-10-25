@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { monotonicNowMs } from '../station/monotonicClock.js';
 import { readFileSync } from 'node:fs';
 import type { SecureVersion } from 'node:tls';
-import { connect, type MqttClient, type IClientOptions } from 'mqtt';
+import { connect, type MqttClient, type IClientOptions, type PacketCallback } from 'mqtt';
 import {
   OsppAction,
   MessageType,
@@ -12,6 +12,7 @@ import {
 } from '@ospp/protocol';
 import { resolveWireProtocolVersion } from './protocolVersion.js';
 import type { FrameJournal } from './FrameJournal.js';
+import { DEFAULT_RECONNECT_BACKOFF_MAX_SECONDS, reconnectDelayMs } from './reconnectBackoff.js';
 
 /**
  * mqtt.js's IClientOptions (ISecureClientOptions) does not model TLS
@@ -112,7 +113,7 @@ export const CONNACK_REASON_NOT_AUTHORIZED = 0x87;
  *
  * `severed` is `network`'s opposite number and the distinction is the whole
  * reason it exists: both destroy the socket, but `network` leaves the client
- * alive to auto-reconnect on LIVE_RECONNECT_PERIOD_MS while `severed` latches
+ * alive to reconnect on the backoff (reconnectBackoff.ts) while `severed` latches
  * it closed for good. Against a broker that honours `willDelayInterval` those
  * are opposite outcomes, not shades of one — see severConnection().
  */
@@ -162,6 +163,12 @@ export interface MqttConnectionOptions {
    * Omit it and this class behaves exactly as it did before the journal existed.
    */
   journal?: FrameJournal;
+  /**
+   * `ReconnectBackoffMax` as the station holds it, read at each reconnection attempt - a Dynamic key
+   * (08-configuration.md, 30-3600 s) - for the cap of the backoff of 02-transport.md §4.5. Omitted, the spec's
+   * default, 30 s.
+   */
+  reconnectBackoffMaxSeconds?: () => number;
   tls?: {
     key?: string;      // file path — station client key (mTLS)
     cert?: string;     // file path — station client cert (mTLS), the LEAF
@@ -253,9 +260,10 @@ export const DISCONNECT_WITH_WILL_REASON_CODE = 0x04;
 
 /**
  * Will Delay Interval, in seconds, armed at CONNECT unless a connection asks
- * for another. MUST stay strictly greater than LIVE_RECONNECT_PERIOD_MS: on a
+ * for another. MUST stay strictly greater than FIRST_RECONNECT_DELAY_MAX_MS, the most
+ * the first reconnect after a drop waits (reconnectBackoff.ts): on a
  * PERSISTENT session (`clean_session: false`, one file in the corpus) the
- * auto-reconnect has to land inside this window so §3.1.3.2.2 suppresses the
+ * reconnect has to land inside this window so §3.1.3.2.2 suppresses the
  * will and `fault: disconnect` stays the arm that does NOT publish one. See
  * MqttConnection.severWill.test.ts, which pins the inequality.
  */
@@ -285,29 +293,10 @@ const RECONNECT_GUARD_MS = 500;
 const lastDisconnectAt = new Map<string, number>();
 
 /**
- * Auto-retry cadence of the LIVE connection. probeReconnect() deliberately
- * passes 0 instead: a ban probe must return a verdict, not retry forever.
- *
- * EXPORTED because it is one half of a relationship, not a private detail: it
- * must stay strictly BELOW the will's `willDelayInterval`, so that on a
- * PERSISTENT session (`clean_session: false`) the reconnect lands inside the
- * delay window and MQTT 5 3.1.3.2.2 suppresses the will. That is the condition
- * under which `fault: disconnect` cancels the Last Will and `fault: sever` is the
- * only teardown that does not. MqttConnection.severWill.test.ts pins the
- * inequality, because the two numbers are otherwise changeable independently and
- * the consequence of crossing them is silent.
- *
- * THE QUALIFIER IS NOT DECORATION — THIS COMMENT USED TO OMIT IT AND WAS WRONG
- * FOR THE COMMON CASE. Scenarios default to `clean_session: true`
- * (ScenarioRunner.ts:820) and only core/connection-lost-lwt.yaml overrides it. On
- * Clean Start 1 the reconnect DISCARDS the old session rather than resuming it,
- * and 3.1.3.2.2 publishes the will when the session ends OR the delay elapses,
- * whichever is first — so under the corpus default `fault: disconnect` PUBLISHES
- * the will at the reconnect no matter how the two numbers compare. Measured on
- * UAT 2026-08-14. core/reconnect-recovery.yaml's middle read depends on exactly
- * that, and the old wording said it could not happen.
+ * The text mqtt.js settles a publish with when removeOutgoingMessage() takes it out of the store - the one way this
+ * connection takes back a message in flight (takeBackInFlight).
  */
-export const LIVE_RECONNECT_PERIOD_MS = 5000;
+const MQTT_JS_MESSAGE_REMOVED = 'Message removed';
 
 export class MqttConnection extends EventEmitter {
   private client: MqttClient | null = null;
@@ -345,6 +334,23 @@ export class MqttConnection extends EventEmitter {
    * elsewhere in this file.
    */
   private currentClientId: string | null = null;
+  /**
+   * THE RECONNECT BACKOFF OF 02-transport.md §4.5 (2026-10-25). The live client is built with no retry period - mqtt.js
+   * arms a fixed interval once and keeps it until a connection succeeds, so no backoff fits through it - and this
+   * connection paces its own attempts: the attempt count since the link last came up, and the pending attempt.
+   */
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `ReconnectBackoffMax` as the station holds it, read at each attempt: a Dynamic key (08-configuration.md). */
+  private readonly readReconnectBackoffMax: () => number;
+  /**
+   * WHAT THE BROKER SAID OF A MESSAGE (2026-10-25, freeze item 33). The callbacks of this connection's publishes not
+   * yet settled - what a CONNACK with Session Present 0 takes back - and the reason code of each PUBACK by packet id,
+   * read off the packet before mqtt.js settles the publish it answers: mqtt.js settles a publish on a 0x10 "No
+   * matching subscribers" as on a 0x00, and says which to nobody.
+   */
+  private readonly unsettledPublishes = new Set<PacketCallback>();
+  private readonly pubackReasonCodes = new Map<number, number>();
 
   constructor(options: MqttConnectionOptions) {
     super();
@@ -356,6 +362,7 @@ export class MqttConnection extends EventEmitter {
     this.journal = options.journal;
     this.willDelayIntervalSeconds =
       options.willDelayIntervalSeconds ?? DEFAULT_WILL_DELAY_INTERVAL_SECONDS;
+    this.readReconnectBackoffMax = options.reconnectBackoffMaxSeconds ?? (() => DEFAULT_RECONNECT_BACKOFF_MAX_SECONDS);
   }
 
   /**
@@ -446,24 +453,24 @@ export class MqttConnection extends EventEmitter {
     // but we emit the clean form anyway so broker logs + client traces
     // are unambiguous and don't read "WRONG_ID overridden to stn_X".
     this.currentClientId = this.stationId;
-    const opts = this.buildConnectOptions(LIVE_RECONNECT_PERIOD_MS);
+    const opts = this.buildConnectOptions();
 
     this.client = connect(this.mqttUrl, opts);
     this.wireClientEvents(this.client);
   }
 
   /**
-   * Build the CONNECT options. Shared by the live connection (which retries on
-   * LIVE_RECONNECT_PERIOD_MS) and by probeReconnect(), which passes 0 so a
-   * refused attempt REPORTS BACK instead of spinning on the broker forever.
+   * Build the CONNECT options, shared by the live connection and by probeReconnect(). Neither lets mqtt.js retry:
+   * the live connection paces its own attempts on the backoff (scheduleReconnect), and a refused probe REPORTS BACK
+   * instead of spinning on the broker forever.
    */
-  private buildConnectOptions(reconnectPeriod: number): TlsVersionClientOptions {
+  private buildConnectOptions(): TlsVersionClientOptions {
     const opts: TlsVersionClientOptions = {
       clientId: this.stationId,
       protocolVersion: 5,
       clean: this.cleanSession,
       keepalive: 30,
-      reconnectPeriod,
+      reconnectPeriod: 0,
       properties: {
         sessionExpiryInterval: 3600,
         receiveMaximum: 10,
@@ -540,6 +547,9 @@ export class MqttConnection extends EventEmitter {
 
   private wireClientEvents(client: MqttClient): void {
     client.on('connect', (connack) => {
+      // Up again: the next drop is the first of a new outage (02-transport.md §4.5: "attempt = 0 - reset on success").
+      this.reconnectAttempt = 0;
+      this.clearReconnectTimer();
       this.isDestroyingConnection = false;
       // A live connection means we are neither kicked nor barred right now.
       this.closeCause = 'none';
@@ -564,7 +574,7 @@ export class MqttConnection extends EventEmitter {
       const code = (err as NodeJS.ErrnoException).code;
       if (code && IGNORED_CODES.has(code)) return;
       if (err.message.includes('write after end')) return;
-      // A client with reconnectPeriod > 0 re-fires the same fatal error on
+      // A client that is retried re-fires the same fatal error on
       // every reconnect attempt. Station.connect() wires its 'error'/'connect'
       // handlers with `.once`, so after the initial attempt settles a later
       // re-emit would reach an EventEmitter with zero 'error' listeners and
@@ -585,6 +595,15 @@ export class MqttConnection extends EventEmitter {
         this.closeCause = 'unknown';
       }
       this.emit('close');
+      this.scheduleReconnect(client);
+    });
+
+    client.on('packetreceive', (packet) => {
+      if (packet.cmd === 'puback' && typeof packet.messageId === 'number') {
+        this.pubackReasonCodes.set(packet.messageId, packet.reasonCode ?? 0);
+      } else if (packet.cmd === 'connack' && packet.sessionPresent !== true) {
+        this.takeBackInFlight(client);
+      }
     });
 
     client.on('reconnect', () => {
@@ -599,6 +618,50 @@ export class MqttConnection extends EventEmitter {
       this.journal?.record('in', topic, payload, normaliseQos(packet?.qos));
       this.emit('message', topic, payload, packet);
     });
+  }
+
+  /**
+   * The next attempt after the link dropped, on the backoff of 02-transport.md §4.5: min(1 s x 2^attempt,
+   * ReconnectBackoffMax) and up to 30 % of jitter - 1.0-1.3 s for the first, which lands a reconnect to a persistent
+   * session inside the will's 10 s delay (DEFAULT_WILL_DELAY_INTERVAL_SECONDS), so `fault: disconnect` stays the arm
+   * that does not publish a will there; on Clean Start 1, the corpus default, the reconnect ends the old session and
+   * the broker publishes the will at once whatever the delay (core/reconnect-recovery.yaml reads that).
+   *
+   * A close the station asked for is not retried: disconnect() and severConnection() end the client, which latches
+   * mqtt.js's `disconnecting`, and severConnection() takes it off this connection first. The stores go back to the
+   * reconnect - without them mqtt.js starts empty ones, and a publish in flight would be neither resent nor settled.
+   */
+  private scheduleReconnect(client: MqttClient): void {
+    if (this.client !== client || client.disconnecting || this.reconnectTimer !== null) return;
+    const delay = reconnectDelayMs(this.reconnectAttempt, this.readReconnectBackoffMax());
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.client !== client || client.disconnecting) return;
+      client.reconnect({ incomingStore: client.incomingStore, outgoingStore: client.outgoingStore });
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  /**
+   * A CONNACK with Session Present 0 (freeze item 33, 2026-10-25): the broker kept no record of what this connection
+   * still had in flight, and MQTT 5 has the client discard it from its session state [MQTT-3.2.2-5] - mqtt.js would
+   * resend it from its store at this CONNACK instead, ahead of the BootNotification the reconnection opens with
+   * (connection-lost.md §6 step 1). Each such message leaves the store, its publish settles with null, and the station
+   * holds it for the replay after its next accepted boot (01-architecture.md §6.5). An entry no publish of this
+   * connection made is not touched. At Session Present 1 MQTT has the client resend it with its packet id, and
+   * mqtt.js does.
+   */
+  private takeBackInFlight(client: MqttClient): void {
+    for (const [id, entry] of Object.entries(client.outgoing ?? {})) {
+      if (this.unsettledPublishes.has(entry.cb as PacketCallback)) client.removeOutgoingMessage(Number(id));
+    }
   }
 
   /** Observable severance state — see SeveranceState. ADR-0004 TIER 1. */
@@ -623,7 +686,7 @@ export class MqttConnection extends EventEmitter {
    */
   async probeReconnect(timeoutMs: number): Promise<ReconnectProbeResult> {
     // Tear the live client down FIRST. Two reasons, both load-bearing:
-    //   1. after a kick it is still auto-retrying on LIVE_RECONNECT_PERIOD_MS,
+    //   1. after a kick it is still retrying on the backoff,
     //      so a probe would race its retries and report whichever won;
     //   2. it holds the SAME clientId (= cert CN), and a second connection
     //      under one clientId is a session takeover — the probe would kick our
@@ -647,7 +710,7 @@ export class MqttConnection extends EventEmitter {
 
   private runReconnectProbe(timeoutMs: number): Promise<ReconnectProbeResult> {
     return new Promise<ReconnectProbeResult>((resolve) => {
-      const probeClient = connect(this.mqttUrl, this.buildConnectOptions(0));
+      const probeClient = connect(this.mqttUrl, this.buildConnectOptions());
       let settled = false;
 
       const settle = (result: ReconnectProbeResult): void => {
@@ -699,7 +762,7 @@ export class MqttConnection extends EventEmitter {
     });
   }
 
-  /** Destroy the TCP stream to simulate a network drop. The client stays alive and auto-reconnects via reconnectPeriod. */
+  /** Destroy the TCP stream to simulate a network drop. The client stays alive and reconnects on the backoff. */
   destroyConnection(): void {
     if (this.client) {
       this.isDestroyingConnection = true;
@@ -716,8 +779,8 @@ export class MqttConnection extends EventEmitter {
    * Last Will that difference is decisive. buildConnectOptions() arms the will
    * with `willDelayInterval: 10`, and MQTT 5 §3.1.3.2.2 says the broker must
    * NOT publish it if a new Network Connection to the same Session arrives
-   * inside that delay. destroyConnection() leaves the client alive, so
-   * LIVE_RECONNECT_PERIOD_MS (5000) brings it back at t+5s — half the delay —
+   * inside that delay. destroyConnection() leaves the client alive, so the
+   * backoff brings it back within 1.3 s — well inside the delay —
    * and the will is discarded every single time. `clean: false` +
    * `sessionExpiryInterval: 3600` guarantee the reconnect resumes the SAME
    * session rather than starting a new one, which is exactly the condition the
@@ -730,7 +793,7 @@ export class MqttConnection extends EventEmitter {
    * `_cleanUp(forced)` calls `stream.destroy()` on the forced path and sends a
    * DISCONNECT packet on the unforced one — so `force` is what keeps the close
    * UNCLEAN and the will armed. And `end()` latches `disconnecting`, which is
-   * what stops reconnectPeriod from firing. Destroying the stream alone gives
+   * what keeps the connection from scheduling a reconnect. Destroying the stream alone gives
    * the first without the second, which is destroyConnection() and is precisely
    * the case that cancels the will.
    *
@@ -747,6 +810,7 @@ export class MqttConnection extends EventEmitter {
     // guard leaves it alone rather than recording this as `unknown`.
     this.closeCause = 'severed';
     this.kickReasonCode = null;
+    this.clearReconnectTimer();
     lastDisconnectAt.set(this.stationId, monotonicNowMs());
     this.client = null;
     this.currentClientId = null;
@@ -784,6 +848,8 @@ export class MqttConnection extends EventEmitter {
       // follows our own DISCONNECT is never mistaken for a broker kick.
       this.closeCause = 'self';
       this.kickReasonCode = null;
+      // An attempt already scheduled after a drop is not made: the station is leaving.
+      this.clearReconnectTimer();
 
       let settled = false;
       const finalize = () => {
@@ -861,8 +927,15 @@ export class MqttConnection extends EventEmitter {
     });
   }
 
-  publish(topic: string, payload: string | Buffer, qos: 0 | 1 | 2): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  /**
+   * Publish, and resolve with what the broker said of the message (freeze item 33, 2026-10-25): the reason code of its
+   * PUBACK - 0x00 Success; 0x10 No matching subscribers, which MQTT counts a success and which means no server received
+   * it; the code of a PUBACK refusing it - or null for a message in flight when the station reconnected to a broker that
+   * kept no session (takeBackInFlight). A QoS 0 publish resolves 0x00 once written. Anything but 0x00 the station keeps
+   * for the replay after its next accepted boot (MessageSender, Station.hold).
+   */
+  publish(topic: string, payload: string | Buffer, qos: 0 | 1 | 2): Promise<number | null> {
+    return new Promise<number | null>((resolve, reject) => {
       if (!this.client) {
         // Nothing was handed over, so nothing is journalled.
         reject(new Error('MQTT client is not connected'));
@@ -876,13 +949,29 @@ export class MqttConnection extends EventEmitter {
       // this order; delivery is the client's business, and a failure reaches the
       // CALLER as a rejected publish.
       this.journal?.record('out', topic, payload, qos);
-      this.client.publish(topic, payload, { qos }, (err) => {
+      const settle: PacketCallback = (err, packet) => {
+        this.unsettledPublishes.delete(settle);
+        const messageId = (packet as { messageId?: unknown } | undefined)?.messageId;
+        const pubackCode = typeof messageId === 'number' ? this.pubackReasonCodes.get(messageId) : undefined;
+        if (typeof messageId === 'number') this.pubackReasonCodes.delete(messageId);
         if (err) {
+          if (err.message === MQTT_JS_MESSAGE_REMOVED) {
+            resolve(null);
+            return;
+          }
+          // A PUBACK refusing the message: mqtt.js settles it with an error carrying the reason code.
+          const code = (err as { code?: unknown }).code;
+          if (typeof code === 'number') {
+            resolve(code);
+            return;
+          }
           reject(err);
-        } else {
-          resolve();
+          return;
         }
-      });
+        resolve(pubackCode ?? 0);
+      };
+      this.unsettledPublishes.add(settle);
+      this.client.publish(topic, payload, { qos }, settle);
     });
   }
 

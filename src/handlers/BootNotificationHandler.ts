@@ -114,11 +114,11 @@ export class BootNotificationHandler implements Handler {
           }
 
           // Then what the station held: the SessionEnded of every wash that ended while it could not
-          // transmit, and of every wash a restart could not resume - after the bay reports, as
-          // connection-lost.md §6 orders a boot (step 2, then the replay of step 4). Nothing else
-          // gates it: no first Heartbeat ends a replay (the session-end rule removed that), and the
-          // Heartbeats keep their interval.
-          await station.replayHeldSessionEnded?.();
+          // transmit, and of every wash a restart could not resume, and every message the broker did not
+          // acknowledge with success (freeze item 33) - after the bay reports, as connection-lost.md §6
+          // orders a boot (step 2, then the replay of step 4). Nothing else gates it: no first Heartbeat
+          // ends a replay (the session-end rule removed that), and the Heartbeats keep their interval.
+          await station.replayHeld?.();
         }
 
         // Clock sync from serverTime (HB-010 -- also done on boot)

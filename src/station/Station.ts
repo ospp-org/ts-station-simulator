@@ -15,6 +15,7 @@ import {
   MemorySessionStore,
   SESSION_CHECKPOINT_INTERVAL_SECONDS,
   STOP_ANSWER_RETENTION_MS,
+  type HeldMessage,
   type HeldSessionEnded,
   type SessionStore,
   type StoppedSessionAnswer,
@@ -54,7 +55,9 @@ import {
 } from '../mqtt/MqttConnection.js';
 import { MessageRouter } from '../mqtt/MessageRouter.js';
 import { resolveInboundSchemaMode } from '../mqtt/inboundSchema.js';
-import { MessageSender } from '../mqtt/MessageSender.js';
+import { MessageSender, PUBACK_SUCCESS, describeAcknowledgement, type NotAcknowledged } from '../mqtt/MessageSender.js';
+import { DEFAULT_RECONNECT_BACKOFF_MAX_SECONDS } from '../mqtt/reconnectBackoff.js';
+import { replayOrder, SENT_FRESH_BY_THE_REPLAY, type ReplayItem } from './replayOrder.js';
 import type { FrameJournal } from '../mqtt/FrameJournal.js';
 import type { ServiceConfig, StationConfig } from './StationConfig.js';
 import { StationLifecycle } from './StationLifecycle.js';
@@ -187,6 +190,12 @@ export class Station extends EventEmitter {
   public readonly configuration: StationConfiguration;
   /** StationContext.heldSessionEnded: the end records waiting for a boot they can be sent after. Mutated in place. */
   public readonly heldSessionEnded: HeldSessionEnded[] = [];
+  /**
+   * FREEZE ITEM 33, DECIDED BY GABI (2026-10-25): every other message the broker did not acknowledge with success - a
+   * PUBACK 0x10 "No matching subscribers" or any code but 0x00, or none at a reconnection to a broker that kept no
+   * session - held, on disk with the sessions, for the replay after the next accepted boot (replayHeld). Mutated in place.
+   */
+  public readonly heldMessages: HeldMessage[] = [];
   /** StationContext.lastReportedBayStatus: what the boot report, and every report since, said each bay was. */
   public readonly lastReportedBayStatus: Map<string, BayStatus> = new Map();
   /** The stops answered `Accepted`, by sessionId - the cached RESPONSE a repeated StopService gets (stop-service.md §6 rule 10). */
@@ -254,7 +263,9 @@ export class Station extends EventEmitter {
     super();
     this.config = config;
     this.currentBootReason = config.bootReason ?? BootReason.POWER_ON;
-    this.connection = new MqttConnection(mqttOptions);
+    // The backoff's cap is the ReconnectBackoffMax this station holds, read at each attempt (a Dynamic key) - after
+    // this constructor has built the configuration it reads.
+    this.connection = new MqttConnection({ ...mqttOptions, reconnectBackoffMaxSeconds: () => this.reconnectBackoffMaxSeconds() });
     // After the connection, which says where the station keeps its state (beside its certificates).
     this.configuration = new StationConfiguration(
       config.factoryConfiguration,
@@ -274,6 +285,8 @@ export class Station extends EventEmitter {
       schemaMode: resolveInboundSchemaMode(),
     });
     this.sender = new MessageSender(this.connection, config.stationId, () => this.sessionKey);
+    // What the broker did not acknowledge with success stays in the buffer for the replay (freeze item 33).
+    this.sender.onNotAcknowledged = (message) => this.hold(message);
 
     // Wire inbound MQTT messages to the router ONCE, here — NOT per connect().
     // The MqttConnection wrapper persists across client reconnects and re-emits
@@ -1031,6 +1044,7 @@ export class Station extends EventEmitter {
       })),
       heldSessionEnded: [...this.heldSessionEnded],
       stoppedSessions: [...this.stoppedSessions.values()],
+      heldMessages: [...this.heldMessages],
     };
   }
 
@@ -1105,6 +1119,7 @@ export class Station extends EventEmitter {
     if (state === null) return restored;
 
     this.heldSessionEnded.splice(0, this.heldSessionEnded.length, ...state.heldSessionEnded);
+    this.heldMessages.splice(0, this.heldMessages.length, ...(state.heldMessages ?? []));
     restored.held = this.heldSessionEnded.length;
     this.stoppedSessions.clear();
     for (const answer of state.stoppedSessions) this.stoppedSessions.set(answer.sessionId, answer);
@@ -1211,6 +1226,7 @@ export class Station extends EventEmitter {
     await this.sessionWrites;
     this.sessions.clear();
     this.heldSessionEnded.splice(0, this.heldSessionEnded.length);
+    this.heldMessages.splice(0, this.heldMessages.length);
     this.stoppedSessions.clear();
     this.lastReportedBayStatus.clear();
     for (const bay of this.config.bays) {
@@ -1269,22 +1285,126 @@ export class Station extends EventEmitter {
   private async sendHeldSessionEnded(): Promise<void> {
     while (this.heldSessionEnded.length > 0 && this.canTransmit()) {
       const held = this.heldSessionEnded[0];
-      try {
-        await this.sender.send<SessionEndedPayload>(OsppAction.SESSION_ENDED, MessageType.EVENT, held.payload, held.messageId);
-      } catch (err) {
-        console.log(
-          '[Session] the held SessionEnded of %s could not be sent (%s) - kept for the next boot',
-          held.payload.sessionId, err instanceof Error ? err.message : String(err),
-        );
-        return;
-      }
-      const at = this.heldSessionEnded.indexOf(held);
-      if (at !== -1) this.heldSessionEnded.splice(at, 1);
-      console.log('[Session] sent the held SessionEnded of %s (%s)', held.payload.sessionId, held.payload.reason);
-      await this.persistSessions().catch((err: unknown) => {
-        console.error('[Session] could not record the release on disk: %s', err instanceof Error ? err.message : String(err));
-      });
+      // Its session's own records the broker did not acknowledge go back first, in the replay after the next boot:
+      // a SessionEnded ahead of its MeterValues would show the server a gap in the seqNo that is not one.
+      if (this.heldMessages.some((m) => (m.payload as { sessionId?: unknown } | null)?.sessionId === held.payload.sessionId)) return;
+      if (!(await this.sendHeldEnd(held))) return;
     }
+  }
+
+  /**
+   * Send one held SessionEnded and release it, on disk too, only when the broker acknowledged it 0x00 (freeze item
+   * 33): a PUBACK 0x10, any other code or none leaves it held for the next boot. Whether it was released.
+   */
+  private async sendHeldEnd(held: HeldSessionEnded): Promise<boolean> {
+    let acknowledgement: number | null;
+    try {
+      ({ acknowledgement } = await this.sender.send<SessionEndedPayload>(OsppAction.SESSION_ENDED, MessageType.EVENT, held.payload, held.messageId));
+    } catch (err) {
+      console.log(
+        '[Session] the held SessionEnded of %s could not be sent (%s) - kept for the next boot',
+        held.payload.sessionId, err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+    if (acknowledgement !== PUBACK_SUCCESS) {
+      console.log(
+        '[Session] the held SessionEnded of %s was not acknowledged with success (PUBACK %s) - kept for the next boot',
+        held.payload.sessionId, describeAcknowledgement(acknowledgement),
+      );
+      return false;
+    }
+    const at = this.heldSessionEnded.indexOf(held);
+    if (at !== -1) this.heldSessionEnded.splice(at, 1);
+    console.log('[Session] sent the held SessionEnded of %s (%s)', held.payload.sessionId, held.payload.reason);
+    await this.persistSessions().catch((err: unknown) => {
+      console.error('[Session] could not record the release on disk: %s', err instanceof Error ? err.message : String(err));
+    });
+    return true;
+  }
+
+  /**
+   * FREEZE ITEM 33: keep a message the broker did not acknowledge with success for the replay after the next accepted
+   * boot (MessageSender.onNotAcknowledged). A SessionEnded of this station's own sessions is already held in
+   * heldSessionEnded, from which only a 0x00 releases it; a message already held - its resend answered 0x10 again -
+   * stays held where it is.
+   */
+  private hold(message: NotAcknowledged): void {
+    if (this.heldSessionEnded.some((h) => h.messageId === message.messageId)) return;
+    if (this.heldMessages.some((h) => h.messageId === message.messageId)) return;
+    this.heldMessages.push({
+      action: message.action,
+      messageType: message.messageType,
+      messageId: message.messageId,
+      payload: message.payload,
+      acknowledgement: message.acknowledgement,
+      heldAt: new Date().toISOString(),
+    });
+    console.log(
+      '[Station] %s %s %s not acknowledged with success (PUBACK %s) - held for the replay after the next accepted boot',
+      this.config.stationId, message.action, message.messageId,
+      describeAcknowledgement(message.acknowledgement),
+    );
+    this.persistSessions().catch((err: unknown) => {
+      console.error('[Station] could not record a held message on disk: %s', err instanceof Error ? err.message : String(err));
+    });
+  }
+
+  /**
+   * THE REPLAY OF WHAT THE BROKER DID NOT ACKNOWLEDGE WITH SUCCESS (freeze item 33, decided by Gabi on 2026-10-25),
+   * after a boot answered `Accepted` and its bay reports: a connect-mode station's on its own (BootNotificationHandler),
+   * a scenario station's where its file says (`replay_held`), since its file sends its boot and reports. Each held
+   * message and held SessionEnded goes out again with its messageId, in the order of 01-architecture.md §6.5
+   * (replayOrder); the kinds the replay sends fresh are let go. It stops at the first that is not acknowledged 0x00,
+   * which stays held for the next boot with every one behind it. One replay at a time, as replayHeldSessionEnded.
+   */
+  async replayHeld(): Promise<void> {
+    while (this.replayInFlight !== null) await this.replayInFlight;
+    const pass = this.sendHeld();
+    this.replayInFlight = pass;
+    try {
+      await pass;
+    } finally {
+      if (this.replayInFlight === pass) this.replayInFlight = null;
+    }
+  }
+
+  private async sendHeld(): Promise<void> {
+    const superseded = this.heldMessages.filter((m) => SENT_FRESH_BY_THE_REPLAY.has(m.action));
+    if (superseded.length > 0) {
+      this.heldMessages.splice(0, this.heldMessages.length, ...this.heldMessages.filter((m) => !superseded.includes(m)));
+      await this.persistSessions().catch(() => undefined);
+    }
+    for (const item of replayOrder(this.heldMessages, this.heldSessionEnded)) {
+      if (!this.canTransmit()) return;
+      if (!(await this.sendHeldItem(item))) return;
+    }
+  }
+
+  private async sendHeldItem(item: ReplayItem): Promise<boolean> {
+    if (item.kind === 'end') return this.sendHeldEnd(item.end);
+    const held = item.message;
+    let acknowledgement: number | null;
+    try {
+      ({ acknowledgement } = await this.sender.send(held.action as OsppAction, held.messageType as MessageType, held.payload, held.messageId));
+    } catch (err) {
+      console.log('[Station] the held %s %s could not be sent (%s) - kept for the next boot', held.action, held.messageId, err instanceof Error ? err.message : String(err));
+      return false;
+    }
+    if (acknowledgement !== PUBACK_SUCCESS) return false;
+    const at = this.heldMessages.indexOf(held);
+    if (at !== -1) this.heldMessages.splice(at, 1);
+    console.log('[Station] sent the held %s %s again', held.action, held.messageId);
+    await this.persistSessions().catch((err: unknown) => {
+      console.error('[Station] could not record the release on disk: %s', err instanceof Error ? err.message : String(err));
+    });
+    return true;
+  }
+
+  /** ReconnectBackoffMax as this station holds it (08-configuration.md: 30-3600 s); the spec default if none valid. */
+  private reconnectBackoffMaxSeconds(): number {
+    const value = Number(this.configuration.value(ConfigKey.RECONNECT_BACKOFF_MAX));
+    return Number.isInteger(value) && value >= 1 ? value : DEFAULT_RECONNECT_BACKOFF_MAX_SECONDS;
   }
 
   async retryBoot(fixedMessageId?: string): Promise<void> {

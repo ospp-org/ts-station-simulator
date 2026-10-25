@@ -107,8 +107,7 @@ describe('MqttConnection - the reconnect backoff', () => {
   });
 
   it('caps the wait at the ReconnectBackoffMax the station holds', async () => {
-    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: stationId() });
-    conn.useReconnectBackoffMax(() => 60);
+    const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: stationId(), reconnectBackoffMaxSeconds: () => 60 });
     conn.connect();
     const client = fakes[0];
     client.emit('connect', {});

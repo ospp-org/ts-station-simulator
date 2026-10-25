@@ -36,8 +36,8 @@ describe('reconnectDelayMs - 02-transport.md §4.5', () => {
 
   it('caps at the ReconnectBackoffMax the station holds, not at a constant', () => {
     expect(reconnectDelayMs(10, 60, () => 0)).toBe(60000);
-    expect(reconnectDelayMs(10, 3600, () => 0)).toBe(3600000);
-    expect(reconnectDelayMs(10, 3600, () => 0.5)).toBe(4140000);
+    expect(reconnectDelayMs(12, 3600, () => 0)).toBe(3600000);
+    expect(reconnectDelayMs(12, 3600, () => 0.5)).toBe(4140000);
   });
 
   it('states the parameters of the spec, and the most the first attempt waits', () => {

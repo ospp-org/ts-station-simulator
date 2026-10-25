@@ -10,7 +10,8 @@ class MqttConnectionStub extends EventEmitter {
   destroyConnection = vi.fn();
   disconnect = vi.fn().mockResolvedValue(undefined);
   subscribe = vi.fn().mockResolvedValue(undefined);
-  publish = vi.fn().mockResolvedValue(undefined);
+  // The PUBACK's reason code: 0x00, Success (freeze item 33 - publish() says what the broker said).
+  publish = vi.fn().mockResolvedValue(0);
   onMessage = vi.fn();
   connect = vi.fn();
 }

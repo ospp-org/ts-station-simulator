@@ -50,7 +50,6 @@ export class MqttConnectionStub extends EventEmitter {
   subscribe = vi.fn(async () => undefined);
   onMessage = vi.fn();
   getTlsPaths = vi.fn(() => wire.tlsPaths ?? undefined);
-  useReconnectBackoffMax = vi.fn();
   publish = vi.fn(async (_topic: string, raw: string | Buffer): Promise<number | null> => {
     const envelope = JSON.parse(String(raw)) as Frame;
     const frame: Frame = {

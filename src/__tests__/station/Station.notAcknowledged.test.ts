@@ -107,7 +107,9 @@ describe('freeze item 33 - a message the broker did not acknowledge with success
 
     wire.puback = (f) => (f.action === 'MeterValues' || f.action === 'SessionEnded' ? 0x10 : 0);
     await elapse(71_000);
-    await until(() => frames('SessionEnded').length > 0, 'the SessionEnded at the end of the wash');
+    await until(() => readSessionRecord().heldSessionEnded.length > 0, 'the SessionEnded held at the end of the wash');
+    // Not sent ahead of its own MeterValues, which wait for the replay: the server would read a gap in the seqNo.
+    expect(frames('SessionEnded'), 'the SessionEnded went out ahead of the MeterValues it follows').toEqual([]);
     const meters = frames('MeterValues').filter((f) => f.payload.sessionId === 'sess_mv');
     expect(meters.length, 'no MeterValues in a 70 s wash').toBeGreaterThan(0);
     await settled(() => readSessionRecord().heldMessages.length >= meters.length);
@@ -162,6 +164,8 @@ describe('freeze item 33 - a message the broker did not acknowledge with success
 describe('freeze item 33 - a scenario station, which boots by the steps of its file', () => {
   it('holds a message answered 0x10 too, and sends it again with its messageId when its file asks for the replay', async () => {
     const station = new Station(connectConfig({ rebootOnReconnect: false }), { mqttUrl: 'mqtts://localhost:8883', stationId: STATION_ID });
+    // A scenario station's boot handler: it takes the session key and reports nothing on its own.
+    station.registerHandler('BootNotification' as never, new BootNotificationHandler(false) as never);
     await station.connect();
     await station.retryBoot();
     station.handleMessage(bootAccepted());
