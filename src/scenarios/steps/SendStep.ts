@@ -407,7 +407,7 @@ export class SendStep implements Step {
         `[SendStep] action=${action} type=${messageType} messageId=${correlationId} (${source})`,
       );
     }
-    const envelope = await station.sender.send(
+    const { envelope } = await station.sender.send(
       action,
       messageType,
       payload,

@@ -62,7 +62,10 @@ vi.mock('mqtt', () => ({
   }),
 }));
 
-const { MqttConnection, LIVE_RECONNECT_PERIOD_MS } = await import('../../mqtt/MqttConnection.js');
+const { MqttConnection } = await import('../../mqtt/MqttConnection.js');
+// The most the first reconnect after a drop waits - 02-transport.md §4.5's 1 s and its 30 % jitter (2026-10-25: the
+// connection retried every 5 s before it paced itself on the backoff).
+const { FIRST_RECONNECT_DELAY_MAX_MS } = await import('../../mqtt/reconnectBackoff.js');
 
 /** Unique stationId per test — RECONNECT_GUARD_MS state is module-level + keyed by it. */
 let seq = 0;
@@ -139,8 +142,8 @@ describe('MqttConnection — destroyConnection() is the OPPOSITE outcome, not a 
     conn.destroyConnection();
 
     expect(fakeClients[0].stream.destroy).toHaveBeenCalledTimes(1);
-    // Not ended => mqtt.js `disconnecting` stays false => it comes back at
-    // LIVE_RECONNECT_PERIOD_MS, which is what cancels the will.
+    // Not ended => mqtt.js `disconnecting` stays false => the connection tries it again
+    // on the backoff, within FIRST_RECONNECT_DELAY_MAX_MS, which is what cancels the will.
     expect(fakeClients[0].endCalls).toHaveLength(0);
     expect(conn.getSeverance().lastCloseCause).toBe('network');
   });
@@ -188,7 +191,7 @@ describe('MqttConnection — the will delay must outlast the reconnect period', 
    * publishing the will, the arm stops inverting, and this assertion goes on
    * passing throughout. The two operands are pinned together below.
    */
-  it('willDelayInterval is strictly greater than LIVE_RECONNECT_PERIOD_MS', () => {
+  it('willDelayInterval is strictly greater than the most the first reconnect waits', () => {
     const conn = new MqttConnection({ mqttUrl: 'mqtts://x', stationId: nextStationId() });
     conn.connect();
 
@@ -197,7 +200,7 @@ describe('MqttConnection — the will delay must outlast the reconnect period', 
     };
     const willDelayMs = will.properties.willDelayInterval * 1000;
 
-    expect(willDelayMs).toBeGreaterThan(LIVE_RECONNECT_PERIOD_MS);
+    expect(willDelayMs).toBeGreaterThan(FIRST_RECONNECT_DELAY_MAX_MS);
   });
 
   /**

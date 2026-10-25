@@ -19,7 +19,7 @@ export class FaultStep implements Step {
         break;
 
       // A power cut, not a network blip. `disconnect` destroys the socket but
-      // leaves the client to auto-reconnect in 5s, which is INSIDE the will's
+      // leaves the client to reconnect within 1.3 s (the backoff's first attempt), which is INSIDE the will's
       // 10s willDelayInterval and therefore cancels it — so no scenario using
       // `disconnect` can ever observe the broker publish the Last Will. `sever`
       // is the teardown that can: unclean (no DISCONNECT packet, so the will
@@ -33,7 +33,7 @@ export class FaultStep implements Step {
       // THE ANNOUNCED DEPARTURE, and the third distinct teardown in this switch.
       // The other two say nothing on the wire on purpose:
       //
-      //   disconnect  destroys the socket and lets the client reconnect in 5s, inside
+      //   disconnect  destroys the socket and lets the client reconnect within 1.3 s, inside
       //               the will's 10s delay, so the broker CANCELS the will;
       //   sever       is unclean and final, so the BROKER publishes the will and the
       //               server hears `UnexpectedDisconnect`;

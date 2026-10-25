@@ -33,6 +33,7 @@ import { FundWalletStep } from './steps/FundWalletStep.js';
 import { AttestDeviceStep } from './steps/AttestDeviceStep.js';
 import { DeviceProofStep } from './steps/DeviceProofStep.js';
 import { CaptureTimeStep } from './steps/CaptureTimeStep.js';
+import { ReplayHeldStep } from './steps/ReplayHeldStep.js';
 import { MULTIUNIT_SERVICE_ID } from './bootstrap/uatPrivileged.js';
 import { StartHeartbeatStep } from './steps/StartHeartbeatStep.js';
 import { FaultStep } from './steps/FaultStep.js';
@@ -578,6 +579,7 @@ const STEP_REGISTRY: ReadonlyMap<string, Step> = new Map<string, Step>([
   ['attest_device', new AttestDeviceStep()],
   ['device_proof', new DeviceProofStep()],
   ['capture_time', new CaptureTimeStep()],
+  ['replay_held', new ReplayHeldStep()],
 ]);
 
 // ---------------------------------------------------------------------------

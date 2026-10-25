@@ -73,7 +73,44 @@ function corruptMac(mac: string): string {
   return flipped.toString('base64');
 }
 
+/** PUBACK reason code 0x00, Success: the only acknowledgement that releases a message (freeze item 33). */
+export const PUBACK_SUCCESS = 0x00;
+
+/** A PUBACK's reason code as a log reads it - `0x10` - or `none` when the broker kept no record of the message. */
+export function describeAcknowledgement(acknowledgement: number | null): string {
+  return typeof acknowledgement === 'number' ? `0x${acknowledgement.toString(16).padStart(2, '0')}` : 'none';
+}
+
+/**
+ * A message the broker did not acknowledge with success (freeze item 33, decided by Gabi on 2026-10-25): a PUBACK
+ * with any other reason code - 0x10 No matching subscribers, which MQTT counts a success and which means no server
+ * received it - or none, the broker having kept no record of it when the station reconnected (Session Present 0).
+ * It stays in the station's buffer and is resent after the next reconnection (01-architecture.md §6.5).
+ */
+export interface NotAcknowledged {
+  action: OsppAction;
+  messageType: MessageType;
+  payload: unknown;
+  /** The messageId it went out with, which its resend keeps: a copy the server did receive is then a duplicate. */
+  messageId: string;
+  /** The PUBACK's reason code, or null when the broker kept no record of the message. */
+  acknowledgement: number | null;
+}
+
+/**
+ * What send() published, and what the broker said of it: the reason code of its PUBACK, or null when the broker kept no
+ * record of it. Anything but 0x00 is also handed to onNotAcknowledged; a held record released only by a 0x00 reads it
+ * here (Station.sendHeldEnd).
+ */
+export interface SentMessage<T> {
+  envelope: OsppEnvelope<T>;
+  acknowledgement: number | null;
+}
+
 export class MessageSender {
+  /** Handed every message the broker did not acknowledge 0x00; the station holds it for its replay (Station.hold). */
+  onNotAcknowledged: ((message: NotAcknowledged) => void) | null = null;
+
   private readonly connection: MqttConnection;
   private readonly stationId: string;
   private readonly getSessionKey: () => string | null;
@@ -129,7 +166,7 @@ export class MessageSender {
     // the fail-closed guard below is untouched for everything that is not a
     // deliberate probe of the server's verification branches.
     tamperMac?: MacTamperMode,
-  ): Promise<OsppEnvelope<T>> {
+  ): Promise<SentMessage<T>> {
     const envelope = createEnvelope<T>({
       messageId: correlationId ?? crypto.randomUUID(),
       messageType,
@@ -229,8 +266,11 @@ export class MessageSender {
     // land here, before publish(), because the broker advertises maximumPacketSize 65536
     // and silently DROPS anything above it — a station that logged and published anyway
     // would lose the frame and be told nothing.
-    await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(outgoing), 1);
+    const acknowledgement = await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(outgoing), 1);
+    if (acknowledgement !== PUBACK_SUCCESS) {
+      this.onNotAcknowledged?.({ action, messageType, payload, messageId: outgoing.messageId, acknowledgement });
+    }
 
-    return outgoing;
+    return { envelope: outgoing, acknowledgement };
   }
 }

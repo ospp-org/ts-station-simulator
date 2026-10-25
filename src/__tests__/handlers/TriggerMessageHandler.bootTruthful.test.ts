@@ -38,6 +38,8 @@ class MqttConnectionStub extends EventEmitter {
   subscribe = vi.fn().mockResolvedValue(undefined);
   publish = vi.fn(async (topic: string, payload: string) => {
     publishCalls.push({ topic, payload: String(payload) });
+    // The PUBACK's reason code: 0x00, Success (freeze item 33 - publish() says what the broker said).
+    return 0;
   });
   onMessage = vi.fn();
   getTlsPaths = vi.fn(() => null);

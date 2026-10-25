@@ -35,7 +35,12 @@ export const wire: {
   /** The certificate paths the next stub reports; the session record lives beside them. */
   tlsPaths: { key: string; cert: string } | null;
   connections: MqttConnectionStub[];
-} = { frames: [], onPublish: null, tlsPaths: null, connections: [] };
+  /**
+   * What the broker says of each frame: the PUBACK reason code publish() resolves with - 0x00 Success when
+   * unset - or null for a frame still in flight when the broker kept no session (freeze item 33).
+   */
+  puback: ((frame: Frame) => number | null) | null;
+} = { frames: [], onPublish: null, tlsPaths: null, connections: [], puback: null };
 
 export class MqttConnectionStub extends EventEmitter {
   setTls = vi.fn();
@@ -45,7 +50,7 @@ export class MqttConnectionStub extends EventEmitter {
   subscribe = vi.fn(async () => undefined);
   onMessage = vi.fn();
   getTlsPaths = vi.fn(() => wire.tlsPaths ?? undefined);
-  publish = vi.fn(async (_topic: string, raw: string | Buffer) => {
+  publish = vi.fn(async (_topic: string, raw: string | Buffer): Promise<number | null> => {
     const envelope = JSON.parse(String(raw)) as Frame;
     const frame: Frame = {
       action: envelope.action,
@@ -55,6 +60,7 @@ export class MqttConnectionStub extends EventEmitter {
     };
     wire.frames.push(frame);
     wire.onPublish?.(frame);
+    return wire.puback === null ? 0 : wire.puback(frame);
   });
   connect = vi.fn(() => {
     // A microtask, not setImmediate: the tests fake the timers, and the connack must not wait for them.
@@ -118,6 +124,7 @@ export function resetWire(): void {
   wire.onPublish = null;
   wire.tlsPaths = null;
   wire.connections.length = 0;
+  wire.puback = null;
 }
 
 /**
@@ -230,9 +237,17 @@ export function sessionRecordFile(): string {
 }
 
 /** What that file holds right now, read synchronously; an absent file holds nothing. */
-export function readSessionRecord(): { sessions: Array<Record<string, unknown>>; heldSessionEnded: unknown[] } {
+export function readSessionRecord(): {
+  sessions: Array<Record<string, unknown>>;
+  heldSessionEnded: unknown[];
+  heldMessages: Array<{ action: string; messageId: string }>;
+} {
   const file = sessionRecordFile();
-  if (!existsSync(file)) return { sessions: [], heldSessionEnded: [] };
-  const parsed = JSON.parse(readFileSync(file, 'utf-8')) as { sessions?: Array<Record<string, unknown>>; heldSessionEnded?: unknown[] };
-  return { sessions: parsed.sessions ?? [], heldSessionEnded: parsed.heldSessionEnded ?? [] };
+  if (!existsSync(file)) return { sessions: [], heldSessionEnded: [], heldMessages: [] };
+  const parsed = JSON.parse(readFileSync(file, 'utf-8')) as {
+    sessions?: Array<Record<string, unknown>>;
+    heldSessionEnded?: unknown[];
+    heldMessages?: Array<{ action: string; messageId: string }>;
+  };
+  return { sessions: parsed.sessions ?? [], heldSessionEnded: parsed.heldSessionEnded ?? [], heldMessages: parsed.heldMessages ?? [] };
 }

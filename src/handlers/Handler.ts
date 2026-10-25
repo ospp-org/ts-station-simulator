@@ -109,6 +109,11 @@ export interface StationContext {
   /** After an Accepted boot and its bay reports: send every held SessionEnded, oldest first (Station). */
   replayHeldSessionEnded?(): Promise<void>;
   /**
+   * After an Accepted boot and its bay reports: send every held SessionEnded and every message the broker did not
+   * acknowledge with success, in the order of 01-architecture.md §6.5 (Station.replayHeld; freeze item 33).
+   */
+  replayHeld?(): Promise<void>;
+  /**
    * Persist a renewed leaf cert (+ optional issuing chain) and its retained
    * private key to the station's TLS file paths — the client-cert swap. ADR-0002 T1.
    */

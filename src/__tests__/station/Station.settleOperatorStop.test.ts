@@ -51,13 +51,16 @@ function stationWithSession(startedAtIsoSecondsAgo: number): { station: Station;
   const sent: Sent[] = [];
   vi.spyOn(station.sender, 'send').mockImplementation(async (action, messageType, payload) => {
     sent.push({ action: String(action), payload: payload as Record<string, unknown> });
-  // `send` answers with the envelope it published, so a stub that returns
-  // nothing does not have that method's type. Returning the envelope keeps
-  // the stub honest instead of widening it to `never`.
-    return createEnvelope({
-      messageId: 'stub', messageType, action, source: MessageSource.STATION,
-      payload, protocolVersion: OSPP_PROTOCOL_VERSION,
-    });
+  // `send` answers with the envelope it published and what the broker said of it, so a stub that
+  // returns nothing does not have that method's type. Returning both - a PUBACK 0x00 - keeps the
+  // stub honest instead of widening it to `never`.
+    return {
+      envelope: createEnvelope({
+        messageId: 'stub', messageType, action, source: MessageSource.STATION,
+        payload, protocolVersion: OSPP_PROTOCOL_VERSION,
+      }),
+      acknowledgement: 0,
+    };
   });
 
   // A bay carrying a session is OCCUPIED — what StartServiceHandler sets on

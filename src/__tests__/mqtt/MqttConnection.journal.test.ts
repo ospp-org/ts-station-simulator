@@ -105,7 +105,8 @@ describe('MqttConnection journals BOTH chokepoints', () => {
   it('a connection with no journal behaves exactly as before', async () => {
     const conn = new MqttConnection({ mqttUrl: 'mqtt://x', stationId: 'stn_j' });
     conn.connect();
-    await expect(conn.publish('t', OUTBOUND, 1)).resolves.toBeUndefined();
+    // The PUBACK's reason code, 0x00 Success when the broker sent none (freeze item 33, 2026-10-25).
+    await expect(conn.publish('t', OUTBOUND, 1)).resolves.toBe(0);
     expect(fake.publishCalls).toHaveLength(1);
   });
 

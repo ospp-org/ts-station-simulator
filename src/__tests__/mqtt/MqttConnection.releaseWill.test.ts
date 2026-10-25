@@ -98,8 +98,8 @@ const {
   MqttConnection,
   DISCONNECT_WITH_WILL_REASON_CODE,
   DEFAULT_WILL_DELAY_INTERVAL_SECONDS,
-  LIVE_RECONNECT_PERIOD_MS,
 } = await import('../../mqtt/MqttConnection.js');
+const { FIRST_RECONNECT_DELAY_MAX_MS } = await import('../../mqtt/reconnectBackoff.js');
 
 /** Unique stationId per test — RECONNECT_GUARD_MS state is module-level + keyed by it. */
 let seq = 0;
@@ -160,7 +160,7 @@ describe('MqttConnection.disconnect({ publishWill: true }) — the release exit'
 
     const will = connectCalls[0].opts.will as { properties: { willDelayInterval: number } };
     expect(will.properties.willDelayInterval).toBe(DEFAULT_WILL_DELAY_INTERVAL_SECONDS);
-    expect(DEFAULT_WILL_DELAY_INTERVAL_SECONDS * 1000).toBeGreaterThan(LIVE_RECONNECT_PERIOD_MS);
+    expect(DEFAULT_WILL_DELAY_INTERVAL_SECONDS * 1000).toBeGreaterThan(FIRST_RECONNECT_DELAY_MAX_MS);
   });
 
   it('the will the broker is asked to publish is still the ConnectionLost the server handles', async () => {
