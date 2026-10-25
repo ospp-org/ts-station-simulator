@@ -207,6 +207,11 @@ export class Station extends EventEmitter {
   private checkpointTimer: ReturnType<typeof setTimeout> | null = null;
   /** The socket is up (MqttConnection's `connect` and `close`) - tracked for a station that acts on its link. */
   private linkUp = false;
+  /**
+   * The socket is up, for every station (2026-10-25): what waitForConnect reads, since a station is back 1.0-1.3 s
+   * after its link drops (02-transport.md §4.5), often before the step that waits for it.
+   */
+  private transportUp = false;
   /** Inside connect(): the `connect` that follows is the one connect() waits for, not mqtt.js reconnecting on its own. */
   private connectInFlight = false;
   /** One replay at a time: a second Accepted boot must not send the same held events twice. */
@@ -307,6 +312,13 @@ export class Station extends EventEmitter {
       this.lifecycle = StationLifecycle.OFFLINE;
       this.bootAccepted = false;
       this.emit('kicked', reasonCode);
+    });
+
+    this.connection.on('connect', () => {
+      this.transportUp = true;
+    });
+    this.connection.on('close', () => {
+      this.transportUp = false;
     });
 
     // THE LINK, AS THE STATION SEES IT. Wired once here, like the two above - and only for a station
@@ -412,6 +424,9 @@ export class Station extends EventEmitter {
 
   /** Simulate network drop — TCP destroyed, client auto-reconnects. */
   destroyConnection(): void {
+    // Down from this instant: its socket reports the close a tick later, and a wait_for_connect right after the fault
+    // waits for the reconnect, not on the connection going away.
+    this.transportUp = false;
     this.connection.destroyConnection();
   }
 
@@ -422,6 +437,7 @@ export class Station extends EventEmitter {
    * MqttConnection.severConnection().
    */
   severConnection(): void {
+    this.transportUp = false;
     this.connection.severConnection();
   }
 
@@ -434,6 +450,9 @@ export class Station extends EventEmitter {
    * next `wait_for`'s timeout budget). Rejects after `timeoutMs`.
    */
   async waitForConnect(timeoutMs: number): Promise<void> {
+    // Connected again since the last drop: on the backoff of 02-transport.md §4.5 the reconnect lands 1.0-1.3 s after
+    // the drop, often before the step that waits for it (2026-10-25) - there is no next `connect` to wait for.
+    if (this.transportUp) return;
     await new Promise<void>((resolve, reject) => {
       const onConnect = (): void => {
         cleanup();
