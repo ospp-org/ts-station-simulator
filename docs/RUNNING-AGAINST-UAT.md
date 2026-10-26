@@ -495,6 +495,15 @@ A handle written before 2026-10-13 carries no `apiBaseUrl`; `teardown-pool` keep
 - A `409` on `/sessions/start` does not say which gate refused:
   `OCCUPIED→3001`, `UNAVAILABLE→3011`, `FAULTED`/`FINISHING`/`UNKNOWN`→**`3002`**. Assert the
   `ospp_code`, not the status.
+- **What the broker acknowledged** is the station's record alone: a message answered PUBACK
+  `0x00` is released (freeze item 33) and logged nowhere, and a broker can acknowledge a message
+  and lose it - EMQX acknowledges one for a durable subscription as it enters its write buffer,
+  which a SIGKILL loses, and its own trace loses its last lines with it (csms-server TODO A0
+  item 14). `OSPP_SIM_LOG_ACKNOWLEDGEMENTS=1` logs every answer, one line a message:
+  `[Acknowledgement] <stationId> <action> <messageType> <messageId> PUBACK 0x00` (or the reason
+  code, or `none` for a message the broker kept no record of). A messageId acknowledged `0x00`
+  that is missing from the station's deduplication set on the server (`ospp:dedup:messages:<stationId>`)
+  is a message the broker took and lost.
 
 ### A background `api_call` reports its failure three steps away from the cause
 
