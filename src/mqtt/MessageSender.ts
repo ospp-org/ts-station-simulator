@@ -267,6 +267,12 @@ export class MessageSender {
     // and silently DROPS anything above it — a station that logged and published anyway
     // would lose the frame and be told nothing.
     const acknowledgement = await this.connection.publish(toServerTopic(this.stationId), serializeEnvelopeForWire(outgoing), 1);
+    // Every acknowledgement, when a proof asks for it (csms-server TODO A0 item 14): a broker can answer 0x00 and lose the
+    // message - EMQX acknowledges a durable one as it enters its write buffer - and the station's record of each answer
+    // is then the only evidence of what it took.
+    if (process.env.OSPP_SIM_LOG_ACKNOWLEDGEMENTS === '1') {
+      console.log(`[Acknowledgement] ${this.stationId} ${action} ${messageType} ${outgoing.messageId} PUBACK ${describeAcknowledgement(acknowledgement)}`);
+    }
     if (acknowledgement !== PUBACK_SUCCESS) {
       this.onNotAcknowledged?.({ action, messageType, payload, messageId: outgoing.messageId, acknowledgement });
     }
